@@ -1,0 +1,128 @@
+{
+  "schema_version": "hub-capabilities/v1",
+  "automatic_school_writes": false,
+  "agent_entrypoint": "docs/START_HERE.md",
+  "capabilities": [
+    {
+      "id": "agenda_reader",
+      "state": "implemented_transport_not_connected",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/adapters/google_sheets.py",
+        "scripts/read_agenda.py",
+        "tests/test_google_sheets_reader.py"
+      ],
+      "remaining": [
+        "School-authorized read-only runtime identity/token refresh",
+        "Explicit live ranges and stable lesson/assignment mapping",
+        "Approved persistent observation baseline and first real read"
+      ]
+    },
+    {
+      "id": "agenda_interconnection",
+      "state": "fixture_tested_and_private_snapshot_reader",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/curriculum_pipeline.py",
+        "src/school_workflow_hub/adapters/private_input.py"
+      ],
+      "remaining": [
+        "Verify stable Agenda/parent/weekly assignment/Schoology link baseline first",
+        "Map real Schoology/IC targets",
+        "Validate calendar/date proposals against live sources"
+      ]
+    },
+    {
+      "id": "lesson_generator",
+      "state": "scaffold_complete",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/lesson_generator.py"
+      ],
+      "remaining": [
+        "Teacher acceptance/current manual",
+        "Live Forensics inventory and approved replacement readback"
+      ]
+    },
+    {
+      "id": "feedback_grading",
+      "state": "fixture_tested",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/feedback_pipeline.py",
+        "tests/test_teaching_continuity.py"
+      ],
+      "remaining": [
+        "Approved private student-work input",
+        "Real 14-day reader and current rubric",
+        "Teacher acceptance and any separately authorized grade executor"
+      ]
+    },
+    {
+      "id": "reports",
+      "state": "preview_builders_complete",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/reporting_pipeline.py"
+      ],
+      "remaining": [
+        "Real cumulative history and teacher review",
+        "Actual folder filing/email/printing adapters and validation"
+      ]
+    },
+    {
+      "id": "schoology_ic",
+      "state": "manifests_and_offline_reconciliation",
+      "live_verified": false,
+      "evidence_files": [
+        "config/manifests/anatomy.json",
+        "config/manifests/forensics.json",
+        "src/school_workflow_hub/workflows/schoology_gradebook.py"
+      ],
+      "remaining": [
+        "Real source observations and student-access evidence",
+        "Verified live adapter, approved actions and readback/rollback"
+      ]
+    },
+    {
+      "id": "rosters",
+      "state": "fixture_tested_status_proposals",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/roster_reconciliation.py"
+      ],
+      "remaining": [
+        "Real complete-current roster input",
+        "Private stable identities and review",
+        "Preserve grade history during approved status changes"
+      ]
+    },
+    {
+      "id": "field_notes_research",
+      "state": "preview_planners_and_design",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/research_pipeline.py"
+      ],
+      "remaining": [
+        "Real note intake and append/readback",
+        "Open inductive codebook implementation and validation",
+        "Research collection deferred until teaching workflows are verified"
+      ]
+    },
+    {
+      "id": "cloud_execution",
+      "state": "manual_validation_prepared",
+      "live_verified": false,
+      "evidence_files": [
+        ".github/workflows/hub-cloud-validation.yml",
+        "scripts/cloud_validation.py"
+      ],
+      "remaining": [
+        "Owner included-usage/spending confirmation",
+        "First successful hosted run",
+        "Separate school identity/storage before live processing"
+      ]
+    }
+  ]
+}

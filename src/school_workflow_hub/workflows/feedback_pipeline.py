@@ -74,6 +74,9 @@ class CompletionEvidence:
     drafts_completed: int = 0
     first_and_revision_pairs: int = 0
     optional_completed: int = 0
+    # None preserves legacy fixtures: unpaired first answers were not observed.
+    first_answers_completed: int | None = None
+    first_answers_completed_later: int = 0
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,7 @@ class FeedbackObservation:
     conceptual_signal: str = "none"
     contains_sensitive_content: bool = False
     synthetic_marker: str = "fixture-only"
+    evidence_status: str = "complete"
 
 
 @dataclass(frozen=True)
@@ -177,15 +181,25 @@ def _validate_observation(item: FeedbackObservation) -> None:
         raise ValueError("invalid_synthetic_fixture")
     if item.work_status not in ("submitted", "missing", "absent") or item.conceptual_signal not in SIGNALS:
         raise ValueError("invalid_synthetic_fixture")
+    if item.evidence_status not in ("complete", "partial", "unreadable"):
+        raise ValueError("invalid_completion_evidence")
     if not isinstance(item.completion, CompletionEvidence):
         raise ValueError("invalid_completion_evidence")
     counts = asdict(item.completion)
+    first_answers = counts.pop("first_answers_completed")
     if any(type(value) is not int or not 0 <= value <= 1000 for value in counts.values()):
         raise ValueError("invalid_completion_evidence")
     evidence = item.completion
+    if first_answers is None:
+        if evidence.first_answers_completed_later:
+            raise ValueError("invalid_completion_evidence")
+    elif (type(first_answers) is not int or not
+          evidence.first_and_revision_pairs <= first_answers <= evidence.draft_required or
+          evidence.first_answers_completed_later > first_answers):
+        raise ValueError("invalid_completion_evidence")
     if not (evidence.notes_completed_later <= evidence.notes_completed <= evidence.notes_required and evidence.bank_completed_later <= evidence.bank_completed <= evidence.bank_required and evidence.first_and_revision_pairs <= evidence.drafts_completed <= evidence.draft_required):
         raise ValueError("invalid_completion_evidence")
-    if item.work_status != "submitted" and (item.conceptual_signal != "none" or any(counts[key] for key in counts if not key.endswith("required"))):
+    if item.work_status != "submitted" and (item.conceptual_signal != "none" or first_answers or any(counts[key] for key in counts if not key.endswith("required"))):
         raise ValueError("missing_work_has_no_conceptual_evidence")
 
 
@@ -203,10 +217,17 @@ def _from_payload(payload: Mapping[str, Any]) -> FeedbackObservation:
 
 
 class _PreparedReader(LocalSyntheticAdapter):
-    def __init__(self, observations: Sequence[FeedbackObservation]):
+    def __init__(self, observations: Sequence[FeedbackObservation], *, review_hold: bool = False):
         self.observations = observations
+        self.review_hold = review_hold
 
     def changed_submissions(self, class_stable_id: str, since: str) -> AdapterResult:
+        if self.review_hold:
+            # The shared student-work planner has an independent retained ledger.
+            # An empty filtered reader would still let it re-plan old evidence.
+            # Its existing blocked-reader path prevents that without erasing any
+            # history or introducing a second backlog policy here.
+            return AdapterResult("blocked", reason="feedback_evidence_review_required")
         return AdapterResult("ok", {"revisions": [
             {**asdict(item.submission), "class_stable_id": item.class_stable_id,
              "work_status": item.work_status, "source_reference": item.source_reference,
@@ -220,7 +241,9 @@ def _grade_value(item: FeedbackObservation) -> str | None:
         return None
     evidence = item.completion
     return canonical_json({
-        "completion": {"notes": [evidence.notes_completed, evidence.notes_required], "bank": [evidence.bank_completed, evidence.bank_required], "later_notes_credited": evidence.notes_completed_later, "later_bank_credited": evidence.bank_completed_later},
+        "completion": {"notes": [evidence.notes_completed, evidence.notes_required], "bank": [evidence.bank_completed, evidence.bank_required], "later_notes_credited": evidence.notes_completed_later, "later_bank_credited": evidence.bank_completed_later,
+                       "first_answers": None if evidence.first_answers_completed is None else [evidence.first_answers_completed, evidence.draft_required],
+                       "later_first_answers_credited": evidence.first_answers_completed_later},
         "revision": {"draft": [evidence.drafts_completed, evidence.draft_required], "paired_evidence_count": evidence.first_and_revision_pairs, "growth_claim": "not_inferred"},
         "optional": "unscored", "teacher_review_required": True,
     })
@@ -235,7 +258,38 @@ def _draft(item: FeedbackObservation) -> str:
         "cause_correlation": "Which evidence distinguishes a causal explanation from a correlation? Revise the explanation in your own words.",
         "vocabulary_connection": "How do two Concept Bank terms connect to your explanation? Revise the connection in your own words.",
     }
-    return messages[item.conceptual_signal] + " Meaningful later-completed NOTES and Concept Bank fields receive completion credit; earlier thinking or growth is not invented."
+    return messages[item.conceptual_signal] + " Meaningful later-completed first answers, NOTES and Concept Bank fields receive completion credit separately from revised answers; earlier thinking or growth is not invented."
+
+
+def _review_hold(item: FeedbackObservation, history: Sequence[FeedbackObservation]) -> str | None:
+    """Withhold a new proposal, rather than turn uncertain reads into lost credit.
+
+    Counts are cumulative snapshots, never increments to add to an older grade.
+    A reduction may be legitimate, but cannot be adjudicated from counts alone.
+    """
+    if item.evidence_status != "complete":
+        return "incomplete_completion_evidence"
+    for prior in history:
+        if (prior.submission.stable_id != item.submission.stable_id or
+            prior.rubric_version != item.rubric_version or
+            prior.evidence_status != "complete" or prior.work_status != "submitted" or
+            _timestamp(prior.submission.observed_at) >= _timestamp(item.submission.observed_at)):
+            continue
+        if item.work_status != "submitted":
+            return "submission_availability_regressed"
+        before, after = prior.completion, item.completion
+        if any(getattr(before, field) != getattr(after, field) for field in
+               ("notes_required", "bank_required", "draft_required")):
+            return "completion_structure_changed"
+        if any(getattr(after, field) < getattr(before, field) for field in
+               ("notes_completed", "bank_completed", "drafts_completed", "first_and_revision_pairs")):
+            return "completion_evidence_regressed"
+        if before.first_answers_completed is not None and (
+            after.first_answers_completed is None or
+            after.first_answers_completed < before.first_answers_completed
+        ):
+            return "completion_evidence_regressed"
+    return None
 
 
 def plan_feedback_pipeline(
@@ -293,14 +347,20 @@ def plan_feedback_pipeline(
             valid.append(item)
 
     stored = {}
-    for row in connection.execute("SELECT id, payload_json FROM source_revisions WHERE source_type = ? AND active = 1", (EVIDENCE_SOURCE,)):
+    stored_history = []
+    unreadable_ids = set()
+    for row in connection.execute("SELECT id, stable_object_id, payload_json FROM source_revisions WHERE source_type = ?", (EVIDENCE_SOURCE,)):
         try:
             item = _from_payload(json.loads(row["payload_json"]))
         except (ValueError, TypeError, KeyError):
             issues.append(WorkflowIssue("stored_metadata_unreadable", "high"))
+            unreadable_ids.add(row["stable_object_id"])
             continue
         if item.class_stable_id == request.class_stable_id and _timestamp(item.submission.observed_at) <= request.as_of:
-            stored[item.submission.stable_id] = item
+            stored_history.append(item)
+            sid = item.submission.stable_id
+            if sid not in stored or _timestamp(item.submission.observed_at) > _timestamp(stored[sid].submission.observed_at):
+                stored[sid] = item
 
     newest = dict(stored)
     rejected = set()
@@ -329,8 +389,18 @@ def plan_feedback_pipeline(
         if len(ids) > 1:
             rejected.update(ids)
             issues.append(WorkflowIssue("duplicate_assignment_submission", "high", assignment_key))
-    current = tuple(newest[sid] for sid in sorted(newest) if sid not in rejected and newest[sid].submission.assignment_stable_id in assignment_map and newest[sid].rubric_version == request.rubric_version)
-    base = plan_student_work(connection, _PreparedReader(current), StudentWorkWorkflowRequest(request.class_stable_id, request.as_of, request.prompt_version, request.rubric_version))
+    current = []
+    for sid in sorted(newest):
+        item = newest[sid]
+        if sid in rejected or item.submission.assignment_stable_id not in assignment_map or item.rubric_version != request.rubric_version:
+            continue
+        hold = "stored_metadata_unreadable" if sid in unreadable_ids else _review_hold(item, (*stored_history, *valid))
+        if hold:
+            issues.append(WorkflowIssue(hold, "high", item.submission.assignment_stable_id))
+        else:
+            current.append(item)
+    current = tuple(current)
+    base = plan_student_work(connection, _PreparedReader(current, review_hold=any(issue.severity == "high" for issue in issues)), StudentWorkWorkflowRequest(request.class_stable_id, request.as_of, request.prompt_version, request.rubric_version))
     run = create_or_get_run(connection, "feedback_pipeline", {"class": request.class_stable_id, "as_of": request.as_of.isoformat(), "prompt": request.prompt_version, "rubric": request.rubric_version, "retention_days": request.retention_days, "evidence": [asdict(item) for item in current], "assignments": [asdict(assignment_map[key]) for key in sorted(assignment_map)], "issues": [asdict(issue) for issue in issues]})
     assignment_sources = {key: record_source_revision(connection, ASSIGNMENT_SOURCE, key, asdict(item), "synthetic://assignments/" + key.split(":")[-1], run.id) for key, item in assignment_map.items()}
     # Retain every valid received revision as evidence, while only the newest

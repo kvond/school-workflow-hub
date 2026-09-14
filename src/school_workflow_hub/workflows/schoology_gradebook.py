@@ -218,6 +218,12 @@ def reconcile_platform_assignments(
             if observed.target_id != target_id:
                 issues.append(WorkflowIssue(f"incorrect_{system}_target", "error", assignment.stable_id))
                 continue
+            # A target claimed under another course/assignment key is not a
+            # unique identity, even when this key has exactly one observation.
+            # Do not choose one conflicting snapshot as the writable target.
+            if sum(r.system == system and r.target_id == target_id for r in current) > 1:
+                issues.append(WorkflowIssue(f"conflicting_observed_{system}_target_binding", "error", assignment.stable_id))
+                continue
             if UNVERIFIED in {entry.revision, observed.revision}:
                 issues.append(WorkflowIssue("unverified_source_revision", "error", assignment.stable_id))
                 continue
@@ -235,7 +241,7 @@ def reconcile_platform_assignments(
                     issues.append(WorkflowIssue(f"unverified_{system}_{field}", "warning", assignment.stable_id))
                     continue
                 old = observed.fields.get(field)
-                if require_observed_fields and (field not in observed.fields or old == UNVERIFIED):
+                if old == UNVERIFIED or (require_observed_fields and field not in observed.fields):
                     issues.append(WorkflowIssue(f"unverified_observed_{system}_{field}", "warning", assignment.stable_id))
                     continue
                 if field == "deck_reference" and old:

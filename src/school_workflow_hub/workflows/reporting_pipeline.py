@@ -142,6 +142,11 @@ def plan_reporting_pipeline(result: FeedbackPipelineResult, *, friday_class_ids:
 
 
 def _evidence_changes(result, start):
+    # A newer partial/unreadable or regressed revision is retained as history,
+    # but the feedback gate deliberately withholds it from current records.
+    # Do not turn that held history into a report of lost completion credit.
+    eligible = {(item.submission.stable_id, item.submission.revision_hash)
+                for item in result.records}
     groups = {}
     for item in result.history:
         if _observed(item) <= result.as_of:
@@ -152,7 +157,9 @@ def _evidence_changes(result, start):
         if len(ordered) < 2:
             continue
         prior, current = ordered[-2:]
-        if _observed(current) < start or current.work_status != "submitted":
+        if (_observed(current) < start or current.work_status != "submitted"
+                or (current.submission.stable_id, current.submission.revision_hash) not in eligible
+                or current.evidence_status != "complete" or prior.evidence_status != "complete"):
             continue
         changes.append(EvidenceChange(pseudonymous_learner_id(current.submission.learner_stable_id), current.submission.assignment_stable_id, prior.submission.revision_hash, current.submission.revision_hash, prior.submission.observed_at, current.submission.observed_at, current.completion.notes_completed - prior.completion.notes_completed, current.completion.bank_completed - prior.completion.bank_completed, current.completion.drafts_completed - prior.completion.drafts_completed, prior.conceptual_signal, current.conceptual_signal, tuple(sorted({prior.source_reference, current.source_reference}))))
     return tuple(sorted(changes, key=lambda item: (item.learner_pseudonym, item.assignment_key)))
@@ -174,6 +181,8 @@ _REPORT_ISSUE_CODES = frozenset({
     "rubric_mismatch", "stored_metadata_unreadable", "submission_identity_conflict",
     "ambiguous_submission_revision", "duplicate_assignment_submission", "late_submission",
     "friday_class_meetings_unverified",
+    "incomplete_completion_evidence", "completion_structure_changed",
+    "completion_evidence_regressed", "submission_availability_regressed",
 })
 
 
@@ -240,6 +249,10 @@ def _render_report_packet(preview: WorkflowPreview) -> str:
         raise ValueError("incomplete_report_packet")
 
     lines = ["# Synthetic report packet", "", "Teacher review preview. Delivery is disabled. Nothing has been sent, printed, copied, or entered into a gradebook.", "", "Observations below are synthetic evidence counts. Discussion prompts are draft interpretations, not diagnoses or findings of learning growth."]
+    if any(issue.code in {"incomplete_completion_evidence", "completion_structure_changed",
+                          "completion_evidence_regressed", "submission_availability_regressed",
+                          "stored_metadata_unreadable"} for issue in preview.issues):
+        lines.extend(["", "Grading is unfinished: held evidence is excluded from current totals and revision comparisons. Omission is not a zero, missing-work judgment or loss of previously recorded credit. Review the exceptions before using this packet."])
     for kind, title in titles.items():
         artifact = reports[kind]
         report_id = bounded(artifact["stable_id"], r"report_[0-9a-f]{24}")

@@ -97,6 +97,51 @@ class PlatformReconcileTests(unittest.TestCase):
         preview = reconcile_platform_assignments((replace(desired, ic_linkage_id="synthetic:other-ic"),), observations_for(desired))
         self.assertIn("conflicting_infinite_campus_linkage", {i.code for i in preview.issues})
 
+    def test_observed_target_claimed_by_other_assignment_or_course_blocks_changes(self):
+        desired = desired_one()
+        for system_index, system in enumerate(("schoology", "infinite_campus")):
+            for conflicting_key in (
+                {"assignment_key": "synthetic:other-assignment"},
+                {"class_stable_id": "synthetic:other-course"},
+            ):
+                with self.subTest(system=system, conflicting_key=conflicting_key):
+                    rows = list(observations_for(desired))
+                    rows[system_index] = replace(rows[system_index], fields=dict(rows[system_index].fields, due_date="2026-09-15"))
+                    rows.append(replace(rows[system_index], **conflicting_key))
+                    first = reconcile_platform_assignments((desired,), tuple(rows))
+                    self.assertFalse(first.changes)
+                    self.assertIn(f"conflicting_observed_{system}_target_binding", {i.code for i in first.issues})
+                    self.assertEqual(first, reconcile_platform_assignments((desired,), tuple(reversed(rows))))
+
+    def test_target_identifiers_are_scoped_to_platform(self):
+        desired = desired_one()
+        shared_target = "synthetic:shared-external-id"
+        desired = replace(desired, assignment=replace(desired.assignment, external_ids={"schoology": shared_target, "infinite_campus": shared_target}), ic_linkage_id=shared_target)
+        rows = tuple(replace(row, target_id=shared_target, fields=dict(row.fields, due_date="2026-09-15")) for row in observations_for(desired))
+        preview = reconcile_platform_assignments((desired,), rows)
+        self.assertEqual({change.target_system for change in preview.changes}, {"schoology", "infinite_campus"})
+        self.assertFalse(preview.issues)
+
+    def test_explicit_unknown_old_values_never_become_reversible_changes(self):
+        desired = desired_one()
+        rows = tuple(replace(row, fields={key: "UNVERIFIED" for key in row.fields}) for row in observations_for(desired))
+        for strict in (False, True):
+            with self.subTest(require_observed_fields=strict):
+                preview = reconcile_platform_assignments((desired,), rows, require_observed_fields=strict)
+                self.assertFalse(preview.changes)
+                self.assertEqual(len(preview.issues), 10)
+                self.assertTrue(all(issue.code.startswith("unverified_observed_") for issue in preview.issues))
+
+    def test_copy_edit_mode_mismatch_is_not_canonicalized_away(self):
+        desired = desired_one()
+        rows = observations_for(desired)
+        rows = (replace(rows[0], fields=dict(rows[0].fields, deck_reference=desired.deck_reference.removesuffix("copy") + "edit")), rows[1])
+        preview = reconcile_platform_assignments((desired,), rows)
+        self.assertEqual(len(preview.changes), 1)
+        self.assertEqual(preview.changes[0].field, "deck_reference")
+        self.assertTrue(preview.changes[0].old_value.endswith("/edit"))
+        self.assertTrue(preview.changes[0].proposed_value.endswith("/copy"))
+
 
 class PlatformLinkAuditTests(unittest.TestCase):
     def setUp(self):

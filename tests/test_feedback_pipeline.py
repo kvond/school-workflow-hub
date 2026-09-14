@@ -77,6 +77,160 @@ class FeedbackPipelineTests(unittest.TestCase):
         self.assertEqual(second.records, third.records)
         self.assertEqual(third.preview.changes, ())
 
+    def test_later_first_answers_and_revisions_count_once_as_separate_snapshots(self):
+        original, revised = self.observations[:2]
+        original = replace(original, completion=replace(original.completion, first_answers_completed=0))
+        revised = replace(revised, completion=replace(revised.completion,
+                          first_answers_completed=2, first_answers_completed_later=2))
+        self.run_pipeline((original,))
+        result = self.run_pipeline((revised,))
+        grade = json.loads(result.grade_proposals[0].proposed_value)
+        self.assertEqual(grade["completion"]["first_answers"], [2, 2])
+        self.assertEqual(grade["completion"]["later_first_answers_credited"], 2)
+        self.assertEqual(grade["revision"]["draft"], [2, 2])
+        self.assertEqual(grade["revision"]["growth_claim"], "not_inferred")
+        counts = self.counts()
+        replay = self.run_pipeline((original, revised))
+        self.assertEqual(replay.records, result.records)
+        self.assertEqual(replay.preview.changes, ())
+        self.assertEqual(counts, self.counts())
+        self.assertEqual(len(replay.history), 2)
+
+    def test_legacy_first_answer_counts_stay_unknown(self):
+        result = self.run_pipeline((self.observations[1],))
+        grade = json.loads(result.grade_proposals[0].proposed_value)
+        self.assertIsNone(grade["completion"]["first_answers"])
+
+    def test_known_first_answers_cannot_silently_become_unknown_or_lower(self):
+        original = replace(self.observations[1], completion=replace(
+            self.observations[1].completion, first_answers_completed=2))
+        for index, first_count in enumerate((None, 1)):
+            with self.subTest(first_count=first_count):
+                changed = replace(original, completion=replace(original.completion, first_answers_completed=first_count),
+                    submission=replace(original.submission, revision_hash=f"synthetic-revision:first-count-{index}",
+                                       observed_at=f"2026-09-1{index + 2}T12:00:00-04:00"))
+                held = self.run_pipeline((original, changed))
+                self.assertEqual(held.grade_proposals, ())
+                self.assertIn("completion_evidence_regressed", {issue.code for issue in held.preview.issues})
+
+    def test_invalid_first_answer_evidence_is_rejected(self):
+        original = self.observations[1]
+        for changes in ({"first_answers_completed": True},
+                        {"first_answers_completed": 0},
+                        {"first_answers_completed": 3},
+                        {"first_answers_completed_later": 1},
+                        {"first_answers_completed": 1, "first_answers_completed_later": 2}):
+            with self.subTest(changes=changes):
+                result = self.run_pipeline((replace(original, completion=replace(original.completion, **changes)),))
+                self.assertEqual(result.records, ())
+                self.assertIn("invalid_submission_metadata", {issue.code for issue in result.preview.issues})
+
+    def test_partial_and_unreadable_snapshots_never_create_lower_proposals(self):
+        original = self.observations[1]
+        first = self.run_pipeline((original,))
+        for index, status in enumerate(("partial", "unreadable")):
+            reduced = replace(original, evidence_status=status, completion=CompletionEvidence(),
+                              submission=replace(original.submission,
+                                  revision_hash=f"synthetic-revision:partial-{index}",
+                                  observed_at=f"2026-09-1{index + 2}T12:00:00-04:00"))
+            held = self.run_pipeline((reduced,))
+            self.assertEqual(held.records, ())
+            self.assertEqual(held.preview.changes, ())
+            self.assertEqual(held.student_work_plan.grade_proposals, ())
+            self.assertIn("incomplete_completion_evidence", {issue.code for issue in held.preview.issues})
+            self.assertIn(original, held.history)
+            self.assertIn(reduced, held.history)
+            counts = self.counts()
+            self.run_pipeline((reduced,))
+            self.assertEqual(counts, self.counts())
+            replay = self.run_pipeline(())
+            self.assertEqual(replay.records, ())
+            self.assertEqual(replay.preview.changes, ())
+        # Prior proposal/evidence survive; there is no replacement zero grade.
+        self.assertTrue(self.db.execute("SELECT 1 FROM proposed_actions WHERE proposed_state_json LIKE ?",
+                                      ("%" + first.grade_proposals[0].stable_id + "%",)).fetchone())
+
+    def test_reduced_complete_counts_require_review_and_preserve_history(self):
+        original = self.observations[1]
+        self.run_pipeline((original,))
+        reduced = replace(original, completion=CompletionEvidence(),
+                          submission=replace(original.submission, revision_hash="synthetic-revision:reduced",
+                                             observed_at="2026-09-12T12:00:00-04:00"))
+        held = self.run_pipeline((reduced,))
+        self.assertEqual(held.grade_proposals, ())
+        self.assertIn("completion_evidence_regressed", {issue.code for issue in held.preview.issues})
+        self.assertEqual(len(held.history), 2)
+        self.assertEqual(self.run_pipeline(()).grade_proposals, ())
+        recovered = replace(original, submission=replace(original.submission,
+                            revision_hash="synthetic-revision:recovered", observed_at="2026-09-13T12:00:00-04:00"))
+        self.assertEqual(len(self.run_pipeline((recovered,)).grade_proposals), 1)
+
+    def test_batch_reduction_and_missing_after_submission_are_held(self):
+        original = self.observations[1]
+        missing = replace(original, work_status="missing", conceptual_signal="none", completion=CompletionEvidence(),
+                          submission=replace(original.submission, revision_hash="synthetic-revision:lost-access",
+                                             observed_at="2026-09-12T12:00:00-04:00"))
+        held = self.run_pipeline((original, missing))
+        self.assertEqual(held.grade_proposals, ())
+        self.assertIn("submission_availability_regressed", {issue.code for issue in held.preview.issues})
+        self.assertEqual(len(held.history), 2)
+
+    def test_changed_required_counts_need_review_not_a_silent_new_denominator(self):
+        original = self.observations[1]
+        changed = replace(original, completion=replace(original.completion, notes_required=3),
+                          submission=replace(original.submission, revision_hash="synthetic-revision:structure",
+                                             observed_at="2026-09-12T12:00:00-04:00"))
+        held = self.run_pipeline((original, changed))
+        self.assertEqual(held.grade_proposals, ())
+        self.assertIn("completion_structure_changed", {issue.code for issue in held.preview.issues})
+
+    def test_unreadable_stored_history_withholds_new_grade(self):
+        original = self.observations[1]
+        self.run_pipeline((original,))
+        self.db.execute("UPDATE source_revisions SET payload_json = '{}' WHERE source_type = ?", (EVIDENCE_SOURCE,))
+        changed = replace(original, submission=replace(original.submission, revision_hash="synthetic-revision:readable",
+                                                       observed_at="2026-09-12T12:00:00-04:00"))
+        held = self.run_pipeline((changed,))
+        self.assertEqual(held.grade_proposals, ())
+        self.assertIn("stored_metadata_unreadable", {issue.code for issue in held.preview.issues})
+
+    def test_hold_blocks_nested_backlog_after_prompt_contract_changes(self):
+        original = self.observations[1]
+        prior = self.run_pipeline((original,))
+        self.assertEqual(len(prior.student_work_plan.grade_proposals), 1)
+        count = self.db.execute("SELECT COUNT(*) FROM proposed_actions").fetchone()[0]
+        partial = replace(original, evidence_status="partial", completion=CompletionEvidence(),
+            submission=replace(original.submission, revision_hash="synthetic-revision:partial-prompt",
+                               observed_at="2026-09-12T12:00:00-04:00"))
+        changed_request = replace(self.request, prompt_version="synthetic-feedback-v2")
+        held = self.run_pipeline((partial,), request=changed_request)
+        self.assertEqual(held.grade_proposals, ())
+        self.assertEqual(held.preview.changes, ())
+        self.assertEqual(held.student_work_plan.status, "blocked")
+        for field in ("discoveries", "grade_proposals", "feedback_requests", "proposed_action_ids", "cumulative_summaries"):
+            self.assertEqual(getattr(held.student_work_plan, field), ())
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM proposed_actions").fetchone()[0], count)
+        self.assertIn(original, held.history)
+        replay = self.run_pipeline((), request=changed_request)
+        self.assertEqual(replay.student_work_plan.status, "blocked")
+        self.assertEqual(replay.student_work_plan.grade_proposals, ())
+        recovered = replace(original, submission=replace(original.submission,
+            revision_hash="synthetic-revision:recovered-prompt", observed_at="2026-09-13T12:00:00-04:00"))
+        ready = self.run_pipeline((recovered,), request=changed_request)
+        self.assertEqual(len(ready.grade_proposals), 1)
+        self.assertEqual(len(ready.student_work_plan.grade_proposals), 1)
+        self.assertEqual(ready.student_work_plan.discoveries[0].submission, recovered.submission)
+
+    def test_nested_hold_does_not_hide_unaffected_outer_feedback_records(self):
+        original, unaffected = self.observations[1:3]
+        partial = replace(original, evidence_status="partial")
+        result = self.run_pipeline((partial, unaffected))
+        self.assertEqual(result.student_work_plan.status, "blocked")
+        self.assertEqual(result.student_work_plan.grade_proposals, ())
+        self.assertEqual(len(result.records), 1)
+        self.assertEqual(result.records[0].submission, unaffected.submission)
+        self.assertEqual(len(result.preview.changes), 1)
+
     def test_14_day_window_and_retained_backlog(self):
         original = self.observations[0]
         out = replace(original, submission=replace(original.submission, observed_at=(self.request.as_of - timedelta(days=15)).isoformat()))
