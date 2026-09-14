@@ -129,4 +129,3 @@ class RosterReconciliationTests(unittest.TestCase):
     def test_snapshot_limit_and_invalid_shape_are_denied(self):
         self.assert_blocked(snapshot(*(entry(str(i)) for i in range(501))), snapshot(), "roster_snapshot_limit_exceeded")
         self.assert_blocked(replace(snapshot(), entries=[]), snapshot(), "roster_count_mismatch")
-
