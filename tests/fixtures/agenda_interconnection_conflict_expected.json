@@ -1,0 +1,52 @@
+{
+  "external_writes": 0,
+  "fixture_id": "synthetic-agenda-interconnection-conflict-v1",
+  "issues": [
+    {
+      "code": "schoology_target_conflict",
+      "detail": "schoology observed target ID does not match the assignment route target ID.",
+      "severity": "error"
+    }
+  ],
+  "live_model_calls": 0,
+  "normalized_change": {
+    "agenda_item_stable_id": "agenda:synthetic-biology-a4:week-04:energy-transfer",
+    "agenda_revision_id": "src_319d9797071a0feb581c9ed8",
+    "assignment_folder_item_id": "folder-item:synthetic-biology-a4:energy-transfer",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "class_stable_id": "synthetic-biology-a4",
+    "deck_file_id": "drive-file:synthetic-deck-energy-transfer-v2",
+    "form_file_id": "drive-file:synthetic-form-energy-transfer-v1",
+    "infinite_campus_assignment_id": "ic-assignment:synthetic-biology-a4:energy-transfer",
+    "intended_due_date": "2026-09-18",
+    "routing_revision_id": "src_2e84f1945d58f6a6230ba3a0",
+    "schoology_assignment_id": "schoology-assignment:synthetic-biology-a4:energy-transfer",
+    "title": "Energy transfer check"
+  },
+  "outcome": "denied",
+  "proposals": [],
+  "run_id": "run_c7accfebb256a9232dbd4ffc",
+  "run_status": "completed",
+  "source_revisions": [
+    [
+      "agenda_item",
+      "src_319d9797071a0feb581c9ed8"
+    ],
+    [
+      "assignment_folder_observation",
+      "src_c8c714c8429c8e6d945a5857"
+    ],
+    [
+      "assignment_route",
+      "src_2e84f1945d58f6a6230ba3a0"
+    ],
+    [
+      "infinite_campus_observation",
+      "src_0ec4a830f076cea6a580fb61"
+    ],
+    [
+      "schoology_observation",
+      "src_83c747344eceadda99afc386"
+    ]
+  ]
+}

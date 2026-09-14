@@ -1,0 +1,84 @@
+{
+  "audit_events": [
+    "input:9a40e699a33e9a03994dfeeaf1ae43c380081393cfbaea8fa8a8e2da0f468d8b",
+    "plans:2",
+    "issues:0",
+    "plan:turnin-route-dry-run:4a688e9f0e154542",
+    "plan:turnin-route-dry-run:71702ea9ac40c250"
+  ],
+  "browser_calls": 0,
+  "external_calls": 0,
+  "external_writes": 0,
+  "input_digest": "9a40e699a33e9a03994dfeeaf1ae43c380081393cfbaea8fa8a8e2da0f468d8b",
+  "issues": [],
+  "model_calls": 0,
+  "plans": [
+    {
+      "assignment_stable_id": "assignment:synthetic-forensics:evidence-logic",
+      "class_stable_id": "class:synthetic-forensics:period-2",
+      "diffs": [
+        {
+          "expected_stable_id": "drive-folder:synthetic:evidence-logic-turnin",
+          "field_name": "turn_in_folder_stable_id",
+          "observed_stable_id": "drive-folder:synthetic:outdated-evidence-logic-turnin"
+        },
+        {
+          "expected_stable_id": "google-slides:synthetic:evidence-logic-copy-source",
+          "field_name": "slide_copy_source_file_stable_id",
+          "observed_stable_id": "google-slides:synthetic:outdated-evidence-logic-copy-source"
+        }
+      ],
+      "downstream_assignment_target_stable_id": "gradebook-assignment:synthetic:evidence-logic",
+      "external_write_performed": false,
+      "lifecycle_state": "dry_run_only",
+      "manifest_revision_stable_id": "folder-manifest-revision:synthetic:evidence-logic:v1",
+      "master_revision_stable_id": "assignment-master-revision:synthetic:evidence-logic:v1",
+      "observation_revision_stable_id": "gradebook-observation:synthetic:evidence-logic:v1",
+      "plan_stable_id": "turnin-route-dry-run:4a688e9f0e154542",
+      "required_permission": "external.update",
+      "reversible": true,
+      "rollback_diffs": [
+        {
+          "expected_stable_id": "drive-folder:synthetic:outdated-evidence-logic-turnin",
+          "field_name": "turn_in_folder_stable_id",
+          "observed_stable_id": "drive-folder:synthetic:evidence-logic-turnin"
+        },
+        {
+          "expected_stable_id": "google-slides:synthetic:outdated-evidence-logic-copy-source",
+          "field_name": "slide_copy_source_file_stable_id",
+          "observed_stable_id": "google-slides:synthetic:evidence-logic-copy-source"
+        }
+      ],
+      "system": "gradebook"
+    },
+    {
+      "assignment_stable_id": "assignment:synthetic-forensics:evidence-logic",
+      "class_stable_id": "class:synthetic-forensics:period-2",
+      "diffs": [
+        {
+          "expected_stable_id": "google-form:synthetic:evidence-logic",
+          "field_name": "form_file_stable_id",
+          "observed_stable_id": "google-form:synthetic:outdated-evidence-logic"
+        }
+      ],
+      "downstream_assignment_target_stable_id": "schoology-assignment:synthetic:evidence-logic",
+      "external_write_performed": false,
+      "lifecycle_state": "dry_run_only",
+      "manifest_revision_stable_id": "folder-manifest-revision:synthetic:evidence-logic:v1",
+      "master_revision_stable_id": "assignment-master-revision:synthetic:evidence-logic:v1",
+      "observation_revision_stable_id": "schoology-observation:synthetic:evidence-logic:v1",
+      "plan_stable_id": "turnin-route-dry-run:71702ea9ac40c250",
+      "required_permission": "external.update",
+      "reversible": true,
+      "rollback_diffs": [
+        {
+          "expected_stable_id": "google-form:synthetic:outdated-evidence-logic",
+          "field_name": "form_file_stable_id",
+          "observed_stable_id": "google-form:synthetic:evidence-logic"
+        }
+      ],
+      "system": "schoology"
+    }
+  ],
+  "schema_version": "turnin-routing-proof/v1"
+}

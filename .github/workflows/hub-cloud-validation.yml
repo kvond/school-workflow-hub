@@ -1,0 +1,35 @@
+name: Hub cloud validation (no school data)
+
+# Manual only until the private destination, billing limit and first successful
+# cloud run are approved. No push/PR trigger, cron, secrets or private inputs.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hub-cloud-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: >-
+      github.event.repository.private == true &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      vars.HUB_CLOUD_VALIDATION_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out reviewed code only
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+      - name: Test and replay the synthetic workflow
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/cloud_validation.py >> "$GITHUB_STEP_SUMMARY"

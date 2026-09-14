@@ -1,0 +1,97 @@
+{
+  "policy": {
+    "policy_stable_id": "github-cleanup-policy:synthetic-v1",
+    "as_of": "2026-09-13",
+    "retention_days": 90,
+    "allowlisted_item_ids": [
+      "github-project-item:eligible",
+      "github-repository:eligible",
+      "github-project-item:protected",
+      "github-project-item:active",
+      "github-project-item:recent",
+      "github-project-item:excluded",
+      "github-project-item:already-archived",
+      "github-project-item:open",
+      "github-project-item:not-restorable"
+    ],
+    "excluded_item_ids": ["github-project-item:excluded"],
+    "protected_item_ids": ["github-project-item:protected"],
+    "active_item_ids": ["github-project-item:active"]
+  },
+  "items": [
+    {
+      "stable_id": "github-project-item:eligible",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-eligible",
+      "state": "closed",
+      "last_activity_on": "2026-05-01",
+      "estimated_storage_bytes": 12
+    },
+    {
+      "stable_id": "github-repository:eligible",
+      "kind": "repository",
+      "canonical_location": "example-org/synthetic-retired-repository",
+      "state": "inactive",
+      "last_activity_on": "2026-04-01",
+      "estimated_storage_bytes": 2048
+    },
+    {
+      "stable_id": "github-project-item:protected",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-protected",
+      "state": "closed",
+      "last_activity_on": "2026-01-01"
+    },
+    {
+      "stable_id": "github-project-item:active",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-active",
+      "state": "closed",
+      "last_activity_on": "2026-01-01"
+    },
+    {
+      "stable_id": "github-project-item:recent",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-recent",
+      "state": "closed",
+      "last_activity_on": "2026-09-01"
+    },
+    {
+      "stable_id": "github-project-item:excluded",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-excluded",
+      "state": "closed",
+      "last_activity_on": "2026-01-01"
+    },
+    {
+      "stable_id": "github-project-item:not-allowlisted",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-not-allowlisted",
+      "state": "closed",
+      "last_activity_on": "2026-01-01"
+    },
+    {
+      "stable_id": "github-project-item:already-archived",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-already-archived",
+      "state": "closed",
+      "last_activity_on": "2026-01-01",
+      "is_archived": true
+    },
+    {
+      "stable_id": "github-project-item:open",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-open",
+      "state": "open",
+      "last_activity_on": "2026-01-01"
+    },
+    {
+      "stable_id": "github-project-item:not-restorable",
+      "kind": "project_item",
+      "canonical_location": "example-org/synthetic-project#item-not-restorable",
+      "state": "closed",
+      "last_activity_on": "2026-01-01",
+      "is_restorable": false
+    }
+  ]
+}

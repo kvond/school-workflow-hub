@@ -1,0 +1,26 @@
+{
+  "normal": [
+    {"date": "2026-09-14", "day_type": "A"},
+    {"date": "2026-09-15", "day_type": "B"},
+    {"date": "2026-09-16", "day_type": "A"},
+    {"date": "2026-09-17", "day_type": "B"}
+  ],
+  "reversed": [
+    {"date": "2026-09-14", "day_type": "B"},
+    {"date": "2026-09-15", "day_type": "A"},
+    {"date": "2026-09-16", "day_type": "B"},
+    {"date": "2026-09-17", "day_type": "A"}
+  ],
+  "changed": [
+    {"date": "2026-09-14", "day_type": "A"},
+    {"date": "2026-09-15", "day_type": "A"},
+    {"date": "2026-09-16", "day_type": "B"},
+    {"date": "2026-09-17", "day_type": "B"}
+  ],
+  "holiday": [
+    {"date": "2026-09-14", "day_type": "A"},
+    {"date": "2026-09-15", "day_type": "NO_SCHOOL"},
+    {"date": "2026-09-16", "day_type": "B"},
+    {"date": "2026-09-17", "day_type": "A"}
+  ]
+}

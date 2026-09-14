@@ -1,0 +1,46 @@
+{
+  "assignment_master": [
+    {
+      "class_stable_id": "class:synthetic-forensics:period-2",
+      "assignment_stable_id": "assignment:synthetic-forensics:evidence-logic",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:evidence-logic-turnin",
+      "form_file_stable_id": "google-form:synthetic:evidence-logic",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:evidence-logic-copy-source",
+      "schoology_assignment_target_stable_id": "schoology-assignment:synthetic:evidence-logic",
+      "gradebook_assignment_target_stable_id": "gradebook-assignment:synthetic:evidence-logic",
+      "master_revision_stable_id": "assignment-master-revision:synthetic:evidence-logic:v1"
+    }
+  ],
+  "folder_manifests": [
+    {
+      "class_stable_id": "class:synthetic-forensics:period-2",
+      "assignment_stable_id": "assignment:synthetic-forensics:evidence-logic",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:evidence-logic-turnin",
+      "form_file_stable_id": "google-form:synthetic:evidence-logic",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:evidence-logic-copy-source",
+      "manifest_revision_stable_id": "folder-manifest-revision:synthetic:evidence-logic:v1"
+    }
+  ],
+  "observed_downstream_routes": [
+    {
+      "system": "schoology",
+      "class_stable_id": "class:synthetic-forensics:period-2",
+      "assignment_stable_id": "assignment:synthetic-forensics:evidence-logic",
+      "downstream_assignment_target_stable_id": "schoology-assignment:synthetic:evidence-logic",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:evidence-logic-turnin",
+      "form_file_stable_id": "google-form:synthetic:outdated-evidence-logic",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:evidence-logic-copy-source",
+      "observation_revision_stable_id": "schoology-observation:synthetic:evidence-logic:v1"
+    },
+    {
+      "system": "gradebook",
+      "class_stable_id": "class:synthetic-forensics:period-2",
+      "assignment_stable_id": "assignment:synthetic-forensics:evidence-logic",
+      "downstream_assignment_target_stable_id": "gradebook-assignment:synthetic:evidence-logic",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:outdated-evidence-logic-turnin",
+      "form_file_stable_id": "google-form:synthetic:evidence-logic",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:outdated-evidence-logic-copy-source",
+      "observation_revision_stable_id": "gradebook-observation:synthetic:evidence-logic:v1"
+    }
+  ]
+}

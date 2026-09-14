@@ -1,0 +1,46 @@
+{
+  "assignment_master": [
+    {
+      "class_stable_id": "class:synthetic-biology:period-4",
+      "assignment_stable_id": "assignment:synthetic-biology:energy-intro",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:energy-intro-turnin",
+      "form_file_stable_id": "google-form:synthetic:energy-intro",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:energy-intro-copy-source",
+      "schoology_assignment_target_stable_id": "schoology-assignment:synthetic:energy-intro",
+      "gradebook_assignment_target_stable_id": "gradebook-assignment:synthetic:energy-intro",
+      "master_revision_stable_id": "assignment-master-revision:synthetic:energy-intro:v1"
+    }
+  ],
+  "folder_manifests": [
+    {
+      "class_stable_id": "class:synthetic-biology:period-4",
+      "assignment_stable_id": "assignment:synthetic-biology:energy-intro",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:energy-intro-turnin",
+      "form_file_stable_id": "google-form:synthetic:energy-intro",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:energy-intro-copy-source",
+      "manifest_revision_stable_id": "folder-manifest-revision:synthetic:energy-intro:v1"
+    }
+  ],
+  "observed_downstream_routes": [
+    {
+      "system": "schoology",
+      "class_stable_id": "class:synthetic-biology:period-4",
+      "assignment_stable_id": "assignment:synthetic-biology:energy-intro",
+      "downstream_assignment_target_stable_id": "schoology-assignment:synthetic:energy-intro-a",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:energy-intro-turnin",
+      "form_file_stable_id": "google-form:synthetic:energy-intro",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:energy-intro-copy-source",
+      "observation_revision_stable_id": "schoology-observation:synthetic:energy-intro:a"
+    },
+    {
+      "system": "schoology",
+      "class_stable_id": "class:synthetic-biology:period-4",
+      "assignment_stable_id": "assignment:synthetic-biology:energy-intro",
+      "downstream_assignment_target_stable_id": "schoology-assignment:synthetic:energy-intro-b",
+      "turn_in_folder_stable_id": "drive-folder:synthetic:energy-intro-turnin",
+      "form_file_stable_id": "google-form:synthetic:energy-intro",
+      "slide_copy_source_file_stable_id": "google-slides:synthetic:energy-intro-copy-source",
+      "observation_revision_stable_id": "schoology-observation:synthetic:energy-intro:b"
+    }
+  ]
+}

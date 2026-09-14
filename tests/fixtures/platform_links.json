@@ -1,0 +1,7 @@
+{
+  "assignment_key": "synthetic:assignment-one",
+  "expected_revision": "synthetic:r2",
+  "deck_reference": "https://example.invalid/slides/deck-one/copy",
+  "stale_deck_reference": "https://example.invalid/slides/deck-old/copy",
+  "internal_reference": "#slide=id.question_one"
+}

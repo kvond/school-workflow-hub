@@ -1,0 +1,47 @@
+{
+  "fixture_id": "synthetic-agenda-interconnection-happy-v1",
+  "synthetic_marker": "fixture-only",
+  "agenda_item": {
+    "class_stable_id": "synthetic-biology-a4",
+    "agenda_item_stable_id": "agenda:synthetic-biology-a4:week-04:energy-transfer",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "title": "Energy transfer check",
+    "intended_due_date": "2026-09-18",
+    "revision_label": "agenda-rev-synthetic-2026-09-13-a"
+  },
+  "assignment_route": {
+    "class_stable_id": "synthetic-biology-a4",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "assignment_folder_item_id": "folder-item:synthetic-biology-a4:energy-transfer",
+    "schoology_assignment_id": "schoology-assignment:synthetic-biology-a4:energy-transfer",
+    "infinite_campus_assignment_id": "ic-assignment:synthetic-biology-a4:energy-transfer",
+    "deck_file_id": "drive-file:synthetic-deck-energy-transfer-v2",
+    "form_file_id": "drive-file:synthetic-form-energy-transfer-v1",
+    "revision_label": "assignment-route-rev-synthetic-2026-09-13-a"
+  },
+  "assignment_folder": {
+    "class_stable_id": "synthetic-biology-a4",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "assignment_folder_item_id": "folder-item:synthetic-biology-a4:energy-transfer",
+    "observed_due_date": "2026-09-16",
+    "observed_message": "Complete Energy transfer check. Due 2026-09-16.",
+    "deck_file_id": "drive-file:synthetic-deck-energy-transfer-v1",
+    "form_file_id": null,
+    "revision_label": "assignment-folder-observation-rev-synthetic-2026-09-13-a"
+  },
+  "schoology": {
+    "class_stable_id": "synthetic-biology-a4",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "schoology_assignment_id": "schoology-assignment:synthetic-biology-a4:energy-transfer",
+    "observed_due_date": "2026-09-16",
+    "observed_message": "Energy transfer check is due 2026-09-16.",
+    "revision_label": "schoology-observation-rev-synthetic-2026-09-13-a"
+  },
+  "infinite_campus": {
+    "class_stable_id": "synthetic-biology-a4",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "infinite_campus_assignment_id": "ic-assignment:synthetic-biology-a4:energy-transfer",
+    "observed_due_date": "2026-09-16",
+    "revision_label": "infinite-campus-observation-rev-synthetic-2026-09-13-a"
+  }
+}

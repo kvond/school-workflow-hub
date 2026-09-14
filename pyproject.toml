@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "school-workflow-hub"
+version = "0.1.0"
+description = "Local, permission-gated foundation for school workflow planning."
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+school-workflow-hub = "school_workflow_hub.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

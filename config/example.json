@@ -1,0 +1,73 @@
+{
+  "school_year": "2026-2027",
+  "timezone": "America/New_York",
+  "classes": [
+    {
+      "id": "biology-a4",
+      "name": "Synthetic Biology A4",
+      "calendar_id": "synthetic-a4"
+    },
+    {
+      "id": "class:synthetic:forensics-a1",
+      "name": "Synthetic Forensics A1",
+      "calendar_id": "synthetic-a1"
+    },
+    {
+      "id": "class:synthetic:anatomy-b3",
+      "name": "Synthetic Anatomy B3",
+      "calendar_id": "synthetic-b3"
+    }
+  ],
+  "approved_destinations": {
+    "agenda": "unconfigured",
+    "assignment_master": "unconfigured",
+    "field_notes": "unconfigured"
+  },
+  "class_meeting_calendar": {
+    "status": "unverified",
+    "meetings": []
+  },
+  "schedules": {
+    "morning_summary": {
+      "local_time": "06:00",
+      "cutoff": "05:45",
+      "enabled": false,
+      "dependencies": ["submission_crawl"],
+      "weekdays": [0, 1, 2, 3, 4]
+    },
+    "submission_crawl": {"local_time": "05:30", "cutoff": "05:00", "enabled": false, "weekdays": [0, 1, 2, 3, 4]},
+    "class_note_crawl": {"local_time": "07:00", "cutoff": "06:55", "enabled": false, "weekdays": [0, 1, 2, 3, 4]},
+    "nightly_agenda_crawl": {"local_time": "19:00", "cutoff": "18:45", "enabled": false, "weekdays": [0, 1, 2, 3, 4]},
+    "friday_agenda_review": {"local_time": "16:00", "cutoff": "15:45", "enabled": false, "weekdays": [4]},
+    "friday_reports": {"local_time": "06:30", "cutoff": "06:15", "enabled": false, "weekdays": [4], "dependencies": ["morning_summary"]},
+    "biweekly_reports": {"local_time": "06:30", "cutoff": "06:15", "enabled": false, "weekdays": [4], "interval_weeks": 2, "anchor_date": "2026-09-18", "dependencies": ["submission_crawl"]},
+    "folder_preview": {"local_time": "06:45", "cutoff": "06:15", "enabled": false, "weekdays": [0, 1, 2, 3, 4], "dependencies": ["morning_summary"]}
+  },
+  "course_rules": {
+    "biology": {"revision_focus": "Explain the mechanism and revise using evidence", "prompt_version": "synthetic-biology-v1", "lessons_ahead": 2, "prefer_digital": true},
+    "forensics": {"revision_focus": "What is the strongest reason your conclusion could be wrong, incomplete, or too certain?", "prompt_version": "synthetic-forensics-v1", "lessons_ahead": 2, "prefer_digital": true},
+    "anatomy": {"revision_focus": "Explain how structure constrains function, test the mechanism, and identify a model limit", "prompt_version": "synthetic-anatomy-v1", "lessons_ahead": 2, "prefer_digital": true}
+  },
+  "workflow_policy": {"max_attempts": 3, "retention_days": 90, "research_assignment_threshold": 3, "deletion_enabled": false},
+  "feature_flags": {
+    "external_writes": false,
+    "live_models": false
+  },
+  "operation_mode": "dry_run",
+  "model_provider": {
+    "provider": "fake",
+    "enabled": false,
+    "daily_budget_usd": 0
+  },
+  "runtime": {
+    "database_path": "/private/tmp/school-workflow-hub/school_workflow.sqlite3",
+    "reports_directory": "/private/tmp/school-workflow-hub/reports"
+  },
+  "permission_policy": {
+    "default": "deny",
+    "allowed": [
+      "local.read",
+      "local.create"
+    ]
+  }
+}

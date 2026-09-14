@@ -1,0 +1,141 @@
+{
+  "audit_events": [
+    "github-project-item:active:blocked:active",
+    "github-project-item:already-archived:already_archived:already_archived:no_duplicate_proposal",
+    "github-project-item:eligible:propose_archive:allowlisted,terminal_state,retention_elapsed:135_days",
+    "github-project-item:excluded:blocked:explicitly_excluded",
+    "github-project-item:not-allowlisted:blocked:not_allowlisted",
+    "github-project-item:not-restorable:blocked:not_restorable",
+    "github-project-item:open:keep:non_terminal_state:open",
+    "github-project-item:protected:blocked:protected",
+    "github-project-item:recent:keep:recent:12_days<90_day_retention",
+    "github-repository:eligible:propose_archive:allowlisted,terminal_state,retention_elapsed:165_days"
+  ],
+  "decisions": [
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-active",
+      "disposition": "blocked",
+      "kind": "project_item",
+      "reasons": ["active"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:active"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-already-archived",
+      "disposition": "already_archived",
+      "kind": "project_item",
+      "reasons": ["already_archived:no_duplicate_proposal"],
+      "restore_guide": {
+        "documentation_url": "https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/archiving-items-from-your-project",
+        "instruction": "If a separately approved archive occurs, restore the project item from the project's Archived items view after reviewer confirmation.",
+        "kind": "project_item"
+      },
+      "stable_id": "github-project-item:already-archived"
+    },
+    {
+      "action_stable_id": "github-archive-proposal:2ad3dc1723a83898",
+      "canonical_location": "example-org/synthetic-project#item-eligible",
+      "disposition": "propose_archive",
+      "kind": "project_item",
+      "reasons": [
+        "allowlisted",
+        "terminal_state",
+        "retention_elapsed:135_days"
+      ],
+      "restore_guide": {
+        "documentation_url": "https://docs.github.com/en/issues/planning-and-tracking-with-projects/managing-items-in-your-project/archiving-items-from-your-project",
+        "instruction": "If a separately approved archive occurs, restore the project item from the project's Archived items view after reviewer confirmation.",
+        "kind": "project_item"
+      },
+      "stable_id": "github-project-item:eligible"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-excluded",
+      "disposition": "blocked",
+      "kind": "project_item",
+      "reasons": ["explicitly_excluded"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:excluded"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-not-allowlisted",
+      "disposition": "blocked",
+      "kind": "project_item",
+      "reasons": ["not_allowlisted"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:not-allowlisted"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-not-restorable",
+      "disposition": "blocked",
+      "kind": "project_item",
+      "reasons": ["not_restorable"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:not-restorable"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-open",
+      "disposition": "keep",
+      "kind": "project_item",
+      "reasons": ["non_terminal_state:open"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:open"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-protected",
+      "disposition": "blocked",
+      "kind": "project_item",
+      "reasons": ["protected"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:protected"
+    },
+    {
+      "action_stable_id": null,
+      "canonical_location": "example-org/synthetic-project#item-recent",
+      "disposition": "keep",
+      "kind": "project_item",
+      "reasons": ["recent:12_days<90_day_retention"],
+      "restore_guide": null,
+      "stable_id": "github-project-item:recent"
+    },
+    {
+      "action_stable_id": "github-archive-proposal:19ff7cd928597643",
+      "canonical_location": "example-org/synthetic-retired-repository",
+      "disposition": "propose_archive",
+      "kind": "repository",
+      "reasons": [
+        "allowlisted",
+        "terminal_state",
+        "retention_elapsed:165_days"
+      ],
+      "restore_guide": {
+        "documentation_url": "https://docs.github.com/en/repositories/archiving-a-github-repository/archiving-repositories",
+        "instruction": "If a separately approved archive occurs, unarchive the repository in its GitHub settings after reviewer confirmation.",
+        "kind": "repository"
+      },
+      "stable_id": "github-repository:eligible"
+    }
+  ],
+  "external_calls": 0,
+  "external_writes": 0,
+  "failure_code": null,
+  "manifest_digest": "6e19afd784b2fc65a99d4cbc27217b0363018f760c58ab7a0c48258d5074d51f",
+  "plan_digest": "0f05a7ee48316ac33cdf3222667c97b62bfb11e407c9e0321cc985002c59eee3",
+  "plan_stable_id": "github-cleanup-plan:0f05a7ee48316ac3",
+  "policy_stable_id": "github-cleanup-policy:synthetic-v1",
+  "schema_version": "github-cleanup-plan/v1",
+  "space_impact": {
+    "guaranteed_storage_reclaimed_bytes": 0,
+    "note": "Archive-first proposals may reduce project-view clutter, but they do not claim repository storage reclamation. Deletion is intentionally out of scope.",
+    "project_view_slots_reduced": 1,
+    "reviewable_storage_bytes": 2060
+  },
+  "status": "planned_synthetic"
+}

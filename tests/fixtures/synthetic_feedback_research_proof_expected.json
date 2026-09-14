@@ -1,0 +1,19 @@
+{
+  "happy": {
+    "status": "teacher_review_required",
+    "reason": "synthetic_draft_only",
+    "teacher_review_required": true,
+    "external_writes": 0,
+    "live_model_calls": 0,
+    "artifact_kind": "synthetic_feedback_summary",
+    "delivery_state": "not_delivered"
+  },
+  "denial": {
+    "status": "denied",
+    "reason": "sensitive_content_declared",
+    "teacher_review_required": true,
+    "external_writes": 0,
+    "live_model_calls": 0,
+    "draft_feedback_summary": null
+  }
+}

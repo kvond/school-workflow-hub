@@ -1,0 +1,171 @@
+{
+  "external_writes": 0,
+  "fixture_id": "synthetic-agenda-interconnection-happy-v1",
+  "issues": [],
+  "live_model_calls": 0,
+  "normalized_change": {
+    "agenda_item_stable_id": "agenda:synthetic-biology-a4:week-04:energy-transfer",
+    "agenda_revision_id": "src_757c65dea296587722531a19",
+    "assignment_folder_item_id": "folder-item:synthetic-biology-a4:energy-transfer",
+    "assignment_stable_id": "assignment:synthetic-biology-a4:energy-transfer",
+    "class_stable_id": "synthetic-biology-a4",
+    "deck_file_id": "drive-file:synthetic-deck-energy-transfer-v2",
+    "form_file_id": "drive-file:synthetic-form-energy-transfer-v1",
+    "infinite_campus_assignment_id": "ic-assignment:synthetic-biology-a4:energy-transfer",
+    "intended_due_date": "2026-09-18",
+    "routing_revision_id": "src_150010880f120a94dd4c4998",
+    "schoology_assignment_id": "schoology-assignment:synthetic-biology-a4:energy-transfer",
+    "title": "Energy transfer check"
+  },
+  "outcome": "proposed",
+  "proposals": [
+    {
+      "action_id": "action_891e75e4a07136d7a7214c7d",
+      "action_type": "update_assignment_folder_materials_and_message",
+      "diff": [
+        "@@ assignment_folder:folder-item:synthetic-biology-a4:energy-transfer @@",
+        "- deck_file_id: \"drive-file:synthetic-deck-energy-transfer-v1\"",
+        "+ deck_file_id: \"drive-file:synthetic-deck-energy-transfer-v2\"",
+        "- due_date: \"2026-09-16\"",
+        "+ due_date: \"2026-09-18\"",
+        "- form_file_id: null",
+        "+ form_file_id: \"drive-file:synthetic-form-energy-transfer-v1\"",
+        "- message: \"Complete Energy transfer check. Due 2026-09-16.\"",
+        "+ message: \"Complete Energy transfer check. Materials: deck drive-file:synthetic-deck-energy-transfer-v2; form drive-file:synthetic-form-energy-transfer-v1. Due 2026-09-18.\""
+      ],
+      "expected_state": {
+        "deck_file_id": "drive-file:synthetic-deck-energy-transfer-v1",
+        "due_date": "2026-09-16",
+        "form_file_id": null,
+        "message": "Complete Energy transfer check. Due 2026-09-16."
+      },
+      "external_write_performed": false,
+      "proposed_state": {
+        "deck_file_id": "drive-file:synthetic-deck-energy-transfer-v2",
+        "due_date": "2026-09-18",
+        "form_file_id": "drive-file:synthetic-form-energy-transfer-v1",
+        "message": "Complete Energy transfer check. Materials: deck drive-file:synthetic-deck-energy-transfer-v2; form drive-file:synthetic-form-energy-transfer-v1. Due 2026-09-18."
+      },
+      "required_permission": "external.update",
+      "review_status": "pending",
+      "source_dependencies": [
+        [
+          "assignment_folder_observation",
+          "src_05a872a0bef55e8c9cfb7d8c"
+        ],
+        [
+          "assignment_route",
+          "src_150010880f120a94dd4c4998"
+        ],
+        [
+          "primary",
+          "src_757c65dea296587722531a19"
+        ]
+      ],
+      "source_revision_id": "src_757c65dea296587722531a19",
+      "state": "proposed",
+      "target_stable_id": "folder-item:synthetic-biology-a4:energy-transfer",
+      "target_system": "assignment_folder"
+    },
+    {
+      "action_id": "action_5c3e0fa4896fd190024d0c87",
+      "action_type": "update_schoology_message_and_due_date",
+      "diff": [
+        "@@ schoology:schoology-assignment:synthetic-biology-a4:energy-transfer @@",
+        "- due_date: \"2026-09-16\"",
+        "+ due_date: \"2026-09-18\"",
+        "- message: \"Energy transfer check is due 2026-09-16.\"",
+        "+ message: \"Complete Energy transfer check using deck drive-file:synthetic-deck-energy-transfer-v2; submit form drive-file:synthetic-form-energy-transfer-v1. Due 2026-09-18.\""
+      ],
+      "expected_state": {
+        "due_date": "2026-09-16",
+        "message": "Energy transfer check is due 2026-09-16."
+      },
+      "external_write_performed": false,
+      "proposed_state": {
+        "due_date": "2026-09-18",
+        "message": "Complete Energy transfer check using deck drive-file:synthetic-deck-energy-transfer-v2; submit form drive-file:synthetic-form-energy-transfer-v1. Due 2026-09-18."
+      },
+      "required_permission": "external.update",
+      "review_status": "pending",
+      "source_dependencies": [
+        [
+          "assignment_route",
+          "src_150010880f120a94dd4c4998"
+        ],
+        [
+          "primary",
+          "src_757c65dea296587722531a19"
+        ],
+        [
+          "schoology_observation",
+          "src_09be7abb3ef59e9ceaefdaf8"
+        ]
+      ],
+      "source_revision_id": "src_757c65dea296587722531a19",
+      "state": "proposed",
+      "target_stable_id": "schoology-assignment:synthetic-biology-a4:energy-transfer",
+      "target_system": "schoology"
+    },
+    {
+      "action_id": "action_8ea48e113b95fdae09655741",
+      "action_type": "update_infinite_campus_due_date",
+      "diff": [
+        "@@ infinite_campus:ic-assignment:synthetic-biology-a4:energy-transfer @@",
+        "- due_date: \"2026-09-16\"",
+        "+ due_date: \"2026-09-18\""
+      ],
+      "expected_state": {
+        "due_date": "2026-09-16"
+      },
+      "external_write_performed": false,
+      "proposed_state": {
+        "due_date": "2026-09-18"
+      },
+      "required_permission": "external.update",
+      "review_status": "pending",
+      "source_dependencies": [
+        [
+          "assignment_route",
+          "src_150010880f120a94dd4c4998"
+        ],
+        [
+          "infinite_campus_observation",
+          "src_c250d6f8a75ebf220d4bc5d0"
+        ],
+        [
+          "primary",
+          "src_757c65dea296587722531a19"
+        ]
+      ],
+      "source_revision_id": "src_757c65dea296587722531a19",
+      "state": "proposed",
+      "target_stable_id": "ic-assignment:synthetic-biology-a4:energy-transfer",
+      "target_system": "infinite_campus"
+    }
+  ],
+  "run_id": "run_7d114f5985c3ea3b586e580a",
+  "run_status": "completed",
+  "source_revisions": [
+    [
+      "agenda_item",
+      "src_757c65dea296587722531a19"
+    ],
+    [
+      "assignment_folder_observation",
+      "src_05a872a0bef55e8c9cfb7d8c"
+    ],
+    [
+      "assignment_route",
+      "src_150010880f120a94dd4c4998"
+    ],
+    [
+      "infinite_campus_observation",
+      "src_c250d6f8a75ebf220d4bc5d0"
+    ],
+    [
+      "schoology_observation",
+      "src_09be7abb3ef59e9ceaefdaf8"
+    ]
+  ]
+}

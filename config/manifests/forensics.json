@@ -1,0 +1,22 @@
+{
+  "schema_version": "platform-manifest/v1",
+  "course_key": "forensics",
+  "class_stable_id": "UNVERIFIED",
+  "revision": "template-20260914-v1",
+  "course_structure": ["course", "marking_period", "week_or_cycle", "assignment_page"],
+  "assignments": [
+    {
+      "assignment_key": "UNVERIFIED",
+      "title": "UNVERIFIED",
+      "marking_period": "UNVERIFIED",
+      "week_key": "UNVERIFIED",
+      "intended_due_date": null,
+      "deck_file_id": "UNVERIFIED",
+      "deck_reference": "UNVERIFIED",
+      "schoology_assignment_id": "UNVERIFIED",
+      "schoology_destination_id": "UNVERIFIED",
+      "expected_publication": "UNVERIFIED",
+      "ic_linkage_id": "UNVERIFIED"
+    }
+  ]
+}

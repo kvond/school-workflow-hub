@@ -1,0 +1,22 @@
+{
+  "happy": {
+    "submission_stable_id": "submission:synthetic:feedback-proof-001",
+    "source_reference": "synthetic://feedback-research/proof-001",
+    "source_revision": "synthetic-revision:proof-001:v1",
+    "synthetic_marker": "fixture-only",
+    "evidence_fingerprint": "synthetic-evidence:claim-observation-v1",
+    "prompt_version": "synthetic-feedback-v1",
+    "rubric_version": "synthetic-rubric-v1",
+    "contains_sensitive_content": false
+  },
+  "denial": {
+    "submission_stable_id": "submission:synthetic:feedback-proof-002",
+    "source_reference": "synthetic://feedback-research/proof-002",
+    "source_revision": "synthetic-revision:proof-002:v1",
+    "synthetic_marker": "fixture-only",
+    "evidence_fingerprint": "synthetic-evidence:denial-v1",
+    "prompt_version": "synthetic-feedback-v1",
+    "rubric_version": "synthetic-rubric-v1",
+    "contains_sensitive_content": true
+  }
+}
