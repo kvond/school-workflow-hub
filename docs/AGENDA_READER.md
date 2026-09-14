@@ -57,10 +57,12 @@ changes can conservatively trigger review; there is no automatic update.
 The fingerprint function cannot verify caller-declared range provenance from
 an arbitrary dictionary; pair it with the actual validated reader call.
 
-The library does not persist the baseline. The future approved private-state
-adapter must retain a successful previous observation, commit only complete
-reads, and keep the last good baseline after access/transport failures. GitHub
-source, artifacts and console logs are not that private-state adapter.
+Baseline storage is now implemented in `core.observation_baseline`, using the
+existing source ledger. `workflows.agenda_observer` composes source read,
+explicit row normalization and atomic checkpointing. Failed/partial reads keep
+the last good baseline; stale reads and competing workers cannot replace it.
+Deployment must still supply approved persistent private state. GitHub source,
+artifacts and console logs are not that private-state location.
 
 ## Tests and limitations
 

@@ -36,6 +36,12 @@ two identical previews. It does not dispatch a cloud run itself.
 
 ## This continuation
 
+**Latest workflow work:** read `WORKFLOW_INPUTS_20260914.md`. The application
+now includes explicit Agenda mapping/checkpoint composition, read-only Todoist
+notes and routing, submission-page collection and printable report output.
+The latest local suite is 322 tests. Cloud deployment/hosting/activation is
+owned by the other chat; do not duplicate or alter that work.
+
 - Reused the existing contracts, SQLite ledgers, fixture workflows, private
   assignment comparator and guarded platform interfaces.
 - Brought the reviewed GitHub export up to the later 252-test teaching checkpoint:
@@ -57,11 +63,16 @@ two identical previews. It does not dispatch a cloud run itself.
    lists/messages -> weekly assignment pages -> Schoology, one week at a time.
    Keep date changes separate from lesson identity; preserve copy/edit mode.
 3. Map the actual Agenda layout and source ranges to normalized observations.
+   The explicit `AgendaLayout` normalizer and `observe_agenda` composition are
+   now implemented; select/validate their real configuration rather than
+   rebuilding them.
    Do not infer stable assignment IDs from titles or row numbers. Live range
    reads alone do not satisfy this mapping step.
 4. Select approved persistent private state with retention/access rules. Store
    baselines atomically only after a complete successful observation. Keep
    student data and raw school sources out of GitHub artifacts/logs/repository.
+   `core.observation_baseline` now provides atomic baseline storage in the
+   existing ledger, including stale-read and concurrent-checkpoint refusal.
 5. Validate one real read/compare and error/recovery path before recurring use.
 6. Add the real submission reader, current rubric and private feedback/report
    acceptance. Then implement separately authorized delivery/update adapters.
@@ -69,6 +80,9 @@ two identical previews. It does not dispatch a cloud run itself.
    synthetic category signals are not an open inductive codebook.
 
 ## Cloud verification
+
+Deployment and activation belong to the separate cloud chat. This application
+handoff requires no cloud-usage response in the workflow-building chat.
 
 The manual GitHub workflow is present and disabled by default. Its first
 activation requires included-usage/spending confirmation. It runs standard
@@ -89,3 +103,10 @@ observed cloud state and next blockers. Update the capability inventory only
 when evidence supports it. A build can be complete while its live acceptance
 task remains open. Preserve presentation/source corrections and existing grade
 history. Avoid copying older local handoffs over this shared entry point.
+
+## HTML owner handoff
+
+Read `docs/HTML_AGENDA_INTEGRATION.md` for the implemented
+`agenda-operations/v1` status contract. Eight focused contract tests cover
+proof requirements, identity and synchronization display gates. Use the existing
+Agenda page. HTTP transport, live receipts and edit saving remain unconnected.

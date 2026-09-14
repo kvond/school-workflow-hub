@@ -12,9 +12,9 @@ import json
 import re
 import time
 from typing import Callable, Mapping, Tuple
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import build_opener
+from .read_only_http import read_json, SourceReadError, validate_token, _NoRedirect
 
 
 MAX_BYTES = 2 * 1024 * 1024
@@ -25,11 +25,6 @@ METADATA_FIELDS = "spreadsheetId,properties(title,timeZone),sheets(properties(sh
 
 class SheetsReadError(ValueError):
     """A fixed code, never a response body, URL, credential, or cell value."""
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
 
 
 def _column_number(value: str) -> int:
@@ -68,10 +63,10 @@ class SheetsReader:
     sleeper: Callable = field(default=time.sleep, repr=False, compare=False)
 
     def __post_init__(self):
-        if (not isinstance(self.access_token, str) or not self.access_token
-                or len(self.access_token) > 8192
-                or any(ord(c) < 33 or ord(c) > 126 for c in self.access_token)):
-            raise SheetsReadError("invalid_credential")
+        try:
+            validate_token(self.access_token)
+        except SourceReadError as error:
+            raise SheetsReadError(str(error)) from None
         if self.opener is None:
             object.__setattr__(self, "opener", build_opener(_NoRedirect()))
 
@@ -81,37 +76,14 @@ class SheetsReader:
         validate_ranges(ranges)
         query = [("fields", FIELDS if ranges else METADATA_FIELDS)]
         query.extend(("ranges", value) for value in ranges)
-        request = Request("https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheet_id
-                          + "?" + urlencode(query), method="GET",
-                          headers={"Authorization": "Bearer " + self.access_token,
-                                   "Accept": "application/json"})
-        for attempt in range(3):
-            try:
-                with self.opener.open(request, timeout=20) as response:
-                    body = response.read(MAX_BYTES + 1)
-                if len(body) > MAX_BYTES:
-                    raise SheetsReadError("response_limit")
-                try:
-                    result = json.loads(body)
-                except (ValueError, UnicodeError):
-                    raise SheetsReadError("invalid_response") from None
-                _validate_response(result, spreadsheet_id)
-                return result
-            except HTTPError as error:
-                status = error.code
-                if error.fp is not None:
-                    error.close()
-                if status in (429, 500, 502, 503, 504) and attempt < 2:
-                    self.sleeper(2 ** attempt)
-                    continue
-                code = {401: "authentication_required", 403: "access_denied", 404: "source_not_found"}.get(status, "source_unavailable")
-                raise SheetsReadError(code) from None
-            except (URLError, OSError):
-                if attempt < 2:
-                    self.sleeper(2 ** attempt)
-                    continue
-                raise SheetsReadError("source_unavailable") from None
-        raise SheetsReadError("source_unavailable")
+        url = "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheet_id + "?" + urlencode(query)
+        try:
+            result = read_json(url, self.access_token, opener=self.opener, sleeper=self.sleeper)
+        except SourceReadError as error:
+            raise SheetsReadError(str(error)) from None
+        _validate_response(result, spreadsheet_id)
+        return result
+
 
 
 def _validate_response(data, expected_id):

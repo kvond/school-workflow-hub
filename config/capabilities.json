@@ -5,17 +5,39 @@
   "capabilities": [
     {
       "id": "agenda_reader",
-      "state": "implemented_transport_not_connected",
+      "state": "reader_normalizer_checkpoint_implemented",
       "live_verified": false,
       "evidence_files": [
         "src/school_workflow_hub/adapters/google_sheets.py",
         "scripts/read_agenda.py",
-        "tests/test_google_sheets_reader.py"
+        "tests/test_google_sheets_reader.py",
+        "src/school_workflow_hub/adapters/agenda_rows.py",
+        "src/school_workflow_hub/core/observation_baseline.py",
+        "src/school_workflow_hub/workflows/agenda_observer.py",
+        "tests/test_workflow_inputs.py",
+        "tests/test_input_integration.py"
       ],
       "remaining": [
-        "School-authorized read-only runtime identity/token refresh",
-        "Explicit live ranges and stable lesson/assignment mapping",
-        "Approved persistent observation baseline and first real read"
+        "School-authorized runtime identity/token refresh",
+        "Verified actual Agenda layout, source ranges and stable lesson/assignment mapping",
+        "Cloud-owned persistent state configuration and first live read/compare"
+      ]
+    },
+    {
+      "id": "agenda_html_status",
+      "state": "status_read_model_and_contract_implemented",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/operations_status.py",
+        "tests/test_operations_status.py",
+        "docs/HTML_AGENDA_INTEGRATION.md",
+        "examples/agenda_operations.preview.json"
+      ],
+      "remaining": [
+        "Existing HTML Agenda integration by HTML owner",
+        "Authenticated transport and genuine live receipt mapping",
+        "Edit saving with durable receipt and reread; unsynced until verified",
+        "End-to-end automatic synchronization verification"
       ]
     },
     {
@@ -46,24 +68,28 @@
     },
     {
       "id": "feedback_grading",
-      "state": "fixture_tested",
+      "state": "page_collection_contract_and_fixture_pipeline",
       "live_verified": false,
       "evidence_files": [
         "src/school_workflow_hub/workflows/feedback_pipeline.py",
-        "tests/test_teaching_continuity.py"
+        "tests/test_teaching_continuity.py",
+        "src/school_workflow_hub/adapters/submission_pages.py",
+        "tests/test_input_integration.py"
       ],
       "remaining": [
-        "Approved private student-work input",
-        "Real 14-day reader and current rubric",
-        "Teacher acceptance and any separately authorized grade executor"
+        "Actual school submission provider with complete snapshot pagination",
+        "Approved private student-work input and current rubric",
+        "Teacher acceptance and separately authorized grade executor"
       ]
     },
     {
       "id": "reports",
-      "state": "preview_builders_complete",
+      "state": "preview_builders_and_printable_html_complete",
       "live_verified": false,
       "evidence_files": [
-        "src/school_workflow_hub/workflows/reporting_pipeline.py"
+        "src/school_workflow_hub/workflows/reporting_pipeline.py",
+        "src/school_workflow_hub/workflows/print_packet.py",
+        "scripts/preview_workflow_inputs.py"
       ],
       "remaining": [
         "Real cumulative history and teacher review",
@@ -99,14 +125,18 @@
     },
     {
       "id": "field_notes_research",
-      "state": "preview_planners_and_design",
+      "state": "note_reader_routing_and_research_preview",
       "live_verified": false,
       "evidence_files": [
-        "src/school_workflow_hub/workflows/research_pipeline.py"
+        "src/school_workflow_hub/workflows/research_pipeline.py",
+        "src/school_workflow_hub/adapters/todoist_notes.py",
+        "src/school_workflow_hub/workflows/daily_notes.py",
+        "tests/test_todoist_note_reader.py"
       ],
       "remaining": [
-        "Real note intake and append/readback",
-        "Open inductive codebook implementation and validation",
+        "Runtime Todoist identity and explicit note source scope; first real routing validation",
+        "Approved journal append/readback and accepted-version persistence",
+        "Open inductive codebook implementation and teacher validation",
         "Research collection deferred until teaching workflows are verified"
       ]
     },
@@ -122,7 +152,8 @@
         "Owner included-usage/spending confirmation",
         "First successful hosted run",
         "Separate school identity/storage before live processing"
-      ]
+      ],
+      "owner": "separate_cloud_chat"
     }
   ]
 }

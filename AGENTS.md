@@ -1,5 +1,14 @@
 # Cloud repository boundaries
 
+- Current ownership: this continuation implements Python workflow logic,
+  source adapters, tests and application handoffs. A separate chat owns cloud
+  deployment, hosting, credentials/storage configuration and activation. Do not
+  change Actions workflows, repository enable variables, billing or schedules
+  as part of the workflow-input continuation.
+- The read-only Todoist note adapter and Agenda normalization/checkpoint code
+  are implemented for host injection. No real-source test or private-data
+  processing was performed by the fixture build; see `docs/WORKFLOW_INPUTS_20260914.md`.
+
 - Start with `docs/START_HERE.md` and `python3 scripts/hub_status.py --json`.
   This repository is the shared code and handoff location for authorized agents.
   The target is deterministic Python running in the cloud; do not create a

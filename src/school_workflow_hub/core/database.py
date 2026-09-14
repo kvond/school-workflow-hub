@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import sys
+import uuid
 from typing import Iterator, Union
 
 
@@ -73,7 +74,19 @@ def connect(database_path: PathLike) -> sqlite3.Connection:
 
 @contextmanager
 def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """Use an explicit, bounded-wait writer transaction."""
+    """Use one writer transaction; nested helpers compose through savepoints."""
+    if connection.in_transaction:
+        savepoint = "hub_" + uuid.uuid4().hex
+        connection.execute("SAVEPOINT " + savepoint)
+        try:
+            yield connection
+        except BaseException:
+            connection.execute("ROLLBACK TO SAVEPOINT " + savepoint)
+            connection.execute("RELEASE SAVEPOINT " + savepoint)
+            raise
+        else:
+            connection.execute("RELEASE SAVEPOINT " + savepoint)
+        return
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield connection

@@ -1,0 +1,93 @@
+{
+  "schema_version": "agenda-operations/v1",
+  "generated_at": "2026-09-14T20:00:00Z",
+  "connection_state": "preview_only",
+  "edit_saving_supported": false,
+  "work_queue": {
+    "system": "todoist",
+    "project": "AIHS",
+    "create_tasks": false
+  },
+  "automatic_sync": {
+    "status": "not_checked",
+    "verification": "unverified",
+    "last_checked_at": null,
+    "evidence": [],
+    "next_action": null,
+    "active": false
+  },
+  "operations": [
+    {
+      "kind": "assignment_links",
+      "scope": {
+        "class_key": "class:synthetic:biology",
+        "assignment_key": "assignment:synthetic:one",
+        "week_key": "week:synthetic:03"
+      },
+      "status": "not_checked",
+      "verification": "unverified",
+      "last_checked_at": null,
+      "evidence": [],
+      "next_action": {
+        "label": "Compare current Agenda with parent assignment pages, then Schoology",
+        "kind": "review",
+        "todoist_task_id": null
+      },
+      "id": "agenda-operation_0a9f76502923e8f9e5bc6ee9"
+    },
+    {
+      "kind": "roster_changes",
+      "scope": {
+        "class_key": "class:synthetic:biology",
+        "assignment_key": null,
+        "week_key": "week:synthetic:03"
+      },
+      "status": "not_checked",
+      "verification": "unverified",
+      "last_checked_at": null,
+      "evidence": [],
+      "next_action": {
+        "label": "Validate the complete current roster and preserve grade history",
+        "kind": "review",
+        "todoist_task_id": null
+      },
+      "id": "agenda-operation_44076baff933817e3175331d"
+    },
+    {
+      "kind": "date_alignment",
+      "scope": {
+        "class_key": "class:synthetic:biology",
+        "assignment_key": "assignment:synthetic:one",
+        "week_key": "week:synthetic:03"
+      },
+      "status": "not_checked",
+      "verification": "unverified",
+      "last_checked_at": null,
+      "evidence": [],
+      "next_action": {
+        "label": "Inspect current Schoology and Infinite Campus dates",
+        "kind": "review",
+        "todoist_task_id": null
+      },
+      "id": "agenda-operation_8cbed92f2463e2df44f4b95f"
+    },
+    {
+      "kind": "grading_review",
+      "scope": {
+        "class_key": "class:synthetic:biology",
+        "assignment_key": "assignment:synthetic:one",
+        "week_key": "week:synthetic:03"
+      },
+      "status": "not_checked",
+      "verification": "unverified",
+      "last_checked_at": null,
+      "evidence": [],
+      "next_action": {
+        "label": "Review the current rubric and grading proposals",
+        "kind": "review",
+        "todoist_task_id": null
+      },
+      "id": "agenda-operation_e94671492d8e42639bd7b177"
+    }
+  ]
+}
