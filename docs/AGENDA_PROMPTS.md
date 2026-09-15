@@ -1,7 +1,7 @@
 # Shared teaching prompts in Agenda
 
 The existing Google Sheets Agenda owns the editable prompt text on the
-`Workflow Prompts` tab. Its small layout is deliberate:
+prompts tab (currently `Feedback Prompts`). Its small layout is deliberate:
 
 | Cell | Content |
 | --- | --- |
@@ -19,7 +19,7 @@ prompt. Copy instructions fetches the **current Agenda text**, using the existin
 signed-IAP, read-only Sheets connection, rather than silently copying an outdated
 packaged version. If Agenda cannot be read, it reports the failure.
 
-`GET /api/agenda-prompts` reads only `Workflow Prompts!A1:B10`, checks the named
+`GET /api/agenda-prompts` locates the unique prompts tab from metadata, reads only `A1:B10`, checks the named
 rows, and returns exact text, SHA-256 fingerprints, direct links, version and
 change rule. Spreadsheet and sheet IDs come from authenticated runtime reads;
 no school identifiers or credentials are embedded in the published assets.

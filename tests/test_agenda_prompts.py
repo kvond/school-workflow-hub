@@ -30,7 +30,8 @@ class AgendaPromptsTests(unittest.TestCase):
         reader=Reader(data)
         with patch('school_workflow_hub.adapters.agenda_prompts.authenticated_reader',return_value=(reader,'FICTIONAL_SOURCE')):
             result=read_prompts('assertion')
-        self.assertEqual(reader.calls,[('FICTIONAL_SOURCE',("'Workflow Prompts'!A1:B10",))])
+        title=data['sheets'][0]['properties']['title']
+        self.assertEqual(reader.calls,[('FICTIONAL_SOURCE',),('FICTIONAL_SOURCE',(f"'{title}'!A1:B10",))])
         return result
     def test_exact_prompts_and_direct_cell_links(self):
         r=self.read(fixture())
@@ -52,3 +53,12 @@ class AgendaPromptsTests(unittest.TestCase):
     def test_identity_failure_prevents_read(self):
         with patch('school_workflow_hub.adapters.agenda_prompts.authenticated_reader',side_effect=ConnectionError('sign_in_required')):
             with self.assertRaisesRegex(ConnectionError,'sign_in_required'):read_prompts(None)
+
+    def test_renamed_feedback_prompts_tab_is_followed(self):
+        data=fixture();data['sheets'][0]['properties']['title']='Feedback Prompts'
+        r=self.read(data)
+        self.assertEqual(r['source'],'Agenda · Feedback Prompts')
+        self.assertTrue(all(r['bundled_matches'].values()))
+    def test_multiple_prompt_tabs_hold_instead_of_guessing(self):
+        data=fixture();other=copy.deepcopy(data['sheets'][0]);other['properties'].update(title='Other Prompts',sheetId=456);data['sheets'].append(other)
+        with self.assertRaisesRegex(ConnectionError,'ambiguous_or_missing'):self.read(data)

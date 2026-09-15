@@ -14,14 +14,21 @@ ROWS = {'completion': (6, 'Completion — Prompt 1'), 'feedback': (7, 'Feedback 
 
 def read_prompts(assertion, config=None):
     reader, source = authenticated_reader(assertion, config)
+    metadata = reader.read(source)
+    candidates = [s['properties'] for s in metadata['sheets']
+                  if 'prompt' in s['properties']['title'].casefold()]
+    if len(candidates) != 1:
+        raise ConnectionError('agenda_prompts_tab_ambiguous_or_missing')
+    title = candidates[0]['title']
+    quoted = title.replace("'", "''")
     try:
-        data = reader.read(source, ("'Workflow Prompts'!A1:B10",))
+        data = reader.read(source, (f"'{quoted}'!A1:B10",))
     except SheetsReadError as error:
         raise ConnectionError("agenda_prompts_" + str(error)) from None
-    cells = grid(data, TAB)
-    if value(cells, 1, 1) != 'Workflow Prompts':
+    cells = grid(data, title)
+    if value(cells, 1, 1) not in {'Workflow Prompts', 'Feedback Prompts'}:
         raise ConnectionError('agenda_prompts_layout_changed')
-    props = next(s['properties'] for s in data['sheets'] if s['properties']['title'] == TAB)
+    props = next(s['properties'] for s in data['sheets'] if s['properties']['title'] == title)
     if type(props.get('sheetId')) is not int:
         raise ConnectionError('agenda_prompts_layout_changed')
     prompts, links, hashes = {}, {}, {}
@@ -37,7 +44,7 @@ def read_prompts(assertion, config=None):
     except (OSError, ValueError):
         raise ConnectionError('prompt_reference_unavailable') from None
     matches = {k: v == bundled['prompts'].get(k) for k, v in prompts.items()}
-    return {'schema_version': 'hub-agenda-prompts/v1', 'source': 'Agenda · Workflow Prompts',
+    return {'schema_version': 'hub-agenda-prompts/v1', 'source': 'Agenda · ' + title,
             'status': 'source_read', 'prompts': prompts, 'links': links, 'sha256': hashes,
             'version_label': value(cells, 3, 2), 'change_rule': value(cells, 2, 2),
             'bundled_matches': matches, 'alignment_review_needed': not all(matches.values()),
