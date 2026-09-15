@@ -15,7 +15,7 @@ ASSETS = {
     **{name: "text/javascript; charset=utf-8" for name in (
         "app.mjs", "pages.mjs", "contract.mjs", "workspace-contract.mjs",
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
-        "review-view.mjs", "agenda-connection.mjs",
+        "review-view.mjs", "agenda-connection.mjs", "teaching-results.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -33,7 +33,7 @@ SECURITY_HEADERS = [
 ]
 
 
-def application(environ, start_response):
+def application(environ, start_response, *, teaching_provider=None):
     method = environ.get("REQUEST_METHOD", "GET")
     path = environ.get("PATH_INFO", "/")
 
@@ -60,6 +60,27 @@ def application(environ, start_response):
             "save_enabled": False, "run_enabled": False,
             "external_writes": 0,
         })
+    if path == "/api/teaching-results" and method == "GET":
+        from urllib.parse import parse_qs
+        from .adapters.teaching_results import read_teaching_results
+        from .adapters.hosted_agenda import ConnectionError
+        try:
+            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=3)
+            if set(query) != {"date", "class_key", "agenda_checked_at"} or any(
+                    len(value) != 1 for value in query.values()):
+                raise ConnectionError("invalid_teaching_scope")
+            return respond("200 OK", read_teaching_results(
+                environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), day=query["date"][0],
+                class_key=query["class_key"][0], agenda_checked_at=query["agenda_checked_at"][0],
+                provider=teaching_provider))
+        except ConnectionError as error:
+            status = "403 Forbidden" if str(error) == "sign_in_required" else (
+                "400 Bad Request" if str(error) == "invalid_teaching_scope" else "503 Service Unavailable")
+            return respond(status, {"error": str(error), "external_writes": 0})
+        except ValueError:
+            return respond("400 Bad Request", {"error": "invalid_teaching_scope", "external_writes": 0})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "teaching_results_unavailable", "external_writes": 0})
     if path == "/api/agenda-day" and method == "GET":
         from urllib.parse import parse_qs
         from .adapters.dated_agenda import read_day
