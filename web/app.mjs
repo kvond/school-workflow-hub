@@ -12,7 +12,7 @@ function dayDate(s){return new Date(s+'T12:00:00');}
 function dateKey(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 function monday(s){const d=dayDate(s);d.setDate(d.getDate()-(d.getDay()+6)%7);return d;}
 function draft(c){const key=c.key+':'+selected;if(!drafts.has(key)) drafts.set(key,{title:selected==='2026-09-14'?c.title:'',notes:selected==='2026-09-14'?c.notes:'',plan:'',links:[],dirty:false});return drafts.get(key);}
-function changed(d,status){d.dirty=true;dirty=true;status.textContent='Unsynced edits';$('draft-status').textContent='Unsynced edits · kept only in this open tab. Switching days keeps them here; closing or reloading loses them. Sheets have not been updated.';}
+function changed(d,status){d.dirty=true;dirty=true;$('draft-status').hidden=false;status.textContent='Unsynced edits';$('draft-status').textContent='Unsynced edits · kept only in this open tab. Switching days keeps them here; closing or reloading loses them. Sheets have not been updated.';}
 function relevant(c){return snapshot?.operations.filter(o=>o.scope.class_key===c.key&&(o.scope.week_key===null||dateKey(monday(selected))==='2026-09-14'&&o.scope.week_key==='week:synthetic:03'))||[];}
 function render(){
  $('date').value=selected;const start=monday(selected),end=new Date(start);end.setDate(start.getDate()+4);
@@ -58,13 +58,13 @@ function renderOperations(){const out=$('operation-list');out.replaceChildren();
  const evidence=button(`Evidence (${o.evidence.length})`,()=>{const rows=o.evidence.flatMap(e=>[node('h3',e.kind),node('p',e.summary),node('p','Receipt reference: '+e.reference),node('p','Observed: '+e.observed_at)]);openDetail('Supporting evidence',[...rows,node('p','Private evidence navigation is not connected. No destination URL has been inferred.')]);});evidence.disabled=!o.evidence.length;
  const run=button('Run',()=>{});run.disabled=true;run.title='Authenticated execution and shared run claims have not been verified.';const actions=node('div',undefined,'action-row');actions.append(button('Copy instructions',()=>showInstructions(o)),run,evidence);card.append(actions,node('span','Execution not connected','hint'));out.append(card);}
 }
-const feedStatus=node('p','Lesson source has not been loaded. Saving and Run remain disabled.','hint');
+const feedStatus=node('p','','hint lesson-feed-status');feedStatus.hidden=true;
 feedStatus.setAttribute('role','status');
 const loadButton=button('Load this date from Agenda',()=>{liveRequested=true;loadDay()});
-$('classes').before(loadButton,feedStatus);
+$('lesson-load-control').append(loadButton);$('classes').before(feedStatus);
 async function loadDay(){
  const requested=selected,sequence=++loadSequence;loadButton.disabled=true;
- feedStatus.textContent='Reading this date from Agenda… Existing drafts are preserved.';
+ feedStatus.hidden=false;feedStatus.textContent='Loading lessons…';
  try{
   const r=await fetch('./api/agenda-day?date='+encodeURIComponent(requested),{cache:'no-store',credentials:'same-origin',redirect:'error'});
   if(!r.ok)throw Error();const data=await r.json();
@@ -80,8 +80,8 @@ async function loadDay(){
   for(const c of classes){const d=draft(c),l=data.lessons.find(l=>c.key.endsWith(':'+l.class_key));if(!d.dirty){d.title=l.title;d.plan=l.plan;d.notes=l.notes;d.links=l.links.map(x=>({...x}));}}
   render();document.querySelector('.preview-pill').textContent='Agenda read-only · other workflows are previews';
   document.dispatchEvent(new CustomEvent('agenda-source-loaded',{detail:{date:data.date,checkedAt:data.checked_at,classes:data.lessons.length}}));
-  if(!dirty)$('draft-status').textContent='Source loaded. Changes remain unsynced in this tab and are lost on reload. Save and Run are disabled.';
-  feedStatus.textContent='Agenda read '+new Date(data.checked_at).toLocaleString()+' · '+data.closures+' · Edits stay in this tab; saving is unavailable.';
+  if(!dirty)$('draft-status').hidden=true;
+  feedStatus.textContent='Agenda read '+new Date(data.checked_at).toLocaleString()+' · '+data.closures;
  }catch{if(sequence===loadSequence){feedStatus.textContent=liveDays.has(requested)?'Refresh failed. Showing the earlier source read; it may be out of date. Drafts are preserved.':'This date could not be read. Sign in and check Agenda access. The date may be outside the mapped school weeks. Drafts are preserved.';}}
  finally{if(sequence===loadSequence)loadButton.disabled=false;}
 }

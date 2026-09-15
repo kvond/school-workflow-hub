@@ -9,14 +9,15 @@
 <link rel="stylesheet" href="styles.css"><script type="module" src="app.mjs"></script><script type="module" src="pages.mjs"></script><script type="module" src="workspace-preview.mjs"></script><script type="module" src="agenda-connection.mjs"></script>
 </head>
 <body>
-<header><div class="brand"><span class="mark">a.</span><div><strong>Agenda</strong><span class="sub">Your teaching week, together.</span></div></div><span class="preview-pill">Design preview · fictional data</span></header>
+<header><div class="brand"><span class="mark">a.</span><div><strong>Agenda</strong></div></div></header>
 <main>
 <nav class="page-nav" aria-label="Dashboard pages"><a href="#agenda" data-page="agenda" aria-current="page">01 · Teaching Agenda</a><a href="#feedback" data-page="feedback">02 · Submissions & feedback</a><a href="#summary" data-page="summary">03 · Teacher summary</a><a href="#research" data-page="research">04 · Research</a></nav>
 <div id="page-agenda">
-<section class="intro"><div class="connection"><strong>Agenda ready to load</strong><span>Run and saving are unavailable.</span></div></section>
-<section class="toolbar" aria-label="Select teaching date"><div class="week-nav"><button id="prev" aria-label="Previous week">←</button><div><span class="eyebrow">WEEK OF</span><h2 id="week-title"></h2></div><button id="next" aria-label="Next week">→</button></div><label class="date-label">Teaching date<input id="date" type="date" value="2026-09-14" required></label></section>
+
+<section class="toolbar" aria-label="Select teaching date"><div class="week-nav"><button id="prev" aria-label="Previous week">←</button><div><h2 id="week-title"></h2></div><button id="next" aria-label="Next week">→</button></div><label class="date-label">Date<input id="date" type="date" value="2026-09-14" required></label></section>
 <nav id="days" aria-label="Days in selected week"></nav>
-<p class="draft-notice" id="draft-status" role="status">Load a date from Agenda, or try an unsynced draft. Edits stay only in this tab and are lost on reload. Saving is disabled.</p>
+<div class="agenda-actions"><div id="lesson-load-control"></div><span class="read-only-note">Read-only · edits are not saved</span><details class="connection-details"><summary>Connection details</summary><div class="connection"><strong>Agenda ready to load</strong><span>Saving and Run remain disabled.</span></div><span class="preview-pill">Design preview · other workflows are not connected</span></details></div>
+<p class="draft-notice" id="draft-status" role="status" hidden></p>
 <div id="classes" class="classes"></div>
 <section class="operations"><div class="section-heading"><div><p class="eyebrow">OPERATIONS</p><h2>Agenda & Infinite Campus checks</h2></div><span class="queue">Work queue · Todoist #AIHS · not connected</span></div><p class="secondary">Current comparison scope: Agenda ↔ Infinite Campus. Assignment documents and Schoology are already set. No current live comparison has been loaded.</p><details class="legacy-preview"><summary>Inspect legacy contract examples · fictional, not current tasks</summary><p id="snapshot-status" class="secondary" role="status">Loading preview checks…</p><div id="operation-list" class="operation-list"></div></details></section>
 </div>
