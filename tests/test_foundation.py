@@ -87,7 +87,7 @@ class FoundationTestCase(unittest.TestCase):
         versions = again.execute("SELECT version FROM schema_migrations").fetchall()
         self.assertEqual(
             [row["version"] for row in versions],
-            ["001_initial", "002_action_dependencies", "003_automation_spine", "004_bind_approvals_to_runs"],
+            ["001_initial", "002_action_dependencies", "003_automation_spine", "004_bind_approvals_to_runs", "005_learning_observations"],
         )
         with self.assertRaises(sqlite3.IntegrityError):
             again.execute(

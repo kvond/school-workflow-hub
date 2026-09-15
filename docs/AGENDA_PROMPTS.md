@@ -34,10 +34,12 @@ skills or teaching pages were reviewed.
 1. Update the affected Agenda lesson/planning pages.
 2. Update the matching skill instructions, including the matching Skill 4 part
    and §12 prompt where both are maintained.
-3. Update the prompt cells on Workflow Prompts in the same pass.
+3. Update the prompt cells on Feedback Prompts in the same pass.
 4. Record date, change, affected Agenda pages, skill version and prompt version.
 5. Reconcile the release reference and verify dashboard Copy instructions reads
    the intended text before accepting the new version.
 
 No automatic skill rewrite, grade posting, feedback generation or printing is
 triggered by editing prompt cells. Run remains separately gated.
+
+The current report layout and year-history contract are in `FEEDBACK_V2.md`. Runtime submission routing uses the active root recorded in Agenda Feedback Prompts B5 and the verified assignment TurnIn Map; exclude trashed duplicates.

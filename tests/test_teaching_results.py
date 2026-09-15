@@ -62,7 +62,7 @@ class TeachingResultsTests(unittest.TestCase):
         result = payload()
         self.assertEqual(result['completion']['rows'][0]['completion']['scores']['content_notes']['value'], 10)
         self.assertEqual(result['completion']['rows'][0]['display_name'], 'Alex F.')
-        self.assertEqual(len(result['feedback']['reports'][0]['sections']), 7)
+        self.assertEqual(len(result['feedback']['reports'][0]['sections']), 5)
         self.assertEqual(result['summary']['participation']['decks_in'], 1)
         self.assertTrue(all(v is False for v in result['capabilities'].values()))
 

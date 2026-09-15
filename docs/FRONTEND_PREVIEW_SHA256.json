@@ -7,12 +7,13 @@
   "operations.preview.json": "da2e99939b5b1f950874f0c6f4867edfe182adb589d711162d3dba2d359b29c4",
   "pages.mjs": "eecdc225215077008983da59be7c7ff30f56341414366fe01aaa38d61e9b498a",
   "review-view.mjs": "80224c157b5aac78ac910475d9c5e87824a2264d62260e3e107bbf662ac12dc7",
-  "styles.css": "fcd0b86834bd0fbdb968f2824dbe9e22eec02b0772e4560faa9f8d91f83953d8",
-  "teacher-prompts.json": "1860eb63801b4bd5a3dcc0f8506b250e34df6c8e47a9ddecba5c0b3e39167c94",
+  "styles.css": "8eedd533409db0b01e593cf1f024c44c754d93105db4b99e6930275fb01e3c47",
+  "teacher-prompts.json": "03e04c0e6fe66250464660318a5b59088af972322c55f33d2d0a954769861562",
   "workspace-contract.mjs": "9ec41fef1286425d17cd67b9a8e9d6a02497a0be0562310ba8282e0f7659acbc",
   "workspace-preview.mjs": "8f0c66bb49e42347b1a7d819a0a33439829deb470fccfea8b5a6788a3d5c37ea",
   "workspace.partial.preview.json": "803dd79dafd1916cd90126d6f21ccb788e66df9a5bf594e3c3950afd4ed41ae1",
   "workspace.preview.json": "121ec9e08063ae3ad78e0077675363bf17628f8e2030e487adbfa8139a406bdf",
   "agenda-connection.mjs": "bcd821ef5e86241ada8918b487bffe74be5c9b87ac0598bd68f008e165fe9a8f",
-  "teaching-results.mjs": "c3ed8aa9e2a0cb2e45536838d990189a7aa904fe54f1612525177bf950f4bf8a"
+  "teaching-results.mjs": "d3d0b352a740919fab81d9129f611baa5aba50394d3e6ea5ee5fba6b3c291668",
+  "learning-progress.mjs": "37ceed619ca89d5dcdd3c42b9b1ee369869a9eed32c1bbe4782cbb9d456e0e8d"
 }

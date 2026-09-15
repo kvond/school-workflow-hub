@@ -7,17 +7,14 @@ private proposals for teacher review, never filed or printed receipts.
 """
 from __future__ import annotations
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 import re
 
 from .completion_policy import ReadinessAssessment, assess_completion, check_readiness, _key
 
 HEADINGS = (
-    "Where my thinking started", "How my thinking changed",
-    "Evidence from my final answer", "Current understanding", "My next step",
-    "An idea worth chasing", "What I understand now that I didn't before",
+    "Current understanding", "How my thinking changed", "One question to think about",
+    "Evidence for my conceptual understanding", "What I understand now that I didn't before",
 )
 LEVELS = ("Developing", "Almost there", "Proficient")
 
@@ -43,8 +40,8 @@ class QuestionFeedback:
     quote: str
     level: str
     current_understanding: str  # Reviewed, student-voice prose grounded in quote.
-    next_step: str  # Reviewed forward move, never repair already submitted work.
-    unit_activity: str  # Specific named activity in this unit.
+    next_step: str  # Legacy input retained for caller compatibility; not rendered.
+    unit_activity: str  # Legacy input; never asserted as a student next lesson.
     idea: str
     assessment_reference: str
     assessment_revision: str
@@ -55,6 +52,8 @@ class QuestionFeedback:
     misconception_description: str | None = None
     misconception_reference: str | None = None
     misconception_quote: str | None = None
+    explanation_level: str | None = None
+    concept_scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +70,8 @@ class FeedbackCase:
     evidence: tuple
     questions: tuple
     filename_identity_verified: bool = False
+    follow_up_question: str | None = None
+    follow_up_reference: str | None = None
 
 
 def _text(value):
@@ -107,7 +108,7 @@ def build_student_feedback(case, *, batch_key):
         issues.extend(completion["issues"])
     if not isinstance(case.evidence, tuple) or not isinstance(case.questions, tuple):
         raise ValueError("invalid_feedback_collection")
-    if len(case.evidence) > 6000 or not 1 <= len(case.questions) <= 3000:
+    if len(case.evidence) > 6000 or not 0 <= len(case.questions) <= 3000:
         raise ValueError("invalid_feedback_size")
     sources = {}
     for evidence in case.evidence:
@@ -120,7 +121,8 @@ def build_student_feedback(case, *, batch_key):
         if evidence.reference in sources:
             raise ValueError("duplicate_feedback_evidence")
         sources[evidence.reference] = evidence
-    paragraphs = [[] for _ in HEADINGS]
+    paragraphs = [[] for _ in range(7)]
+    current_understanding, teacher_ideas = [], []
     understanding, misconceptions, comparisons, flags = [], [], [], []
     seen = set()
     for q in case.questions:
@@ -133,7 +135,9 @@ def build_student_feedback(case, *, batch_key):
                  and q.assessment_revision == case.submission_revision
                  and q.level in LEVELS and all(_text(x) for x in (
                      q.question_label, q.quote, q.current_understanding,
-                     q.next_step, q.unit_activity, q.idea)))
+                     q.idea)))
+        if q.explanation_level is not None and q.explanation_level not in {"Names an idea", "Connects ideas", "Explains how or why"}:
+            valid = False
         current = sources.get(q.current_reference)
         if (not valid or current is None or current.question_id != q.question_id
                 or current.submission_revision != case.submission_revision
@@ -196,6 +200,12 @@ def build_student_feedback(case, *, batch_key):
         paragraphs[4].append(q.question_label + ": " + q.next_step)
         paragraphs[5].append(current.slide_title + ": " + q.idea + "\n" + q.unit_activity)
         understanding.append({"question_id": q.question_id, "level": q.level})
+        current_understanding.append({"question_id": q.question_id, "label": q.question_label,
+            "level": q.level, "explanation": q.current_understanding,
+            "explanation_level": q.explanation_level, "concept_scope": q.concept_scope,
+            "quote": q.quote, "evidence_reference": current.reference})
+        teacher_ideas.append({"question_id": q.question_id, "slide_title": current.slide_title,
+            "idea": q.idea, "evidence_reference": current.reference})
         comparisons.append({"question_id": q.question_id, "basis": basis, "change": change,
                             "evidence_references": [current.reference] + ([earlier.reference] if earlier else [])})
         if any(x is not None for x in (q.misconception_key, q.misconception_description,
@@ -213,16 +223,43 @@ def build_student_feedback(case, *, batch_key):
                     "timing": "earlier" if m is earlier else "current"})
     expected_questions = ({qid for ids in case.readiness.required_ids.values() for qid in ids}
                           if gate["status"] == "READY" else seen)
-    if seen != expected_questions:
+    # A genuinely blank response has no quote or level. It must not block readable work.
+    blank_ids = {r.question_id for r in case.responses if r.judgment == "blank"}
+    blank_ids -= {r.question_id for r in case.responses if r.judgment != "blank"}
+    for qid in sorted(blank_ids - seen):
+        current_understanding.append({"question_id": qid, "label": qid,
+            "level": None, "explanation": "No response is available to assess.",
+            "explanation_level": None, "concept_scope": None})
+    if seen != expected_questions - (blank_ids - seen):
         issues.append("feedback_question_coverage_incomplete")
-    paragraphs[6] = ["Write this yourself and hand the page back.\n____________________________\n____________________________\n____________________________"]
-    sections = [{"heading": h, "text": "\n\n".join(p)} for h, p in zip(HEADINGS, paragraphs)]
+    follow_up = ""
+    if seen:
+        ref = sources.get(case.follow_up_reference)
+        if (ref is None or ref.submission_revision != case.submission_revision
+                or ref.timing == "earlier" or not ref.text.strip()
+                or not _text(case.follow_up_question)
+                or case.follow_up_question.count("?") != 1):
+            issues.append("follow_up_evidence_unverified")
+        else:
+            follow_up = (ref.slide_title + ": " + case.follow_up_question +
+                "\nThink this through for yourself. You may rework your concept notes for your own understanding; this is not for submission or another grade.")
+    current_text = "\n\n".join(x["label"] + ": " + (x["level"] or "Evidence unavailable") +
+                                    "\n" + x["explanation"] for x in current_understanding)
+    changes = "\n\n".join(a + "\n" + b for a, b in zip(paragraphs[0], paragraphs[1]))
+    sections = [
+        {"heading": HEADINGS[0], "text": current_text},
+        {"heading": HEADINGS[1], "text": changes or "There is no readable response to compare yet."},
+        {"heading": HEADINGS[2], "text": follow_up or "A question will be added when there is readable writing to discuss."},
+        {"heading": HEADINGS[3], "text": "\n\n".join(paragraphs[2]) or "No readable written evidence is available."},
+        {"heading": HEADINGS[4], "text": "Write your own reflection here.\n____________________________\n____________________________\n____________________________"},
+    ]
     issues = sorted(set(issues))
     status = "needs_review" if issues else "prepared_for_review"
     base = {k: getattr(case, k) for k in ("class_key", "assignment_key", "learner_key",
                                           "display_name", "submission_revision", "prompt_version", "stage")}
     # Failed assessments do not leak partial reports or apparently valid levels.
-    report = dict(base, readiness=gate,
+    report = dict(base, report_version="student-feedback/v2", current_understanding=[] if issues else current_understanding,
+                  teacher_notes=[] if issues else teacher_ideas, readiness=gate,
                   evidence_references=sorted(sources),
                   assessment_references=[q.assessment_reference for q in case.questions],
                   status=status, review_reasons=issues, teacher_only_flags=flags,
@@ -237,6 +274,8 @@ def build_student_feedback(case, *, batch_key):
                     completion=completion.get("counts") if completion["status"] == "proposed" else None,
                     timing_evidence="unknown" if issues else timing,
                     comparisons=[] if issues else comparisons,
+                    teacher_notes=[] if issues else teacher_ideas,
+                    current_understanding=[] if issues else current_understanding,
                     misconceptions=[] if issues else misconceptions, review_reasons=issues)
     return {"report": report, "compiled_record": compiled, "external_writes": 0}
 
@@ -250,7 +289,10 @@ def compile_feedback_line(record):
                            for c in ("NOTES", "BANK", "DRAFT")) if counts else "unavailable"
     misconceptions = "; ".join(m["description"] + ': "' + m["quote"].replace("\n", " ")
                                  + '" (' + m["timing"] + ")" for m in record["misconceptions"])
-    return (record["display_name"] + "; levels: " + levels + "; misconception: "
+    explanations = ", ".join(x["question_id"] + "=" + (x.get("explanation_level") or "unavailable")
+                                 for x in record.get("current_understanding", [])) or "unavailable"
+    discussion = " | ".join(n["idea"] for n in record.get("teacher_notes", [])) or "none"
+    return (record["display_name"] + "; explanation: " + explanations + "; teacher discussion: " + discussion + "; levels: " + levels + "; misconception: "
             + (misconceptions or "unavailable") + "; stage: " + record["stage"]
             + "; completion: " + completion + "; comparison: " + record["timing_evidence"]
             + ("; review: " + ", ".join(record["review_reasons"]) if record["review_reasons"] else ""))

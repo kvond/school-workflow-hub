@@ -1,13 +1,14 @@
+import {levelBadge,renderLearningProgress,renderClassProgress} from './learning-progress.mjs';
 import {safeLink} from './contract.mjs';
 import {completionLines} from './completion-view.mjs';
-export const FEEDBACK_HEADERS=['Where my thinking started','How my thinking changed','Evidence from my final answer','Current understanding','My next step','An idea worth chasing',"What I understand now that I didn't before"];
+export const FEEDBACK_HEADERS=['Current understanding','How my thinking changed','One question to think about','Evidence for my conceptual understanding',"What I understand now that I didn't before"];
 export function validateResults(data,scope){
  if(!data||data.schema_version!=='hub-teaching-results/v1')throw Error('Results unavailable.');
  if(data.class_key!==scope.classKey||data.date!==scope.date||data.agenda_checked_at!==scope.checkedAt)throw Error('Results belong to a different lesson read. Reload this lesson.');
  if(!['source_read','synthetic'].includes(data.provenance)||!data.assignment_key||!data.source_revision||!data.checked_at)throw Error('Result provenance is incomplete.');
  return data;
 }
-export function validReport(report){return Array.isArray(report.sections)&&report.sections.length===7&&report.sections.every((s,i)=>s.heading===FEEDBACK_HEADERS[i]&&typeof s.text==='string');}
+export function validReport(report){return Array.isArray(report.sections)&&report.sections.length===5&&report.sections.every((s,i)=>s.heading===FEEDBACK_HEADERS[i]&&typeof s.text==='string');}
 export function resultLabel(data){return `${data.provenance==='synthetic'?'Synthetic preview':'Source results'} · Proposed scores and reports for review; no posting or delivery confirmed.`;}
 export function readableTime(value){const date=new Date(value);return Number.isNaN(date.valueOf())?'Unavailable':date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});}
 export function statusLabel(value){return ({missing_unscored:'Awaiting submission · unscored',zero_proposed:'Zero proposed · deadline passed',not_due:'Not yet due',needs_you:'Needs review',needs_review:'Needs review',prepared_for_review:'Ready for review',proposed:'Proposed',ready:'Ready for review',not_applicable:'Not applicable'})[value]||String(value||'Needs review').replaceAll('_',' ');}
@@ -73,21 +74,36 @@ export function renderTeachingResults({feedbackRoot,summaryRoot},state){
  for(const report of asList(data.feedback?.reports)){
   const entry=node(reports.ownerDocument,'details');entry.append(node(reports.ownerDocument,'summary',report.display_name||'Student identity unavailable'));
   line(entry,'Prepared for teacher review · '+statusLabel(report.status));
+  if(data.provenance==='synthetic')line(entry,'Fictional practice sample — answers and graph history are invented.');
   if(report.class_key!==(data.class_stable_id||data.class_key)||report.assignment_key!==data.assignment_key){line(entry,'Report belongs to another lesson. Report withheld.');reports.append(entry);continue;}
+  if(report.report_version==='missing-work/v1'){
+   entry.append(node(entry.ownerDocument,'h3','Your thinking matters'),levelBadge(entry.ownerDocument,null));
+   line(entry,report.message);
+   entry.append(node(entry.ownerDocument,'h3',report.contract_heading));
+   for(const text of asList(report.contract_lines))line(entry,text);
+   reports.append(entry);continue;
+  }
   for(const reason of asList(report.review_reasons))line(entry,'Needs review: '+reason);
   if(report.status==='needs_review'){line(entry,'Feedback is withheld until these evidence issues are reviewed.');reports.append(entry);continue;}
-  if(!validReport(report)){line(entry,'Seven-part report format needs review. Report withheld.');reports.append(entry);continue;}
-  for(const flag of asList(report.teacher_only_flags))line(entry,'Teacher only: '+flag);
-  for(const part of report.sections){entry.append(node(entry.ownerDocument,'h3',part.heading));const content=node(entry.ownerDocument,'p',part.text);content.style.whiteSpace='pre-wrap';entry.append(content);}
+  if(!validReport(report)){line(entry,'Feedback format needs review. Report withheld.');reports.append(entry);continue;}
+  renderLearningProgress(entry,report.learning_progress,{learnerKey:report.learner_key,classKey:data.class_stable_id||data.class_key,provenance:data.provenance});
+  for(const part of report.sections){
+   entry.append(node(entry.ownerDocument,'h3',part.heading));
+   if(part.heading==='Current understanding'&&Array.isArray(report.current_understanding)){
+    for(const item of report.current_understanding){const block=node(entry.ownerDocument,'div');block.className='understanding-item';block.append(node(entry.ownerDocument,'strong',item.label),node(entry.ownerDocument,'br'),levelBadge(entry.ownerDocument,item.level),node(entry.ownerDocument,'p',item.explanation));entry.append(block);}
+   }else{const content=node(entry.ownerDocument,'p',part.text);content.style.whiteSpace='pre-wrap';entry.append(content);}
+  }
   sourceLink(entry,'Open feedback document ↗',report.document_url);
-  line(entry,'Submission revision: '+report.submission_revision+' · Instructions: '+report.prompt_version);reports.append(entry);
+  const sourceDetails=node(entry.ownerDocument,'details');sourceDetails.append(node(entry.ownerDocument,'summary','Teacher source details'));line(sourceDetails,'Submission revision: '+report.submission_revision+' · Instructions: '+report.prompt_version);entry.append(sourceDetails);reports.append(entry);
  }
  const summary=data.summary;
  if(!summary){line(summaryRoot,'No class summary supplied.');return;}
  if(summary.class_key!==(data.class_stable_id||data.class_key)||summary.assignment_key!==data.assignment_key){line(summaryRoot,'Summary belongs to another lesson. Summary withheld.');return;}
  line(summaryRoot,`Coverage: ${summary.coverage?.state||'unavailable'} · ${displayCount(summary.coverage?.received)} received / ${displayCount(summary.coverage?.expected)} expected. ${summary.status==='partial'?'Partial evidence; this is not a whole-class conclusion.':''}`);
+ renderClassProgress(summaryRoot,summary.learning_progress,{classKey:data.class_stable_id||data.class_key,provenance:data.provenance});
  const participation=section(summaryRoot,'Participation');
  line(participation,'Decks in: '+displayCount(summary.participation?.decks_in));
+ if(summary.missing_feedback_count)line(participation,'Missing-work feedback notes prepared: '+summary.missing_feedback_count);
  for(const [stage,counts]of Object.entries(summary.participation?.by_stage||{})){
   line(participation,`${stage}: ${displayCount(counts.complete)} complete / ${displayCount(counts.decks)} decks · completion unavailable: ${displayCount(counts.completion_unavailable)}`);
   for(const [category,count]of Object.entries(counts.categories||{}))line(participation,`${category}: ${displayCount(count.completed_items)}/${displayCount(count.required_items)} items · ${count.status||'unavailable'} · ${displayCount(count.unavailable_students)} students with unavailable evidence`);
@@ -103,6 +119,9 @@ export function renderTeachingResults({feedbackRoot,summaryRoot},state){
  const contrasts=section(summaryRoot,'The next instructional contrast');
  if(!asList(summary.instructional_contrasts).length)line(contrasts,'No evidence-backed contrast supplied.');
  for(const contrast of asList(summary.instructional_contrasts)){line(contrasts,'Case 1: '+contrast.case_a);line(contrasts,'Case 2: '+contrast.case_b);line(contrasts,contrast.rationale);}
+ const ideas=section(summaryRoot,'Teacher notes · An idea worth chasing');
+ for(const note of asList(summary.teacher_notes)){const item=node(ideas.ownerDocument,'div');item.className='teacher-discussion';line(item,(note.display_name||'Student')+' · '+note.slide_title);line(item,note.idea);ideas.append(item);}
+ for(const report of asList(data.feedback?.reports))for(const flag of asList(report.teacher_only_flags))line(ideas,(report.display_name||'Student')+': '+flag);
  const checks=section(summaryRoot,'Anything I should check myself');
  if(!asList(summary.teacher_checks).length)line(checks,'No additional check supplied.');
  for(const check of asList(summary.teacher_checks))line(checks,(check.display_name||'Identity unavailable')+': '+check.reason);

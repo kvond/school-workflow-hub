@@ -22,7 +22,7 @@ def case():
     return FeedbackCase('class:one', 'assignment:one', 'learner:one', 'Alex F.',
                         'revision:2', 'prompt:existing', 'final', ready,
                         (AssessedResponse('NOTES', 'Q1', 'meaningful_attempt', 'e:current'),),
-                        (source,), (q,), True)
+                        (source,), (q,), True, "How does energy get from the plant to the rabbit?", source.reference)
 
 
 def run(c):
@@ -108,7 +108,8 @@ class StudentFeedbackTests(unittest.TestCase):
         ids = {'NOTES': ('Q1', 'Q2'), 'BANK': (), 'DRAFT': ()}
         expanded = replace(c, readiness=replace(c.readiness, required_ids=ids, observed_ids=ids),
                            responses=c.responses + (AssessedResponse('NOTES', 'Q2', 'blank', 'e:second'),))
-        self.assertIn('feedback_question_coverage_incomplete', run(expanded)['report']['review_reasons'])
+        self.assertEqual(run(expanded)['report']['status'], 'prepared_for_review')
+        self.assertIsNone(run(expanded)['report']['current_understanding'][-1]['level'])
         fabricated = replace(c, questions=(replace(c.questions[0], misconception_key='idea:x',
                     misconception_description='Idea', misconception_reference='e:current',
                     misconception_quote='Never written'),))
@@ -119,6 +120,30 @@ class StudentFeedbackTests(unittest.TestCase):
         self.assertIn('NOTES=1/1', result['compiled_lines'][0])
         self.assertEqual(result['reports'][0]['readiness']['status'], 'READY')
         self.assertEqual(result['reports'][0]['assessment_references'], ['review:1'])
+
+    def test_revised_order_and_teacher_ideas_stay_private(self):
+        result = run(case())
+        text = result["report"]["text"]
+        self.assertTrue(text.startswith("Current understanding"))
+        self.assertNotIn("My next step", text)
+        self.assertNotIn("An idea worth chasing", text)
+        self.assertNotIn(case().questions[0].idea, text)
+        self.assertEqual(result["compiled_record"]["teacher_notes"][0]["idea"], case().questions[0].idea)
+        self.assertEqual(result["report"]["sections"][-2]["heading"], "Evidence for my conceptual understanding")
+
+    def test_all_blank_has_no_fabricated_quote_or_level(self):
+        c = case()
+        c = replace(c, responses=(AssessedResponse("NOTES", "Q1", "blank", "e:current"),),
+                    evidence=(replace(c.evidence[0], text=""),), questions=(),
+                    follow_up_question=None, follow_up_reference=None)
+        result = run(c)
+        self.assertEqual(result["report"]["status"], "prepared_for_review")
+        self.assertEqual(result["compiled_record"]["understanding"], [])
+        self.assertIsNone(result["report"]["current_understanding"][0]["level"])
+
+    def test_follow_up_requires_current_readable_source(self):
+        result = run(replace(case(), follow_up_reference="other:writing"))
+        self.assertEqual(result["report"]["status"], "needs_review")
 
     def test_batch_limits_scope_and_duplicates(self):
         with self.assertRaisesRegex(ValueError, 'twenty'):

@@ -2,18 +2,17 @@
 
 ## Authoritative instructions
 
-The three §12 prompts supplied September 15, 2026 match the existing canonical
-`web/teacher-prompts.json` prompt bodies (ignoring surrounding whitespace).
-The original text and fingerprint are unchanged. Page 2 and Page 3 retain Copy
-instructions for manual use in school Claude or ChatGPT. Completion also carries
-the separate due-assignment workflow; it does not rewrite Prompt 1.
+The teacher's September 15 revision is recorded in `FEEDBACK_V2.md` and
+`web/teacher-prompts.json`. Agenda Feedback Prompts is the live Copy-instructions
+source. Prompt 1 completion arithmetic is preserved; Prompt 2 and Prompt 3 now
+separate conceptual understanding, explaining concepts, and completion.
 
 ## Implemented composition
 
 - `workflows.due_completion`: due Agenda/IC assignment scope → complete cumulative
   folder/roster snapshot → revision-bound Prompt 1 completion proposals. Missing
   work stays unscored through the two-week cutoff; ambiguous work never becomes zero.
-- `workflows.student_feedback`: Prompt 2 reviewed evidence → seven exact report
+- `workflows.student_feedback`: Prompt 2 reviewed evidence → two progress graphs followed by five exact report
   sections, exact quotations and slide attribution, first name + initial from the
   supplied filename, blank reflection with three ruled lines. Batches are at most
   twenty. Each batch provides structured compiled records and portable lines.
@@ -34,7 +33,7 @@ writing and reviewed judgments. No model or paid service is called by these func
 ## Existing dashboard integration
 
 `web/teaching-results.mjs` renders completion scores and expandable student feedback
-on Page 2, and all five Prompt 3 sections on Page 3. Empty state never classifies
+on Page 2, and year graphs, class summary and teacher discussion notes on Page 3. Empty state never classifies
 students as missing. Fictional inputs are explicitly synthetic; source reads are
 prepared-for-review, never posted or delivered. Date/class changes and failed
 refreshes clear prior results and discard late HTTP responses. Research is untouched.
@@ -73,3 +72,18 @@ JSON/fixture fallback, public student file or credential configuration is includ
 Current Cloud Run entry point has no teaching provider and responds unavailable
 rather than serving sample student work. A deployed UI is not evidence of live
 workflow execution. Run, saving, printing, emailing and grade posting remain disabled.
+
+## Learning history v1
+
+`workflows.learning_progress` validates reviewed, quoted observations and groups
+only matching learner/concept-task scope/stage/rubric into a series. Understanding
+and explanation remain separate ordinal descriptors; there is no average or
+combined grade. Missing evidence is unavailable. Repeated observations are
+idempotent; conflicting rewrites are rejected. Migration 005 adds history to
+the existing state database, not a second store.
+
+The host may call `record_observation(connection, observation)` and
+`read_observations(...)` against its approved private database, then pass the
+observations to `build_teaching_results(learning_observations=...)`.
+The live hosted provider and private database connection remain unconfigured.
+These functions and synthetic persistence tests do not establish live storage.

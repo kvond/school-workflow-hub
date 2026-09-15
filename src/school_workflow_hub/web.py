@@ -15,7 +15,7 @@ ASSETS = {
     **{name: "text/javascript; charset=utf-8" for name in (
         "app.mjs", "pages.mjs", "contract.mjs", "workspace-contract.mjs",
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
-        "review-view.mjs", "agenda-connection.mjs", "teaching-results.mjs",
+        "review-view.mjs", "agenda-connection.mjs", "teaching-results.mjs", "learning-progress.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",

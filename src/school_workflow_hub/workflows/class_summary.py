@@ -39,6 +39,7 @@ def build_class_summary(records, *, class_key, assignment_key, expected_learners
     batches = None if expected_batch_keys is None else _keys(expected_batch_keys)
     seen, received_batches, prompts = set(), set(), set()
     stages, question_counts, ideas, checks = {}, {}, {}, []
+    teacher_notes = []
     timing_counts = Counter({k: 0 for k in TIMINGS})
     comparison_counts = Counter({k: 0 for k in ("known_later_completion", "documented_revision", "genuine_earlier_answer", "unknown_timing")})
     for row in records:
@@ -150,6 +151,12 @@ def build_class_summary(records, *, class_key, assignment_key, expected_learners
             evidence.update(learner_key=learner, display_name=row["display_name"])
             if evidence not in idea["evidence"]:
                 idea["evidence"].append(evidence)
+        for note in row.get("teacher_notes", []):
+            if (not isinstance(note, dict) or not _text(note.get("idea"))
+                    or not _key(note.get("evidence_reference"))):
+                raise ValueError("invalid_teacher_note")
+            teacher_notes.append({**copy.deepcopy(note), "learner_key": learner,
+                                  "display_name": row["display_name"]})
         reasons = row.get("review_reasons", [])
         if not isinstance(reasons, (list, tuple)) or any(not _text(r) for r in reasons):
             raise ValueError("invalid_compiled_review_reasons")
@@ -197,4 +204,4 @@ def build_class_summary(records, *, class_key, assignment_key, expected_learners
             "unavailable": len(seen) - sum(c.values())} for q, c in sorted(question_counts.items())},
         "recurring_misconceptions": recurring, "instructional_contrasts": accepted,
         "contrast_state": "prepared_for_review" if accepted else "needs_assessor" if recurring else "no_recurring_evidence",
-        "teacher_checks": checks, "execution_supported": False, "external_writes": 0}
+        "teacher_notes": teacher_notes, "teacher_checks": checks, "execution_supported": False, "external_writes": 0}
