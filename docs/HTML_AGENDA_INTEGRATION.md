@@ -154,3 +154,7 @@ receipts rather than building another comparator, queue or state database.
 
 Backend contract tests: `tests/test_operations_status.py`. This checklist is
 not a claim that the HTML interface has been implemented or accepted.
+
+## Optional read-only dated source extension
+
+The hosted adapter now supplies `GET /api/agenda-day?date=YYYY-MM-DD`, documented in [DATED_AGENDA_READ.md](DATED_AGENDA_READ.md). This separate `hub-agenda-day/v1` payload supplies lesson display only. It does not change the operations contract, establish stable write identities, or enable saving/execution. Existing preview workspace validators must not accept it as a synthetic snapshot.

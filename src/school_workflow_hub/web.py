@@ -1,7 +1,7 @@
-"""Preview-only WSGI entry point for the existing hub.
+"""Existing hub WSGI entry point: previews and authenticated read-only Agenda.
 
 Cloud Run IAM/IAP must protect the deployment. The optional metadata check also
-verifies IAP's signed identity. No cell data is served or workflows executed.
+verifies IAP's signed identity, as does the dated lesson reader. No writes or workflows execute.
 Only explicitly packaged preview assets are exposed, never arbitrary files.
 """
 import json
@@ -45,7 +45,7 @@ def application(environ, start_response):
         ] + list(extra))
         return [b"" if method == "HEAD" else body]
 
-    # Never parse bodies, query strings or caller-supplied bearer tokens.
+    # Never parse bodies or caller-supplied bearer tokens.
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "method_not_allowed"},
                        extra=[("Allow", "GET, HEAD")])
@@ -60,6 +60,20 @@ def application(environ, start_response):
             "save_enabled": False, "run_enabled": False,
             "external_writes": 0,
         })
+    if path == "/api/agenda-day" and method == "GET":
+        from urllib.parse import parse_qs
+        from .adapters.dated_agenda import read_day
+        from .adapters.hosted_agenda import ConnectionError
+        try:
+            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
+            if set(query) != {"date"} or len(query["date"]) != 1:
+                raise ConnectionError("invalid_date")
+            return respond("200 OK", read_day(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), query["date"][0]))
+        except ConnectionError as error:
+            status = "403 Forbidden" if str(error) == "sign_in_required" else "400 Bad Request" if str(error) == "invalid_date" else "503 Service Unavailable"
+            return respond(status, {"error": str(error), "external_writes": 0})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "agenda_read_failed", "external_writes": 0})
     if path == "/api/agenda-connection" and method == "GET":
         from .adapters.hosted_agenda import check_connection, ConnectionError
         try:

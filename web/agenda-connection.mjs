@@ -14,7 +14,7 @@ check.addEventListener('click',async()=>{
   }
   if(result.schema_version!=='hub-agenda-connection/v1'||result.status!=='metadata_read_verified'||!Number.isInteger(result.tab_count)||result.tab_count<0||!Number.isFinite(Date.parse(result.checked_at))||result.cell_data_loaded!==false||result.save_enabled!==false||result.run_enabled!==false||result.external_writes!==0)throw new Error('Unexpected connection response.');
   panel.querySelector('strong').textContent='Agenda metadata access verified';
-  panel.querySelector('span').textContent='Lesson feed, saving and Run are not connected.';
+  panel.querySelector('span').textContent='Use “Load this date from Agenda” for lessons. Saving and Run remain disabled.';
   status.textContent=`Read-only check: ${result.tab_count} tabs · ${new Date(result.checked_at).toLocaleString()}. No lesson cells were loaded.`;
  }catch(error){
   panel.querySelector('strong').textContent='Agenda access not verified';

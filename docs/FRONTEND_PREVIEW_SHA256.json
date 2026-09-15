@@ -1,9 +1,9 @@
 {
-  "app.mjs": "a857a67a02895ed836e5a15b0da5b0be8a4e7df251af52e97994a5145c2f97f0",
+  "app.mjs": "a64d153718d6f874fccdb2c07d295b4189b46d3405498780b73aa8d7346b3370",
   "completion-view.mjs": "a59d811ce7bc36ec3cda9349c2490e56f25431f0aec3bf11b8c45409a7f6ef14",
   "contract.mjs": "711642a26a31e2808fc8683612c4c1040b077ac8f62a21fc6bedb11308214c34",
   "draft-review.mjs": "fbc05771ac8648a178daa9bcf6805b5c5a6752d4cc5dbbc98e780c90847a914b",
-  "index.html": "cfe360df3c042ea48bf1694b18cb0fae048e6fca5ecfb5101eba737a4cb658fc",
+  "index.html": "81281f78d636e57beb83e6d07214e34fc29da2aa930af9549ce8a27c532be35a",
   "operations.preview.json": "da2e99939b5b1f950874f0c6f4867edfe182adb589d711162d3dba2d359b29c4",
   "pages.mjs": "bbd05d913b9e6457bf7a7ac7adc195b6b49d0d2f8976ea0f5f7be5cf2843abb0",
   "review-view.mjs": "80224c157b5aac78ac910475d9c5e87824a2264d62260e3e107bbf662ac12dc7",
@@ -13,5 +13,5 @@
   "workspace-preview.mjs": "29b9a89adf1ba7394883dc2bf15f178702ed3efafe4c2ef5c5a0712a1ec6e18b",
   "workspace.partial.preview.json": "803dd79dafd1916cd90126d6f21ccb788e66df9a5bf594e3c3950afd4ed41ae1",
   "workspace.preview.json": "121ec9e08063ae3ad78e0077675363bf17628f8e2030e487adbfa8139a406bdf",
-  "agenda-connection.mjs": "5f70559953b958768892c34d43e3388b53bf0eac2a8765cd9961b5fd1bcca378"
+  "agenda-connection.mjs": "4065760861c9ae84e38e79551446fed40f85236a16078949531a2c2c0c7c5d10"
 }

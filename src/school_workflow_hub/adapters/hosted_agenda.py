@@ -1,4 +1,4 @@
-"""IAP-protected metadata pilot. No keys, school writes or cell reads."""
+"""Shared IAP/runtime identity verification and metadata-only connection check."""
 from datetime import datetime, timezone
 import os
 import re
@@ -57,7 +57,7 @@ def service_token(expected_email):
         raise ConnectionError("runtime_identity_unavailable") from None
 
 
-def check_connection(assertion, config=None):
+def authenticated_reader(assertion, config=None):
     config = os.environ if config is None else config
     source = config.get("HUB_AGENDA_SPREADSHEET_ID", "")
     audience = config.get("HUB_IAP_AUDIENCE", "")
@@ -71,8 +71,13 @@ def check_connection(assertion, config=None):
         raise ConnectionError("connection_not_configured")
     authorize(assertion, audience, allowed)
     token = service_token(service_email)
+    return SheetsReader(token), source
+
+
+def check_connection(assertion, config=None):
+    reader, source = authenticated_reader(assertion, config)
     try:
-        data = SheetsReader(token).read(source)  # metadata only, no ranges
+        data = reader.read(source)  # metadata only, no ranges
     except SheetsReadError:
         raise ConnectionError("agenda_read_failed") from None
     return {
