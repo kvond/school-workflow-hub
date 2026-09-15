@@ -5,11 +5,14 @@ for the existing Python backend and Agenda interface. It supersedes older
 handoffs that say hosting or the dated Agenda reader does not exist. It is not
 the operational student/task database. Research remains owned by the other chat.
 
-The next storage implementation and acceptance procedure is documented in
+The storage implementation and acceptance procedure is documented in
 [Private cloud state](PRIVATE_CLOUD_STATE.md). Its Python store, Firestore adapter,
-fenced claims and fictional-data verification route are implemented; consult the
-authenticated storage-check response for actual deployment acceptance. The dated
-evidence below describes the state before storage configuration.
+fenced claims and fictional-data verification route are deployed. Authenticated
+HTTPS readback on September 15 verified a stored fictional record across two
+service revisions, a competing-claim rejection and idempotent result retry. The
+latest acceptance receipt is summarized in that document. Check the authenticated
+storage endpoint again when resuming work; a historical receipt is not a current
+health check.
 
 ## Current evidence
 
@@ -22,8 +25,16 @@ evidence below describes the state before storage configuration.
 - A correctly scoped teaching-results request returned 503
   `teaching_results_not_connected`. `web.application` has a provider injection
   point but the deployed entry point does not supply a private provider.
-- No hosted Agenda writer, IC reader/writer, submission assessor, shared task
-  claims, persistent private state or delivery adapter is connected by this release.
+- Firestore is connected through the attached runtime identity. The live readiness
+  endpoint reported `persistent_storage_verified=true`, private storage
+  `restart_verified` and shared claims `storage_probe_verified`. Anonymous hub
+  requests redirect to Google sign-in; anonymous Firestore reads return 403.
+- All 460 Python tests pass. Forced simultaneous claims, a superseded worker's
+  commit, expired ownership, repeat results and failed-scan baseline preservation
+  are covered locally; those local cases are distinct from the live probe above.
+- No hosted Agenda writer, IC reader/writer, submission assessor, teaching-results
+  provider or delivery adapter is connected by this release. No student records
+  were processed by the storage acceptance.
 - Prior documentation records one supervised browser IC test score being saved,
   reread and removed. That is narrower than a server-side IC connector and was
   not repeated by this audit.
@@ -50,7 +61,7 @@ Save and Run remain false. No fixture data is promoted to live status.
 
 | Order | Python/cloud work | Evidence required before calling it complete |
 | --- | --- | --- |
-| 1 | Connect one private durable store to the existing task/run, baseline, result and observation contracts. | Restart/redeploy preserves data; concurrent claims have exactly one owner; an expired owner cannot overwrite the successor; failed scans preserve the last successful baseline; repeat requests do not duplicate results. |
+| 1 | Private storage and shared ownership are deployed; bind each teaching provider to this store next. | Live fictional write/readback, repeat result, competing-claim rejection and cross-revision persistence passed. Forced races, expiry recovery and baseline preservation passed locally. Actual student/result/history integration still requires scoped acceptance. |
 | 2 | Connect the actual Agenda/Drive and IC readers. | Correct due assignment and assigned roster; active mapped folder; all submission pages/history; exact document revision and stable student match; failed or partial scans cannot produce missing-work zeros. |
 | 3 | Bind actual-work assessment to the accepted prompts and lesson inventory. | Completion arithmetic remains deterministic Python. Reviewed conceptual interpretation uses exact writing and the current versioned rubric; no invented timing, improvement, quotes or assessment. A model, if later configured, supplies constrained reviewed evidence, not permission to post grades. |
 | 4 | Persist a reviewed result and inject its provider into the existing HTTP entry point. | Authenticated Page 2 and Page 3 show the same stored class/assignment/revision as the private record, including history across dates. Refresh is not a new run. |
@@ -65,17 +76,16 @@ write destination against the explicit authorized scope and retain receipts.
 Credentials stay in runtime secret/identity facilities; school records stay in
 approved private storage, never GitHub, instruction cells, fixtures or logs.
 
-## Persistence is a real remaining dependency
+## Durable state is connected; teaching providers remain
 
-The existing SQLite migrations and helpers are exercised locally. The current
-Cloud Run image copies application code and web assets only; it does not deploy
-or initialize the SQL migrations or connect a durable database. Simply enabling
-a flag or pointing SQLite at the container filesystem will not complete this.
-Cloud Run documents that its container filesystem is in memory and loses written
-data when the instance stops. See the [official runtime contract](https://docs.cloud.google.com/run/docs/container-contract#file_system).
+Firestore is the single hosted state store. SQLite migrations and helpers remain
+offline fixtures; they are not a second operational database. The hosted adapter
+uses runtime IAM, bounded reads and atomic commits with version preconditions.
+Successful result publication includes its task, run receipt and optional baseline
+in one commit. It does not imply that any school destination was updated.
 
-Choose and verify a durable backend for the existing contracts, then retire any
-temporary test storage. Keep a single authoritative task/status record and
-preserve source revision, prompt/rubric version, evidence and run ownership.
-No provider, new billing service, recurring job or external write is enabled by
-the readiness correction.
+Teaching readers, reviewed result publication, learning-history queries and the
+Page 2/Page 3 provider still need to use this store with stable identity and source
+revision mapping. Decide and verify backup/restore before relying on it for real
+student history. Agenda saves, school posting/delivery and unattended runs remain
+disabled. Research work and the existing Friday scan were not changed.

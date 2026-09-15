@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from threading import Lock
+from threading import Barrier, Event, Lock
 import unittest
 
 from school_workflow_hub.core.cloud_state import (
@@ -68,6 +68,23 @@ class CloudStateTests(unittest.TestCase):
             outcomes = list(pool.map(attempt, range(8)))
         self.assertEqual(sum(isinstance(x, Claim) for x in outcomes), 1)
 
+    def test_two_workers_reading_the_same_unclaimed_version_still_have_one_owner(self):
+        gate, original = Barrier(2), self.port.read
+        def read(ids):
+            snapshot = original(ids)
+            if len(ids) == 3 and snapshot.documents[self.task].value["active_run"] is None:
+                gate.wait(timeout=2)
+            return snapshot
+        self.port.read = read
+        def attempt(i):
+            try:
+                return self.claim("request-"+str(i), "worker-"+str(i))
+            except Busy:
+                return None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(attempt, range(2)))
+        self.assertEqual(sum(isinstance(x, Claim) for x in outcomes), 1)
+
     def test_retry_of_same_claim_recovers_same_fence(self):
         first = self.claim()
         self.assertEqual(first, self.claim())
@@ -97,6 +114,28 @@ class CloudStateTests(unittest.TestCase):
         with self.assertRaises(LeaseLost):
             self.store.renew(old)
         self.assertEqual(self.store.read_task(self.task)["owner"], "worker-b")
+
+    def test_old_worker_paused_after_read_cannot_commit_over_new_owner(self):
+        old = self.claim()
+        ready, resume, original = Event(), Event(), self.port.commit
+        def commit(changes):
+            task = changes.get(self.task, ({}, None))[0]
+            if task.get("status") == "Needs you" and task.get("fence") == old.fence:
+                ready.set()
+                if not resume.wait(timeout=2):
+                    raise AssertionError("test worker did not resume")
+            return original(changes)
+        self.port.commit = commit
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.store.finish, old, records={"result": {"fictional": True}})
+            self.assertTrue(ready.wait(timeout=2))
+            self.port.advance(31)
+            new = self.claim("request-2", "worker-b")
+            resume.set()
+            with self.assertRaises(Conflict):
+                pending.result(timeout=2)
+        self.assertEqual(self.store.read_task(self.task)["fence"], new.fence)
+        self.assertFalse(any(k.startswith("record_") for k in self.port.rows))
 
     def test_expired_request_does_not_silently_reacquire(self):
         self.claim()

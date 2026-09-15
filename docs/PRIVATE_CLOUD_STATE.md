@@ -108,3 +108,30 @@ Next: private result provider and stable lesson/student mapping; complete source
 readers and review; actual save/post/file/deliver adapters; destination receipts;
 backup/restore policy for real student history; then one supervised end-to-end
 lesson before unattended runs. Research remains with its separate continuation.
+
+## Deployment acceptance: September 15, 2026
+
+The existing private repository published implementation commit `3b31324`; Cloud
+Build deployed it successfully. The default Native database is in the service's
+region, with deletion protection and the payload index exemption. Runtime access
+uses the attached service identity and a database-conditioned IAM binding. The
+project inspection found no public principal grants.
+
+At 22:53:33 UTC, an authenticated HTTPS POST returned 200 and
+`write_readback_verified`. It saved only the fixed fictional sample, rejected a
+competing claim, retried the result and reread the stored data. After deployment
+of a different Cloud Run revision, the authenticated GET at 22:54:41 UTC returned
+200, `restart_verified=true` and `persistent_storage_verified=true`. Readiness at
+22:54:46 UTC independently returned verified IAP/Agenda metadata, storage
+`restart_verified` and claims `storage_probe_verified`.
+
+Anonymous requests to the hub storage/readiness endpoints redirected to Google
+sign-in; an anonymous database read returned 403. Save and Run remained false;
+the diagnostic reported zero student records and zero school writes. Its probe
+ID is retained in the service's `HUB_STATE_ACCEPTANCE_PROBE` configuration.
+
+All 460 Python tests passed. Local tests additionally force workers to read the
+same task version and pause an old worker before a successor's claim: exactly
+one claim succeeds, and the old commit cannot publish a result. Local expiry and
+baseline tests are not claims that a real school workflow has recovered from an
+interruption. School adapters and their destination receipts remain pending.
