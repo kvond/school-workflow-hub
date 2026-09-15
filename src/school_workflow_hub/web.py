@@ -5,6 +5,7 @@ verifies IAP's signed identity, as does the dated lesson reader. No writes or wo
 Only explicitly packaged preview assets are exposed, never arbitrary files.
 """
 import json
+import os
 from pathlib import Path
 
 
@@ -44,6 +45,49 @@ def application(environ, start_response, *, teaching_provider=None):
             ("Content-Type", content_type), ("Content-Length", str(len(body)))
         ] + list(extra))
         return [b"" if method == "HEAD" else body]
+
+    if path == "/api/storage-check":
+        from .adapters.hosted_agenda import _identity_configuration, authorize, ConnectionError
+        from .adapters.firestore_state import configured_store
+        from .adapters.storage_probe import read_probe, run_probe
+        from .core.cloud_state import Conflict, StoreUnavailable
+        if method not in ("GET", "POST"):
+            return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+        try:
+            audience, allowed = _identity_configuration(os.environ)
+            authorize(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), audience, allowed)
+            revision = os.environ.get("K_REVISION", "")
+            if method == "POST":
+                # Only a same-origin explicit probe may write fixed fictional data.
+                origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                           if v.startswith("https://") and "/" not in v[8:]}
+                if (environ.get("HTTP_ORIGIN") not in origins
+                        or environ.get("CONTENT_TYPE") != "application/json"
+                        or environ.get("QUERY_STRING", "")):
+                    return respond("403 Forbidden", {"error": "storage_probe_origin_required"})
+                length = int(environ.get("CONTENT_LENGTH", "0"))
+                if not 1 <= length <= 256:
+                    raise ValueError()
+                data = json.loads(environ["wsgi.input"].read(length))
+                if not isinstance(data, dict) or set(data) != {"action", "probe_id"} or data["action"] != "verify":
+                    raise ValueError()
+                return respond("200 OK", run_probe(configured_store, data["probe_id"], revision))
+            from urllib.parse import parse_qs
+            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
+            if query and (set(query) != {"probe_id"} or len(query["probe_id"]) != 1):
+                raise ValueError()
+            probe_id = query.get("probe_id", [os.environ.get("HUB_STATE_ACCEPTANCE_PROBE", "")])[0]
+            return respond("200 OK", read_probe(configured_store, probe_id, revision))
+        except ConnectionError:
+            return respond("403 Forbidden", {"error": "sign_in_required"})
+        except Conflict:
+            return respond("409 Conflict", {"error": "storage_probe_already_working"})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "storage_not_verified"})
+        except (ValueError, KeyError, TypeError):
+            return respond("400 Bad Request", {"error": "invalid_storage_probe"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "storage_not_verified"})
 
     # Never parse bodies or caller-supplied bearer tokens.
     if method not in ("GET", "HEAD"):

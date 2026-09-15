@@ -5,6 +5,12 @@ for the existing Python backend and Agenda interface. It supersedes older
 handoffs that say hosting or the dated Agenda reader does not exist. It is not
 the operational student/task database. Research remains owned by the other chat.
 
+The next storage implementation and acceptance procedure is documented in
+[Private cloud state](PRIVATE_CLOUD_STATE.md). Its Python store, Firestore adapter,
+fenced claims and fictional-data verification route are implemented; consult the
+authenticated storage-check response for actual deployment acceptance. The dated
+evidence below describes the state before storage configuration.
+
 ## Current evidence
 
 - The accepted feedback and teacher-summary layouts, completion rules, missing-work

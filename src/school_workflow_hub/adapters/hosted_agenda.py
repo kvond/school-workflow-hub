@@ -138,6 +138,21 @@ def check_readiness(assertion, config=None, *, teaching_provider_configured=Fals
         return result
     checks["authentication"]["status"] = "verified"
     result.update(authentication_verified=True, mode="authenticated")
+    if config.get("HUB_STATE_BACKEND") == "firestore":
+        checks["private_storage"] = {"status": "configured_not_verified",
+                                     "check_endpoint": "/api/storage-check"}
+        checks["shared_run_claims"] = {"status": "configured_not_verified"}
+        if config.get("HUB_STATE_ACCEPTANCE_PROBE"):
+            try:
+                from .firestore_state import configured_store
+                from .storage_probe import read_probe
+                proof = read_probe(lambda: configured_store(config),
+                    config["HUB_STATE_ACCEPTANCE_PROBE"], config.get("K_REVISION", ""))
+                checks["private_storage"]["status"] = proof["status"]
+                checks["shared_run_claims"]["status"] = "storage_probe_verified"
+                result["persistent_storage_verified"] = proof["persistent_storage_verified"]
+            except Exception:
+                checks["private_storage"]["status"] = "unavailable"
     checks["teaching_results"]["status"] = (
         "configured_not_verified" if teaching_provider_configured else "not_connected")
     try:
