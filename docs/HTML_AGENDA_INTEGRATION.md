@@ -5,6 +5,14 @@ building the existing HTML Agenda. The repository contains no connected Agenda
 HTML application, Agenda preview URL, HTTP status endpoint or edit-saving API.
 The report-preview HTML elsewhere in this repo is a fictional printable report.
 
+The HTML owner's frontend handoff was read on September 14 and reconciled in
+`docs/FRONTEND_REQUIREMENTS_ALIGNMENT.md`. That document maps its requested
+fields and controls to the implemented contract and identifies missing services.
+Do not add those requested fields to this strict v1 payload until a versioned
+extension is implemented. Local folders are development locations only. The
+finished interface, instructions and shared records require authenticated HTTPS;
+no hosted service URL has been verified in this backend checkout.
+
 ## Ownership and current connection state
 
 - HTML owner: integrate into the existing Agenda page. Keep all classes editable

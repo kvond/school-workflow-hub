@@ -110,3 +110,9 @@ Read `docs/HTML_AGENDA_INTEGRATION.md` for the implemented
 `agenda-operations/v1` status contract. Eight focused contract tests cover
 proof requirements, identity and synchronization display gates. Use the existing
 Agenda page. HTTP transport, live receipts and edit saving remain unconnected.
+
+The HTML owner's September 14 requirements are reconciled in
+`docs/FRONTEND_REQUIREMENTS_ALIGNMENT.md`: authenticated HTTPS, portable
+versioned instructions, task versus operation identity, record revisions,
+weekly/list save conflicts and shared run claims. That document distinguishes
+the implemented projection from requested services that remain absent.
