@@ -81,6 +81,16 @@ def application(environ, start_response, *, teaching_provider=None):
             return respond("400 Bad Request", {"error": "invalid_teaching_scope", "external_writes": 0})
         except Exception:
             return respond("503 Service Unavailable", {"error": "teaching_results_unavailable", "external_writes": 0})
+    if path == "/api/agenda-prompts" and method == "GET":
+        from .adapters.agenda_prompts import read_prompts
+        from .adapters.hosted_agenda import ConnectionError
+        try:
+            return respond("200 OK", read_prompts(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")))
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable",
+                           {"error": str(error), "external_writes": 0})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "agenda_prompts_unavailable", "external_writes": 0})
     if path == "/api/agenda-day" and method == "GET":
         from urllib.parse import parse_qs
         from .adapters.dated_agenda import read_day
