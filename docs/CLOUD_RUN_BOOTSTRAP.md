@@ -1,5 +1,9 @@
 # First Cloud Run deployment: preview only
 
+Subsequent metadata-only connection work is documented in
+`AGENDA_CONNECTION_PILOT.md`. Its explicit configuration gate is off by default;
+the original deployment checkpoint below remains historical.
+
 The teacher authorized Google Cloud hosting in the frontend chat on September
 15, 2026. This adds a web entry point to the existing Python repository, not a
 second backend. Other workflow/research work remains owned by its existing chat.

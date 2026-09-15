@@ -1,7 +1,7 @@
 """Preview-only WSGI entry point for the existing hub.
 
-Cloud Run IAM must protect the deployment. This module does not implement
-teacher login, accept credentials, load school data or execute workflows.
+Cloud Run IAM/IAP must protect the deployment. The optional metadata check also
+verifies IAP's signed identity. No cell data is served or workflows executed.
 Only explicitly packaged preview assets are exposed, never arbitrary files.
 """
 import json
@@ -15,7 +15,7 @@ ASSETS = {
     **{name: "text/javascript; charset=utf-8" for name in (
         "app.mjs", "pages.mjs", "contract.mjs", "workspace-contract.mjs",
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
-        "review-view.mjs",
+        "review-view.mjs", "agenda-connection.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -45,7 +45,7 @@ def application(environ, start_response):
         ] + list(extra))
         return [b"" if method == "HEAD" else body]
 
-    # Never parse bodies, query strings, bearer tokens or identity headers.
+    # Never parse bodies, query strings or caller-supplied bearer tokens.
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "method_not_allowed"},
                        extra=[("Allow", "GET, HEAD")])
@@ -60,6 +60,16 @@ def application(environ, start_response):
             "save_enabled": False, "run_enabled": False,
             "external_writes": 0,
         })
+    if path == "/api/agenda-connection" and method == "GET":
+        from .adapters.hosted_agenda import check_connection, ConnectionError
+        try:
+            return respond("200 OK", check_connection(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")))
+        except ConnectionError as error:
+            status = "403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable"
+            return respond(status, {"error": str(error), "external_writes": 0})
+        except Exception:
+            # No provider response, credential or private source in error logs.
+            return respond("503 Service Unavailable", {"error": "connection_check_failed", "external_writes": 0})
     if path.startswith(("/api/", "/auth/", "/oauth/")):
         return respond("503 Service Unavailable", {"error": "not_connected",
                                                     "external_writes": 0})
