@@ -50,16 +50,14 @@ def application(environ, start_response, *, teaching_provider=None):
         return respond("405 Method Not Allowed", {"error": "method_not_allowed"},
                        extra=[("Allow", "GET, HEAD")])
     if path == "/healthz":
-        return respond("200 OK", {"status": "ok", "mode": "preview_only",
-                                  "school_connected": False, "external_writes": 0})
+        return respond("200 OK", {"status": "ok", "external_writes": 0})
     if path == "/api/readiness":
-        return respond("200 OK", {
-            "schema_version": "hub-hosting-readiness/v1",
-            "mode": "preview_only", "school_connected": False,
-            "authentication_verified": False, "persistent_storage_verified": False,
-            "save_enabled": False, "run_enabled": False,
-            "external_writes": 0,
-        })
+        if method == "HEAD":
+            return respond("200 OK", b"")  # health probes do not read school sources
+        from .adapters.hosted_agenda import check_readiness
+        return respond("200 OK", check_readiness(
+            environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+            teaching_provider_configured=teaching_provider is not None))
     if path == "/api/teaching-results" and method == "GET":
         from urllib.parse import parse_qs
         from .adapters.teaching_results import read_teaching_results

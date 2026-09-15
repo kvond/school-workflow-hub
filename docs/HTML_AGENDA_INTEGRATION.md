@@ -1,17 +1,20 @@
 # Existing HTML Agenda: Python integration contract
 
-Contract: **agenda-operations/v1**. This is the backend handoff for the chat
-building the existing HTML Agenda. The repository contains no connected Agenda
-HTML application, Agenda preview URL, HTTP status endpoint or edit-saving API.
-The report-preview HTML elsewhere in this repo is a fictional printable report.
+Contract: **agenda-operations/v1**. This document defines the original operations
+projection for the existing HTML Agenda. **Current cloud status, September 15:**
+the HTML and Python application are deployed, and authenticated Agenda metadata,
+dated lessons and prompt reads have been verified. Saving, private teaching
+results and workflow execution remain unconnected. See [Cloud readiness and
+remaining work](CLOUD_READINESS.md) for the current acceptance checklist.
 
 The HTML owner's frontend handoff was read on September 14 and reconciled in
 `docs/FRONTEND_REQUIREMENTS_ALIGNMENT.md`. That document maps its requested
 fields and controls to the implemented contract and identifies missing services.
 Do not add those requested fields to this strict v1 payload until a versioned
 extension is implemented. Local folders are development locations only. The
-finished interface, instructions and shared records require authenticated HTTPS;
-no hosted service URL has been verified in this backend checkout.
+finished interface, instructions and shared records require authenticated HTTPS.
+The older handoff's deployment status is historical; use CLOUD_READINESS.md for
+current evidence rather than treating those earlier gaps as still unverified.
 
 ## Ownership and current connection state
 
@@ -23,12 +26,13 @@ no hosted service URL has been verified in this backend checkout.
 - Cloud owner: runtime credentials, hosting, transport, persistent private state
   configuration and activation. Reuse the existing ledger and services.
 - Live-audit owner: supplies actual source observations and verified receipts.
-  First compare current Agenda links with parent assignment pages, then Schoology.
+  The teacher's current comparison is Agenda versus Infinite Campus. Assignment
+  documents and Schoology are already set; they are not the first comparison.
 
-This handoff has local synthetic-test evidence only. Source credentials, actual
-Agenda layout mapping, live comparisons, UI transport and saving still require
-connection and verification. Do not display automatic synchronization as active
-from a test pass, a successful GET, or code being present.
+The operations projection below has synthetic-test evidence. The authenticated
+read-only endpoints do not establish workflow execution, live IC comparisons or
+saving. Do not display automatic synchronization as active from a test pass, a
+successful GET, or code being present.
 
 ## Implemented entry point
 
