@@ -1,0 +1,17 @@
+**
+!Dockerfile
+!requirements-hosting.txt
+!gunicorn.conf.py
+!src/
+!src/**
+!web/
+!web/**
+**/__pycache__/**
+**/*.pyc
+**/.env*
+**/*.pem
+**/*.key
+**/*.sqlite*
+**/*.db
+**/client_secret*
+**/credentials*

@@ -1,0 +1,16 @@
+{
+  "app.mjs": "a857a67a02895ed836e5a15b0da5b0be8a4e7df251af52e97994a5145c2f97f0",
+  "completion-view.mjs": "a59d811ce7bc36ec3cda9349c2490e56f25431f0aec3bf11b8c45409a7f6ef14",
+  "contract.mjs": "711642a26a31e2808fc8683612c4c1040b077ac8f62a21fc6bedb11308214c34",
+  "draft-review.mjs": "fbc05771ac8648a178daa9bcf6805b5c5a6752d4cc5dbbc98e780c90847a914b",
+  "index.html": "4b1f9bc4d94c59ea9d29f86b4210b2dd6d0d8a5d2d8d64b27add58a181944120",
+  "operations.preview.json": "da2e99939b5b1f950874f0c6f4867edfe182adb589d711162d3dba2d359b29c4",
+  "pages.mjs": "bbd05d913b9e6457bf7a7ac7adc195b6b49d0d2f8976ea0f5f7be5cf2843abb0",
+  "review-view.mjs": "80224c157b5aac78ac910475d9c5e87824a2264d62260e3e107bbf662ac12dc7",
+  "styles.css": "0e69a934dafaf93c5999a868501f44c289b58252bfeebf2b1c80b1b1f1f8a0e2",
+  "teacher-prompts.json": "575e37f4708f2400f30b8464034c927da07b1ec0de07bf5b3ab22d88ebf37f0f",
+  "workspace-contract.mjs": "9ec41fef1286425d17cd67b9a8e9d6a02497a0be0562310ba8282e0f7659acbc",
+  "workspace-preview.mjs": "29b9a89adf1ba7394883dc2bf15f178702ed3efafe4c2ef5c5a0712a1ec6e18b",
+  "workspace.partial.preview.json": "803dd79dafd1916cd90126d6f21ccb788e66df9a5bf594e3c3950afd4ed41ae1",
+  "workspace.preview.json": "121ec9e08063ae3ad78e0077675363bf17628f8e2030e487adbfa8139a406bdf"
+}

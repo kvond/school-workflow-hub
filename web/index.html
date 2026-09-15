@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Agenda · Teaching planner</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23173857'/%3E%3Cpath d='M9 24V9h14v15M9 14h14M14 14v10' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css"><script type="module" src="app.mjs"></script><script type="module" src="pages.mjs"></script><script type="module" src="workspace-preview.mjs"></script>
+</head>
+<body>
+<header><div class="brand"><span class="mark">a.</span><div><strong>Agenda</strong><span class="sub">Your teaching week, together.</span></div></div><span class="preview-pill">Design preview · fictional data</span></header>
+<main>
+<nav class="page-nav" aria-label="Dashboard pages"><a href="#agenda" data-page="agenda" aria-current="page">01 · Teaching Agenda</a><a href="#feedback" data-page="feedback">02 · Submissions & feedback</a><a href="#summary" data-page="summary">03 · Teacher summary</a><a href="#research" data-page="research">04 · Research</a></nav>
+<div id="page-agenda">
+<section class="intro"><div><p class="eyebrow">TEACHING PLANNER</p><h1>Room to plan.</h1><p>Every class. Notes and materials right where you need them.</p></div><div class="connection"><strong>Sheets not connected</strong><span>Run and saving are unavailable.</span></div></section>
+<section class="toolbar" aria-label="Select teaching date"><div class="week-nav"><button id="prev" aria-label="Previous week">←</button><div><span class="eyebrow">WEEK OF</span><h2 id="week-title"></h2></div><button id="next" aria-label="Next week">→</button></div><label class="date-label">Teaching date<input id="date" type="date" value="2026-09-14" required></label></section>
+<nav id="days" aria-label="Days in selected week"></nav>
+<p class="draft-notice" id="draft-status" role="status">Lesson source not connected. Try a draft below; it stays only in this tab and is lost on reload. No student information.</p>
+<div id="classes" class="classes"></div>
+<section class="operations"><div class="section-heading"><div><p class="eyebrow">OPERATIONS</p><h2>Agenda & Infinite Campus checks</h2></div><span class="queue">Work queue · Todoist #AIHS · not connected</span></div><p class="secondary">Current comparison scope: Agenda ↔ Infinite Campus. Assignment documents and Schoology are already set. No current live comparison has been loaded.</p><details class="legacy-preview"><summary>Inspect legacy contract examples · fictional, not current tasks</summary><p id="snapshot-status" class="secondary" role="status">Loading preview checks…</p><div id="operation-list" class="operation-list"></div></details></section>
+</div>
+<section id="page-feedback" hidden></section><section id="page-summary" hidden></section><section id="page-research" hidden></section>
+<footer><span>Preview only · no sheet writes or workflow runs</span><a href="https://github.com/kvond/school-workflow-hub/blob/main/docs/HTML_AGENDA_INTEGRATION.md" target="_blank" rel="noopener noreferrer">Shared integration contract ↗</a></footer>
+</main>
+<dialog id="detail"><div class="dialog-head"><h2 id="detail-title"></h2><button id="close-detail" aria-label="Close details">✕</button></div><div id="detail-body"></div></dialog>
+</body></html>

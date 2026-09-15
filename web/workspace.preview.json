@@ -1,0 +1,779 @@
+{
+  "schema_version": "agenda-workspace/v1",
+  "generated_at": "2026-09-14T20:00:00Z",
+  "operations": {
+    "schema_version": "agenda-operations/v1",
+    "generated_at": "2026-09-14T20:00:00Z",
+    "connection_state": "preview_only",
+    "edit_saving_supported": false,
+    "work_queue": {
+      "system": "todoist",
+      "project": "AIHS",
+      "create_tasks": false
+    },
+    "automatic_sync": {
+      "status": "not_checked",
+      "verification": "unverified",
+      "last_checked_at": null,
+      "evidence": [],
+      "next_action": null,
+      "active": false
+    },
+    "operations": []
+  },
+  "privacy": "authenticated_teacher_only",
+  "pages": {
+    "teaching_agenda": {
+      "lessons": [
+        {
+          "lesson_key": "lesson:synthetic:anatomy",
+          "class_key": "class:synthetic:anatomy",
+          "assignment_key": "assignment:synthetic:anatomy",
+          "teaching_date": "2026-09-14",
+          "title": "Synthetic Anatomy integration example",
+          "notes": "Fictional text for testing the workspace feed. Not a teaching plan.",
+          "source_page_reference": "page:synthetic:daily",
+          "source_revision": "revision:daily:one",
+          "observed_at": "2026-09-14T20:00:00Z",
+          "slides_url": null,
+          "open_slides": null,
+          "link_access": "not_tested",
+          "save_supported": false
+        },
+        {
+          "lesson_key": "lesson:synthetic:one",
+          "class_key": "class:synthetic:biology",
+          "assignment_key": "assignment:synthetic:one",
+          "teaching_date": "2026-09-14",
+          "title": "Synthetic lesson",
+          "notes": "Synthetic notes",
+          "source_page_reference": "page:synthetic:daily",
+          "source_revision": "revision:daily:one",
+          "observed_at": "2026-09-14T20:00:00Z",
+          "slides_url": null,
+          "open_slides": null,
+          "link_access": "not_tested",
+          "save_supported": false
+        },
+        {
+          "lesson_key": "lesson:synthetic:forensics",
+          "class_key": "class:synthetic:forensics",
+          "assignment_key": "assignment:synthetic:forensics",
+          "teaching_date": "2026-09-14",
+          "title": "Synthetic Forensics integration example",
+          "notes": "Fictional text for testing the workspace feed. Not a teaching plan.",
+          "source_page_reference": "page:synthetic:daily",
+          "source_revision": "revision:daily:one",
+          "observed_at": "2026-09-14T20:00:00Z",
+          "slides_url": null,
+          "open_slides": null,
+          "link_access": "not_tested",
+          "save_supported": false
+        }
+      ],
+      "comparison_target": "infinite_campus",
+      "two_way_editing_supported": false
+    },
+    "submissions_feedback": {
+      "classes": [
+        {
+          "class_key": "class:synthetic:biology",
+          "rows": [
+            {
+              "class_key": "class:synthetic:biology",
+              "assignment_key": "assignment:synthetic:one",
+              "learner_key": "learner:synthetic:one",
+              "submission_state": "submitted",
+              "submission_revision": "revision:one",
+              "deadline_state": "submitted_by_deadline",
+              "feedback_state": "available",
+              "feedback_document_reference": "document:synthetic:feedback",
+              "parent_email_route": "not_needed",
+              "ic_contact_reference": null,
+              "completion": {
+                "policy_version": "completion-policy/2026-09-14",
+                "stage": "final",
+                "readiness": {
+                  "status": "READY",
+                  "issues": [],
+                  "missing_ids": {
+                    "NOTES": [],
+                    "BANK": [],
+                    "DRAFT": []
+                  },
+                  "extra_ids": {
+                    "NOTES": [],
+                    "BANK": [],
+                    "DRAFT": []
+                  },
+                  "inventory_line": "[[MARKER-INVENTORY: fictional fixture]]",
+                  "evidence_reference": "receipt:synthetic:inventory"
+                },
+                "status": "proposed",
+                "scores": {
+                  "content_notes": {
+                    "completed": 4,
+                    "required": 4,
+                    "status": "proposed",
+                    "out_of": 10,
+                    "value": 10.0,
+                    "exact_value": "10"
+                  },
+                  "revision": {
+                    "completed": 1,
+                    "required": 1,
+                    "status": "proposed",
+                    "out_of": 10,
+                    "value": 10.0,
+                    "exact_value": "10"
+                  }
+                },
+                "growth_claim": "not_inferred",
+                "external_writes": 0,
+                "issues": [],
+                "counts": {
+                  "NOTES": {
+                    "completed": 3,
+                    "required": 3,
+                    "due": true
+                  },
+                  "BANK": {
+                    "completed": 1,
+                    "required": 1,
+                    "due": true
+                  },
+                  "DRAFT": {
+                    "completed": 1,
+                    "required": 1,
+                    "due": true
+                  }
+                },
+                "optional_items_reported": 0
+              },
+              "completion_state": "proposed",
+              "delivery": {
+                "parent_email": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                },
+                "roster_grade": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                },
+                "ic_grade": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                },
+                "print_feedback": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                }
+              },
+              "last_checked_at": "2026-09-14T20:00:00Z"
+            },
+            {
+              "class_key": "class:synthetic:biology",
+              "assignment_key": "assignment:synthetic:one",
+              "learner_key": "learner:synthetic:two",
+              "submission_state": "not_submitted",
+              "submission_revision": null,
+              "deadline_state": "past_deadline",
+              "feedback_state": "not_applicable",
+              "feedback_document_reference": null,
+              "parent_email_route": "contact_needs_verification",
+              "ic_contact_reference": null,
+              "completion": null,
+              "completion_state": "not_assessed",
+              "delivery": {
+                "parent_email": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                },
+                "roster_grade": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                },
+                "ic_grade": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                },
+                "print_feedback": {
+                  "state": "not_verified",
+                  "receipt_reference": null,
+                  "last_checked_at": null
+                }
+              },
+              "last_checked_at": "2026-09-14T20:00:00Z"
+            }
+          ],
+          "roster_complete": true,
+          "full_history_complete": true,
+          "last_checked_at": "2026-09-14T20:00:00Z",
+          "deadline_policy": {
+            "assignment:synthetic:one": "policy:approved:fixture"
+          },
+          "external_writes": 0
+        }
+      ]
+    },
+    "teacher_summary": {
+      "case_counts": {
+        "submission_state": {
+          "submitted": 1,
+          "not_submitted": 1
+        },
+        "deadline_state": {
+          "submitted_by_deadline": 1,
+          "past_deadline": 1
+        },
+        "feedback_state": {
+          "available": 1,
+          "not_applicable": 1
+        },
+        "parent_email_route": {
+          "not_needed": 1,
+          "contact_needs_verification": 1
+        },
+        "completion_state": {
+          "proposed": 1,
+          "not_assessed": 1
+        }
+      },
+      "delivery_outcomes": {
+        "parent_email": {
+          "not_verified": 2
+        },
+        "roster_grade": {
+          "not_verified": 2
+        },
+        "ic_grade": {
+          "not_verified": 2
+        },
+        "print_feedback": {
+          "not_verified": 2
+        }
+      },
+      "scheduled_lesson_count": 3,
+      "lesson_completion_state": "requires_teaching_receipts",
+      "instructional_summary_reference": null,
+      "instructional_summary_state": "not_generated",
+      "counts_unit": "learner_assignment_cases",
+      "learner_ranking": false
+    },
+    "research_data": {
+      "status": "restricted",
+      "records": [],
+      "collection_supported": false,
+      "agenda": {
+        "schema_version": "research-agenda/v1",
+        "status": "source_grounded_draft_awaiting_teacher_review",
+        "last_checked_at": "2026-09-15T02:49:36Z",
+        "evidence": [
+          {
+            "source_reference": "book:full-revised-decision-draft:42d7040cb7e3",
+            "title": "Answerable Teaching \u2014 Full Revised Decision Draft",
+            "sha256": "42d7040cb7e309b5c2a6564df3a3a4b392f9602a44723e01d0036f99c95455e1",
+            "reviewed_at": "2026-09-15T02:49:36Z",
+            "verification": "local_document_review",
+            "scope": "Relevant definition, variation, growth-report and case-index passages; not a full editorial audit.",
+            "locator_method": "One-based document.xml body descendant paragraph order, including table cells and empty paragraphs; rendered PDF page numbers are this local render only.",
+            "teacher_approved": false,
+            "older_research_document_reviewed": false
+          }
+        ],
+        "next_action": "Review the source-grounded observation guide and the authorial-scope distinction; student coding remains disabled.",
+        "source_of_priority": "teacher_instruction",
+        "source_documents_verified": true,
+        "source_verification_scope": "attached_book_relevant_passages_only_not_live_school_or_older_research_documents",
+        "codebook": {
+          "version": "answerable-research/2026-09-14-draft1",
+          "status": "source_grounded_draft_awaiting_teacher_review",
+          "source": {
+            "source_reference": "book:full-revised-decision-draft:42d7040cb7e3",
+            "title": "Answerable Teaching \u2014 Full Revised Decision Draft",
+            "sha256": "42d7040cb7e309b5c2a6564df3a3a4b392f9602a44723e01d0036f99c95455e1",
+            "reviewed_at": "2026-09-15T02:49:36Z",
+            "verification": "local_document_review",
+            "scope": "Relevant definition, variation, growth-report and case-index passages; not a full editorial audit.",
+            "locator_method": "One-based document.xml body descendant paragraph order, including table cells and empty paragraphs; rendered PDF page numbers are this local render only.",
+            "teacher_approved": false,
+            "older_research_document_reviewed": false
+          },
+          "criteria_origin": "assistant_operational_proposals_grounded_in_book_not_a_published_rubric",
+          "numeric_scale": null,
+          "coding_enabled": false,
+          "definitions": {
+            "conceptual_understanding": {
+              "definition": "The learner can discern and reason with a concept's critical aspects and relationships, rather than only recognize its words or representations, and can use that understanding in explanations, contrasts and changed cases.",
+              "definition_kind": "synthesis_of_book_passages_not_a_single_explicit_definition",
+              "source_locators": [
+                "P573-P585: The problem biology poses; Variation Theory; What-if questions",
+                "P593: thinking versus question wording",
+                "P605: Critical aspects",
+                "P640-P647: Feedback; Growth made visible; Lingering"
+              ],
+              "indicators": [
+                [
+                  "CU1",
+                  "Discerns the relevant critical aspect and distinguishes it from a surface feature.",
+                  "P575-P582; P605"
+                ],
+                [
+                  "CU2",
+                  "Explains a relationship or system dynamic in the learner's own reasoning, with disciplinary evidence considered separately.",
+                  "P574-P575; P585-P586"
+                ],
+                [
+                  "CU3",
+                  "Uses a distinction to interpret a contrast or new case and notices where a prior generalization fails.",
+                  "P580-P585; P593"
+                ],
+                [
+                  "CU4",
+                  "Predicts consequences of a changed condition and gives reasons, including limitations or alternative consequences when visible.",
+                  "P585-P586"
+                ],
+                [
+                  "CU5",
+                  "Revises an identifiable conception across comparable work, explaining what changed and why when that evidence is available.",
+                  "P640-P647"
+                ]
+              ],
+              "counterexamples": [
+                "A copied definition or diagram label without visible reasoning.",
+                "Longer wording, more filled boxes or higher completion credit alone.",
+                "A corrected claim with no evidence of the learner's reasoning: correctness may be observed, but conceptual growth remains uncertain."
+              ]
+            },
+            "engaged_agency": {
+              "definition": "The learner brings their own effort to understand and their own purposes or way of thinking to the assigned disciplinary task while remaining within the lesson frame; the thinking may be partial or scientifically mistaken.",
+              "definition_kind": "paraphrase_of_explicit_book_definition",
+              "source_locators": [
+                "Chapter 2 P176; P215-P217: Engaged agency"
+              ],
+              "indicators": [
+                [
+                  "ENG1",
+                  "Offers a self-originated explanation, method, question or representation inside the assigned task; record evidence for origination instead of inferring it from style.",
+                  "P176; P215-P217"
+                ],
+                [
+                  "ENG2",
+                  "Describes a difficulty, tests an idea or requests a meaningful change in representation while pursuing the lesson's object.",
+                  "P217"
+                ]
+              ],
+              "counterexamples": [
+                "Compliance, completion, polished language or correct recall alone.",
+                "Writing I think without an identifiable reasoning move.",
+                "Silence or missing writing does not establish lack of engagement."
+              ]
+            },
+            "epistemic_agency": {
+              "definition": "The learner makes a bid to reshape the problem, the question, what counts as a solution or the kind of knowledge being sought, rather than only reason within the teacher's existing frame.",
+              "definition_kind": "paraphrase_of_explicit_book_definition",
+              "source_locators": [
+                "Chapter 1 P90: bid versus recognition",
+                "Chapter 2 P177; P265-P266: Epistemic agency"
+              ],
+              "indicators": [
+                [
+                  "EPI1",
+                  "Reframes what is being asked or challenges what counts as a relevant solution or account; document the original and proposed frames.",
+                  "P177; P265-P266"
+                ],
+                [
+                  "EPI2",
+                  "Proposes an alternative question or counterclaim that changes the knowledge task, not merely its answer.",
+                  "P177; P266"
+                ]
+              ],
+              "counterexamples": [
+                "A partial or incorrect answer by itself.",
+                "A strong evidence-based answer or an alternative conclusion within the unchanged task.",
+                "Performing an assigned critique step without a further identifiable reframing move."
+              ]
+            },
+            "authorial_agency": {
+              "definition": "The learner authors purposes and a direction of study of their own, deciding what is worth pursuing and how to pursue it rather than merely choosing among teacher-created options.",
+              "definition_kind": "shared_core_of_book_definitions_boundary_pending_review",
+              "source_locators": [
+                "Chapter 2 P179; P274-P278: Authorial agency",
+                "Chapter 8 P850-P855: Authorial agency and intellectual authorship"
+              ],
+              "indicators": [
+                [
+                  "AUT1",
+                  "Articulates a learner-originated purpose and direction of study beyond selecting an assigned option; record a candidate bid, not a settled trait.",
+                  "P274-P275"
+                ],
+                [
+                  "AUT2",
+                  "Documents decisions about inquiry path, methods or standards, with linked follow-through before claiming a sustained self-authored course of study.",
+                  "P276-P278; P850-P851"
+                ]
+              ],
+              "counterexamples": [
+                "Using one's own words or revising an assigned answer alone.",
+                "Choosing a topic from a menu or completing an extra assigned activity.",
+                "An isolated interesting question without evidence of an authored purpose and path."
+              ]
+            }
+          },
+          "open_decisions": [
+            {
+              "id": "authorial_scope",
+              "status": "teacher_review_needed",
+              "question": "Should the research index record emerging self-authored projects within class separately from sustained independent learning paths?",
+              "evidence": [
+                "Chapter 2 P274-P275 permits learner-created curricular purposes inside school.",
+                "Chapter 8 P850-P851 emphasizes an entire self-directed path beyond the provided frame."
+              ],
+              "interim_rule": "Describe candidate bids and sustained-path evidence separately; no automatic equivalence or score."
+            },
+            {
+              "id": "conceptual_indicators",
+              "status": "teacher_review_needed",
+              "question": "Accept or revise CU1-CU5 as an open observation guide, with lesson-specific critical aspects supplied separately.",
+              "evidence": [
+                "P602 mentions four stages without enumerating them in the following passage.",
+                "P605 describes critical aspects; P645 describes longitudinal quoted evidence."
+              ],
+              "interim_rule": "No invented four-stage scale, fixed cutoff or composite growth score."
+            }
+          ],
+          "interpretation_rules": {
+            "unit": "contextual_move_or_episode_not_a_type_of_student",
+            "open_case_index": true,
+            "multiple_codes_allowed_with_separate_evidence": true,
+            "unclassified_description_allowed": true,
+            "context_fields": [
+              "assigned_frame",
+              "student_proposed_frame",
+              "origination_evidence",
+              "object_of_action",
+              "answerability",
+              "capability_evidence",
+              "decision_making",
+              "opportunity_to_express_move",
+              "prompted_or_spontaneous",
+              "teacher_response",
+              "follow_through"
+            ],
+            "bid_is_not_teacher_recognition": true,
+            "intellectual_authorship_is_not_authorial_agency": true,
+            "engagement_phases_not_ranked_or_assigned_from_silence": true,
+            "disciplinary_fit_separate_from_agency": true,
+            "democratic_agency": "Retain in unclassified context if encountered; not added as a fourth tracking target without teacher direction.",
+            "source_locators": [
+              "Chapter 2 P161-P170; P231; P279",
+              "Chapter 8 P855",
+              "Chapter 11 P1032",
+              "Chapter 12 P1071; P1097-P1100"
+            ]
+          },
+          "source_cautions": [
+            "The manuscript is a decision draft with unresolved placeholders and duplicate chapter numbering; use headings and paragraph locators, not guessed chapter numbers.",
+            "The book's style-based copying discussion is not an automated AI-authorship detector; no penalty or provenance claim follows from writing style.",
+            "Book descriptions of grading do not replace the teacher's separately approved completion-credit rules.",
+            "Conceptual-science correctness still needs lesson-specific evidence and teacher review; acknowledging a student's agency is not endorsement of every claim."
+          ]
+        },
+        "dimensions": [
+          {
+            "key": "conceptual_understanding",
+            "label": "Conceptual understanding",
+            "question": "Are students getting better at conceptualizing science concepts?",
+            "priority": "primary",
+            "definition": "The learner can discern and reason with a concept's critical aspects and relationships, rather than only recognize its words or representations, and can use that understanding in explanations, contrasts and changed cases.",
+            "definition_source_reference": "book:full-revised-decision-draft:42d7040cb7e3",
+            "codebook_version": "answerable-research/2026-09-14-draft1",
+            "observable_criteria": [
+              {
+                "id": "CU1",
+                "proposal": "Discerns the relevant critical aspect and distinguishes it from a surface feature.",
+                "source_locator": "P575-P582; P605",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "CU2",
+                "proposal": "Explains a relationship or system dynamic in the learner's own reasoning, with disciplinary evidence considered separately.",
+                "source_locator": "P574-P575; P585-P586",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "CU3",
+                "proposal": "Uses a distinction to interpret a contrast or new case and notices where a prior generalization fails.",
+                "source_locator": "P580-P585; P593",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "CU4",
+                "proposal": "Predicts consequences of a changed condition and gives reasons, including limitations or alternative consequences when visible.",
+                "source_locator": "P585-P586",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "CU5",
+                "proposal": "Revises an identifiable conception across comparable work, explaining what changed and why when that evidence is available.",
+                "source_locator": "P640-P647",
+                "status": "proposed_not_teacher_approved"
+              }
+            ],
+            "examples": [],
+            "counterexamples": [
+              "A copied definition or diagram label without visible reasoning.",
+              "Longer wording, more filled boxes or higher completion credit alone.",
+              "A corrected claim with no evidence of the learner's reasoning: correctness may be observed, but conceptual growth remains uncertain."
+            ],
+            "status": "source_grounded_draft_awaiting_teacher_review"
+          },
+          {
+            "key": "engaged_agency",
+            "label": "Engaged agency",
+            "question": "What evidence of engaged agency appears in students' written work?",
+            "priority": "secondary",
+            "definition": "The learner brings their own effort to understand and their own purposes or way of thinking to the assigned disciplinary task while remaining within the lesson frame; the thinking may be partial or scientifically mistaken.",
+            "definition_source_reference": "book:full-revised-decision-draft:42d7040cb7e3",
+            "codebook_version": "answerable-research/2026-09-14-draft1",
+            "observable_criteria": [
+              {
+                "id": "ENG1",
+                "proposal": "Offers a self-originated explanation, method, question or representation inside the assigned task; record evidence for origination instead of inferring it from style.",
+                "source_locator": "P176; P215-P217",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "ENG2",
+                "proposal": "Describes a difficulty, tests an idea or requests a meaningful change in representation while pursuing the lesson's object.",
+                "source_locator": "P217",
+                "status": "proposed_not_teacher_approved"
+              }
+            ],
+            "examples": [],
+            "counterexamples": [
+              "Compliance, completion, polished language or correct recall alone.",
+              "Writing I think without an identifiable reasoning move.",
+              "Silence or missing writing does not establish lack of engagement."
+            ],
+            "status": "source_grounded_draft_awaiting_teacher_review"
+          },
+          {
+            "key": "epistemic_agency",
+            "label": "Epistemic agency",
+            "question": "What evidence of epistemic agency appears in students' written work?",
+            "priority": "secondary",
+            "definition": "The learner makes a bid to reshape the problem, the question, what counts as a solution or the kind of knowledge being sought, rather than only reason within the teacher's existing frame.",
+            "definition_source_reference": "book:full-revised-decision-draft:42d7040cb7e3",
+            "codebook_version": "answerable-research/2026-09-14-draft1",
+            "observable_criteria": [
+              {
+                "id": "EPI1",
+                "proposal": "Reframes what is being asked or challenges what counts as a relevant solution or account; document the original and proposed frames.",
+                "source_locator": "P177; P265-P266",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "EPI2",
+                "proposal": "Proposes an alternative question or counterclaim that changes the knowledge task, not merely its answer.",
+                "source_locator": "P177; P266",
+                "status": "proposed_not_teacher_approved"
+              }
+            ],
+            "examples": [],
+            "counterexamples": [
+              "A partial or incorrect answer by itself.",
+              "A strong evidence-based answer or an alternative conclusion within the unchanged task.",
+              "Performing an assigned critique step without a further identifiable reframing move."
+            ],
+            "status": "source_grounded_draft_awaiting_teacher_review"
+          },
+          {
+            "key": "authorial_agency",
+            "label": "Authorial agency",
+            "question": "What evidence of authorial agency appears in students' written work?",
+            "priority": "secondary",
+            "definition": "The learner authors purposes and a direction of study of their own, deciding what is worth pursuing and how to pursue it rather than merely choosing among teacher-created options.",
+            "definition_source_reference": "book:full-revised-decision-draft:42d7040cb7e3",
+            "codebook_version": "answerable-research/2026-09-14-draft1",
+            "observable_criteria": [
+              {
+                "id": "AUT1",
+                "proposal": "Articulates a learner-originated purpose and direction of study beyond selecting an assigned option; record a candidate bid, not a settled trait.",
+                "source_locator": "P274-P275",
+                "status": "proposed_not_teacher_approved"
+              },
+              {
+                "id": "AUT2",
+                "proposal": "Documents decisions about inquiry path, methods or standards, with linked follow-through before claiming a sustained self-authored course of study.",
+                "source_locator": "P276-P278; P850-P851",
+                "status": "proposed_not_teacher_approved"
+              }
+            ],
+            "examples": [],
+            "counterexamples": [
+              "Using one's own words or revising an assigned answer alone.",
+              "Choosing a topic from a menu or completing an extra assigned activity.",
+              "An isolated interesting question without evidence of an authored purpose and path."
+            ],
+            "status": "source_grounded_draft_awaiting_teacher_review"
+          }
+        ],
+        "finding_contract": {
+          "required_fields": [
+            "finding_id",
+            "learner_pseudonym",
+            "course_reference",
+            "concept_reference",
+            "dimension",
+            "codebook_version",
+            "criterion_reference",
+            "evidence_references",
+            "interpretation",
+            "uncertainty",
+            "alternative_explanations",
+            "teacher_review_state",
+            "review_reference",
+            "supersedes_finding_id"
+          ],
+          "evidence_fields": [
+            "evidence_id",
+            "exact_student_excerpt",
+            "source_document_reference",
+            "source_revision",
+            "slide_or_response_locator",
+            "assignment_reference",
+            "prompt_reference",
+            "response_stage",
+            "writing_date",
+            "writing_date_evidence",
+            "observed_at",
+            "instructional_timing",
+            "instructional_timing_evidence",
+            "known_support_or_ai_assistance",
+            "source_match_review_reference"
+          ],
+          "nullable_when_unknown": [
+            "writing_date",
+            "writing_date_evidence",
+            "instructional_timing_evidence",
+            "known_support_or_ai_assistance",
+            "review_reference",
+            "supersedes_finding_id"
+          ],
+          "unknown_timing_label": "unknown",
+          "review_states": [
+            "provisional",
+            "accepted",
+            "rejected",
+            "needs_more_evidence"
+          ],
+          "history_policy": "append_new_version_preserve_prior_evidence_and_reviews",
+          "excerpt_policy": "Exact source-matched words only; no invented or silently rewritten quotations."
+        },
+        "comparison_contract": {
+          "modes": [
+            {
+              "key": "within_lesson_revision",
+              "label": "First answer to revised answer",
+              "requires": [
+                "same_learner",
+                "same_prompt_and_concept",
+                "distinct_response_evidence",
+                "verified_response_order",
+                "instruction_and_support_context"
+              ]
+            },
+            {
+              "key": "across_lessons",
+              "label": "Conceptual development across lessons",
+              "requires": [
+                "same_learner",
+                "distinct_assignments",
+                "verified_writing_order",
+                "shared_concept_and_criterion",
+                "reviewed_task_comparability",
+                "instruction_and_support_context"
+              ]
+            }
+          ],
+          "required_fields": [
+            "earlier_evidence_reference",
+            "later_evidence_reference",
+            "comparison_mode",
+            "comparability_review_reference",
+            "codebook_version",
+            "criterion_reference",
+            "interpretation",
+            "uncertainty",
+            "teacher_review_state"
+          ],
+          "missing_earlier_evidence": "insufficient_evidence_of_growth",
+          "unknown_writing_order": "change_direction_unverified",
+          "noncomparable_tasks": "not_comparable",
+          "observed_at_is_not_writing_date": true,
+          "single_excerpt_can_support": "provisional_current_work_observation_only",
+          "aggregate_requirements": [
+            "eligible_comparable_case_count",
+            "missing_or_excluded_case_count",
+            "codebook_version",
+            "review_state",
+            "comparison_mode"
+          ]
+        },
+        "safeguards": {
+          "agency_is_separate_from_conceptual_understanding": true,
+          "completion_is_not_conceptual_growth": true,
+          "longer_answers_are_not_automatically_better": true,
+          "agency_evidence_is_not_a_stable_learner_trait": true,
+          "later_filled_boxes_do_not_prove_preinstruction_thinking": true,
+          "no_automatic_causal_or_ai_authorship_claims": true,
+          "completion_grades_and_grade_history_unchanged": true,
+          "requires_separate_research_authorization": true,
+          "private_excerpts_never_in_public_html_or_repository": true
+        },
+        "coding_supported": false,
+        "collection_supported": false,
+        "external_writes": 0
+      }
+    }
+  },
+  "actions": {
+    "save_agenda": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    },
+    "send_parent_email": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    },
+    "file_feedback": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    },
+    "record_roster_grade": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    },
+    "post_ic_grade": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    },
+    "print_feedback": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    },
+    "collect_research": {
+      "supported": false,
+      "reason": "executor_not_connected_and_verified"
+    }
+  },
+  "external_writes": 0
+}
