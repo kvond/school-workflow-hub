@@ -103,3 +103,22 @@ class DatedTests(unittest.TestCase):
             result=request('/api/agenda-day',QUERY_STRING='date=2032-01-05')
             self.assertNotIn(b'PRIVATE',result['body'])
             self.assertEqual(result['headers']['Cache-Control'],'no-store')
+
+class TurnInMapTests(unittest.TestCase):
+    run_day = DatedTests.run_day
+    def test_matching_map_supplies_folder_without_claiming_submission_evidence(self):
+        meta,mapping,data=fixtures()
+        source=sheet('🗂 TurnIn Map',{1:['assignment key','target folder id','course','week'],2:['Fictional assignment','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example']})
+        meta['sheets'].append({'properties':source['properties']});data['sheets'].append(source)
+        result=self.run_day(data=(meta,mapping,data))
+        self.assertEqual(result['lessons'][0]['assignment_label'],'Fictional assignment')
+        self.assertEqual(result['lessons'][0]['turnin_folder'],'https://drive.google.com/drive/folders/FICTIONAL_FOLDER_123456789')
+        self.assertIsNone(result['lessons'][1]['turnin_folder'])
+        self.assertNotIn('submitted',result)
+
+    def test_duplicate_or_unsafe_folder_is_not_offered(self):
+        for rows in ({2:['Lesson','invalid/path','🌿 Biology','Wk example']},{2:['Lesson','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example'],3:['Other lesson','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example']}):
+            meta,mapping,data=fixtures()
+            source=sheet('🗂 TurnIn Map',{1:['assignment key','target folder id','course','week'],**rows})
+            meta['sheets'].append({'properties':source['properties']});data['sheets'].append(source)
+            self.assertIsNone(self.run_day(data=(meta,mapping,data))['lessons'][0]['turnin_folder'])

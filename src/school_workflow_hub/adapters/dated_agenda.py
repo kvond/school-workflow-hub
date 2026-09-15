@@ -83,7 +83,12 @@ def read_day(assertion, selected, config=None):
         raise ConnectionError('agenda_layout_changed') from None
     week = value(weeks, wr, 3)
     current = value(weeks, wr, 4) == value(weeks, 5, 7)
-    data = reader.read(source, tuple("'%s'!A3:R%d" % (title, row) for _, title in COURSES))
+    ranges = tuple("'%s'!A3:R%d" % (title, row) for _, title in COURSES)
+    if '🗂 TurnIn Map' in titles:
+        ranges += ("'🗂 TurnIn Map'!A1:D160",)
+    data = reader.read(source, ranges)
+    turnins = grid(data, '🗂 TurnIn Map') if '🗂 TurnIn Map' in titles else {}
+    turnin_headers = [value(turnins,1,c) for c in (1,2,3,4)] == ['assignment key','target folder id','course','week']
     lessons = []
     weekday = ('Mon','Tue','Wed','Thu','Fri','Sat','Sun')[day.weekday()]
     for key, title in COURSES:
@@ -127,8 +132,15 @@ def read_day(assertion, selected, config=None):
             target = link(cell.get('hyperlink','')) or link(value(cells,row,c))
             if target:
                 resources.append({'label':label,'url':target})
+        targets = [r for r in range(2,161) if turnin_headers and value(turnins,r,3) == title and value(turnins,r,4) == week]
+        turnin_folder, assignment_label = None, None
+        if len(targets) == 1:
+            folder_id = value(turnins,targets[0],2)
+            if re.fullmatch(r'[A-Za-z0-9_-]{20,128}',folder_id):
+                turnin_folder = 'https://drive.google.com/drive/folders/' + folder_id
+                assignment_label = value(turnins,targets[0],1)
         lessons.append({'class_key':key,'title':value(cells,row,3),'plan':plan,'notes':notes,
-            'teacher_slides':teacher,'links':resources,'origin':origin,'dashboard_text':extra,
+            'teacher_slides':teacher,'turnin_folder':turnin_folder,'assignment_label':assignment_label,'links':resources,'origin':origin,'dashboard_text':extra,
             'weekly_plan':value(cells,row,col) if col else '',
             'todo':value(cells,row,10),'prep':value(cells,row,11),
             'source_reference':f'{title}!A{row}:R{row}'})

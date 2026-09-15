@@ -64,7 +64,7 @@ const loadButton=button('Load this date from Agenda',()=>{liveRequested=true;loa
 $('lesson-load-control').append(loadButton);$('classes').before(feedStatus);
 async function loadDay(){
  const requested=selected,sequence=++loadSequence;loadButton.disabled=true;
- feedStatus.hidden=false;feedStatus.textContent='Loading lessons…';
+ feedStatus.hidden=false;feedStatus.textContent='Loading lessons…';document.dispatchEvent(new CustomEvent('agenda-day-loading',{detail:{date:requested}}));
  try{
   const r=await fetch('./api/agenda-day?date='+encodeURIComponent(requested),{cache:'no-store',credentials:'same-origin',redirect:'error'});
   if(!r.ok)throw Error();const data=await r.json();
@@ -72,19 +72,22 @@ async function loadDay(){
   if(new Set(data.lessons.map(l=>l.class_key)).size!==3)throw Error();
   for(const l of data.lessons){
    if(!['biology','forensics','anatomy'].includes(l.class_key)||!['title','plan','notes','origin','weekly_plan','todo','prep','source_reference'].every(k=>typeof l[k]==='string'&&l[k].length<=20000)||!Array.isArray(l.links))throw Error();
+   if(l.turnin_folder!=null&&!safeLink(l.turnin_folder))throw Error();
+   if(l.assignment_label!=null&&typeof l.assignment_label!=='string')throw Error();
    if(l.teacher_slides!==null&&(!safeLink(l.teacher_slides)||!/^https:\/\/docs\.google\.com\/presentation\/d\/[A-Za-z0-9_-]+\/edit(?:[?#]|$)/.test(l.teacher_slides)))throw Error();
    for(const link of l.links)if(typeof link.label!=='string'||!safeLink(link.url))throw Error();
   }
   if(sequence!==loadSequence||selected!==requested)return;
-  liveDays.set(requested,data);
+  liveDays.set(requested,data);document.dispatchEvent(new CustomEvent('agenda-day-loaded',{detail:data}));
   for(const c of classes){const d=draft(c),l=data.lessons.find(l=>c.key.endsWith(':'+l.class_key));if(!d.dirty){d.title=l.title;d.plan=l.plan;d.notes=l.notes;d.links=l.links.map(x=>({...x}));}}
   render();document.querySelector('.preview-pill').textContent='Agenda read-only · other workflows are previews';
   document.dispatchEvent(new CustomEvent('agenda-source-loaded',{detail:{date:data.date,checkedAt:data.checked_at,classes:data.lessons.length}}));
   if(!dirty)$('draft-status').hidden=true;
   feedStatus.textContent='Agenda read '+new Date(data.checked_at).toLocaleString()+' · '+data.closures;
- }catch{if(sequence===loadSequence){feedStatus.textContent=liveDays.has(requested)?'Refresh failed. Showing the earlier source read; it may be out of date. Drafts are preserved.':'This date could not be read. Sign in and check Agenda access. The date may be outside the mapped school weeks. Drafts are preserved.';}}
+ }catch{if(sequence===loadSequence){document.dispatchEvent(new CustomEvent('agenda-day-failed'));feedStatus.textContent=liveDays.has(requested)?'Refresh failed. Showing the earlier source read; it may be out of date. Drafts are preserved.':'This date could not be read. Sign in and check Agenda access. The date may be outside the mapped school weeks. Drafts are preserved.';}}
  finally{if(sequence===loadSequence)loadButton.disabled=false;}
 }
+document.addEventListener('agenda-request-day',e=>{const value=e.detail?.date;if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(dayDate(value).getTime())||dateKey(dayDate(value))!==value)return;selected=value;render();liveRequested=true;loadDay();});
 $('prev').addEventListener('click',()=>{const d=dayDate(selected);d.setDate(d.getDate()-7);selectDate(dateKey(d))});$('next').addEventListener('click',()=>{const d=dayDate(selected);d.setDate(d.getDate()+7);selectDate(dateKey(d))});$('date').addEventListener('change',e=>selectDate(e.target.value));$('close-detail').addEventListener('click',()=>$('detail').close());
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue='';}});
 render();
