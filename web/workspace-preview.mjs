@@ -1,7 +1,7 @@
 import {reviewReasons,deliveryText} from './review-view.mjs';
 import {coverageText,completionLines} from './completion-view.mjs';
 import {validatePreviewWorkspace,scopedCases} from './workspace-contract.mjs';
-const titles={agenda:'Dated lesson feed',feedback:'Submission & feedback feed',summary:'Class evidence feed'};
+const titles={feedback:'Submission & feedback feed',summary:'Class evidence feed'};
 const mounts={};let snapshot=null,choice='',state='',scenario='complete',requestSequence=0;
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function button(text,fn){const n=el('button',text);n.type='button';n.addEventListener('click',fn);return n;}
@@ -17,11 +17,7 @@ function render(){for(const [page,mount] of Object.entries(mounts)){
  mount.open=true;
  mount.append(button('Close synthetic demo',()=>{requestSequence++;snapshot=null;choice='';state='Demo closed. Any staged unsynced drafts are preserved.';render()}));
  const l=el('label','Preview lesson','field-label'),select=el('select');select.setAttribute('aria-label',page+' preview lesson');select.append(new Option('All preview lessons',''));for(const lesson of lessons())select.append(new Option(lesson.title+' · '+lesson.teaching_date,lesson.lesson_key));select.value=choice;select.addEventListener('change',()=>{choice=select.value;render()});l.append(select);mount.append(l);
- if(page==='agenda'){
-  const visible=selection()?[selection()]:lessons();
-  for(const lesson of visible){const card=el('article',undefined,'workspace-record');card.append(el('h3',lesson.title),el('p',lesson.teaching_date+' · '+lesson.class_key),el('p',lesson.notes),el('p','Source revision: '+lesson.source_revision+' · observed '+lesson.observed_at,'hint'));
-   const slides=el('button',lesson.open_slides?'Teacher Slides reference supplied · preview only':'No Slides URL supplied');slides.disabled=true;card.append(slides,button('Use fictional notes as an unsynced draft',()=>{document.dispatchEvent(new CustomEvent('workspace-preview-draft',{detail:lesson}));}));mount.append(card);}
- }else{
+ {
   const selected=selection(),rows=scopedCases(snapshot,selected?.class_key,selected?.assignment_key);for(const feed of snapshot.pages.submissions_feedback.classes.filter(f=>!selected||f.class_key===selected.class_key))mount.append(el('p',coverageText(feed),'readiness'));
   if(!rows.length){mount.append(el('p','No cases supplied for this scope. Missing data is not zero submissions.','document-empty'));continue;}
   if(page==='summary'){
@@ -40,4 +36,4 @@ function render(){for(const [page,mount] of Object.entries(mounts)){
 }}
 async function load(){const sequence=++requestSequence;state='Loading fictional workspace…';render();try{const r=await fetch(scenario==='partial'?'./workspace.partial.preview.json':'./workspace.preview.json',{cache:'no-store'});if(!r.ok)throw Error('Unavailable');const next=validatePreviewWorkspace(await r.json());if(sequence!==requestSequence)return;snapshot=next;if(choice&&!lessons().some(l=>l.lesson_key===choice))choice='';state='Synthetic snapshot assembled '+snapshot.generated_at+'. No live operations.';}catch{if(sequence!==requestSequence)return;state=snapshot?'Refresh failed. Retaining last valid synthetic snapshot from '+snapshot.generated_at+'.':'Workspace preview unavailable. No records or actions loaded.';}render();}
 // Add only in-scope mounts; do not inspect or render research payloads.
-for(const page of Object.keys(titles)){const target=document.getElementById('page-'+page);const mount=el('details',undefined,'surface workspace-demo');const anchor=page==='agenda'?target.querySelector('#classes'):target.querySelector('.section-grid');target.insertBefore(mount,anchor);mounts[page]=mount;}render();
+for(const page of Object.keys(titles)){const target=document.getElementById('page-'+page);const mount=el('details',undefined,'surface workspace-demo');const anchor=target.querySelector('.section-grid');target.insertBefore(mount,anchor);mounts[page]=mount;}render();

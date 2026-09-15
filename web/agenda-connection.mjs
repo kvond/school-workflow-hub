@@ -1,10 +1,20 @@
 const panel=document.querySelector('.connection');
 const check=document.createElement('button');check.type='button';check.textContent='Check Agenda access';
 const status=document.createElement('p');status.className='hint';status.setAttribute('role','status');
-status.textContent='Connection check only; lesson data is not loaded.';
+let lessonRead=null,accessMessage='',checking=false;
 panel.append(check,status);
+function render(){
+ panel.querySelector('strong').textContent=lessonRead?'Agenda lessons loaded':'Agenda ready to load';
+ panel.querySelector('span').textContent='Saving and Run remain disabled.';
+ const loaded=lessonRead?`Loaded ${lessonRead.classes} classes for ${lessonRead.date} · ${new Date(lessonRead.checkedAt).toLocaleString()}.`:'';
+ status.textContent=[loaded,checking?'Checking Agenda access…':accessMessage].filter(Boolean).join(' ');
+ status.hidden=!status.textContent;
+}
+document.addEventListener('agenda-source-loaded',event=>{
+ lessonRead=event.detail;accessMessage='';render();
+});
 check.addEventListener('click',async()=>{
- check.disabled=true;status.textContent='Checking read-only Agenda access…';
+ check.disabled=true;checking=true;render();
  try{
   const response=await fetch('./api/agenda-connection',{cache:'no-store',credentials:'same-origin',redirect:'error'});
   const result=await response.json();
@@ -13,12 +23,10 @@ check.addEventListener('click',async()=>{
    throw new Error(messages[result.error]||'Connection check unavailable.');
   }
   if(result.schema_version!=='hub-agenda-connection/v1'||result.status!=='metadata_read_verified'||!Number.isInteger(result.tab_count)||result.tab_count<0||!Number.isFinite(Date.parse(result.checked_at))||result.cell_data_loaded!==false||result.save_enabled!==false||result.run_enabled!==false||result.external_writes!==0)throw new Error('Unexpected connection response.');
-  panel.querySelector('strong').textContent='Agenda metadata access verified';
-  panel.querySelector('span').textContent='Use “Load this date from Agenda” for lessons. Saving and Run remain disabled.';
-  status.textContent=`Read-only check: ${result.tab_count} tabs · ${new Date(result.checked_at).toLocaleString()}. No lesson cells were loaded.`;
+  accessMessage=`Access check passed · ${result.tab_count} tabs · ${new Date(result.checked_at).toLocaleString()}.`;
+  if(!lessonRead)accessMessage+=' Choose “Load this date from Agenda” to display lessons.';
  }catch(error){
-  panel.querySelector('strong').textContent='Agenda access not verified';
-  panel.querySelector('span').textContent='Run and saving are unavailable.';
-  status.textContent=error.message==='Failed to fetch'?'Connection check unavailable.':error.message;
- }finally{check.disabled=false;}
+  accessMessage='Access check failed. '+(error.message==='Failed to fetch'?'Connection check unavailable.':error.message);
+ }finally{check.disabled=false;checking=false;render();}
 });
+render();

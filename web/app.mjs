@@ -1,4 +1,4 @@
-import {describeDraft,stagePreviewNotes} from './draft-review.mjs';
+import {describeDraft} from './draft-review.mjs';
 import {validateSnapshot,displayStatus,KINDS,safeLink,manualInstructions} from './contract.mjs';
 const $=id=>document.getElementById(id);
 const classes=[{key:'class:synthetic:biology',name:'Biology',color:'#247b88',title:'',notes:''},{key:'class:synthetic:forensics',name:'Forensics',color:'#a26336',title:'',notes:''},{key:'class:synthetic:anatomy',name:'Anatomy',color:'#67539c',title:'',notes:''}];
@@ -79,8 +79,7 @@ async function loadDay(){
   liveDays.set(requested,data);
   for(const c of classes){const d=draft(c),l=data.lessons.find(l=>c.key.endsWith(':'+l.class_key));if(!d.dirty){d.title=l.title;d.plan=l.plan;d.notes=l.notes;d.links=l.links.map(x=>({...x}));}}
   render();document.querySelector('.preview-pill').textContent='Agenda read-only · other workflows are previews';
-  document.querySelector('.connection strong').textContent='Agenda lesson source read';
-  document.querySelector('.connection span').textContent='Saving and Run remain disabled.';
+  document.dispatchEvent(new CustomEvent('agenda-source-loaded',{detail:{date:data.date,checkedAt:data.checked_at,classes:data.lessons.length}}));
   if(!dirty)$('draft-status').textContent='Source loaded. Changes remain unsynced in this tab and are lost on reload. Save and Run are disabled.';
   feedStatus.textContent='Agenda read '+new Date(data.checked_at).toLocaleString()+' · '+data.closures+' · Edits stay in this tab; saving is unavailable.';
  }catch{if(sequence===loadSequence){feedStatus.textContent=liveDays.has(requested)?'Refresh failed. Showing the earlier source read; it may be out of date. Drafts are preserved.':'This date could not be read. Sign in and check Agenda access. The date may be outside the mapped school weeks. Drafts are preserved.';}}
@@ -102,14 +101,3 @@ if(document.modelContext?.registerTool){
  },{signal:lifecycle.signal})).catch(()=>{});
  window.addEventListener('pagehide',()=>lifecycle.abort(),{once:true});
 }
-
-// Explicit fictional-draft staging; never overwrite an existing unsynced draft.
-document.addEventListener('workspace-preview-draft',event=>{
- const lesson=event.detail,c=classes.find(c=>c.key===lesson.class_key);
- if(!c||!lesson.lesson_key?.startsWith('lesson:synthetic:'))return;
- selectDate(lesson.teaching_date);const d=draft(c);
- const result=stagePreviewNotes(d,lesson);dirty=true;render();
- if(result==='review_needed'){reviewDraft(c,d);return;}
- $('draft-status').textContent='Fictional source notes staged as unsynced edits. Nothing was saved to Agenda. Reloading loses this draft.';
- location.hash='agenda';
-});
