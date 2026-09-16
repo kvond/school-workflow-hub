@@ -1,5 +1,6 @@
 const panel=document.querySelector('.connection');
 const rosterStatus=document.querySelector('#roster-sync-status');
+const rosterOperation=document.querySelector('#roster-sync-operation');
 const check=document.createElement('button');check.type='button';check.textContent='Check Agenda access';
 const status=document.createElement('p');status.className='hint';status.setAttribute('role','status');
 let lessonRead=null,accessMessage='',checking=false;
@@ -36,9 +37,11 @@ async function loadRosterStatus(){
   const response=await fetch('./api/roster-sync',{cache:'no-store',credentials:'same-origin',redirect:'error'});
   const result=await response.json();
   if(!response.ok||result.schema_version!=='hub-roster-sync/v1'||typeof result.status!=='string'||result.run_enabled!==false||result.external_writes!==0)throw Error();
-  rosterStatus.textContent=`Roster sync: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Run remains disabled.`;
+  const message=`Roster sync: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Run remains disabled.`;
+  rosterStatus.textContent=message;rosterOperation.textContent=message;
  }catch{
-  rosterStatus.textContent='Roster sync: status unavailable. It has not run from this dashboard.';
+  const message='Roster sync: status unavailable. It has not run from this dashboard.';
+  rosterStatus.textContent=message;rosterOperation.textContent=message;
  }
 }
 loadRosterStatus();
