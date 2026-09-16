@@ -48,3 +48,11 @@ revision. A successful access probe alone never displays a saved confirmation.
 Synthetic mapping regressions cover Wednesday Forensics, Thursday Anatomy,
 nonmeeting days, literal Dashboard overrides, formula protection and revisions
 that change when teacher notes change. Live save/readback remains a separate check.
+
+Run `python3 scripts/cloud_validation.py` for the Python source/write checks and
+`node --test tests/agenda-editor.test.mjs` for the browser-state checks. The latter
+imports the production app with fictional fetch responses and a minimal DOM;
+it verifies stale success/failure responses cannot replace the save revision,
+selected-date changes reset readiness, and typing during a save preserves the
+newer draft. Node is an explicit frontend check so the existing Python-only cloud
+validation retains its standard-library runtime contract.
