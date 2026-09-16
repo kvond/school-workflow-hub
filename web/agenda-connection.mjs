@@ -38,7 +38,7 @@ async function loadRosterStatus(){
   const response=await fetch('./api/roster-sync',{cache:'no-store',credentials:'same-origin',redirect:'error'});
   const result=await response.json();
   if(!response.ok||result.schema_version!=='hub-roster-sync/v1'||typeof result.status!=='string'||result.run_enabled!==false||result.external_writes!==0)throw Error();
-  const message=`Roster sync: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Run remains disabled.`;
+  const message=`Roster sync: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Cloud execution needs the IC reader and workbook writer. A manual browser roster update does not connect this button.`;
   rosterStatus.textContent=message;
  }catch{
   const message='Roster sync: status unavailable. It has not run from this dashboard.';
