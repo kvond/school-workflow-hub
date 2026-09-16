@@ -27,18 +27,18 @@ async function copyPrompt(kind){const titles={completion:'Completion check',feed
 
 const classes={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy'};
 let scope={date:$('date').value,classKey:'biology',data:null,loading:false,error:''};
-let recordState={status:'empty'},sectionId='all',sectionSelect;
+let recordState={status:'empty'},sectionId='matched',sectionSelect;
 const views=[];
 function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='all';renderScope();loadResults()});classLabel.append(select);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';renderScope();loadResults()});classLabel.append(select);
  const dateLabel=el('label','Lesson date'),date=el('input');date.type='date';date.value=scope.date;date.setAttribute('aria-label',page+' date');dateLabel.append(date);
  date.addEventListener('change',()=>requestDay(date.value));
  const load=btn('Load lesson',()=>requestDay(date.value));bar.append(classLabel);
  if(page==='Feedback'){
-  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','All sections'));sectionSelect.firstChild.value='all';
+  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','Matched sections'));sectionSelect.firstChild.value='matched';
   sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);bar.append(sectionLabel);
  }
  bar.append(dateLabel,load);
@@ -107,7 +107,7 @@ const summary=$('page-summary');compactHeading(summary,'Teacher summary');summar
 const summaryActions=el('div',undefined,'action-row summary-actions');promptAction(summaryActions,'Copy class-summary instructions','summary');summary.append(summaryActions);
 const summaryResults=el('div',undefined,'section-grid');summaryResults.setAttribute('aria-live','polite');summary.append(summaryResults);
 function renderPrivateRecords(){
- if(sectionSelect){const options=recordState.status==='loaded'?sectionOptions(recordState.data,scope.classKey):[];sectionSelect.replaceChildren();const all=el('option','All sections');all.value='all';sectionSelect.append(all);for(const [id,name]of options){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&sectionId!=='all'&&!options.some(([id])=>id===sectionId))sectionId='all';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
+ if(sectionSelect){const options=recordState.status==='loaded'?sectionOptions(recordState.data,scope.classKey):[];sectionSelect.replaceChildren();for(const [id,name]of [['matched','Matched sections'],['all','All records'],...options]){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId))sectionId='matched';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
  renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId});renderSummaries(summaryResults,recordState);
 }
 const retrieveRecords=createRecordsLoader({onState:state=>{recordState=state;renderPrivateRecords()}});

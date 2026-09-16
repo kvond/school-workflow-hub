@@ -26,6 +26,16 @@ test('filters course then exact section without conflating periods',()=>{
  assert.equal(filterRecords(data,'forensics').length,2);
  assert.equal(filterRecords(data,'anatomy').length,0);
 });
+test('unmatched work has a counted option and stays outside default class view',()=>{
+ const data=fixture();data.submissions.push({record_id:'unmatched',class_key:'biology',section_id:'',section_name:'',student_id:'',display_name:'Unmatched F.',assignment_title:'Fictional unmatched',status:'identity_unverified',answers:[],included_in_counts:false});
+ assert.deepEqual(sectionOptions(data,'biology'),[['c','Period C'],['','Unmatched (1)']]);
+ assert.deepEqual(filterRecords(data,'biology').map(r=>r.record_id),['three']);
+ assert.deepEqual(filterRecords(data,'biology','').map(r=>r.record_id),['unmatched']);
+ assert.equal(filterRecords(data,'biology','all').length,2);
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'biology'});
+ assert.match(target.allText,/1 record needs a section match/);assert.doesNotMatch(target.allText,/Unmatched F/);
+ renderRecords(target,{status:'loaded',data},{classKey:'biology',sectionId:''});assert.match(target.allText,/Unmatched F/);assert.match(target.allText,/Excluded from class counts/);
+});
 test('duplicate summary scope and unsupported provenance fail',()=>{
  const data=fixture();data.summaries.push({...data.summaries[0]});assert.throws(()=>validateRecords(data));
  const synthetic=fixture();synthetic.provenance='synthetic';assert.throws(()=>validateRecords(synthetic));

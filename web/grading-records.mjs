@@ -7,11 +7,12 @@ export function validateRecords(data){
  return data;
 }
 export function sectionOptions(data,classKey){
- const sections=new Map();for(const row of data.submissions)if(row.class_key===classKey)sections.set(row.section_id||'',row.section_name||'Section needs matching');
- return [...sections].sort((a,b)=>a[1].localeCompare(b[1]));
+ const sections=new Map();let unmatched=0;
+ for(const row of data.submissions)if(row.class_key===classKey){if(row.section_id)sections.set(row.section_id,row.section_name||row.section_id);else unmatched++;}
+ const options=[...sections].sort((a,b)=>a[1].localeCompare(b[1]));if(unmatched)options.push(['',`Unmatched (${unmatched})`]);return options;
 }
-export function filterRecords(data,classKey,sectionId='all'){
- return data.submissions.filter(row=>row.class_key===classKey&&(sectionId==='all'||row.section_id===sectionId)).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||'')||a.assignment_title.localeCompare(b.assignment_title));
+export function filterRecords(data,classKey,sectionId='matched'){
+ return data.submissions.filter(row=>row.class_key===classKey&&(sectionId==='all'||(sectionId==='matched'?Boolean(row.section_id):row.section_id===sectionId))).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||'')||a.assignment_title.localeCompare(b.assignment_title));
 }
 export function createRecordsLoader({fetcher=fetch,onState}){
  let generation=0,controller;
@@ -34,16 +35,20 @@ export function score(row,key){
  if(row.hold_reason||['identity_unverified','superseded'].includes(row.status)||!Number.isFinite(row[key]))return '—';
  return `${Number(row[key].toFixed(2))} / 10`;
 }
-export function renderRecords(root,state,{classKey,sectionId='all'}){
+export function renderRecords(root,state,{classKey,sectionId='matched'}){
  root.replaceChildren();
  if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
  const rows=filterRecords(state.data,classKey,sectionId),included=rows.filter(r=>r.included_in_counts);
  line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with matched submissions · ${included.length} records · checked ${time(state.data.checked_at)}`,'hint');
+ if(sectionId==='matched'){
+  const unmatched=state.data.submissions.filter(r=>r.class_key===classKey&&!r.section_id).length;
+  if(unmatched)line(root,`${unmatched} ${unmatched===1?'record needs':'records need'} a section match. Choose Unmatched in Section to review them.`,'hint');
+ }
  if(!rows.length){line(root,'No submission records for this selection. This does not establish missing work.');return;}
  const table=node(root,'table');table.className='work-table';table.setAttribute('aria-label','Submissions by class and section');const head=node(root,'thead'),hr=node(root,'tr');
  for(const text of ['Student / section','Assignment','Content / notes','Revision','Status / work'])hr.append(node(root,'th',text));head.append(hr);table.append(head);const body=node(root,'tbody');
  for(const row of rows){
-  const tr=node(root,'tr'),student=node(root,'td');student.append(node(root,'strong',row.display_name||'Identity needs matching'));line(student,row.section_name||'Section needs matching','hint');tr.append(student);
+  const tr=node(root,'tr'),student=node(root,'td');student.append(node(root,'strong',row.display_name||'Identity needs matching'));line(student,row.section_name||'Unmatched','hint');tr.append(student);
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));
   const cell=node(root,'td');line(cell,label(row.status));const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
   if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,'Excluded from class counts until identity and current submission are resolved.','hint');

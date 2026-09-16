@@ -1,7 +1,10 @@
 # Private grading records on the existing dashboard
 
 Page 2 reads the private grading workbook across all assignments. Course and
-section selectors filter that list; the lesson date controls only Agenda links
+section selectors filter that list. It opens on Matched sections; Unmatched (N)
+keeps files without a verified section available separately, and All records
+retains the complete view. These display filters do not change records or grades.
+The lesson date controls only Agenda links
 and the optional lesson-folder inventory. Each submission expands to the actual
 written answers, separate conceptual/explanation descriptions, completion status,
 feedback, and recorded IC posting state. Page 3 has exactly one concise teaching
