@@ -1,10 +1,10 @@
 const panel=document.querySelector('.connection');
 const rosterStatus=document.querySelector('#roster-sync-status');
-const rosterOperation=document.querySelector('#roster-sync-operation');
 const check=document.createElement('button');check.type='button';check.textContent='Check Agenda access';
+const runRoster=document.createElement('button');runRoster.type='button';runRoster.textContent='Run roster sync';runRoster.disabled=true;runRoster.title='Needs a verified Infinite Campus reader and roster-workbook writer.';
 const status=document.createElement('p');status.className='hint';status.setAttribute('role','status');
 let lessonRead=null,accessMessage='',checking=false;
-panel.append(check,status);
+panel.append(check,runRoster,status);
 function render(){
  panel.querySelector('strong').textContent=lessonRead?'Agenda lessons loaded':'Agenda ready to load';
  panel.querySelector('span').textContent='Saving and Run remain disabled.';
@@ -38,10 +38,10 @@ async function loadRosterStatus(){
   const result=await response.json();
   if(!response.ok||result.schema_version!=='hub-roster-sync/v1'||typeof result.status!=='string'||result.run_enabled!==false||result.external_writes!==0)throw Error();
   const message=`Roster sync: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Run remains disabled.`;
-  rosterStatus.textContent=message;rosterOperation.textContent=message;
+  rosterStatus.textContent=message;
  }catch{
   const message='Roster sync: status unavailable. It has not run from this dashboard.';
-  rosterStatus.textContent=message;rosterOperation.textContent=message;
+  rosterStatus.textContent=message;
  }
 }
 loadRosterStatus();
