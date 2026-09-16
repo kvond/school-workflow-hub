@@ -17,6 +17,7 @@ ASSETS = {
         "app.mjs", "pages.mjs", "contract.mjs", "workspace-contract.mjs",
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
         "review-view.mjs", "agenda-connection.mjs", "teaching-results.mjs", "learning-progress.mjs",
+        "browser-runs.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -45,6 +46,32 @@ def application(environ, start_response, *, teaching_provider=None):
             ("Content-Type", content_type), ("Content-Length", str(len(body)))
         ] + list(extra))
         return [b"" if method == "HEAD" else body]
+
+    if path == "/api/browser-runs":
+        from .adapters.browser_runs import handle_request, WorkerForbidden
+        from .adapters.hosted_agenda import ConnectionError
+        from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
+        if method not in ("GET", "POST"):
+            return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+        try:
+            body, headers = handle_request(environ, os.environ)
+            return respond("200 OK", body, extra=headers)
+        except ConnectionError:
+            return respond("403 Forbidden", {"error": "sign_in_required"})
+        except WorkerForbidden as error:
+            return respond("403 Forbidden", {"error": str(error)})
+        except Busy:
+            return respond("409 Conflict", {"error": "browser_worker_busy"})
+        except LeaseLost:
+            return respond("409 Conflict", {"error": "browser_claim_expired_or_conflict"})
+        except Conflict:
+            return respond("409 Conflict", {"error": "browser_run_conflict"})
+        except (ValueError, KeyError, TypeError, OverflowError):
+            return respond("400 Bad Request", {"error": "invalid_browser_request"})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "browser_state_unavailable"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "browser_state_unavailable"})
 
     if path == "/api/storage-check":
         from .adapters.hosted_agenda import _identity_configuration, authorize, ConnectionError

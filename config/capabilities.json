@@ -268,6 +268,22 @@
         "Inject an actual private Firestore-backed provider using stable current student/lesson/revision identities",
         "Verify a reviewed one-lesson result and history on Pages 2 and 3; current deployment returns unavailable"
       ]
+    },
+    {
+      "id": "browser_run_coordination",
+      "state": "authenticated_browser_claims_and_attributed_reports",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/adapters/browser_runs.py",
+        "web/browser-runs.mjs",
+        "tests/test_browser_runs.py",
+        "docs/BROWSER_RUNS.md"
+      ],
+      "remaining": [
+        "Verify signed-in hosted claim, renewal, report publication and reload readback",
+        "Actual source scope, student identities, assessment history and each school destination need per-run verification",
+        "Stored browser reports are not independently server-verified school actions"
+      ]
     }
   ]
 }

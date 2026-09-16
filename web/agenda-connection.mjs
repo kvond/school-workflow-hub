@@ -1,13 +1,14 @@
+import {mountBrowserRuns} from './browser-runs.mjs';
 const panel=document.querySelector('.connection');
 const rosterStatus=document.querySelector('#roster-sync-status');
 const check=document.createElement('button');check.type='button';check.textContent='Check Agenda access';
-const runRoster=document.createElement('button');runRoster.type='button';runRoster.textContent='Run roster sync';runRoster.disabled=true;runRoster.title='Needs a verified Infinite Campus reader and roster-workbook writer.';
 const status=document.createElement('p');status.className='hint';status.setAttribute('role','status');
 let lessonRead=null,accessMessage='',checking=false,savingReady=false;
-panel.append(check,runRoster,status);
+panel.append(check,status);
+mountBrowserRuns(document.querySelector('.connection-details'));
 function render(){
  panel.querySelector('strong').textContent=lessonRead?'Agenda lessons loaded':'Agenda ready to load';
- panel.querySelector('span').textContent=savingReady?'Agenda editing connected. Workflow runs remain unavailable.':'Checking Agenda editing access. Workflow runs remain unavailable.';
+ panel.querySelector('span').textContent=savingReady?'Agenda editing connected. Roster and grading use the signed-in browser.':'Checking Agenda editing access. Roster and grading use the signed-in browser.';
  const loaded=lessonRead?`Loaded ${lessonRead.classes} classes for ${lessonRead.date} · ${new Date(lessonRead.checkedAt).toLocaleString()}.`:'';
  status.textContent=[loaded,checking?'Checking Agenda access…':accessMessage].filter(Boolean).join(' ');
  status.hidden=!status.textContent;
@@ -38,7 +39,7 @@ async function loadRosterStatus(){
   const response=await fetch('./api/roster-sync',{cache:'no-store',credentials:'same-origin',redirect:'error'});
   const result=await response.json();
   if(!response.ok||result.schema_version!=='hub-roster-sync/v1'||typeof result.status!=='string'||result.run_enabled!==false||result.external_writes!==0)throw Error();
-  const message=`Roster sync: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Cloud execution needs the IC reader and workbook writer. A manual browser roster update does not connect this button.`;
+  const message=`Roster record: ${result.status} · ${result.next_action?.replaceAll('_',' ')||'review needed'}. Infinite Campus checks use the signed-in school browser.`;
   rosterStatus.textContent=message;
  }catch{
   const message='Roster sync: status unavailable. It has not run from this dashboard.';
@@ -46,3 +47,4 @@ async function loadRosterStatus(){
  }
 }
 loadRosterStatus();
+document.addEventListener('browser-run-updated',()=>loadRosterStatus());

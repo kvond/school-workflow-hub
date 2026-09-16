@@ -1,19 +1,20 @@
 {
+  "agenda-connection.mjs": "82c718a9924ffeeeacdba2794d1022a0c697263ac0eae4bcbd8fda4be436edd9",
   "app.mjs": "fa47c85da721a8117601367bc10b9369c5e18ddc033e26bf87b1dda2f5b0200c",
+  "browser-runs.mjs": "3f8f8f0a60900e5b19742864da503dc37b978a8758abe838b985822d534e5e16",
   "completion-view.mjs": "a59d811ce7bc36ec3cda9349c2490e56f25431f0aec3bf11b8c45409a7f6ef14",
   "contract.mjs": "711642a26a31e2808fc8683612c4c1040b077ac8f62a21fc6bedb11308214c34",
   "draft-review.mjs": "fbc05771ac8648a178daa9bcf6805b5c5a6752d4cc5dbbc98e780c90847a914b",
   "index.html": "2924da0d13c934963fe93ea2fa18501f607a9cf78703002bddf33ab506dc1397",
+  "learning-progress.mjs": "37ceed619ca89d5dcdd3c42b9b1ee369869a9eed32c1bbe4782cbb9d456e0e8d",
   "operations.preview.json": "da2e99939b5b1f950874f0c6f4867edfe182adb589d711162d3dba2d359b29c4",
-  "pages.mjs": "865264e75b59668608b2fd0beb31b41693c45f8c069146d3cfbc37f4c2a1f91a",
+  "pages.mjs": "5be90e8902d9723196e07f4b2657a3b4be71dd24278d45bf94071119efde5ff6",
   "review-view.mjs": "80224c157b5aac78ac910475d9c5e87824a2264d62260e3e107bbf662ac12dc7",
-  "styles.css": "8eedd533409db0b01e593cf1f024c44c754d93105db4b99e6930275fb01e3c47",
+  "styles.css": "dab4f77f21a5d38ae4a16c3288a20a381dd48870daff74b904c7d9a86448780c",
   "teacher-prompts.json": "03e04c0e6fe66250464660318a5b59088af972322c55f33d2d0a954769861562",
+  "teaching-results.mjs": "d3d0b352a740919fab81d9129f611baa5aba50394d3e6ea5ee5fba6b3c291668",
   "workspace-contract.mjs": "9ec41fef1286425d17cd67b9a8e9d6a02497a0be0562310ba8282e0f7659acbc",
   "workspace-preview.mjs": "8f0c66bb49e42347b1a7d819a0a33439829deb470fccfea8b5a6788a3d5c37ea",
   "workspace.partial.preview.json": "803dd79dafd1916cd90126d6f21ccb788e66df9a5bf594e3c3950afd4ed41ae1",
-  "workspace.preview.json": "7e4ad51e674d635d46cf471c77f3b27e5c5fa96965abba7a2cbef886151a41e8",
-  "agenda-connection.mjs": "c3dd54416afe6941d4f9b6e9e1f463b1aba9214ff1661b8a8833701433c0f961",
-  "teaching-results.mjs": "d3d0b352a740919fab81d9129f611baa5aba50394d3e6ea5ee5fba6b3c291668",
-  "learning-progress.mjs": "37ceed619ca89d5dcdd3c42b9b1ee369869a9eed32c1bbe4782cbb9d456e0e8d"
+  "workspace.preview.json": "7e4ad51e674d635d46cf471c77f3b27e5c5fa96965abba7a2cbef886151a41e8"
 }

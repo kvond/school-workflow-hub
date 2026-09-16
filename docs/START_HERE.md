@@ -13,6 +13,7 @@ workflow.
 3. [Cloud readiness](CLOUD_READINESS.md): latest recorded hosted acceptance and the next one-lesson milestone.
 4. [Capabilities](../config/capabilities.json): code evidence and scoped remaining work.
 5. [Current prompts](AGENDA_PROMPTS.md) and [feedback v2](FEEDBACK_V2.md): authoritative instructions and the accepted report layout.
+6. [Browser run coordination](BROWSER_RUNS.md): the separately authorized browser-assisted roster/grading path when a district IC API is unavailable. It reuses private cloud state and does not turn browser reports into server-verified school results.
 
 ```sh
 python3 scripts/hub_status.py --json
