@@ -43,12 +43,12 @@ def authorize(assertion, audience, allowed_emails, request=None):
         raise ConnectionError("sign_in_required") from None
 
 
-def service_token(expected_email):
+def service_token(expected_email, scope=SCOPE):
     try:
         from google.auth import compute_engine
         # Use only the attached runtime identity, never a downloaded JSON key
         # or the caller's bearer token. Google obtains fresh short-lived tokens.
-        credential = compute_engine.Credentials(scopes=[SCOPE])
+        credential = compute_engine.Credentials(scopes=[scope])
         credential.refresh(_request())
         if credential.service_account_email != expected_email or not credential.token:
             raise ValueError("unexpected runtime identity")

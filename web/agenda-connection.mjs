@@ -3,11 +3,11 @@ const rosterStatus=document.querySelector('#roster-sync-status');
 const check=document.createElement('button');check.type='button';check.textContent='Check Agenda access';
 const runRoster=document.createElement('button');runRoster.type='button';runRoster.textContent='Run roster sync';runRoster.disabled=true;runRoster.title='Needs a verified Infinite Campus reader and roster-workbook writer.';
 const status=document.createElement('p');status.className='hint';status.setAttribute('role','status');
-let lessonRead=null,accessMessage='',checking=false;
+let lessonRead=null,accessMessage='',checking=false,savingReady=false;
 panel.append(check,runRoster,status);
 function render(){
  panel.querySelector('strong').textContent=lessonRead?'Agenda lessons loaded':'Agenda ready to load';
- panel.querySelector('span').textContent='Saving and Run remain disabled.';
+ panel.querySelector('span').textContent=savingReady?'Agenda editing connected. Workflow runs remain unavailable.':'Checking Agenda editing access. Workflow runs remain unavailable.';
  const loaded=lessonRead?`Loaded ${lessonRead.classes} classes for ${lessonRead.date} · ${new Date(lessonRead.checkedAt).toLocaleString()}.`:'';
  status.textContent=[loaded,checking?'Checking Agenda access…':accessMessage].filter(Boolean).join(' ');
  status.hidden=!status.textContent;
@@ -15,6 +15,7 @@ function render(){
 document.addEventListener('agenda-source-loaded',event=>{
  lessonRead=event.detail;accessMessage='';render();
 });
+document.addEventListener('agenda-saving-ready',()=>{savingReady=true;render();});
 check.addEventListener('click',async()=>{
  check.disabled=true;checking=true;render();
  try{

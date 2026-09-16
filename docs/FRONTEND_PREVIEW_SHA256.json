@@ -1,5 +1,5 @@
 {
-  "app.mjs": "a200daec3d662b9d950d8b69518022262e3abdc9a92b30a5eef479cbf218e653",
+  "app.mjs": "eaa79e4e458220a2e4437345bd12226de4d979cbcb45304386341aebc34ef094",
   "completion-view.mjs": "a59d811ce7bc36ec3cda9349c2490e56f25431f0aec3bf11b8c45409a7f6ef14",
   "contract.mjs": "711642a26a31e2808fc8683612c4c1040b077ac8f62a21fc6bedb11308214c34",
   "draft-review.mjs": "fbc05771ac8648a178daa9bcf6805b5c5a6752d4cc5dbbc98e780c90847a914b",
@@ -13,7 +13,7 @@
   "workspace-preview.mjs": "8f0c66bb49e42347b1a7d819a0a33439829deb470fccfea8b5a6788a3d5c37ea",
   "workspace.partial.preview.json": "803dd79dafd1916cd90126d6f21ccb788e66df9a5bf594e3c3950afd4ed41ae1",
   "workspace.preview.json": "7e4ad51e674d635d46cf471c77f3b27e5c5fa96965abba7a2cbef886151a41e8",
-  "agenda-connection.mjs": "fc28ad02b1ccfe1834477349646738a08856a2af23df27226865dfec83b8e680",
+  "agenda-connection.mjs": "4355a9860d3a528303cd8d1905a06936c7b92abdbb15d9c7cbfec2fdd8b8ab11",
   "teaching-results.mjs": "d3d0b352a740919fab81d9129f611baa5aba50394d3e6ea5ee5fba6b3c291668",
   "learning-progress.mjs": "37ceed619ca89d5dcdd3c42b9b1ee369869a9eed32c1bbe4782cbb9d456e0e8d"
 }

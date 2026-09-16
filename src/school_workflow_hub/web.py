@@ -89,7 +89,42 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond("503 Service Unavailable", {"error": "storage_not_verified"})
 
-    # Never parse bodies or caller-supplied bearer tokens.
+    if path == '/api/agenda-save':
+        from .adapters import agenda_save
+        from .adapters.hosted_agenda import _identity_configuration, authorize, ConnectionError
+        from .core.cloud_state import Conflict
+        try:
+            audience, allowed = _identity_configuration(os.environ)
+            assertion = environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION')
+            authorize(assertion, audience, allowed)
+            if method == 'GET':
+                from urllib.parse import parse_qs
+                query = parse_qs(environ.get('QUERY_STRING', ''), max_num_fields=2)
+                if set(query) != {'date', 'class_key'} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError()
+                return respond('200 OK', agenda_save.capability(assertion, query['date'][0], query['class_key'][0], os.environ))
+            if method != 'POST':
+                return respond('405 Method Not Allowed', {'error': 'method_not_allowed'})
+            origins = set(os.environ.get('HUB_STATE_PROBE_ORIGINS', '').split(','))
+            if (not environ.get('HTTP_ORIGIN', '').startswith('https://')
+                    or environ.get('HTTP_ORIGIN') not in origins
+                    or environ.get('CONTENT_TYPE') != 'application/json' or environ.get('QUERY_STRING', '')):
+                return respond('403 Forbidden', {'error': 'save_origin_required'})
+            length = int(environ.get('CONTENT_LENGTH', '0'))
+            if not 1 <= length <= 250000:
+                raise ValueError()
+            payload = json.loads(environ['wsgi.input'].read(length))
+            return respond('200 OK', agenda_save.save(assertion, payload, os.environ))
+        except Conflict:
+            return respond('409 Conflict', {'error': 'agenda_changed_or_save_in_progress'})
+        except ConnectionError as error:
+            return respond('403 Forbidden' if str(error) == 'sign_in_required' else '503 Service Unavailable', {'error': str(error)})
+        except (ValueError, TypeError, KeyError):
+            return respond('400 Bad Request', {'error': 'invalid_agenda_save'})
+        except Exception:
+            return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
+
+    # Remaining endpoints are read-only.
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "method_not_allowed"},
                        extra=[("Allow", "GET, HEAD")])

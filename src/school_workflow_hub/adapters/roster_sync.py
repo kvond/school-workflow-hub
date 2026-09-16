@@ -49,7 +49,7 @@ def read_roster_sync_status(assertion, config):
         return result
     result["shared_run_claims"] = "configured"
     if task is None:
-        result["status"] = "Queued"
+        result["status"] = "Needs you"
         return result
     # The task is internal state, so return only the teacher-facing fields.
     result.update(status=task["status"], next_action=task.get("next_action"),
