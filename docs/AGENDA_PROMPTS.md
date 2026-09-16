@@ -43,3 +43,25 @@ No automatic skill rewrite, grade posting, feedback generation or printing is
 triggered by editing prompt cells. Run remains separately gated.
 
 The current report layout and year-history contract are in `FEEDBACK_V2.md`. Runtime submission routing uses the active root recorded in Agenda Feedback Prompts B5 and the verified assignment TurnIn Map; exclude trashed duplicates.
+
+## September 16 prompt alignment
+
+The feedback-v2.1 Agenda change updates B3 and B6:B8 together. It preserves
+Prompt 1 completion arithmetic, adds per-submission manual reconciliation of
+marker defects, excludes not-yet-due work, and limits Page 3 to one short summary
+per verified class section. Private evidence/history remains separate. The
+active bundle and `FEEDBACK_V2.md` carry this revision; historical assessments
+retain their original prompt-version provenance.
+
+The bundle fingerprint continues the existing algorithm:
+`sha256(json.dumps(prompts, sort_keys=True, ensure_ascii=False).encode())`, using
+Python's default JSON separators, UTF-8 and no appended newline. It hashes only
+the three-prompt object. Each API prompt fingerprint instead hashes that exact
+prompt's UTF-8 text. Agenda B3 carries the aggregate fingerprint.
+
+Connector readback verified the four Agenda values and the other populated
+cells across the existing prompt-tab grid. This does not prove deployed Copy
+instructions, native visual rendering, or every separately maintained §12,
+Skill 4 and worked-example copy is aligned. Those remain distinct readback
+checks under the B2 update-together rule; do not label all destinations aligned
+from the bundle fingerprint alone.

@@ -1,6 +1,9 @@
-# Feedback and yearly progress — teacher revision, September 15, 2026
+# Feedback and yearly progress — teacher revision, September 16, 2026
 
-This replaces the student feedback order and forward-next-lesson requirement in §12 / Prompt 2, and extends Prompt 3. Prompt 1 completion arithmetic remains unchanged.
+The current revision is feedback-v2.1. It retains the September 15 student
+feedback order and completion arithmetic, adds reviewed manual reconciliation,
+and replaces the long Page 3 report with one concise summary per class. Existing
+assessment records retain the prompt version under which they were assessed.
 
 ## Student report order
 
@@ -23,11 +26,46 @@ Class graphs show distributions and coverage at each date and distinguish member
 
 ## Teacher summary
 
-Lead with the two year graphs. Then participation; current understanding by question; source-backed changes in explanation; recurring misconceptions; teacher-only discussion ideas; possible instructional contrasts; and individual checks. Recurring means more than one student's evidence. A pilot or incomplete batch is explicitly partial.
+Page 3 shows one plain-language paragraph per verified class section, at most
+90 words each. Name the assignment/checkpoint, verified received/expected
+coverage, the most useful finding about current understanding or explanation,
+and one teaching follow-up. Include an unresolved-evidence count only when it
+affects the conclusion. Classes sharing a course remain separate. A retained
+worksheet name is not proof of active enrollment; exclude unresolved identities
+and example artifacts from learner counts. Count a learner once per assignment
+and retain earlier submissions as history.
+
+Do not place graphs, per-student answer tables, long quote lists or detailed
+grading exceptions on Page 3. Keep exact evidence, per-question distributions,
+teacher checks and any supported history graphs in a separate private record
+or view. Graphs are not required in the class summaries. Recurring means more
+than one student's evidence, and a partial sample stays explicitly partial.
+Exclude homework, BANK and DRAFT that are not yet due from missing/incomplete
+counts or current completion penalties. Proposed scores, saved assessments and
+grades with destination readback are separate statuses.
+
+## Per-submission readiness
+
+Check each actual distributed version and the teacher-confirmed checkpoint.
+Marker defects are source issues, not proof of blank student work. A complete
+manual prompt-to-response mapping can resolve missing or duplicate markers
+without editing a distributed deck or inventing requirements. Retain exact
+source/revision evidence and one inspected field per unique due item. Never
+award two items credit for the same field. See
+[manual reconciliation](MANUAL_COMPLETION_RECONCILIATION.md) for the Python
+evidence contract and the separate host-integration boundary.
+
+Only NOTES are due at an initial checkpoint. Future BANK/DRAFT structure or
+response ambiguities do not hold a verified NOTES score. A distributed version
+with zero BANK terms has no Bank-slide or Bank-order requirement. A required
+conflict case follows its actual teacher-declared order; do not invent a
+conflict or Day 3 requirement. Structural reconciliation does not decide whether
+writing is a meaningful attempt. Continue to hold unresolved due-item mappings,
+unreadable writing, uncertain identity and conflicting assessments for review.
 
 ## Blank work and safe evidence
 
-A genuinely blank required response retains its completion treatment and displays gray Evidence unavailable for understanding. Provide feedback on other readable answers; never invent a quote or level for the blank. Missing markers, unreadable sources, ambiguous identity and assessment conflicts still require review. Exact copying flags are teacher-only.
+A genuinely blank required response retains its completion treatment and displays gray Evidence unavailable for understanding. Provide feedback on other readable answers; never invent a quote or level for the blank. Marker defects require review and can be resolved by the documented mapping above. Unreadable sources, ambiguous identity and unresolved assessment conflicts still require review. Exact copying flags are teacher-only.
 
 ## Shared maintenance
 
