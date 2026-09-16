@@ -27,7 +27,7 @@ function render(){
   const lesson=node('div',undefined,'lesson'),title=node('input',undefined,'lesson-title');title.value=d.title;title.placeholder='Lesson title · awaiting Agenda';title.setAttribute('aria-label',c.name+' lesson title');
   const label=node('label','My teaching notes','field-label'),notes=node('textarea',undefined,'notes');notes.id='notes-'+i;label.htmlFor=notes.id;notes.value=d.notes;notes.placeholder='Draft a note for this class and date…';
   const access=saveAccess.get(draftKey(c));
-  const status=node('span',d.message||(d.dirty?'Unsaved changes':source?'Loaded from Agenda':'Load this date to edit'));
+  const status=node('span',d.message||(d.dirty?'Unsaved changes':access?.error==='agenda_editor_access_required'?'Saving needs Editor access':access?.error?'Saving unavailable for this date':source?'Loaded from Agenda':'Load this date to edit'));
   const save=button('Save to Sheets',()=>saveLesson(c));save.disabled=!access?.revision||d.saving===true;save.title=access?.revision?'Save notes and plan to the weekly Agenda':access?.error||'Checking Agenda editing access';
   title.readOnly=notes.readOnly=!source;
   title.addEventListener('input',()=>{d.title=title.value;changed(d,status)});notes.addEventListener('input',()=>{d.notes=notes.value;changed(d,status)});
