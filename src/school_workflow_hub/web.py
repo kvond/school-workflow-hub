@@ -17,7 +17,7 @@ ASSETS = {
         "app.mjs", "pages.mjs", "contract.mjs", "workspace-contract.mjs",
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
         "review-view.mjs", "agenda-connection.mjs", "teaching-results.mjs", "learning-progress.mjs",
-        "browser-runs.mjs",
+        "browser-runs.mjs", "grading-records.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -191,6 +191,19 @@ def application(environ, start_response, *, teaching_provider=None):
             return respond("403 Forbidden", {"error": "sign_in_required", "external_writes": 0})
         except Exception:
             return respond("503 Service Unavailable", {"error": "roster_sync_unavailable", "external_writes": 0})
+    if path == "/api/grading-records" and method == "GET":
+        from .adapters.grading_records import read_records
+        from .adapters.hosted_agenda import ConnectionError
+        if environ.get("QUERY_STRING", ""):
+            return respond("400 Bad Request", {"error": "invalid_grading_scope", "external_writes": 0})
+        try:
+            return respond("200 OK", read_records(
+                environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), os.environ))
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable",
+                           {"error": str(error), "external_writes": 0})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "grading_records_unavailable", "external_writes": 0})
     if path == "/api/teaching-results" and method == "GET":
         from urllib.parse import parse_qs
         from .adapters.teaching_results import read_teaching_results

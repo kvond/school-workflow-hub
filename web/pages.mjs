@@ -1,4 +1,4 @@
-import {createResultLoader,renderTeachingResults} from './teaching-results.mjs';
+import {createRecordsLoader,renderRecords,renderSummaries,sectionOptions} from './grading-records.mjs';
 import {safeLink} from './contract.mjs';
 import {showRunInstructions} from './browser-runs.mjs';
 const $=id=>document.getElementById(id);
@@ -27,15 +27,21 @@ async function copyPrompt(kind){const titles={completion:'Completion check',feed
 
 const classes={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy'};
 let scope={date:$('date').value,classKey:'biology',data:null,loading:false,error:''};
+let recordState={status:'empty'},sectionId='all',sectionSelect;
 const views=[];
 function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;renderScope();loadResults()});classLabel.append(select);
- const dateLabel=el('label','Date'),date=el('input');date.type='date';date.value=scope.date;date.setAttribute('aria-label',page+' date');dateLabel.append(date);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='all';renderScope();loadResults()});classLabel.append(select);
+ const dateLabel=el('label','Lesson date'),date=el('input');date.type='date';date.value=scope.date;date.setAttribute('aria-label',page+' date');dateLabel.append(date);
  date.addEventListener('change',()=>requestDay(date.value));
- const load=btn('Load lesson',()=>requestDay(date.value));bar.append(classLabel,dateLabel,load);
+ const load=btn('Load lesson',()=>requestDay(date.value));bar.append(classLabel);
+ if(page==='Feedback'){
+  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','All sections'));sectionSelect.firstChild.value='all';
+  sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);bar.append(sectionLabel);
+ }
+ bar.append(dateLabel,load);
  const context=el('section',undefined,'lesson-context');const notice=el('p','','hint');notice.setAttribute('role','status');
  target.append(bar,context,notice);views.push({select,date,load,context,notice});
 }
@@ -68,10 +74,11 @@ function promptAction(target,label,kind){
 }
 function heldAction(target,label,reason){const button=btn(label,null,true);button.title=reason;target.append(button);}
 const feedback=$('page-feedback');compactHeading(feedback,'Submissions & feedback');scopeBar(feedback,'Feedback');
+feedback.append(el('p','Submissions include all recorded assignments for this class. Lesson date selects the Agenda links and folder check.','hint'));
 const feedbackGrid=el('div',undefined,'section-grid');
 const queue=el('section',undefined,'surface wide');const qhead=el('div',undefined,'section-heading');qhead.append(el('h2','Student work'));promptAction(qhead,'Copy completion instructions','completion');queue.append(qhead);
 const inventory=el('div');inventory.setAttribute('aria-live','polite');
-const scan=btn('Check submitted files',()=>scanSubmissions());queue.append(scan,inventory);
+const scan=btn('Check lesson folder',()=>scanSubmissions());
 let scanGeneration=0,scanController;
 function clearInventory(){scanGeneration++;scanController?.abort();inventory.replaceChildren();scan.disabled=!scope.data||scope.loading||!!scope.error;}
 async function scanSubmissions(){
@@ -92,16 +99,21 @@ async function scanSubmissions(){
  finally{if(generation===scanGeneration)scan.disabled=false;}
 }
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
+const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);queue.append(inventoryDetails);
 const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Open each student’s report from the list above.'));const reportActions=el('div',undefined,'action-row');promptAction(reportActions,'Copy feedback instructions','feedback');heldAction(reportActions,'Print feedback documents','Needs current feedback documents, a verified school printer, and your direction.');reports.append(reportActions);
 const delivery=el('section',undefined,'surface');delivery.append(el('h2','Grades & parent contact'),el('p','Completion grading uses the connected Codex task and signed-in Infinite Campus browser.'));const deliveryActions=el('div',undefined,'action-row');deliveryActions.append(btn('Manual completion grading',()=>showRunInstructions('grading')));heldAction(deliveryActions,'Review overdue emails','Needs verified due dates, cumulative submissions, and parent contacts from Infinite Campus.');delivery.append(deliveryActions);const details=el('details',undefined,'workflow-details');details.append(el('summary','What is needed to enable these actions'),el('p','Printing needs the lesson’s complete report batch and printer mapping. Grades need verified assignment targets and score readback in Infinite Campus. Parent notices need verified non-submission 14 days after the due date and current parent contacts.'));delivery.append(details);
 feedbackGrid.append(queue,reports,delivery);feedback.append(feedbackGrid);
-const summary=$('page-summary');compactHeading(summary,'Teacher summary');scopeBar(summary,'Summary');
-const summaryActions=el('div',undefined,'action-row summary-actions');promptAction(summaryActions,'Copy class-summary instructions','summary');heldAction(summaryActions,'Update teacher summary','Needs the whole class’s submitted work or compiled summaries from every feedback batch.');summary.append(summaryActions);
-const summaryGrid=el('div',undefined,'section-grid');
+const summary=$('page-summary');compactHeading(summary,'Teacher summary');summary.append(el('p','One teaching summary for each class, using the reviewed submission records.','hint'));
+const summaryActions=el('div',undefined,'action-row summary-actions');promptAction(summaryActions,'Copy class-summary instructions','summary');summary.append(summaryActions);
 const summaryResults=el('div',undefined,'section-grid');summaryResults.setAttribute('aria-live','polite');summary.append(summaryResults);
-const retrieveResults=createResultLoader({onState:state=>renderTeachingResults({feedbackRoot:feedbackResults,summaryRoot:summaryResults},state)});
-function loadResults(){clearInventory();return retrieveResults(scope.data&&!scope.loading&&!scope.error?{classKey:scope.classKey,date:scope.date,checkedAt:scope.data.checked_at}:null);}
-renderScope();loadResults();
+function renderPrivateRecords(){
+ if(sectionSelect){const options=recordState.status==='loaded'?sectionOptions(recordState.data,scope.classKey):[];sectionSelect.replaceChildren();const all=el('option','All sections');all.value='all';sectionSelect.append(all);for(const [id,name]of options){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&sectionId!=='all'&&!options.some(([id])=>id===sectionId))sectionId='all';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
+ renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId});renderSummaries(summaryResults,recordState);
+}
+const retrieveRecords=createRecordsLoader({onState:state=>{recordState=state;renderPrivateRecords()}});
+qhead.append(btn('Refresh submissions',()=>retrieveRecords()));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));
+function loadResults(){clearInventory();renderPrivateRecords();}
+renderScope();loadResults();retrieveRecords();
 const research=$('page-research');heading(research,'Research workspace','Keep research evidence separate from student-facing feedback. Reuse versioned instructions and the same private workflow records.');const rg=el('div',undefined,'section-grid');const instructions=panel('Shared research instructions','A relevant skill was located in your answerable-skills repository. Its referenced codebook and current applicability still need review before research execution is enabled.');instructions.append(link('Open versioned research workflow ↗',researchURL),el('p','Pinned repository version · access requires your repository permissions. This is an instruction source, not the student-data store.','hint'));actions(instructions,btn('Run research workflow',null,true));const evidence=panel('Evidence & coding record','Research observations must link back to approved private evidence and the applied instruction version. Unknown response timing remains unknown.');metrics(evidence,['Accepted observations','Needs review','Verified evidence links']);empty(evidence,'Research data not connected','There is no student research data in this preview or its source files.');const history=panel('Provenance & review history','The shared backend holds the persistent record. This page will display its accepted results and unresolved reviews, without creating a second store.',true);history.append(el('p','Instruction/codebook acceptance: Pending · Authenticated data access: Not verified · Last run: Not checked','readiness'));rg.append(instructions,evidence,history);research.append(rg);
 function navigate(){const requested=location.hash.slice(1);const page=allowed.includes(requested)?requested:'agenda';for(const id of allowed)$('page-'+id).hidden=id!==page;for(const a of document.querySelectorAll('[data-page]')){if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');}document.title=`${{agenda:'Teaching Agenda',feedback:'Submissions & feedback',summary:'Teacher summary',research:'Research'}[page]} · Agenda`;}
 window.addEventListener('hashchange',navigate);navigate();
