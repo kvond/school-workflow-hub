@@ -182,7 +182,7 @@
               "submission_state": "not_submitted",
               "submission_revision": null,
               "deadline_state": "past_deadline",
-              "feedback_state": "not_applicable",
+              "feedback_state": "missing_work_feedback_needed",
               "feedback_document_reference": null,
               "parent_email_route": "contact_needs_verification",
               "ic_contact_reference": null,
@@ -235,7 +235,7 @@
         },
         "feedback_state": {
           "available": 1,
-          "not_applicable": 1
+          "missing_work_feedback_needed": 1
         },
         "parent_email_route": {
           "not_needed": 1,

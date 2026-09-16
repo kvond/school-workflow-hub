@@ -1,118 +1,91 @@
 # Shared entry point for the School Workflow Hub
 
-## Product direction
-
-The user is making presentation/source corrections while the existing partly
-built workflows are turned into reusable Python. The destination is cloud
-execution, with this private GitHub repository as the shared code, interfaces,
-tests and handoff location. Any agent authorized to read this repository should
-be able to continue from here. Private repository access must be granted through
-the owner's normal account controls; this does not make school data public.
-
-Routine jobs must call deterministic Python functions. AI agents help build,
-review and handle exceptions; they should not repeatedly reconstruct the same
-logic from chat history. Keep prompts replaceable and never invent grades or
-interpret missing observations as verified absence.
+Updated September 16, 2026. This private repository is the canonical code and
+handoff location for authorized agents. Keep deterministic workflow logic here
+and school data in the approved private runtime. Continue the existing Agenda
+and backend; do not create another dashboard, task database or routine agent-only
+workflow.
 
 ## Read these first
 
-1. `AGENTS.md` — project boundaries and ownership rules.
-2. `config/capabilities.json` — completed code, evidence paths and remaining work.
-3. `docs/AGENDA_READER.md` — first read-only API connection and exact limitations.
-4. `docs/TOMORROW_TESTS.md` — existing offline test/review packet.
-
-Get the same inventory without relying on a particular AI tool:
+1. [AGENTS.md](../AGENTS.md): ownership and implementation boundaries.
+2. [Python integration](PYTHON_INTEGRATION_20260916.md): module map, validation and remaining connections.
+3. [Cloud readiness](CLOUD_READINESS.md): latest recorded hosted acceptance and the next one-lesson milestone.
+4. [Capabilities](../config/capabilities.json): code evidence and scoped remaining work.
+5. [Current prompts](AGENDA_PROMPTS.md) and [feedback v2](FEEDBACK_V2.md): authoritative instructions and the accepted report layout.
 
 ```sh
 python3 scripts/hub_status.py --json
-python3 scripts/run_all_tests.py
 python3 scripts/cloud_validation.py
 ```
 
-These commands need Python's standard library only. Status inspection reads the
-repository; tests use fictional data and mocked transport. `cloud_validation`
-locally exercises the same entry point as the GitHub-hosted workflow and checks
-two identical previews. It does not dispatch a cloud run itself.
+These commands use the standard library. Status inspection reads the repository;
+validation runs the full synthetic suite and verifies identical replay. Neither
+command performs a live health check, loads student records or activates a job.
 
-## This continuation
+## What is established
 
-**Latest workflow work:** read `WORKFLOW_INPUTS_20260914.md`. The application
-now includes explicit Agenda mapping/checkpoint composition, read-only Todoist
-notes and routing, submission-page collection and printable report output.
-The latest local suite is 322 tests. Cloud deployment/hosting/activation is
-owned by the other chat; do not duplicate or alter that work.
+The September 15 acceptance records in `CLOUD_READINESS.md` and
+`PRIVATE_CLOUD_STATE.md` verify hosted signed-IAP authentication, Agenda metadata,
+dated class lessons and prompts. Firestore write/readback, competing ownership
+rejection, retry receipts and persistence across service revisions were verified
+with a fictional record. These are recorded observations, not a new health check.
 
-- Reused the existing contracts, SQLite ledgers, fixture workflows, private
-  assignment comparator and guarded platform interfaces.
-- Brought the reviewed GitHub export up to the later 252-test teaching checkpoint:
-  roster status/history safeguards, unknown/colliding target holds, later
-  completion evidence and unfinished-grading reporting.
-- Added `adapters/google_sheets.py`, `scripts/read_agenda.py`, capability JSON,
-  status CLI and focused regression tests. No second framework or database.
-- The Sheets reader uses a supplied authorized token and a single explicit
-  source. It has GET only, bounded ranges/response size/retries, rejects
-  redirects and prints only opaque fingerprints through its CLI.
-- Added comparison semantics for unchanged, changed, missing-baseline and
-  incompatible-scope observations. An initial read is not proof of a change.
+The September 16 reconciliation publishes the previously local workspace,
+Dashboard navigation and research draft modules alongside the newer teaching
+results, feedback, learning history and cloud-state implementation. Pure Python
+composition remains distinct from a live provider or destination executor.
+
+The live Agenda prompt cells are the runtime instruction source;
+`web/teacher-prompts.json` is the reviewed release reference. The September 14
+text under `prompts/` is historical and cannot override feedback v2. Research
+definitions preserve the approved authorial separation; other proposed criteria
+still require teacher review. Collection and student coding remain deferred.
 
 ## Next implementation sequence
 
-1. Select a school-authorized runtime identity and credential refresh mechanism
-   for the read-only source; provide no tokens in chat, source or task comments.
-2. Establish the live stable lesson/link baseline: Agenda -> parent assignment
-   lists/messages -> weekly assignment pages -> Schoology, one week at a time.
-   Keep date changes separate from lesson identity; preserve copy/edit mode.
-3. Map the actual Agenda layout and source ranges to normalized observations.
-   The explicit `AgendaLayout` normalizer and `observe_agenda` composition are
-   now implemented; select/validate their real configuration rather than
-   rebuilding them.
-   Do not infer stable assignment IDs from titles or row numbers. Live range
-   reads alone do not satisfy this mapping step.
-4. Select approved persistent private state with retention/access rules. Store
-   baselines atomically only after a complete successful observation. Keep
-   student data and raw school sources out of GitHub artifacts/logs/repository.
-   `core.observation_baseline` now provides atomic baseline storage in the
-   existing ledger, including stale-read and concurrent-checkpoint refusal.
-5. Validate one real read/compare and error/recovery path before recurring use.
-6. Add the real submission reader, current rubric and private feedback/report
-   acceptance. Then implement separately authorized delivery/update adapters.
-7. Research collection follows teaching-system verification. The existing
-   synthetic category signals are not an open inductive codebook.
+1. Recheck the existing hosted service and runtime access when beginning live
+   integration. Reuse its identity and Firestore store rather than creating them
+   again. Verify the backup/restore approach before relying on real student history.
+2. Connect one actual due lesson's active submission folder and current IC
+   assignment/roster readers. Resolve stable identities, individual extensions,
+   full pagination, cumulative history and exact document revisions. A recent
+   14-day crawl alone cannot prove a learner never submitted.
+3. Supply actual reviewed writing assessments to the accepted completion and
+   feedback functions. Preserve prior versions. Missing or ambiguous evidence is
+   a review state, never permission to invent quotes, growth or student zeros.
+4. Bind that result to the existing private state/claim service and inject the
+   `hub-teaching-results/v1` provider into the existing HTTP app. Verify Page 2 and
+   Page 3 show the same stored scope and revisions after reload.
+5. Complete two-way Agenda plan/note saving with authoritative weekly/list
+   mapping, concurrent-edit rejection and destination readback.
+6. Implement and accept each authorized IC, feedback-filing, email or requested
+   print destination separately. A stored proposal is not successful delivery.
+7. Verify the full supervised lesson before enabling unattended execution.
+   Coordinate existing schedules; do not create duplicate jobs. Research follows
+   teaching-workflow acceptance.
 
-## Cloud verification
+The current priority is Agenda-to-IC alignment and real teaching inputs. The
+older parent-page/Schoology-first sequence and claims that hosting does not
+exist are superseded. Older 252/322/361/382-test counts are historical checkpoints;
+use the integration record for this reconciliation's validation.
 
-Deployment and activation belong to the separate cloud chat. This application
-handoff requires no cloud-usage response in the workflow-building chat.
+## Contract and ownership boundaries
 
-The manual GitHub workflow is present and disabled by default. Its first
-activation requires included-usage/spending confirmation. It runs standard
-Ubuntu, read-only repository permissions, one job at a time and a ten-minute
-timeout; it does not need school credentials or upload generated records.
+- `agenda-operations/v1` remains the strict operation-status projection.
+- `agenda-workspace/v1` is a host-injected library wrapper for planning and
+  private views. It is not a replacement for the deployed Page 2/Page 3 provider.
+- `hub-teaching-results/v1` is the existing authenticated teaching-results
+  boundary; its actual private provider is still missing.
+- Firestore is the hosted task/result store. SQLite helpers remain offline
+  synthetic fixtures; do not introduce operational dual writes.
+- Cloud deployment, credentials, billing, Actions enable variables and schedules
+  remain with the cloud owner. This integration publishes code only.
 
-Record the actual commit, hosted run URL and successful job conclusion before
-calling cloud execution verified. A skipped job is not a pass. A passing fixture
-job does not validate the real source connector or a school operation.
+Save, Run, grade posting, email and printing remain disabled until their actual
+integration and acceptance. Preserve stable file/slide IDs and grade history.
+Keep student records, source IDs, credentials and browser profiles out of GitHub.
 
-Do not silently add recurring cron, new paid services, a public endpoint,
-browser profiles, school credentials or a live grade writer to this stage.
-
-## Handoff discipline
-
-For each continuation record code changes, commands/results, exact commit,
-observed cloud state and next blockers. Update the capability inventory only
-when evidence supports it. A build can be complete while its live acceptance
-task remains open. Preserve presentation/source corrections and existing grade
-history. Avoid copying older local handoffs over this shared entry point.
-
-## HTML owner handoff
-
-Read `docs/HTML_AGENDA_INTEGRATION.md` for the implemented
-`agenda-operations/v1` status contract. Eight focused contract tests cover
-proof requirements, identity and synchronization display gates. Use the existing
-Agenda page. HTTP transport, live receipts and edit saving remain unconnected.
-
-The HTML owner's September 14 requirements are reconciled in
-`docs/FRONTEND_REQUIREMENTS_ALIGNMENT.md`: authenticated HTTPS, portable
-versioned instructions, task versus operation identity, record revisions,
-weekly/list save conflicts and shared run claims. That document distinguishes
-the implemented projection from requested services that remain absent.
+For every continuation, record the code revision, checks, exact remaining scope
+and evidence level. A code pass is not a school read, hosted deployment or live
+end-to-end result. Update existing task records rather than creating duplicates.

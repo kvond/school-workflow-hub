@@ -29,7 +29,8 @@ health check.
   endpoint reported `persistent_storage_verified=true`, private storage
   `restart_verified` and shared claims `storage_probe_verified`. Anonymous hub
   requests redirect to Google sign-in; anonymous Firestore reads return 403.
-- All 460 Python tests pass. Forced simultaneous claims, a superseded worker's
+- The September 15 checkpoint passed 460 Python tests. See
+  `PYTHON_INTEGRATION_20260916.md` for the later reconciled suite. Forced simultaneous claims, a superseded worker's
   commit, expired ownership, repeat results and failed-scan baseline preservation
   are covered locally; those local cases are distinct from the live probe above.
 - No hosted Agenda writer, IC reader/writer, submission assessor, teaching-results

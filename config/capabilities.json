@@ -4,6 +4,48 @@
   "agent_entrypoint": "docs/START_HERE.md",
   "capabilities": [
     {
+      "id": "research_agenda_contract",
+      "state": "source_grounded_research_draft_pending_teacher_review",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/research_agenda.py",
+        "src/school_workflow_hub/workflows/research_codebook.py",
+        "src/school_workflow_hub/workflows/teacher_workspace.py",
+        "tests/test_research_agenda.py",
+        "docs/RESEARCH_AGENDA.md",
+        "docs/RESEARCH_CODEBOOK_DRAFT.md"
+      ],
+      "remaining": [
+        "Teacher review of remaining source-grounded criteria and proposed conceptual indicators; authorial separation is approved",
+        "Compare older conceptual-growth research document if supplied; retain codebook versions on book changes",
+        "Private evidence validation, comparable dated work and teacher-reviewed interpretations",
+        "Existing HTML integration; no coding or collection enabled"
+      ]
+    },
+    {
+      "id": "four_page_workspace_feed",
+      "state": "reconciled_host_injected_library_projection",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/completion_policy.py",
+        "src/school_workflow_hub/workflows/teacher_workspace.py",
+        "src/school_workflow_hub/adapters/dashboard_navigation.py",
+        "tests/test_completion_policy.py",
+        "tests/test_teacher_workspace.py",
+        "tests/test_dashboard_navigation.py",
+        "docs/FOUR_PAGE_WORKFLOWS.md",
+        "web/teacher-prompts.json",
+        "docs/TEACHING_RESULTS_INTEGRATION.md"
+      ],
+      "remaining": [
+        "Bind verified hosted daily Agenda reads to this optional workspace projection; the deployed teaching-results provider is a separate contract",
+        "Complete current IC roster/due-date and cumulative submission sources, including individual extensions and reviewed response assessments",
+        "Use accepted feedback-v2 and class-summary builders; bind private results/history to Firestore and the existing HTTP provider",
+        "Authorized destination adapters and scoped current readback; no save, grade, email or print execution is supplied",
+        "Research-specific authorized records and remaining teacher criteria review; no collection enabled"
+      ]
+    },
+    {
       "id": "agenda_reader",
       "state": "reader_normalizer_checkpoint_implemented",
       "live_verified": false,
@@ -18,9 +60,9 @@
         "tests/test_input_integration.py"
       ],
       "remaining": [
-        "School-authorized runtime identity/token refresh",
-        "Verified actual Agenda layout, source ranges and stable lesson/assignment mapping",
-        "Cloud-owned persistent state configuration and first live read/compare"
+        "This is the general injected row-normalization/checkpoint library; hosted dated reads are tracked separately below",
+        "Bind the intended layout, stable assignment identity and complete comparison baseline to the actual teaching workflow",
+        "Verify one complete live read/compare through that workflow; transport configuration alone is insufficient"
       ]
     },
     {
@@ -34,10 +76,9 @@
         "examples/agenda_operations.preview.json"
       ],
       "remaining": [
-        "Existing HTML Agenda integration by HTML owner",
-        "Authenticated transport and genuine live receipt mapping",
-        "Edit saving with durable receipt and reread; unsynced until verified",
-        "End-to-end automatic synchronization verification"
+        "Map genuine workflow receipts to the operations projection in the existing authenticated UI",
+        "Edit saving with authoritative weekly/list targets, conflict rejection and readback",
+        "End-to-end teaching execution and automatic synchronization verification"
       ]
     },
     {
@@ -49,9 +90,9 @@
         "src/school_workflow_hub/adapters/private_input.py"
       ],
       "remaining": [
-        "Verify stable Agenda/parent/weekly assignment/Schoology link baseline first",
-        "Map real Schoology/IC targets",
-        "Validate calendar/date proposals against live sources"
+        "Use the current dated Agenda and Agenda-to-IC priority; older Schoology-first baseline guidance is superseded",
+        "Map current IC assignment/section/term targets and verify source dates",
+        "Validate date proposals against current evidence before separately authorized posting"
       ]
     },
     {
@@ -68,13 +109,18 @@
     },
     {
       "id": "feedback_grading",
-      "state": "page_collection_contract_and_fixture_pipeline",
+      "state": "submission_contract_completion_and_reviewed_feedback_composition",
       "live_verified": false,
       "evidence_files": [
         "src/school_workflow_hub/workflows/feedback_pipeline.py",
         "tests/test_teaching_continuity.py",
         "src/school_workflow_hub/adapters/submission_pages.py",
-        "tests/test_input_integration.py"
+        "tests/test_input_integration.py",
+        "src/school_workflow_hub/workflows/due_completion.py",
+        "src/school_workflow_hub/workflows/student_feedback.py",
+        "src/school_workflow_hub/workflows/teaching_results.py",
+        "tests/test_teaching_results.py",
+        "docs/FEEDBACK_V2.md"
       ],
       "remaining": [
         "Actual school submission provider with complete snapshot pagination",
@@ -84,12 +130,17 @@
     },
     {
       "id": "reports",
-      "state": "preview_builders_and_printable_html_complete",
+      "state": "reviewed_summary_history_and_print_preview_builders",
       "live_verified": false,
       "evidence_files": [
         "src/school_workflow_hub/workflows/reporting_pipeline.py",
         "src/school_workflow_hub/workflows/print_packet.py",
-        "scripts/preview_workflow_inputs.py"
+        "scripts/preview_workflow_inputs.py",
+        "src/school_workflow_hub/workflows/class_summary.py",
+        "src/school_workflow_hub/workflows/learning_progress.py",
+        "src/school_workflow_hub/workflows/missing_work_feedback.py",
+        "tests/test_class_summary.py",
+        "tests/test_learning_progress.py"
       ],
       "remaining": [
         "Real cumulative history and teacher review",
@@ -136,24 +187,87 @@
       "remaining": [
         "Runtime Todoist identity and explicit note source scope; first real routing validation",
         "Approved journal append/readback and accepted-version persistence",
-        "Open inductive codebook implementation and teacher validation",
+        "Research codebook draft is implemented separately; remaining criteria and actual evidence still require teacher review",
         "Research collection deferred until teaching workflows are verified"
       ]
     },
     {
       "id": "cloud_execution",
-      "state": "manual_validation_prepared",
+      "state": "manual_synthetic_actions_validation_prepared",
       "live_verified": false,
       "evidence_files": [
         ".github/workflows/hub-cloud-validation.yml",
         "scripts/cloud_validation.py"
       ],
       "remaining": [
-        "Owner included-usage/spending confirmation",
-        "First successful hosted run",
-        "Separate school identity/storage before live processing"
+        "This capability tracks the optional manual GitHub Actions fixture job, not existing Cloud Run hosting",
+        "Retain existing enable/spending controls; record the first successful hosted Actions job separately",
+        "A fixture job does not establish live teaching processing or recurring operations"
       ],
       "owner": "separate_cloud_chat"
+    },
+    {
+      "id": "hosted_agenda_read",
+      "state": "scoped_acceptance_recorded",
+      "live_verified": true,
+      "verified_on": "2026-09-15",
+      "current_health": "not_rechecked_by_20260916_code_reconciliation",
+      "verification_scope": [
+        "signed_IAP_identity",
+        "Agenda_metadata",
+        "three_dated_class_lessons",
+        "current_prompt_reads"
+      ],
+      "evidence_files": [
+        "src/school_workflow_hub/web.py",
+        "src/school_workflow_hub/adapters/hosted_agenda.py",
+        "src/school_workflow_hub/adapters/dated_agenda.py",
+        "src/school_workflow_hub/adapters/agenda_prompts.py",
+        "docs/CLOUD_READINESS.md"
+      ],
+      "remaining": [
+        "Recheck runtime access when beginning live teaching integration; these reads do not validate submissions, IC or writes"
+      ]
+    },
+    {
+      "id": "private_cloud_state",
+      "state": "fictional_persistence_and_claim_acceptance_recorded",
+      "live_verified": true,
+      "verified_on": "2026-09-15",
+      "current_health": "not_rechecked_by_20260916_code_reconciliation",
+      "verification_scope": [
+        "fictional_write_readback",
+        "cross_revision_persistence",
+        "competing_claim_rejection",
+        "idempotent_result_retry"
+      ],
+      "evidence_files": [
+        "src/school_workflow_hub/core/cloud_state.py",
+        "src/school_workflow_hub/adapters/firestore_state.py",
+        "src/school_workflow_hub/adapters/storage_probe.py",
+        "tests/test_cloud_state.py",
+        "docs/PRIVATE_CLOUD_STATE.md"
+      ],
+      "remaining": [
+        "Bind real teaching providers, reviewed results and history to the existing store with scoped acceptance",
+        "Verify backup/restore before relying on real student history; destination delivery receipts remain separate"
+      ]
+    },
+    {
+      "id": "teaching_results_http_provider",
+      "state": "authenticated_boundary_and_ui_implemented_provider_unconnected",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/adapters/teaching_results.py",
+        "src/school_workflow_hub/workflows/teaching_results.py",
+        "web/teaching-results.mjs",
+        "tests/test_teaching_results.py",
+        "docs/TEACHING_RESULTS_INTEGRATION.md"
+      ],
+      "remaining": [
+        "Inject an actual private Firestore-backed provider using stable current student/lesson/revision identities",
+        "Verify a reviewed one-lesson result and history on Pages 2 and 3; current deployment returns unavailable"
+      ]
     }
   ]
 }

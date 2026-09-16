@@ -63,9 +63,11 @@ JSON/fixture fallback, public student file or credential configuration is includ
    complete cumulative submission history.
 2. Current IC assignment due dates and assigned-roster readers, including extensions.
 3. Actual writing assessments under these prompts and a supervised one-lesson check.
-4. The shared persistent private task/status record and atomic execution claim.
-   Clients must claim the same class/assignment task; a second caller seeing Working
-   stops. Failed scans cannot overwrite the last successful baseline.
+4. Bind teaching readers/results to the existing shared Firestore task/status
+   record and atomic execution claim. Storage and claims passed fictional hosted
+   acceptance on September 15; actual teaching-provider integration remains.
+   Clients must claim the same class/assignment task; a second caller seeing
+   Working stops. Failed scans cannot overwrite the last successful baseline.
 5. Provider hookup and live acceptance. Grade posting, email, document filing and
    printer execution each require their own authorization and destination readback.
 
@@ -82,8 +84,10 @@ combined grade. Missing evidence is unavailable. Repeated observations are
 idempotent; conflicting rewrites are rejected. Migration 005 adds history to
 the existing state database, not a second store.
 
-The host may call `record_observation(connection, observation)` and
-`read_observations(...)` against its approved private database, then pass the
-observations to `build_teaching_results(learning_observations=...)`.
-The live hosted provider and private database connection remain unconfigured.
-These functions and synthetic persistence tests do not establish live storage.
+`record_observation(connection, observation)` and `read_observations(...)` are
+SQLite helpers used in offline tests. The hosted provider must bind validated
+observations to the existing Firestore store and pass the resulting history to
+`build_teaching_results(learning_observations=...)`; do not introduce operational
+SQLite or a second history database. Firestore's fictional persistence acceptance
+is documented in `PRIVATE_CLOUD_STATE.md`; actual teaching/history integration
+remains unconnected. These local helpers do not establish that integration.
