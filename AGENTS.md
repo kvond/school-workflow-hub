@@ -26,6 +26,39 @@
   September 14 checkpoint. The
   existing fixture-only workflows must not accept real input by relabeling it.
 
+## Assistant accounts
+
+The program must run every week whether or not the teacher is signed in to any
+assistant. Three rules keep it that way, and they apply to every workflow here:
+
+- No assistant account is a credential path to a school system. Credentials
+  belong to the service identity in the approved private runtime, never to a
+  chat session or a personal account.
+- No scheduled or recurring run may depend on an assistant session being open or
+  reachable. A run that cannot complete unattended is not ready to be scheduled.
+- An assistant may read a shared status record and may prepare work for teacher
+  review. It never claims a task, writes a destination, or records a receipt.
+
+The Python package holds no model client and makes no model call; the feedback
+and reporting workflows carry a live-model-call counter that the tests assert
+stays at zero. Keep it that way, and see `docs/ROSTER_SYNC_INTEGRATION.md` for
+the worked example of the boundary.
+
+## Document retirement
+
+Status and handoff documents accumulate at the rate of sessions rather than at
+the rate of working features, so retire them as you go:
+
+- When a document supersedes an earlier status or handoff document, delete the
+  earlier one in the same commit. The repository history already preserves it;
+  `docs/` is for what is currently true.
+- The same applies to a command, capability entry, manifest or fixture that no
+  longer serves a live purpose. Remove it rather than leaving it for provenance.
+- If you are unsure whether a document is superseded, say so in your handoff and
+  leave it. Do not add a second document that says the first one is stale.
+
+## Standing limits
+
 - This is a code-and-synthetic-test export, not the school's data store.
 - Do not add credentials, actual school URLs/IDs, student records, private
   inputs, browser profiles, local reports or source repository history.
