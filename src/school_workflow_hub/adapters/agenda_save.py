@@ -26,7 +26,10 @@ def batch(source, token, requests):
                 headers={'Authorization': 'Bearer ' + token}, json={'requests': requests},
                 timeout=(5, 20), allow_redirects=False)
             if response.status_code != 200:
-                raise ConnectionError('agenda_editor_access_required')
+                code = {400: 'agenda_write_request_invalid', 401: 'agenda_writer_identity_failed',
+                        403: 'agenda_writer_permission_or_scope_denied', 429: 'agenda_write_rate_limited'}.get(
+                            response.status_code, 'agenda_write_service_unavailable')
+                raise ConnectionError(code)
             return response.json()
     except ConnectionError:
         raise
@@ -71,9 +74,15 @@ def target(assertion, day, course, config):
 
 def capability(assertion, day, course, config):
     identity, values, revision = target(assertion, day, course, config)
-    # Empty batch verifies edit authorization without changing lesson cells.
+    # A bounded identity replacement verifies edit authorization without
+    # changing any content. Sheets rejects an empty batch on some deployments.
     token = service_token(config['HUB_READER_SERVICE_ACCOUNT'], WRITE_SCOPE)
-    batch(identity['source'], token, [])
+    marker = '__hub_permission_probe_no_content_change__'
+    column = identity['columns']['notes'] - 1
+    batch(identity['source'], token, [{'findReplace': {'find': marker, 'replacement': marker,
+        'matchCase': True, 'matchEntireCell': True, 'includeFormulas': False,
+        'range': {'sheetId': identity['sheet'], 'startRowIndex': identity['row'] - 1,
+                  'endRowIndex': identity['row'], 'startColumnIndex': column, 'endColumnIndex': column + 1}}}])
     CloudState(configured_store(config)).read_task('task_' + '0' * 64)
     return {'schema_version': 'hub-agenda-save/v1', 'save_enabled': True,
             'revision': revision, 'values': values, 'date': day, 'class_key': course}
