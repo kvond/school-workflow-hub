@@ -77,7 +77,7 @@ async function loadDay(){
   if(sequence!==loadSequence||selected!==requested)return;
   liveDays.set(requested,data);document.dispatchEvent(new CustomEvent('agenda-day-loaded',{detail:data}));
   for(const c of classes){const d=draft(c),l=data.lessons.find(l=>c.key.endsWith(':'+l.class_key));if(!d.dirty){d.title=l.title;d.plan=l.plan;d.notes=l.notes;d.links=l.links.map(x=>({...x}));}}
-  render();document.querySelector('.preview-pill').textContent='Agenda read-only · other workflows are previews';
+  render();document.querySelector('.preview-pill').textContent='Agenda loaded · Infinite Campus checks use the school browser';
   for(const c of classes){const l=data.lessons.find(l=>c.key.endsWith(':'+l.class_key));if(!draft(c).dirty)checkSaving(c,requested,l);}
   document.dispatchEvent(new CustomEvent('agenda-source-loaded',{detail:{date:data.date,checkedAt:data.checked_at,classes:data.lessons.length}}));
   if(!dirty)$('draft-status').hidden=true;

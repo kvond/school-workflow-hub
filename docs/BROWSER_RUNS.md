@@ -83,3 +83,14 @@ the computer and authenticated school browser to be available. Configure the
 schedule through Codex's native automation tool; do not add a parallel cloud
 schedule. School-source, assessment, destination and history checks remain
 independent requirements for each actual execution.
+
+## Scoped acceptance — September 16, 2026
+
+The hosted school session successfully reserved and renewed the canonical roster
+run. A second tab in the same signed-in profile saw the busy state and could not
+adopt the claim. An attributed partial-check report saved with readback; after
+reload, the same run ID, result hash and stored timestamp were returned. The
+grading status also loaded. No grade or roster cell was written. This verifies
+coordination and report persistence, not a complete grading or reconciliation
+workflow. The full offline suite passed 557 tests, including 18 endpoint tests;
+frontend syntax and uncertain-save recovery checks also passed.

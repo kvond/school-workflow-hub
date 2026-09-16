@@ -271,8 +271,8 @@
     },
     {
       "id": "browser_run_coordination",
-      "state": "authenticated_browser_claims_and_attributed_reports",
-      "live_verified": false,
+      "state": "scoped_hosted_browser_coordination_verified",
+      "live_verified": true,
       "evidence_files": [
         "src/school_workflow_hub/adapters/browser_runs.py",
         "web/browser-runs.mjs",
@@ -280,9 +280,16 @@
         "docs/BROWSER_RUNS.md"
       ],
       "remaining": [
-        "Verify signed-in hosted claim, renewal, report publication and reload readback",
         "Actual source scope, student identities, assessment history and each school destination need per-run verification",
         "Stored browser reports are not independently server-verified school actions"
+      ],
+      "verified_on": "2026-09-16",
+      "verification_scope": [
+        "roster_cookie_and_tab_bound_claim",
+        "lease_renewal",
+        "same_profile_competing_tab_excluded",
+        "browser_report_save_and_reload_readback",
+        "grading_status_read"
       ]
     }
   ]
