@@ -110,7 +110,7 @@ def check_readiness(assertion, config=None, *, teaching_provider_configured=Fals
     config = os.environ if config is None else config
     checks = {name: {"status": "not_connected"} for name in (
         "private_storage", "shared_run_claims", "agenda_save", "submissions",
-        "infinite_campus", "grade_posting", "feedback_filing", "parent_email", "printing",
+        "infinite_campus", "roster_sync", "grade_posting", "feedback_filing", "parent_email", "printing",
     )}
     checks.update({
         "authentication": {"status": "not_configured"},

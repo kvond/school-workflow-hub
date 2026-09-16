@@ -77,6 +77,9 @@ use the integration record for this reconciliation's validation.
   private views. It is not a replacement for the deployed Page 2/Page 3 provider.
 - `hub-teaching-results/v1` is the existing authenticated teaching-results
   boundary; its actual private provider is still missing.
+- `hub-roster-sync/v1` is the authenticated shared status boundary at
+  `/api/roster-sync`; it reuses the cloud task/lease model and remains
+  status-only until its IC reader and roster-workbook writer are accepted.
 - Firestore is the hosted task/result store. SQLite helpers remain offline
   synthetic fixtures; do not introduce operational dual writes.
 - Cloud deployment, credentials, billing, Actions enable variables and schedules

@@ -15,6 +15,15 @@ CONFIG = {
 
 
 class ConnectionTests(unittest.TestCase):
+    def test_roster_status_route_is_read_only_and_requires_signed_identity(self):
+        from tests.test_web_hosting import request
+        with patch("school_workflow_hub.adapters.roster_sync.read_roster_sync_status",
+                   return_value={"status": "Queued", "external_writes": 0}) as status:
+            response = request("/api/roster-sync")
+            self.assertEqual(response["status"], "200 OK")
+            status.assert_called_once()
+        self.assertEqual(request("/api/roster-sync", "POST")["status"], "405 Method Not Allowed")
+
     def test_web_route_requires_signed_identity_and_head_does_not_read(self):
         from tests.test_web_hosting import request
         with patch.dict("os.environ", CONFIG, clear=True), patch.object(pilot, "service_token") as token:
