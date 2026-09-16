@@ -3,12 +3,12 @@ const panel=document.querySelector('.connection');
 const rosterStatus=document.querySelector('#roster-sync-status');
 const check=document.createElement('button');check.type='button';check.textContent='Check Agenda access';
 const status=document.createElement('p');status.className='hint';status.setAttribute('role','status');
-let lessonRead=null,accessMessage='',checking=false,savingReady=false;
+let lessonRead=null,accessMessage='',checking=false,editing={ready:0,pending:3};
 panel.append(check,status);
 mountBrowserRuns(document.querySelector('.connection-details'));
 function render(){
  panel.querySelector('strong').textContent=lessonRead?'Agenda lessons loaded':'Agenda ready to load';
- panel.querySelector('span').textContent=savingReady?'Agenda editing connected. Roster and grading use the signed-in browser.':'Checking Agenda editing access. Roster and grading use the signed-in browser.';
+ panel.querySelector('span').textContent=(editing.ready?'Dashboard → Agenda saving is available for '+editing.ready+' classes.':editing.pending?'Checking Agenda editing access.':'Agenda saving needs attention; see the class save status.')+' Roster and grading use the signed-in browser.';
  const loaded=lessonRead?`Loaded ${lessonRead.classes} classes for ${lessonRead.date} · ${new Date(lessonRead.checkedAt).toLocaleString()}.`:'';
  status.textContent=[loaded,checking?'Checking Agenda access…':accessMessage].filter(Boolean).join(' ');
  status.hidden=!status.textContent;
@@ -16,7 +16,7 @@ function render(){
 document.addEventListener('agenda-source-loaded',event=>{
  lessonRead=event.detail;accessMessage='';render();
 });
-document.addEventListener('agenda-saving-ready',()=>{savingReady=true;render();});
+document.addEventListener('agenda-saving-state',event=>{editing=event.detail;render();});
 check.addEventListener('click',async()=>{
  check.disabled=true;checking=true;render();
  try{

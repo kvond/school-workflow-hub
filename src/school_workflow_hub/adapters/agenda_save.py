@@ -42,6 +42,10 @@ def target(assertion, day, course, config):
         raise ValueError('invalid_course')
     result = read_day(assertion, day, config)
     lesson = next(l for l in result['lessons'] if l['class_key'] == course)
+    days = (1, 3, 4) if course == 'anatomy' else (0, 2, 4)
+    weekday = date.fromisoformat(day).weekday()
+    if weekday not in days:
+        raise ConnectionError('agenda_day_not_writable')
     if lesson['origin'] != 'Weekly Agenda':
         raise ConnectionError('agenda_override_needs_review')
     title = dict(COURSES)[course]
@@ -49,10 +53,6 @@ def target(assertion, day, course, config):
     if not match:
         raise ConnectionError('agenda_layout_changed')
     row = int(match[1])
-    days = (1, 3, 4) if course == 'anatomy' else (0, 2, 4)
-    weekday = date.fromisoformat(day).weekday()
-    if weekday not in days:
-        raise ConnectionError('agenda_day_not_writable')
     col = 4 + days.index(weekday) * 2
     reader, source = authenticated_reader(assertion, config)
     data = reader.read(source, (f"'{title}'!A{row}:R{row}",))
