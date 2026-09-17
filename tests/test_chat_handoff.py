@@ -104,5 +104,60 @@ class ReturnTests(unittest.TestCase):
             chat_handoff.validate_return({"schema_version": "other/v1"}, [])
 
 
+
+RESEARCH_PROMPTS = {
+    "prompts": {"feedback": "Prompt 2 — feedback.", "summary": "Prompt 3 — summary.",
+                "research": "Prompt 4 — research coding."},
+    "sha256": {"feedback": "abc123", "summary": "def456", "research": "ghi789"},
+    "version_label": "feedback-v2.1",
+    "bundled_matches": {"feedback": True, "summary": True, "research": True}}
+
+
+class SelfContainedBlockTest(unittest.TestCase):
+    """The chat account cannot reach Drive, the Agenda sheet or the dashboard.
+
+    A block that points it at one of those is refused outright rather than
+    worked, so no standing rule may carry an address. The rules may name a
+    check in order to say the assistant does not own it; they may not link out.
+    """
+
+    ADDRESSES = ("http", "docs.google.com", "drive.google.com", "infinitecampus",
+                 "run.app", "@", ".com", ".org", ".edu")
+
+    def _all_rule_lines(self):
+        lines = list(chat_handoff.SELF_CONTAINED)
+        for task_lines in chat_handoff.TASK_RULES.values():
+            lines.extend(task_lines)
+        return lines
+
+    def test_every_task_has_rules(self):
+        self.assertEqual(set(chat_handoff.TASK_RULES), set(chat_handoff.TASK_LIMITS))
+
+    def test_no_standing_rule_carries_an_address(self):
+        for line in self._all_rule_lines():
+            for address in self.ADDRESSES:
+                self.assertNotIn(address, line.lower(),
+                                 "a standing rule points outside the block: " + line)
+
+    def test_block_states_it_is_self_contained_for_every_task(self):
+        for task in chat_handoff.TASK_LIMITS:
+            handoff = chat_handoff.build_handoff(
+                task, RESEARCH_PROMPTS, CONTEXT,
+                {"index": 1, "total": 1, "aliases": ["Ana R"]}, DESTINATION)
+            self.assertTrue(handoff["self_contained"])
+            self.assertIn("HOW TO USE THIS BLOCK", handoff["block"])
+            self.assertIn("nothing here requires them.", handoff["block"])
+            for line in chat_handoff.TASK_RULES[task]:
+                self.assertIn(line, handoff["block"])
+
+    def test_rules_are_task_specific_not_one_shared_paragraph(self):
+        feedback = chat_handoff.TASK_RULES["feedback"]
+        summary = chat_handoff.TASK_RULES["summary"]
+        research = chat_handoff.TASK_RULES["research"]
+        self.assertNotEqual(feedback, summary)
+        self.assertNotEqual(summary, research)
+        self.assertIn("not batched", " ".join(summary))
+        self.assertIn("Collection is disabled", " ".join(research))
+
 if __name__ == "__main__":
     unittest.main()

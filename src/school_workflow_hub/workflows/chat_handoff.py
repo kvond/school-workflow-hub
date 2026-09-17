@@ -32,6 +32,50 @@ UNDERSTANDING = frozenset({"Developing", "Almost there", "Proficient", "Evidence
 # must not leave the teacher's side.
 ALIAS = re.compile(r"^[^\s]+(?: [A-Za-z]\.?)?$")
 
+# A chat account cannot reach Drive, the Agenda sheet or the hosted dashboard:
+# the dashboard sits behind an identity proxy and the school Google account does
+# not extend to the chat accounts. An instruction that asks the assistant to read
+# one of those, or to verify an account, a browser profile or a schedule, makes it
+# refuse the whole task rather than do the work. So every block states that it is
+# self-contained, and no line below may name a system to open or a check to run.
+SELF_CONTAINED = (
+    "HOW TO USE THIS BLOCK",
+    "Everything you need is in this block and in the work pasted after it. Do not",
+    "open Drive, the Agenda sheet, the dashboard or any other system: you cannot",
+    "reach them, and nothing here requires them.",
+    "Do not verify accounts, browser profiles, schedules or permissions. Those are",
+    "the teacher's checks, they are already done, and you cannot see them.",
+    "The prompt below is the one in force. Do not change it. If it looks wrong, say",
+    "so in one line and return the records you can.",
+)
+
+TASK_RULES = {
+    "feedback": (
+        "Work only from the student writing pasted after this block.",
+        "Use the aliases given above. Never ask for, infer or write a real name.",
+        "If a student's work cannot be assessed, return that student with",
+        "understanding_level \"Evidence unavailable\" rather than leaving them out.",
+        "Do not write to, send from, or print from any school system.",
+    ),
+    "summary": (
+        "Work from the whole class at once. This stage compares students, so it is",
+        "not batched.",
+        "Report what the assessed evidence shows. Do not infer a cause you cannot",
+        "see in the evidence, and do not rank students.",
+        "Where a count has a zero denominator, say N/A rather than 0: they mean",
+        "different things and are stored differently.",
+        "Do not write to, send from, or print from any school system.",
+    ),
+    "research": (
+        "Code only the records pasted after this block. Collection is disabled: do",
+        "not look for further records.",
+        "Where a record supports no code in the codebook given, return it uncoded",
+        "with a one-line reason. An uncoded record is a finding about the codebook,",
+        "not a failure, so do not force a fit.",
+        "Aliases only. A coded entry is never a finding about a named student.",
+    ),
+}
+
 
 def _check_aliases(aliases):
     if not aliases:
@@ -82,6 +126,9 @@ def build_handoff(task, prompts, context, batch, destination):
         "Submissions folder: {}".format(context["folder_reference"]),
         "Students in this batch: " + ", ".join(aliases),
         "",
+        *SELF_CONTAINED,
+        *TASK_RULES[task],
+        "",
         "RETURN — end your reply with one fenced block per student, exactly these fields:",
         "  " + ", ".join(RETURN_FIELDS),
         "Use the alias above as learner_alias. Leave a field empty rather than guessing.",
@@ -97,6 +144,7 @@ def build_handoff(task, prompts, context, batch, destination):
         "prompt_version": prompts.get("version_label"),
         "prompt_sha256": prompts.get("sha256", {}).get(task),
         "return_fields": RETURN_FIELDS,
+        "self_contained": True,
         "block": "\n".join(header) + "\n" + prompts["prompts"][task],
         "external_writes": 0,
         "live_model_calls": 0,
