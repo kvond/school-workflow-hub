@@ -1,6 +1,8 @@
 import {createRecordsLoader,renderRecords,renderSummaries,sectionOptions} from './grading-records.mjs';
 import {safeLink} from './contract.mjs';
 import {showRunInstructions} from './browser-runs.mjs';
+import {buildPostingReview,renderPostingReview} from './grade-posting.mjs';
+import {createCompanionClient,companionMessage} from './browser-companion.mjs';
 const $=id=>document.getElementById(id);
 const allowed=['agenda','feedback','summary','research'];
 const researchURL='https://github.com/kvond/answerable-skills/blob/a9a8fc1992c6564dac68d818f3597f11671f9667/skills/formative-pipeline-v2/SKILL.md';
@@ -101,7 +103,41 @@ async function scanSubmissions(){
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
 const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);queue.append(inventoryDetails);
 const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Open each student’s report from the list above.'));const reportActions=el('div',undefined,'action-row');promptAction(reportActions,'Copy feedback instructions','feedback');heldAction(reportActions,'Print feedback documents','Needs current feedback documents, a verified school printer, and your direction.');reports.append(reportActions);
-const delivery=el('section',undefined,'surface');delivery.append(el('h2','Grades & parent contact'),el('p','Completion grading uses the connected Codex task and signed-in Infinite Campus browser.'));const deliveryActions=el('div',undefined,'action-row');deliveryActions.append(btn('Manual completion grading',()=>showRunInstructions('grading')));heldAction(deliveryActions,'Review overdue emails','Needs verified due dates, cumulative submissions, and parent contacts from Infinite Campus.');delivery.append(deliveryActions);const details=el('details',undefined,'workflow-details');details.append(el('summary','What is needed to enable these actions'),el('p','Printing needs the lesson’s complete report batch and printer mapping. Grades need verified assignment targets and score readback in Infinite Campus. Parent notices need verified non-submission 14 days after the due date and current parent contacts.'));delivery.append(details);
+async function reviewGrades(){
+ const selection={classKey:scope.classKey,sectionId};
+ const modal=$('detail'),body=el('div');
+ $('detail-title').textContent='Review grades for Infinite Campus';
+ body.append(el('p','Refreshing the recorded grades…'));
+ $('detail-body').replaceChildren(body);modal.showModal();
+ try{
+  const response=await fetch('/api/grading-records',{cache:'no-store',credentials:'same-origin',redirect:'error'});
+  if(!response.ok)throw Error('The grading workbook could not be refreshed. Close this review and try again.');
+  const review=buildPostingReview(await response.json(),selection);
+  if(!body.isConnected||!modal.open)return;
+  if(scope.classKey!==selection.classKey||sectionId!==selection.sectionId)throw Error('The selected class or section changed. Open a new grade review.');
+  renderPostingReview(body,review);
+  body.append(el('p','Open the matching assignment’s Score panel in Infinite Campus in this same school browser. The companion checks the current assignment and asks you to confirm there before posting.','hint'));
+  const state=el('p','Checking the school browser companion…','hint');state.setAttribute('role','status');body.append(state);
+  const companion=createCompanionClient();
+  modal.addEventListener('close',()=>companion.dispose(),{once:true});
+  const available=await companion.status();if(!body.isConnected||!modal.open){companion.dispose();return;}
+  state.textContent=companionMessage(available);
+  const start=btn('Review & post in school browser',async()=>{
+   start.disabled=true;state.textContent='Refreshing the recorded grades before the Infinite Campus review…';
+   try{
+    if(scope.classKey!==selection.classKey||sectionId!==selection.sectionId)throw Error('The selection changed. Open a new review.');
+    const latest=await fetch('/api/grading-records',{cache:'no-store',credentials:'same-origin',redirect:'error'});
+    if(!latest.ok)throw Error('The grading workbook could not be refreshed. Nothing was sent.');
+    const fresh=buildPostingReview(await latest.json(),selection);
+    if(fresh.source_revision!==review.source_revision)throw Error('The workbook changed. Open a new review.');
+    const result=await companion.prepare(fresh,{onProgress:reply=>{state.textContent=companionMessage(reply);}});
+    state.textContent=companionMessage(result);
+   }catch(error){state.textContent=error.message;}
+  },available.code!=='companion_available');
+  body.append(start);
+ }catch(error){if(body.isConnected&&modal.open)body.replaceChildren(el('p',error.message,'error'));}
+}
+const delivery=el('section',undefined,'surface');delivery.append(el('h2','Grades & parent contact'),el('p','Post recorded grades through your signed-in school browser. Existing matching grades are skipped.'));const deliveryActions=el('div',undefined,'action-row');deliveryActions.append(btn('Post grades to Infinite Campus',()=>reviewGrades()),btn('Manual completion grading',()=>showRunInstructions('grading')));heldAction(deliveryActions,'Review overdue emails','Needs verified due dates, cumulative submissions, and parent contacts from Infinite Campus.');delivery.append(deliveryActions);const details=el('details',undefined,'workflow-details');details.append(el('summary','What is needed to enable these actions'),el('p','Grade posting uses the School Workflow Hub browser companion in the same school Chrome or Edge profile on this computer. It verifies the open assignment, preserves existing grades and checks the saved result. Manual completion grading copies a separate grading request. Parent notices need verified non-submission 14 days after the due date and current parent contacts.'));delivery.append(details);
 feedbackGrid.append(queue,reports,delivery);feedback.append(feedbackGrid);
 const summary=$('page-summary');compactHeading(summary,'Teacher summary');summary.append(el('p','One teaching summary for each class, using the reviewed submission records.','hint'));
 const summaryActions=el('div',undefined,'action-row summary-actions');promptAction(summaryActions,'Copy class-summary instructions','summary');summary.append(summaryActions);

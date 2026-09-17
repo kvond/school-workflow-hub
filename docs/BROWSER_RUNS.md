@@ -42,9 +42,12 @@ grades and return conflicting existing grades or teacher changes for explicit
 review. Follow the ownership, recovery and destination readback requirements
 below. Approval of one selection does not cover changed records or a new scope.
 
-The existing coordination endpoint and grade-review UI do not establish that
-this executor is implemented or accepted. Live posting remains unverified until
-an authorized supervised write and matching IC readback are recorded.
+The [browser companion](../browser-extension/README.md) implements this bounded
+executor and the Page 2 connection. It uses the current assignment's rendered
+Score panel, exact source references, full visible grade snapshots, and native
+Save followed by reload/readback. Synthetic validation does not establish live
+acceptance. An existing-score check verifies the read/skip path; live posting
+remains unverified until an authorized write and matching IC readback occur.
 
 ## Worker procedure
 

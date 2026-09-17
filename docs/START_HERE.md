@@ -22,8 +22,10 @@ browser worker, including an assistant, to claim the shared run, perform the
 selected verified writes and record an attributed receipt. Each computer uses
 its own school session; credentials and cookies are never copied to the server
 or between computers. It does not enable a schedule or regrade submitted work.
-The executor and live IC write/readback acceptance remain pending; a review
-screen or stored browser report alone does not make the post operational.
+The [browser companion](../browser-extension/README.md) implements the Page 2
+review and bounded executor for the current assignment's Score panel. Its
+synthetic tests pass; installation and live IC write/readback acceptance remain
+separate requirements. A stored browser report alone does not prove a write.
 
 ```sh
 python3 scripts/hub_status.py --json
