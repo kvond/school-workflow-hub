@@ -14,6 +14,56 @@ export function sectionOptions(data,classKey){
 export function filterRecords(data,classKey,sectionId='matched'){
  return data.submissions.filter(row=>row.class_key===classKey&&(sectionId==='all'||(sectionId==='matched'?Boolean(row.section_id):row.section_id===sectionId))).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||'')||a.assignment_title.localeCompare(b.assignment_title));
 }
+// Fixed, non-sensitive messages only: never render provider bodies or exception text.
+const recoveryKinds={
+ sign_in:{title:'Dashboard sign-in required',message:'The dashboard needs your signed-in school session.',kind:'connect',next:'Sign in to this dashboard, then refresh.',retryable:false},
+ connection:{title:'Grading workbook connection missing',message:'The dashboard has no valid private grading-workbook connection.',kind:'connect',next:'Restore the existing workbook connection before refreshing.',retryable:false},
+ access:{title:'Grading workbook access denied',message:'The dashboard reader was denied access to the configured workbook.',kind:'connect',next:'Restore the existing reader’s approved workbook access, then refresh.',retryable:false},
+ not_found:{title:'Grading workbook not found',message:'The configured workbook could not be found or is not visible to the dashboard reader.',kind:'connect',next:'Verify the existing workbook connection and reader access before refreshing.',retryable:false},
+ identity:{title:'Dashboard reader authentication failed',message:'The server could not authenticate its workbook reader. This is separate from your dashboard sign-in.',kind:'connect',next:'Restore the existing server reader identity before refreshing.',retryable:false},
+ layout:{title:'Grading workbook layout needs review',message:'The existing workbook does not match the required tabs, headers, or bounded grid layout.',kind:'review',next:'Review the existing workbook layout; preserve its records, then refresh.',retryable:false},
+ records:{title:'Grading records need review',message:'The workbook contains unresolved or invalid grading records. The dashboard has not treated them as missing work.',kind:'review',next:'Resolve the reported record issue in the existing private workbook, then refresh.',retryable:false},
+ changed:{title:'Grading workbook changed during the read',message:'The workbook structure changed while the dashboard was reading it.',kind:'recheck',next:'Finish the current workbook edit, then refresh for a new read.',retryable:true},
+ limit:{title:'Grading workbook read limit reached',message:'The workbook exceeded a bounded read limit; this is not an empty-submission result.',kind:'review',next:'Review the existing workbook’s read bounds without deleting student history, then refresh.',retryable:false},
+ temporary:{title:'Grading workbook temporarily unavailable',message:'The workbook service is busy or could not complete this read.',kind:'recheck',next:'Retry Refresh after the temporary service issue clears.',retryable:true},
+ invalid:{title:'Grading response could not be verified',message:'The dashboard received an unreadable or invalid grading response.',kind:'review',next:'Check the workbook reader response before relying on these records; then refresh.',retryable:false},
+ request:{title:'Dashboard request could not be completed',message:'The request did not return a verified grading response. The cause has not been confirmed.',kind:'recheck',next:'Check the dashboard connection and signed-in session, then refresh.',retryable:true},
+ unknown:{title:'Grading workbook unavailable',message:'The dashboard could not read verified grading records. The cause has not been confirmed.',kind:'recheck',next:'Retry Refresh; a repeated failure needs the existing service connection checked.',retryable:true},
+};
+const recoveryCodes={
+ sign_in_required:'sign_in',
+ grading_records_not_connected:'connection',
+ grading_records_access_denied:'access',
+ grading_records_source_not_found:'not_found',
+ grading_records_authentication_required:'identity',
+ grading_records_invalid_credential:'identity',
+ grading_workbook_layout_required:'layout',
+ grading_workbook_headers_required:'layout',
+ grading_workbook_changed:'changed',
+ grading_workbook_limit:'limit',
+ grading_records_response_limit:'limit',
+ grading_records_range_limit:'limit',
+ grading_records_source_rate_limited:'temporary',
+ grading_records_source_transient_failure:'temporary',
+ grading_records_source_unavailable:'temporary',
+ grading_records_invalid_response:'invalid',
+ grading_record_conflict:'records',
+ grading_identity_conflict:'records',
+ grading_assignment_unresolved:'records',
+ grading_answer_unresolved:'records',
+ grading_score_invalid:'records',
+ grading_class_invalid:'records',
+ grading_summary_invalid:'records',
+ grading_records_unavailable:'unknown',
+};
+export function recordsFailure(status,payload){
+ const reported=payload&&!Array.isArray(payload)&&typeof payload.error==='string'?payload.error:'';
+ const code=status===401||status===403?'sign_in_required':Object.hasOwn(recoveryCodes,reported)?reported:'grading_records_unavailable';
+ const category=status===0?'request':recoveryCodes[code];
+ const recovery=recoveryKinds[category];
+ return {status:'error',code,category,title:recovery.title,message:recovery.message,
+  next_action:{kind:recovery.kind,label:recovery.next},retryable:recovery.retryable};
+}
 export function createRecordsLoader({fetcher=fetch,onState}){
  let generation=0,controller;
  return async()=>{
@@ -21,10 +71,26 @@ export function createRecordsLoader({fetcher=fetch,onState}){
   try{
    const response=await fetcher('/api/grading-records',{cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal});
    if(current!==generation)return;
-   if(!response.ok)throw Error(response.status===403?'Sign in to read your private grading records.':'The private grading workbook is unavailable. Refresh after its connection is restored.');
-   const data=validateRecords(await response.json());if(current===generation)onState({status:'loaded',data});
-  }catch(error){if(current===generation&&error.name!=='AbortError')onState({status:'error',message:error.message});}
+   if(!response.ok){
+    let payload;try{payload=await response.json();}catch{} // IAP/proxies may return non-JSON.
+    if(current===generation)onState(recordsFailure(response.status,payload));
+    return;
+   }
+   let data;
+   try{data=validateRecords(await response.json());}
+   catch{if(current===generation)onState(recordsFailure(503,{error:'grading_records_invalid_response'}));return;}
+   if(current===generation)onState({status:'loaded',data});
+  }catch(error){if(current===generation&&error?.name!=='AbortError')onState(recordsFailure(0));}
  };
+}
+function renderReadState(root,state,waiting){
+ if(state.status!=='error'){line(root,state.message||waiting);return;}
+ const panel=node(root,'section');panel.className='surface';panel.setAttribute('role','alert');
+ line(panel,state.title||'Grading records unavailable');line(panel,state.message||'No verified read is available.');
+ if(state.next_action)line(panel,'Next action: '+state.next_action.label);
+ if(state.code)line(panel,'Diagnostic: '+state.code,'hint');
+ line(panel,'A failed read does not establish missing work. Refresh does not change grades.','hint');
+ root.append(panel);
 }
 function node(root,tag,text){const n=root.ownerDocument.createElement(tag);if(text!==undefined)n.textContent=String(text);return n;}
 function line(root,text,cls){const p=node(root,'p',text);if(cls)p.className=cls;root.append(p);return p;}
@@ -37,7 +103,7 @@ export function score(row,key){
 }
 export function renderRecords(root,state,{classKey,sectionId='matched'}){
  root.replaceChildren();
- if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
+ if(state.status!=='loaded'){renderReadState(root,state,state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.');return;}
  const rows=filterRecords(state.data,classKey,sectionId),included=rows.filter(r=>r.included_in_counts);
  line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with matched submissions · ${included.length} records · checked ${time(state.data.checked_at)}`,'hint');
  if(sectionId==='matched'){
@@ -65,7 +131,7 @@ export function renderRecords(root,state,{classKey,sectionId='matched'}){
  table.append(body);const wrap=node(root,'div');wrap.className='work-table-wrap';wrap.append(table);root.append(wrap);
 }
 export function renderSummaries(root,state){
- root.replaceChildren();if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading class summaries…':'Refresh to load class summaries.'));return;}
+ root.replaceChildren();if(state.status!=='loaded'){renderReadState(root,state,state.status==='loading'?'Loading class summaries…':'Refresh to load class summaries.');return;}
  const summaries=state.data.summaries;
  if(!summaries.length){line(root,'No reviewed class summaries have been recorded.');return;}
  // Exactly one card per explicit class/section. No score averages or repeated panels.
