@@ -19,6 +19,7 @@ from .read_only_http import read_json, SourceReadError, validate_token, _NoRedir
 
 MAX_BYTES = 2 * 1024 * 1024
 MAX_CELLS = 5000
+GRADING_TABLE_TITLES = frozenset({"Assignments", "Submissions", "Answers", "Class summaries"})
 FIELDS = "spreadsheetId,properties(title,timeZone),sheets(properties(sheetId,title,index,hidden),data(startRow,startColumn,rowData(values(formattedValue,effectiveValue(numberValue),hyperlink,textFormatRuns(format(link(uri))),userEnteredValue(formulaValue)))))"
 METADATA_FIELDS = "spreadsheetId,properties(title,timeZone),sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)))"
 
@@ -56,6 +57,29 @@ def validate_ranges(ranges: Tuple[str, ...]) -> Tuple[str, ...]:
     return ranges
 
 
+def _grading_ranges(ranges: Tuple[str, ...]) -> Tuple[str, ...]:
+    """Only the four fixed grading tables may use a complete bounded grid read.
+
+    Sheets omits trailing empty grid data. The shared HTTP transport still caps
+    the complete response at 2 MiB; oversized workbooks fail instead of truncating.
+    General source readers retain their 5,000-cell limit.
+    """
+    if not isinstance(ranges, tuple) or len(ranges) != 4:
+        raise SheetsReadError("invalid_ranges")
+    titles = set()
+    for value in ranges:
+        match = re.fullmatch(r"'(Assignments|Submissions|Answers|Class summaries)'!A1:([A-Z]{1,2})([1-9][0-9]{0,4})", value) if isinstance(value, str) and len(value) <= 100 else None
+        if match is None:
+            raise SheetsReadError("invalid_range")
+        title, column, row = match.groups()
+        if title in titles or _column_number(column) > 40 or int(row) > 10000:
+            raise SheetsReadError("range_limit")
+        titles.add(title)
+    if titles != GRADING_TABLE_TITLES:
+        raise SheetsReadError("invalid_ranges")
+    return ranges
+
+
 @dataclass(frozen=True)
 class SheetsReader:
     access_token: str = field(repr=False)
@@ -71,9 +95,18 @@ class SheetsReader:
             object.__setattr__(self, "opener", build_opener(_NoRedirect()))
 
     def read(self, spreadsheet_id: str, ranges: Tuple[str, ...] = ()) -> Mapping:
+        return self._read(spreadsheet_id, validate_ranges(ranges))
+
+    def read_grading_tables(self, spreadsheet_id: str, ranges: Tuple[str, ...]) -> Mapping:
+        result = self._read(spreadsheet_id, _grading_ranges(ranges))
+        if (len(result["sheets"]) != 4 or
+                {sheet["properties"]["title"] for sheet in result["sheets"]} != GRADING_TABLE_TITLES):
+            raise SheetsReadError("invalid_response")
+        return result
+
+    def _read(self, spreadsheet_id: str, ranges: Tuple[str, ...]) -> Mapping:
         if not isinstance(spreadsheet_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", spreadsheet_id):
             raise SheetsReadError("invalid_spreadsheet_id")
-        validate_ranges(ranges)
         query = [("fields", FIELDS if ranges else METADATA_FIELDS)]
         query.extend(("ranges", value) for value in ranges)
         url = "https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheet_id + "?" + urlencode(query)

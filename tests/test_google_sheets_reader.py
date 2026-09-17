@@ -1,4 +1,5 @@
 import io
+import copy
 import json
 import unittest
 from unittest.mock import patch
@@ -15,6 +16,8 @@ SOURCE = "synthetic_sheet_0123456789"
 TOKEN = "fictional-test-token"
 RANGE = "'Synthetic Agenda'!A1:D10"
 KEY = b"f" * 32
+GRADING_TITLES = ("Assignments", "Submissions", "Answers", "Class summaries")
+GRADING_RANGES = tuple("'" + title + "'!A1:Z1000" for title in GRADING_TITLES)
 
 
 def sample():
@@ -22,6 +25,13 @@ def sample():
             "sheets": [{"properties": {"sheetId": 7, "title": "Synthetic Agenda", "index": 0},
                         "data": [{"rowData": [{"values": [{"formattedValue": "private fixture text",
                                    "hyperlink": "https://example.invalid/copy"}]}]}]}]}
+
+
+def grading_sample():
+    result = sample()
+    result["sheets"] = [{"properties": {"sheetId": index, "title": title}, "data": []}
+                        for index, title in enumerate(GRADING_TITLES)]
+    return result
 
 
 class Opener:
@@ -58,6 +68,50 @@ class SheetsReaderTests(unittest.TestCase):
         self.assertIn("hyperlink", query["fields"][0])
         self.assertIn("textFormatRuns", query["fields"][0])
         self.assertEqual(query["fields"][0].count("("), query["fields"][0].count(")"))
+
+    def test_dedicated_grading_read_uses_one_bounded_get_for_exact_four_grids(self):
+        opener = Opener(grading_sample())
+        result = SheetsReader(TOKEN, opener).read_grading_tables(SOURCE, GRADING_RANGES)
+        self.assertEqual(result, grading_sample())
+        self.assertEqual(len(opener.calls), 1)
+        request, timeout = opener.calls[0]
+        self.assertEqual(request.get_method(), "GET")
+        self.assertEqual(timeout, 20)
+        query = parse_qs(urlsplit(request.full_url).query)
+        self.assertEqual(query["ranges"], list(GRADING_RANGES))
+        self.assertIn("formattedValue", query["fields"][0])
+        self.assertIn("effectiveValue(numberValue)", query["fields"][0])
+        generic_opener = Opener()
+        with self.assertRaisesRegex(SheetsReadError, "range_limit"):
+            SheetsReader(TOKEN, generic_opener).read(SOURCE, GRADING_RANGES)
+        self.assertFalse(generic_opener.calls)
+
+    def test_dedicated_grading_bounds_cannot_read_other_or_unbounded_sources(self):
+        invalid = [(), GRADING_RANGES[:3], GRADING_RANGES + (GRADING_RANGES[0],), list(GRADING_RANGES),
+                   (GRADING_RANGES[0],) * 4]
+        for replacement in ("'Other'!A1:Z1000", "'Assignments'!A2:Z1000", "'Assignments'!B1:Z1000",
+                            "'Assignments'!A1:AO10", "'Assignments'!A1:AN10001", "'Assignments'!A:Z"):
+            invalid.append((replacement, *GRADING_RANGES[1:]))
+        for ranges in invalid:
+            opener = Opener()
+            with self.subTest(ranges=ranges), self.assertRaises(SheetsReadError):
+                SheetsReader(TOKEN, opener).read_grading_tables(SOURCE, ranges)
+            self.assertFalse(opener.calls)
+        opener = Opener(grading_sample())
+        maximum = tuple("'" + title + "'!A1:AN10000" for title in GRADING_TITLES)
+        SheetsReader(TOKEN, opener).read_grading_tables(SOURCE, maximum)
+        self.assertEqual(len(opener.calls), 1)
+
+    def test_dedicated_grading_read_keeps_response_cap_and_rejects_missing_or_duplicate_tabs(self):
+        opener = Opener(b"x" * (MAX_BYTES + 1))
+        with self.assertRaisesRegex(SheetsReadError, "response_limit"):
+            SheetsReader(TOKEN, opener).read_grading_tables(SOURCE, GRADING_RANGES)
+        for change in (lambda result: result["sheets"].pop(),
+                       lambda result: result["sheets"][1]["properties"].update(title="Assignments"),
+                       lambda result: result["sheets"].append(copy.deepcopy(result["sheets"][0]))):
+            result = grading_sample(); change(result)
+            with self.assertRaisesRegex(SheetsReadError, "invalid_response"):
+                SheetsReader(TOKEN, Opener(result)).read_grading_tables(SOURCE, GRADING_RANGES)
 
     def test_unbounded_malformed_oversized_duplicate_ranges_fail_before_network(self):
         for ranges in (("Sheet1!A:Z",), ("'Sheet1'!A1:Z9999",), (RANGE,) * 2,
@@ -105,6 +159,18 @@ class SheetsReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(SheetsReadError, "^source_unavailable$"):
             SheetsReader(TOKEN, opener, lambda _: None).read(SOURCE)
         self.assertEqual(len(opener.calls), 3)
+
+    def test_exhausted_http_status_keeps_safe_throttling_and_transient_diagnostics(self):
+        for status in (429, 500, 502, 503, 504):
+            errors = [HTTPError("private-url", status, "private-token", {}, io.BytesIO(b"private-body"))
+                      for _ in range(3)]
+            opener = Opener(*errors); sleeps = []
+            code = "source_rate_limited" if status == 429 else "source_transient_failure"
+            with self.subTest(status=status), self.assertRaisesRegex(SheetsReadError, "^" + code + "$"):
+                SheetsReader(TOKEN, opener, sleeps.append).read(SOURCE)
+            self.assertEqual(sleeps, [1, 2])
+            self.assertEqual(len(opener.calls), 3)
+            self.assertTrue(all(error.closed for error in errors))
 
     def test_response_limit_and_malformed_wrong_source_fail(self):
         wrong = sample()

@@ -19,7 +19,8 @@ EXCLUDED = {"identity_unverified", "superseded"}
 # forward an arbitrary exception message, provider response, or cell value.
 SHEETS_READ_ERRORS = frozenset({
     "authentication_required", "access_denied", "source_not_found",
-    "source_unavailable", "response_limit", "invalid_response",
+    "source_unavailable", "source_rate_limited", "source_transient_failure",
+    "response_limit", "invalid_response",
     "invalid_credential", "unsupported_read_endpoint", "invalid_spreadsheet_id",
     "invalid_ranges", "invalid_range", "range_limit",
 })
@@ -49,63 +50,89 @@ def _column(number):
     return result
 
 
+def _sheet_map(response):
+    if not isinstance(response, dict) or not isinstance(response.get("sheets"), list):
+        raise ConnectionError("grading_workbook_layout_required")
+    result, ids = {}, set()
+    for sheet in response["sheets"]:
+        properties = sheet.get("properties") if isinstance(sheet, dict) else None
+        if (not isinstance(properties, dict) or not isinstance(properties.get("title"), str)
+                or type(properties.get("sheetId")) is not int or properties["sheetId"] < 0
+                or properties["title"] in result or properties["sheetId"] in ids):
+            raise ConnectionError("grading_workbook_layout_required")
+        result[properties["title"]] = sheet
+        ids.add(properties["sheetId"])
+    return result
+
+
 def _tables(reader, source):
-    metadata = reader.read(source)
-    sheets = {s["properties"]["title"]: s["properties"] for s in metadata["sheets"]}
-    result, requests, text_bytes = {}, 0, 0
+    sheets = _sheet_map(reader.read(source))
+    ranges = []
     for title, required in HEADERS.items():
-        properties = sheets.get(title, {})
+        properties = sheets.get(title, {}).get("properties", {})
         grid = properties.get("gridProperties", {})
+        if not isinstance(grid, dict):
+            raise ConnectionError("grading_workbook_layout_required")
         rows, columns = grid.get("rowCount"), grid.get("columnCount")
         if (type(rows) is not int or not 1 <= rows <= 10000 or
                 type(columns) is not int or not len(required) <= columns <= 40):
             raise ConnectionError("grading_workbook_layout_required")
-        values, score_columns = [], set()
-        size = 5000 // columns
-        for first in range(0, rows, size):
-            requests += 1
-            if requests > 128:
-                raise ConnectionError("grading_workbook_limit")
-            last = min(first + size, rows)
-            cell_range = "'" + title.replace("'", "''") + "'!A" + str(first + 1) + ":" + _column(columns) + str(last)
-            response = reader.read(source, (cell_range,))
-            matches = [s for s in response["sheets"] if s["properties"]["sheetId"] == properties["sheetId"]]
-            if len(matches) != 1 or matches[0]["properties"]["title"] != title:
-                raise ConnectionError("grading_workbook_changed")
-            chunk = [[""] * columns for _ in range(last - first)]
-            seen = set()
-            for block in matches[0].get("data", []):
-                start, left = block.get("startRow", 0), block.get("startColumn", 0)
-                if type(start) is not int or type(left) is not int or left != 0:
+        ranges.append("'" + title + "'!A1:" + _column(columns) + str(rows))
+    data = _sheet_map(reader.read_grading_tables(source, tuple(ranges)))
+    if set(data) != set(HEADERS):
+        raise ConnectionError("grading_workbook_changed")
+    result, text_bytes = {}, 0
+    for title, required in HEADERS.items():
+        properties = sheets[title]["properties"]
+        grid = properties["gridProperties"]
+        rows, columns = grid["rowCount"], grid["columnCount"]
+        if data[title]["properties"]["sheetId"] != properties["sheetId"]:
+            raise ConnectionError("grading_workbook_changed")
+        blocks = data[title].get("data", [])
+        if not isinstance(blocks, list):
+            raise ConnectionError("grading_workbook_layout_required")
+        values = {}
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise ConnectionError("grading_workbook_layout_required")
+            start, left = block.get("startRow", 0), block.get("startColumn", 0)
+            row_data = block.get("rowData", [])
+            if (type(start) is not int or not 0 <= start < rows or type(left) is not int
+                    or left != 0 or not isinstance(row_data, list)):
+                raise ConnectionError("grading_workbook_layout_required")
+            for offset, row in enumerate(row_data):
+                position = start + offset
+                cells = row.get("values", []) if isinstance(row, dict) else None
+                if (position in values or not position < rows or not isinstance(cells, list)
+                        or len(cells) > columns or any(not isinstance(cell, dict) for cell in cells)):
                     raise ConnectionError("grading_workbook_layout_required")
-                for offset, row in enumerate(block.get("rowData", [])):
-                    position = start + offset
-                    cells = row.get("values", [])
-                    if position in seen or not first <= position < last or len(cells) > columns:
-                        raise ConnectionError("grading_workbook_layout_required")
-                    seen.add(position)
-                    text = [str(c.get("formattedValue", "")) for c in cells]
-                    if title == "Submissions" and position == 0:
-                        score_columns = {i for i, value in enumerate(text) if value in {"content_score", "revision_score"}}
-                    if position:
-                        for i in score_columns:
-                            number = cells[i].get("effectiveValue", {}).get("numberValue") if i < len(cells) else None
-                            if type(number) in (int, float):
-                                text[i] = str(number)
-                    chunk[position - first] = text + [""] * (columns - len(cells))
-                    text_bytes += sum(len(value.encode("utf-8")) for value in chunk[position - first])
-                    if text_bytes > 4_000_000:
-                        raise ConnectionError("grading_workbook_limit")
-            values.extend(chunk)
-        headers = values[0]
+                values[position] = cells
+        headers = [str(cell.get("formattedValue", "")) for cell in values.get(0, [])]
+        headers += [""] * (columns - len(headers))
         used = [h for h in headers if h]
         if len(set(used)) != len(used) or not set(required) <= set(used):
             raise ConnectionError("grading_workbook_headers_required")
-        result[title] = [{h: row[i] for i, h in enumerate(headers) if h}
-                         for row in values[1:] if any(row)]
-    fresh = reader.read(source)
-    fresh_properties = {s["properties"]["title"]: s["properties"] for s in fresh["sheets"]}
-    if any(fresh_properties.get(title) != sheets[title] for title in HEADERS):
+        score_columns = {i for i, header in enumerate(headers) if title == "Submissions"
+                         and header in {"content_score", "revision_score"}}
+        result[title] = []
+        for position, cells in sorted(values.items()):
+            text = [str(cell.get("formattedValue", "")) for cell in cells]
+            if position:
+                for index in score_columns:
+                    effective = cells[index].get("effectiveValue", {}) if index < len(cells) else {}
+                    if not isinstance(effective, dict):
+                        raise ConnectionError("grading_workbook_layout_required")
+                    number = effective.get("numberValue")
+                    if type(number) in (int, float):
+                        text[index] = str(number)
+            text += [""] * (columns - len(text))
+            text_bytes += sum(len(value.encode("utf-8")) for value in text)
+            if text_bytes > 4_000_000:
+                raise ConnectionError("grading_workbook_limit")
+            if position and any(text):
+                result[title].append({h: text[i] for i, h in enumerate(headers) if h})
+    fresh = _sheet_map(reader.read(source))
+    if any(fresh.get(title, {}).get("properties") != sheets[title]["properties"] for title in HEADERS):
         raise ConnectionError("grading_workbook_changed")
     return result
 

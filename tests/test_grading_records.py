@@ -1,4 +1,4 @@
-"""Fictional private-workbook projection, pagination and auth tests."""
+"""Fictional private-workbook projection, complete bounded reads and auth tests."""
 import copy
 import json
 import re
@@ -41,17 +41,28 @@ class Reader:
 
     def read(self, source, ranges=()):
         self.calls.append(ranges)
-        if not ranges:
-            return {"sheets": [{"properties": copy.deepcopy(p)} for p in self.properties]}
-        title, first, last = re.fullmatch(r"'([^']+)'!A(\d+):[A-Z]+(\d+)", ranges[0]).groups()
-        first, last = int(first) - 1, int(last)
-        values = self.values[title][first:last]
-        return {"sheets": [{"properties": next(p for p in self.properties if p["title"] == title),
-             "data": [{"startRow": first, "startColumn": 0,
-                        "rowData": [{"values": [{"formattedValue": v} for v in row]} for row in values]}]}]}
+        if ranges:
+            raise AssertionError("Grading cells must use the dedicated bounded bulk reader")
+        return {"sheets": [{"properties": copy.deepcopy(p)} for p in self.properties]}
+
+    def read_grading_tables(self, source, ranges):
+        self.calls.append(ranges)
+        sheets = []
+        for cell_range in ranges:
+            title, last = re.fullmatch(r"'([^']+)'!A1:[A-Z]+(\d+)", cell_range).groups()
+            values = self.values[title][:int(last)]
+            sheets.append({"properties": copy.deepcopy(next(p for p in self.properties if p["title"] == title)),
+                "data": [{"startRow": 0, "startColumn": 0,
+                          "rowData": [{"values": [{"formattedValue": v} for v in row]} for row in values]}]})
+        return {"sheets": sheets}
 
 
 class GradingRecordsTests(unittest.TestCase):
+    def test_three_reads_preserve_the_complete_table_projection(self):
+        reader = Reader()
+        self.assertEqual(_tables(reader, SOURCE), tables())
+        self.assertEqual(len(reader.calls), 3)
+
     def test_reads_whole_grids_and_keeps_answers_after_blank_gap(self):
         reader = Reader()
         reader.values["Answers"] += [[]] * 598
@@ -60,7 +71,22 @@ class GradingRecordsTests(unittest.TestCase):
         self.assertEqual(len(result["submissions"][0]["answers"]), 2)
         self.assertEqual(result["submissions"][0]["content_score"], 6.25)
         self.assertEqual(result["summaries"][0]["submitted_students"], 1)
-        self.assertTrue(any("A577:Z700" in r[0] for r in reader.calls if r))
+        self.assertEqual(reader.calls, [(), tuple("'" + title + "'!A1:Z700" for title in HEADERS), ()])
+
+    def test_separate_late_block_at_last_allowed_row_is_not_truncated(self):
+        class SparseReader(Reader):
+            def __init__(self):
+                super().__init__()
+                self.properties[2]["gridProperties"]["rowCount"] = 10000
+
+            def read_grading_tables(self, source, ranges):
+                result = super().read_grading_tables(source, ranges)
+                sheet = next(s for s in result["sheets"] if s["properties"]["title"] == "Answers")
+                sheet["data"].insert(0, {"startRow": 9999, "rowData": [{"values": [
+                    {"formattedValue": v} for v in ["one", "last", "DRAFT", "Final row writing", "", "", "true"]]}]})
+                return result
+        result = project(_tables(SparseReader(), SOURCE))
+        self.assertEqual([answer["question_id"] for answer in result["submissions"][0]["answers"]], ["q1", "last"])
 
     def test_holds_preserve_writing_but_never_show_numeric_grade(self):
         values = tables(); values["Submissions"][0]["hold_reason"] = "Assignment matching review"
@@ -70,11 +96,11 @@ class GradingRecordsTests(unittest.TestCase):
 
     def test_score_uses_unrounded_cell_value_not_display_format(self):
         class NumericReader(Reader):
-            def read(self, source, ranges=()):
-                result = super().read(source, ranges)
-                if ranges and ranges[0].startswith("'Submissions'!A1:"):
-                    cell = result["sheets"][0]["data"][0]["rowData"][1]["values"][9]
-                    cell.update(formattedValue="4.62", effectiveValue={"numberValue": 60 / 13})
+            def read_grading_tables(self, source, ranges):
+                result = super().read_grading_tables(source, ranges)
+                sheet = next(s for s in result["sheets"] if s["properties"]["title"] == "Submissions")
+                cell = sheet["data"][0]["rowData"][1]["values"][9]
+                cell.update(formattedValue="4.62", effectiveValue={"numberValue": 60 / 13})
                 return result
         result = project(_tables(NumericReader(), SOURCE))
         self.assertEqual(result["submissions"][0]["content_score"], 60 / 13)
@@ -147,7 +173,8 @@ class GradingRecordsTests(unittest.TestCase):
         capture = {}
         def start(status, headers): capture.update(status=status, headers=dict(headers))
         for code in ("authentication_required", "access_denied", "source_not_found",
-                     "source_unavailable", "response_limit", "invalid_response"):
+                     "source_unavailable", "source_rate_limited", "source_transient_failure",
+                     "response_limit", "invalid_response"):
             with self.subTest(code=code), patch.dict('os.environ', CONFIG), \
                     patch('school_workflow_hub.adapters.grading_records.authorize'), \
                     patch('school_workflow_hub.adapters.grading_records.service_token', return_value='fictional-token'), \
@@ -170,12 +197,10 @@ class GradingRecordsTests(unittest.TestCase):
                 self.assertEqual(str(caught.exception), 'grading_records_unavailable')
                 self.assertTrue(caught.exception.__suppress_context__)
 
-    def test_later_sheet_failure_keeps_diagnostic_without_partial_records(self):
+    def test_bulk_sheet_failure_keeps_diagnostic_without_partial_records(self):
         class FailingReader(Reader):
-            def read(self, source, ranges=()):
-                if ranges and ranges[0].startswith("'Submissions'!"):
-                    raise SheetsReadError('access_denied')
-                return super().read(source, ranges)
+            def read_grading_tables(self, source, ranges):
+                raise SheetsReadError('access_denied')
         with patch('school_workflow_hub.adapters.grading_records.authorize'), \
                 patch('school_workflow_hub.adapters.grading_records.service_token', return_value='fictional-token'), \
                 patch('school_workflow_hub.adapters.grading_records.SheetsReader', return_value=FailingReader()), \
@@ -183,6 +208,58 @@ class GradingRecordsTests(unittest.TestCase):
             with self.assertRaisesRegex(ConnectionError, '^grading_records_access_denied$'):
                 read_records('fictional-assertion', CONFIG)
             project_records.assert_not_called()
+
+    def test_metadata_is_complete_unique_and_bounded_before_bulk_read(self):
+        changes = [lambda r: r.properties.pop(),
+                   lambda r: r.properties.append(copy.deepcopy(r.properties[0])),
+                   lambda r: r.properties[1].update(title=r.properties[0]["title"]),
+                   lambda r: r.properties[1].update(sheetId=r.properties[0]["sheetId"]),
+                   lambda r: r.properties[0].update(gridProperties=None)]
+        for key, value in (("rowCount", 0), ("rowCount", 10001), ("columnCount", 2), ("columnCount", 41)):
+            changes.append(lambda r, k=key, v=value: r.properties[0]["gridProperties"].update({k: v}))
+        for change in changes:
+            reader = Reader(); change(reader)
+            with self.subTest(change=change), self.assertRaises(ConnectionError):
+                _tables(reader, SOURCE)
+            self.assertEqual(reader.calls, [()])
+
+    def test_bulk_response_missing_duplicate_or_reidentified_tab_fails_closed(self):
+        changes = [lambda data: data["sheets"].pop(),
+                   lambda data: data["sheets"].append(copy.deepcopy(data["sheets"][0])),
+                   lambda data: data["sheets"][0]["properties"].update(sheetId=100),
+                   lambda data: data["sheets"][1]["properties"].update(title="Assignments"),
+                   lambda data: data["sheets"][1].update(properties=None)]
+        for change in changes:
+            reader = Reader(); original = reader.read_grading_tables
+            def read(source, ranges):
+                data = original(source, ranges); change(data); return data
+            reader.read_grading_tables = read
+            with self.subTest(change=change), self.assertRaises(ConnectionError):
+                _tables(reader, SOURCE)
+
+    def test_bulk_rows_remain_bounded_and_nonoverlapping(self):
+        changes = [lambda sheet: sheet["data"].append(copy.deepcopy(sheet["data"][0])),
+                   lambda sheet: sheet["data"][0].update(startRow=700),
+                   lambda sheet: sheet["data"][0].update(startColumn=1),
+                   lambda sheet: sheet["data"][0]["rowData"][0].update(values=[{}] * 27),
+                   lambda sheet: sheet["data"][0].update(rowData="not rows")]
+        for change in changes:
+            reader = Reader(); original = reader.read_grading_tables
+            def read(source, ranges):
+                data = original(source, ranges); change(data["sheets"][0]); return data
+            reader.read_grading_tables = read
+            with self.subTest(change=change), self.assertRaisesRegex(ConnectionError, "grading_workbook_layout_required"):
+                _tables(reader, SOURCE)
+
+    def test_closing_metadata_change_rejects_full_read(self):
+        class ChangedReader(Reader):
+            def read(self, source, ranges=()):
+                response = super().read(source, ranges)
+                if len(self.calls) == 3:
+                    response["sheets"][0]["properties"]["gridProperties"]["rowCount"] += 1
+                return response
+        with self.assertRaisesRegex(ConnectionError, "grading_workbook_changed"):
+            _tables(ChangedReader(), SOURCE)
 
     def test_http_read_only_no_store_and_no_private_errors(self):
         capture = {}

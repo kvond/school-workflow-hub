@@ -56,7 +56,10 @@ def read_json(url, token, *, opener=None, sleeper=time.sleep):
             if status in (429, 500, 502, 503, 504) and attempt < 2:
                 sleeper(2 ** attempt)
                 continue
-            code = {401: "authentication_required", 403: "access_denied", 404: "source_not_found"}.get(status, "source_unavailable")
+            code = {401: "authentication_required", 403: "access_denied", 404: "source_not_found",
+                    429: "source_rate_limited", 500: "source_transient_failure",
+                    502: "source_transient_failure", 503: "source_transient_failure",
+                    504: "source_transient_failure"}.get(status, "source_unavailable")
             raise SourceReadError(code) from None
         except (URLError, OSError, HTTPException):
             if attempt < 2:
