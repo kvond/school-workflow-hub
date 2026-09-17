@@ -40,7 +40,7 @@
       "remaining": [
         "Bind verified hosted daily Agenda reads to this optional workspace projection; the deployed teaching-results provider is a separate contract",
         "Complete current IC roster/due-date and cumulative submission sources, including individual extensions and reviewed response assessments",
-        "Use accepted feedback-v2 and class-summary builders; bind private results/history to Firestore and the existing HTTP provider",
+        "Use accepted feedback-v2.1 and class-summary builders; bind private results/history to Firestore and the existing HTTP provider",
         "Authorized destination adapters and scoped current readback; no save, grade, email or print execution is supplied",
         "Research-specific authorized records and remaining teacher criteria review; no collection enabled"
       ]
