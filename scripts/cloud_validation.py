@@ -17,13 +17,28 @@ from school_workflow_hub.core.database import SYNTHETIC_RUNTIME_ROOT
 from school_workflow_hub.workflows.system_demo import run_system_preview
 
 
+# The signature tests skip unless requirements-hosting.txt is installed, which the
+# bare runner and a standard-library local check both lack. Any other skip is a gap.
+ALLOWED_SKIP_REASONS = frozenset({"Install requirements-hosting.txt for signature tests"})
+
+
+def _skips_are_allowed(output):
+    """True only when every reported skip reason is one this gate expects."""
+    reasons = re.search(r"^Skip reasons: (.+)\.$", output, re.M)
+    if not reasons:
+        return False
+    return set(part.strip() for part in reasons.group(1).split(";")) <= ALLOWED_SKIP_REASONS
+
+
 def run_validation():
     suite = subprocess.run(
         [sys.executable, str(ROOT / "scripts/run_all_tests.py")], cwd=ROOT,
         capture_output=True, text=True, timeout=180, check=False,
     )
-    match = re.search(r"^Synthetic suite: tests=(\d+), failures=0, errors=0, skipped=0\.$", suite.stdout, re.M)
+    match = re.search(r"^Synthetic suite: tests=(\d+), failures=0, errors=0, skipped=(\d+)\.$", suite.stdout, re.M)
     if suite.returncode != 0 or not match or int(match.group(1)) < 215:
+        raise ValueError("test_suite_failed_or_incomplete")
+    if int(match.group(2)) and not _skips_are_allowed(suite.stdout):
         raise ValueError("test_suite_failed_or_incomplete")
     SYNTHETIC_RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cloud-validation-", dir=SYNTHETIC_RUNTIME_ROOT) as temporary:
