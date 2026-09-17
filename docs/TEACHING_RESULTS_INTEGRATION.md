@@ -2,7 +2,7 @@
 
 ## Authoritative instructions
 
-The teacher's September 15 revision is recorded in `FEEDBACK_V2.md` and
+The teacher's September 16 revision, feedback-v2.1, is recorded in `FEEDBACK_V2.md` and
 `web/teacher-prompts.json`. Agenda Feedback Prompts is the live Copy-instructions
 source. Prompt 1 completion arithmetic is preserved; Prompt 2 and Prompt 3 now
 separate conceptual understanding, explaining concepts, and completion.
