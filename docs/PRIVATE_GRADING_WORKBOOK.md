@@ -74,6 +74,24 @@ structural changes. A read has an observed-content hash; this is not a native
 Google document revision or a transaction covering concurrent cell edits.
 Publish a reviewed workbook batch before refreshing the dashboard.
 
+## Recovery inside the dashboard
+
+Page 2 and Page 3 share an accessible recovery panel for failed grading reads.
+The loader reads the endpoint's fixed diagnostic code instead of replacing every
+failure with a generic workbook-unavailable message. It distinguishes teacher
+sign-in, server reader authentication, missing connection, denied access, missing
+source, workbook layout, record conflicts, concurrent structural edits, bounded
+read limits and temporary service failures. Unknown failures remain unknown.
+Each known failure has a concise next action and a safe diagnostic code in the
+existing dashboard; arbitrary provider bodies and exception text are not shown.
+
+Refresh remains a same-origin, no-store GET, not grading or posting. A failed
+refresh removes prior records from the view, never invents missing-work counts
+or zero scores, and cannot be overwritten by an older request completing late.
+The recovery action is guidance, not a claim that an integration was repaired or
+an automatic repair job was launched. No extra task store, service or polling
+schedule is introduced.
+
 ## Deployment handoff
 
 The repository is deployed through its existing Cloud Build integration on
@@ -101,10 +119,20 @@ workbook, hosted read, or IC posting verification.
 
 ```sh
 PYTHONPATH=src python3 -m unittest tests.test_grading_records tests.test_google_sheets_reader tests.test_teaching_results tests.test_web_hosting
-node --test web/tests/grading-records.test.mjs
+node --test web/tests/grading-records.test.mjs web/tests/grading-recovery.test.mjs
+node --check web/grading-records.mjs
 node --check web/pages.mjs
 ```
 
 All test data is fictional. Tests cover auth before private reads, range gaps,
 reference conflicts, partial identity, held grades, exact section filtering,
 single summary cards, plain-text student responses and stale-request rejection.
+
+September 17 recovery patch verification: the two listed JavaScript test files
+passed 43 tests (8 existing, 35 new), with zero failures or skips; the changed
+module passed `node --check`. This was a scoped local run, not a rerun of the
+Python/full-repository suite or a browser/Cloud Run acceptance test. GitHub code
+access and a separate live Agenda connector read succeeded, but authenticated
+Cloud Run access was not established in this session. The original production
+workbook failure's cause remains unconfirmed. No school records, grades, source
+documents, cloud configuration, deployment settings or schedules were changed.
