@@ -16,13 +16,13 @@ Cloud Run or activate any workflow.
 | Four-page workspace projection | `workflows/teacher_workspace.py` | Host-injected planning/read model; preserves `agenda-operations/v1` inside `agenda-workspace/v1`. Not the deployed teaching-results provider. |
 | Dashboard navigation | `adapters/dashboard_navigation.py` | Bounded row-2 discovery. Reuses the read-only Sheets client; does not replace the hosted dated-lesson reader. |
 | Completion | `workflows/completion_policy.py`, `workflows/due_completion.py` | Existing deterministic rules remain authoritative; workspace tests and plans use the same rules. |
-| Feedback, summary and history | `workflows/student_feedback.py`, `class_summary.py`, `learning_progress.py`, `missing_work_feedback.py`, `teaching_results.py` | Existing reviewed-evidence composition and feedback-v2 remain authoritative. |
+| Feedback, summary and history | `workflows/student_feedback.py`, `class_summary.py`, `learning_progress.py`, `missing_work_feedback.py`, `teaching_results.py` | Existing reviewed-evidence composition and feedback-v2.1 remain authoritative. |
 | Research drafts | `workflows/research_agenda.py`, `research_codebook.py` | Retains separate dimensions and approved authorial distinction. No collection, student coding or model calls enabled. |
 | Private state | `core/cloud_state.py`, `adapters/firestore_state.py` | Reuses existing hosted task/result store and ownership controls; no new store. |
 
 The original September 14 prompt text is retained for provenance and explicitly
 catalogued as historical. Runtime instructions come from Agenda; the reviewed
-release reference is `web/teacher-prompts.json` (September 15 feedback-v2).
+release reference is `web/teacher-prompts.json` (September 16 feedback-v2.1).
 See `AGENDA_PROMPTS.md` for coordinated prompt maintenance.
 
 README, START_HERE, capabilities and related handoffs now distinguish historical
@@ -44,7 +44,7 @@ verified individual extensions override assignment cutoffs. Multiple competing
 submission documents and contradictory turn-in observations require review.
 Partial history cannot claim missing work, and current feed timestamps cannot
 relabel old row evidence. Verified missing submissions require missing-work
-feedback under v2. Delivery proposal identity includes the roster/IC mappings,
+feedback under v2.1. Delivery proposal identity includes the roster/IC mappings,
 so changing a destination invalidates an old roster receipt. Missing or
 out-of-scope Dashboard grid evidence remains blocked rather than empty success.
 

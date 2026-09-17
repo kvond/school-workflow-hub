@@ -89,8 +89,8 @@ Classifying overdue status uses the source check time, not a later page refresh.
 The host must revalidate freshness before any proposed delivery or grade change.
 
 Verified non-submitters have `feedback_state=missing_work_feedback_needed`,
-following September 15 feedback-v2. Use the existing `missing_work_feedback`
-builder for the teacher's note and commitment form. This wrapper does not
+following feedback-v2.1. Use the existing `missing_work_feedback` builder
+for the teacher's note and commitment form. This wrapper does not
 invent quotes, conceptual levels or submission revisions for missing work.
 This state does not change grades, bypass the grace period or trigger delivery.
 
@@ -108,7 +108,7 @@ an older submission outcome stays `prior_revision`.
 ## Current prompt and completion contracts
 
 The editable Agenda Feedback Prompts tab is authoritative. The reviewed release
-reference is `web/teacher-prompts.json` (September 15 feedback-v2); see
+reference is `web/teacher-prompts.json` (September 16 feedback-v2.1); see
 [AGENDA_PROMPTS.md](AGENDA_PROMPTS.md). The September 14 prompt text is historical.
 Do not copy its superseded report order into current outputs.
 
@@ -134,7 +134,7 @@ roster revision or IC mapping invalidate the prior readback. Both executors
 remain unsupported, and earlier grade history is preserved.
 
 Parts 1/2 batch at twenty; Part 3 uses the full class or explicitly partial
-compiled evidence. The implemented feedback-v2 and summary builders follow
+compiled evidence. The implemented feedback-v2.1 and summary builders follow
 [FEEDBACK_V2.md](FEEDBACK_V2.md): separate evidence-backed understanding and
 explanation graphs; current understanding; source-backed explanation changes;
 one question; exact evidence; three blank reflection lines. Missing evidence is
