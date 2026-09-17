@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 
 from school_workflow_hub.adapters.grading_records import HEADERS, _tables, project, read_records
+from school_workflow_hub.adapters.google_sheets import SheetsReadError
 from school_workflow_hub.adapters.hosted_agenda import ConnectionError
+from school_workflow_hub.adapters.read_only_http import SourceReadError
 from school_workflow_hub.web import application
 
 SOURCE = "fictional_private_grading_12345"
@@ -140,6 +142,47 @@ class GradingRecordsTests(unittest.TestCase):
             with self.assertRaisesRegex(ConnectionError, 'sign_in_required'):
                 read_records('bad', CONFIG)
             token.assert_not_called()
+
+    def test_safe_sheets_diagnostics_reach_authenticated_http_response(self):
+        capture = {}
+        def start(status, headers): capture.update(status=status, headers=dict(headers))
+        for code in ("authentication_required", "access_denied", "source_not_found",
+                     "source_unavailable", "response_limit", "invalid_response"):
+            with self.subTest(code=code), patch.dict('os.environ', CONFIG), \
+                    patch('school_workflow_hub.adapters.grading_records.authorize'), \
+                    patch('school_workflow_hub.adapters.grading_records.service_token', return_value='fictional-token'), \
+                    patch('school_workflow_hub.adapters.google_sheets.read_json', side_effect=SourceReadError(code)):
+                body = b''.join(application({'PATH_INFO': '/api/grading-records', 'REQUEST_METHOD': 'GET',
+                                            'HTTP_X_GOOG_IAP_JWT_ASSERTION': 'fictional-assertion'}, start))
+                self.assertEqual(capture['status'], '503 Service Unavailable')
+                self.assertEqual(capture['headers']['Cache-Control'], 'no-store')
+                self.assertEqual(json.loads(body), {'error': 'grading_records_' + code, 'external_writes': 0})
+
+    def test_unknown_sheets_errors_and_general_errors_do_not_expose_details(self):
+        private = 'access_denied: fictional student; Bearer fictional-secret; https://example.invalid/private'
+        for error in (SheetsReadError(private), RuntimeError(private)):
+            with self.subTest(kind=type(error).__name__), \
+                    patch('school_workflow_hub.adapters.grading_records.authorize'), \
+                    patch('school_workflow_hub.adapters.grading_records.service_token', return_value='fictional-token'), \
+                    patch('school_workflow_hub.adapters.grading_records.SheetsReader', side_effect=error):
+                with self.assertRaises(ConnectionError) as caught:
+                    read_records('fictional-assertion', CONFIG)
+                self.assertEqual(str(caught.exception), 'grading_records_unavailable')
+                self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_later_sheet_failure_keeps_diagnostic_without_partial_records(self):
+        class FailingReader(Reader):
+            def read(self, source, ranges=()):
+                if ranges and ranges[0].startswith("'Submissions'!"):
+                    raise SheetsReadError('access_denied')
+                return super().read(source, ranges)
+        with patch('school_workflow_hub.adapters.grading_records.authorize'), \
+                patch('school_workflow_hub.adapters.grading_records.service_token', return_value='fictional-token'), \
+                patch('school_workflow_hub.adapters.grading_records.SheetsReader', return_value=FailingReader()), \
+                patch('school_workflow_hub.adapters.grading_records.project') as project_records:
+            with self.assertRaisesRegex(ConnectionError, '^grading_records_access_denied$'):
+                read_records('fictional-assertion', CONFIG)
+            project_records.assert_not_called()
 
     def test_http_read_only_no_store_and_no_private_errors(self):
         capture = {}

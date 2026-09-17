@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import math
 import re
 
-from .google_sheets import SheetsReader
+from .google_sheets import SheetsReader, SheetsReadError
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize,
                             service_token)
 from ..core.cloud_state import content_hash
@@ -15,6 +15,14 @@ from ..core.cloud_state import content_hash
 SCHEMA = "hub-grading-records/v1"
 CLASSES = {"biology", "forensics", "anatomy"}
 EXCLUDED = {"identity_unverified", "superseded"}
+# Only fixed reader codes may cross the authenticated HTTP boundary. Never
+# forward an arbitrary exception message, provider response, or cell value.
+SHEETS_READ_ERRORS = frozenset({
+    "authentication_required", "access_denied", "source_not_found",
+    "source_unavailable", "response_limit", "invalid_response",
+    "invalid_credential", "unsupported_read_endpoint", "invalid_spreadsheet_id",
+    "invalid_ranges", "invalid_range", "range_limit",
+})
 HEADERS = {
     "Assignments": ("assignment_key", "class_key", "assignment_title"),
     "Submissions": ("record_id", "assignment_key", "section_id", "section_name",
@@ -183,5 +191,9 @@ def read_records(assertion, config):
         return project(_tables(reader, config["HUB_GRADING_SPREADSHEET_ID"]))
     except ConnectionError:
         raise
+    except SheetsReadError as error:
+        code = str(error)
+        diagnostic = "grading_records_" + code if code in SHEETS_READ_ERRORS else "grading_records_unavailable"
+        raise ConnectionError(diagnostic) from None
     except Exception:
         raise ConnectionError("grading_records_unavailable") from None
