@@ -57,6 +57,24 @@ class HostingTests(TestCase):
             self.assertNotIn(b"secret-placeholder", response["body"])
             self.assertNotIn(b"untrusted", response["body"])
 
+    def test_run_directions_never_answer_an_unverified_request(self):
+        """The private values are configuration, not a preview asset."""
+        import os
+        filled = '{"timezone": "America/New_York"}'
+        with patch.dict(os.environ, {"HUB_RUN_DIRECTIONS": filled}, clear=False):
+            response = request("/api/run-directions",
+                               HTTP_X_GOOG_AUTHENTICATED_USER_EMAIL="untrusted",
+                               HTTP_AUTHORIZATION="Bearer secret-placeholder")
+        self.assertIn(response["status"], ("403 Forbidden", "503 Service Unavailable"))
+        for leaked in (b"America/New_York", b"secret-placeholder", b"untrusted"):
+            self.assertNotIn(leaked, response["body"])
+
+    def test_run_directions_is_not_a_served_file_and_refuses_writes(self):
+        self.assertNotIn("run-directions.local.json", ASSETS)
+        self.assertEqual(request("/run-directions.local.json")["status"], "404 Not Found")
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            self.assertNotEqual(request("/api/run-directions", method)["status"], "200 OK")
+
     def test_missing_assets_do_not_disclose_paths(self):
         with patch.object(Path, "read_bytes", side_effect=OSError("private-detail")):
             response = request()

@@ -1,7 +1,7 @@
 // Fictional DOM test. No browser, no network, no private data.
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {fillDirections,directionsText,ROWS,mountControlPanel} from '../control-panel.mjs';
+import {fillDirections,directionsText,ROWS,mountControlPanel,loadDirections} from '../control-panel.mjs';
 
 class Element extends EventTarget{
  constructor(doc,tag){super();this.ownerDocument=doc;this.tagName=tag;this.children=[];this.attributes={};this.textContent='';this.hidden=false;this.disabled=false;this.type='';}
@@ -76,6 +76,53 @@ const TEMPLATE={title:'Roster check and completion grading',cadence:'Weekday mor
  const buttons=root.all.filter(n=>n.tagName==='button');
  assert.equal(buttons.length,ROWS.length);
  assert.ok(buttons.every(b=>!b.disabled));
+}
+
+// Where the private values come from. Hosted configuration reaches every computer
+// she signs in from; the local file is a development fallback and is not served.
+{
+ const TEMPLATE_BODY={schema_version:'hub-run-directions/v1'};
+ const reply=(ok,body)=>({ok,json:async()=>body});
+ const record=[];
+ const fetcherFor=map=>async url=>{record.push(url);
+  if(url in map){const r=map[url];if(r==='throw')throw Error('offline');return r;}
+  return {ok:false,json:async()=>({})};};
+
+ // Hosted values win, and the local file is not even requested.
+ record.length=0;
+ const hosted=await loadDirections(fetcherFor({
+  './run-directions.json':reply(true,TEMPLATE_BODY),
+  './api/run-directions':reply(true,{values:{timezone:'America/New_York'},missing:[]}),
+  './run-directions.local.json':reply(true,{timezone:'STALE'}),
+ }));
+ assert.deepEqual(hosted.values,{timezone:'America/New_York'});
+ assert.ok(!record.includes('./run-directions.local.json'),'local file read despite hosted values');
+
+ // The endpoint being unreachable falls back rather than failing the dialog.
+ const offline=await loadDirections(fetcherFor({
+  './run-directions.json':reply(true,TEMPLATE_BODY),
+  './api/run-directions':'throw',
+  './run-directions.local.json':reply(true,{timezone:'ET'}),
+ }));
+ assert.deepEqual(offline.values,{timezone:'ET'});
+
+ // So does the endpoint answering without values, which is what an unconfigured
+ // service does.
+ const empty=await loadDirections(fetcherFor({
+  './run-directions.json':reply(true,TEMPLATE_BODY),
+  './api/run-directions':reply(false,{error:'sign_in_required'}),
+  './run-directions.local.json':reply(true,{timezone:'ET'}),
+ }));
+ assert.deepEqual(empty.values,{timezone:'ET'});
+
+ // With neither source the template still loads, so the dialog can name what is
+ // missing instead of showing nothing.
+ const none=await loadDirections(fetcherFor({'./run-directions.json':reply(true,TEMPLATE_BODY)}));
+ assert.deepEqual(none.values,{});
+ assert.equal(none.template.schema_version,'hub-run-directions/v1');
+
+ // A missing template is the one condition worth failing on.
+ await assert.rejects(loadDirections(fetcherFor({})));
 }
 
 console.log('control-panel: all checks passed');

@@ -42,13 +42,26 @@ export function directionsText(filled){
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function button(text,fn,disabled=false){const b=node('button',text);b.type='button';b.disabled=disabled;if(fn)b.addEventListener('click',fn);return b;}
 
-async function loadDirections(fetcher){
+// Hosted configuration is the source of the private values, so the filled
+// directions appear on every computer she signs in from. The gitignored local
+// file stays only as a development fallback; it is never served, so on the
+// deployed service this second branch simply finds nothing.
+export async function loadDirections(fetcher){
  const template=await fetcher('./run-directions.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('template');return r.json();});
  let values={};
  try{
-  const local=await fetcher('./run-directions.local.json',{cache:'no-store'});
-  if(local.ok)values=await local.json();
- }catch{/* private values are optional; the panel says which are missing */}
+  const hosted=await fetcher('./api/run-directions',{cache:'no-store'});
+  if(hosted&&hosted.ok){
+   const body=await hosted.json();
+   if(body&&body.values&&typeof body.values==='object')values=body.values;
+  }
+ }catch{/* fall through to the local file */}
+ if(!Object.keys(values).length){
+  try{
+   const local=await fetcher('./run-directions.local.json',{cache:'no-store'});
+   if(local&&local.ok)values=await local.json();
+  }catch{/* private values are optional; the panel says which are missing */}
+ }
  return {template,values};
 }
 

@@ -251,6 +251,17 @@ def application(environ, start_response, *, teaching_provider=None):
             return respond(status, {"error": str(error), "external_writes": 0})
         except Exception:
             return respond("503 Service Unavailable", {"error": "agenda_read_failed", "external_writes": 0})
+    if path == "/api/run-directions" and method == "GET":
+        from .adapters.run_directions import read_values
+        from .adapters.hosted_agenda import ConnectionError
+        try:
+            return respond("200 OK", read_values(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")))
+        except ConnectionError as error:
+            status = "403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable"
+            return respond(status, {"error": str(error), "external_writes": 0})
+        except Exception:
+            # Never echo a configured value, even in a failure.
+            return respond("503 Service Unavailable", {"error": "run_directions_unavailable", "external_writes": 0})
     if path == "/api/agenda-connection" and method == "GET":
         from .adapters.hosted_agenda import check_connection, ConnectionError
         try:
