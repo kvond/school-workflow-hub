@@ -45,6 +45,26 @@ class CloudValidationTests(unittest.TestCase):
                     cloud_validation.run_validation()
                 preview.assert_not_called()
 
+    def test_known_dependency_skips_pass_and_any_other_skip_blocks_preview(self):
+        summary = "Synthetic suite: tests=215, failures=0, errors=0, skipped=4.\n"
+        allowed = summary + "Skip reasons: Install requirements-hosting.txt for signature tests.\n"
+        receipt = {"external_writes": 0, "live_model_calls": 0}
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.object(cloud_validation, "SYNTHETIC_RUNTIME_ROOT", Path(temp)), \
+                 patch.object(cloud_validation.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0, allowed, "")), \
+                 patch.object(cloud_validation, "run_system_preview", return_value=receipt):
+                self.assertEqual(cloud_validation.run_validation()["tests_passed"], 215)
+        for blocked in (summary + "Skip reasons: Needs a school account.\n",
+                        summary + "Skip reasons: Install requirements-hosting.txt for signature tests; Needs a school account.\n",
+                        summary):
+            with patch.object(cloud_validation.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0, blocked, "")), \
+                 patch.object(cloud_validation, "run_system_preview") as preview:
+                with self.assertRaises(ValueError):
+                    cloud_validation.run_validation()
+                preview.assert_not_called()
+
     def test_changed_replay_or_nonzero_writes_fail(self):
         suite = subprocess.CompletedProcess([], 0, "Synthetic suite: tests=215, failures=0, errors=0, skipped=0.\n", "")
         for receipts in (({"external_writes": 0, "live_model_calls": 0}, {"external_writes": 0, "live_model_calls": 0, "changed": True}),

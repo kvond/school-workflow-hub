@@ -14,6 +14,9 @@ def main() -> int:
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     print("Synthetic suite: tests={}, failures={}, errors={}, skipped={}.".format(
         result.testsRun, len(result.failures), len(result.errors), len(result.skipped)))
+    # Distinct reasons only; the gate allows a fixed set and blocks any other skip.
+    print("Skip reasons: {}.".format(
+        "; ".join(sorted({reason for _, reason in result.skipped})) or "none"))
     return 0 if result.wasSuccessful() else 1
 
 

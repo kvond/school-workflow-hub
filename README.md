@@ -38,9 +38,11 @@ command. It writes fictional report HTML and a receipt, repeats the workflow,
 and refuses to overwrite a different existing report.
 
 `cloud_validation.py` runs the full local test suite and two identical synthetic
-previews. It does not start a hosted job or contact school systems. The separate
-GitHub Actions workflow is manual and requires its existing enable variable;
-this code reconciliation does not change it or any cloud schedule.
+previews. It does not start a hosted job or contact school systems. Without
+`requirements-hosting.txt` installed, the four signed-identity tests skip and are
+not exercised; the gate expects exactly those skips and fails on any other. The
+separate GitHub Actions workflow is manual and requires its existing enable
+variable; this code reconciliation does not change it or any cloud schedule.
 
 For an installable Python library wheel, use an isolated environment with current
 packaging tools (the older macOS system pip produced an invalid empty wheel):
