@@ -1,6 +1,6 @@
 # Shared entry point for the School Workflow Hub
 
-Updated September 16, 2026. This private repository is the canonical code and
+Updated September 17, 2026. This private repository is the canonical code and
 handoff location for authorized agents. Keep deterministic workflow logic here
 and school data in the approved private runtime. Continue the existing Agenda
 and backend; do not create another dashboard, task database or routine agent-only
@@ -14,6 +14,16 @@ workflow.
 4. [Capabilities](../config/capabilities.json): code evidence and scoped remaining work.
 5. [Current prompts](AGENDA_PROMPTS.md) and [feedback v2](FEEDBACK_V2.md): authoritative instructions and the accepted report layout.
 6. [Browser run coordination](BROWSER_RUNS.md): the separately authorized browser-assisted roster/grading path when a district IC API is unavailable. It reuses private cloud state and does not turn browser reports into server-verified school results.
+
+Current Page 2 scope: the teacher authorized supervised posting of the existing
+reviewed workbook grades from a signed-in school Chrome or Edge browser on their
+Mac or school Windows computer. This narrow exception permits a connected local
+browser worker, including an assistant, to claim the shared run, perform the
+selected verified writes and record an attributed receipt. Each computer uses
+its own school session; credentials and cookies are never copied to the server
+or between computers. It does not enable a schedule or regrade submitted work.
+The executor and live IC write/readback acceptance remain pending; a review
+screen or stored browser report alone does not make the post operational.
 
 ```sh
 python3 scripts/hub_status.py --json
@@ -77,7 +87,9 @@ use the integration record for this reconciliation's validation.
 - `agenda-workspace/v1` is a host-injected library wrapper for planning and
   private views. It is not a replacement for the deployed Page 2/Page 3 provider.
 - `hub-teaching-results/v1` is the existing authenticated teaching-results
-  boundary; its actual private provider is still missing.
+  boundary for dated lesson composition; its actual private provider is still
+  missing. Page 2 reads the separate existing private grading workbook through
+  `hub-grading-records/v1`; see [the workbook contract](PRIVATE_GRADING_WORKBOOK.md).
 - `hub-roster-sync/v1` is the authenticated shared status boundary at
   `/api/roster-sync`; it reuses the cloud task/lease model and remains
   status-only until its IC reader and roster-workbook writer are accepted.
@@ -86,9 +98,12 @@ use the integration record for this reconciliation's validation.
 - Cloud deployment, credentials, billing, Actions enable variables and schedules
   remain with the cloud owner. This integration publishes code only.
 
-Save, Run, grade posting, email and printing remain disabled until their actual
-integration and acceptance. Preserve stable file/slide IDs and grade history.
-Keep student records, source IDs, credentials and browser profiles out of GitHub.
+The Page 2 posting exception authorizes implementation and supervised execution
+only after source, identity, assignment, current-grade and ownership checks.
+It does not establish a working executor. Other unconnected Run, email and
+printing actions still require their own integration and acceptance. Preserve
+stable file/slide IDs and grade history. Keep student records, source IDs,
+credentials and browser profiles out of GitHub.
 
 For every continuation, record the code revision, checks, exact remaining scope
 and evidence level. A code pass is not a school read, hosted deployment or live

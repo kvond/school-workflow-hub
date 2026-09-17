@@ -1,10 +1,10 @@
 # Browser-assisted roster and grading runs
 
 The signed-in dashboard exposes shared ownership and private run reports at
-`/api/browser-runs`. Infinite Campus has no configured server API. A connected
-browser worker performs the actual source checks and any authorized destination
-changes. This interface reserves work and stores reports; it does not execute
-grading, grant permission, or independently verify school results.
+`/api/browser-runs`. Infinite Campus has no configured server API. This interface
+reserves work and stores reports; it does not execute grading, grant permission,
+or independently verify school results. Actual destination changes require a
+separately implemented and accepted local browser executor.
 
 Manual requests and scheduled wake-ups use the same procedure and canonical
 task: `weekly-roster-sync/all-classes/2026-2027` for roster checks and the browser
@@ -12,6 +12,39 @@ grading scope defined in `adapters/browser_runs.py` for completion grading.
 The existing Firestore store supplies server timestamps, compare-and-set
 fencing, immutable results, and durable readback. No second operational store
 or district credential is introduced.
+
+## Teacher-initiated Page 2 posting
+
+The September 17 teacher authorization permits supervised posting of existing
+reviewed workbook grades through the signed-in school Chrome or Edge browser on
+the teacher's Mac or school Windows computer. A connected browser worker may be
+an assistant operating that browser. It may claim the existing shared run,
+perform the selected authorized writes and record an attributed private receipt.
+This replaces the earlier blanket prohibition on assistant browser writes for
+this specific manual workflow. It does not authorize other school writes or
+scheduled execution.
+
+Each computer must use its own authenticated school session. Verify the browser
+profile and signed-in school account before starting. Do not copy school
+passwords, cookies or browser profiles to another computer, a chat, GitHub or the
+cloud service. Authentication protections and restricted workbook sharing remain
+in place. If the local browser executor is unavailable, the action must explain
+that limitation without claiming a queued or completed grade post.
+
+Page 2 reviews the selected workbook records and their observed source revision;
+it does not assess the work again. Before writing, fresh-read the same source,
+verify exact IC student, section, term and assignment mappings for each content
+or revision component, and confirm the destination's points scale. A learner key
+or a matching display name is not an IC student ID. Blank, held, superseded or
+unverified grades stay unscored; duplicate current records need review. A
+recorded IC posting status is not live gradebook evidence. Skip matching current
+grades and return conflicting existing grades or teacher changes for explicit
+review. Follow the ownership, recovery and destination readback requirements
+below. Approval of one selection does not cover changed records or a new scope.
+
+The existing coordination endpoint and grade-review UI do not establish that
+this executor is implemented or accepted. Live posting remains unverified until
+an authorized supervised write and matching IC readback are recorded.
 
 ## Worker procedure
 
@@ -77,12 +110,13 @@ Owner, scope and lease fields are checked against
 private stored state; client JSON cannot confer ownership. Other browsers see
 busy status without claim handles or report content.
 
-Manual dashboard actions copy a request for the connected Codex task. They do
-not silently queue or launch a cloud IC job. A local schedule requires Codex,
-the computer and authenticated school browser to be available. Configure the
-schedule through Codex's native automation tool; do not add a parallel cloud
-schedule. School-source, assessment, destination and history checks remain
-independent requirements for each actual execution.
+The existing generic manual dashboard actions copy a request for the connected
+Codex task. They do not silently queue or launch a cloud IC job. The Page 2 manual
+posting exception does not enable or change a schedule. Existing scheduled
+wake-ups are coordination only until their executor and independent authorization
+are accepted; do not treat a teacher-supervised browser path as unattended
+readiness. Source, destination and history checks remain requirements for each
+actual execution, without regrading the reviewed Page 2 records.
 
 ## Scoped acceptance — September 16, 2026
 
