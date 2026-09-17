@@ -8,9 +8,10 @@
  const fromBackground=sender=>sender.id===chrome.runtime.id&&!sender.tab;
  function active(message){
   const item=sessions.get(message.session_id);
-  if(!item||item.request_id!==message.request_id||!P.UUID.test(message.call_id))throw Error('review_expired');
+  // Stage names only; never student data.
+  if(!item||item.request_id!==message.request_id||!P.UUID.test(message.call_id)){console.warn('School Workflow Hub: hub_session_missing');throw Error('review_expired');}
   const exactRetry=message.action==='finish'&&item.pendingFinish&&same(item.pendingFinish,message.payload);
-  if(item.expires_at<=Date.now()&&!exactRetry)throw Error('review_expired');
+  if(item.expires_at<=Date.now()&&!exactRetry){console.warn('School Workflow Hub: hub_session_expired');throw Error('review_expired');}
   if(item.pendingFinish&&!exactRetry)throw Error('report_retry_required');
   return item;
  }
@@ -98,7 +99,11 @@
    if(pageRequests.size>=30){send('companion_busy');preparing=false;return;}
    pageRequests.set(request.request_id,request);
   }
-  try{const result=await chrome.runtime.sendMessage({type:'hub_request',request});window.postMessage(P.publicResult(result,request.request_id),C.HUB_ORIGIN);}
+  try{const result=await chrome.runtime.sendMessage({type:'hub_request',request});
+   // Safe stage names only; logged here where the console is inspectable and
+   // stripped before the strict page bridge.
+   if(result&&typeof result.diag==='string'){console.warn('School Workflow Hub: prepare_failed ('+result.diag.slice(0,40)+')');delete result.diag;}
+   window.postMessage(P.publicResult(result,request.request_id),C.HUB_ORIGIN);}
   catch{send('companion_unavailable');}finally{preparing=false;}
  });
 })();

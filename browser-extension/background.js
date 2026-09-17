@@ -23,19 +23,26 @@ function normalizedICURL(value){
 }
 function expire(){for(const [id,item]of pending)if(item.expires_at<=Date.now()&&!item.pendingFinish)pending.delete(id);}
 function status(){expire();return {configured:configured(),pending_count:pending.size,source_origin:C.HUB_ORIGIN,destination_origin:C.IC_ORIGIN,posting_enabled:false,external_writes:0,code:'review_required'};}
+// Safe one-word diagnosis of the most recent session rejection; carried on the
+// rejecting response so the school tab can log it. Never student data.
+let lastDiag='';
+const expired=reason=>{lastDiag=reason;return Error('review_expired');};
 function findSession(message,sender){
- if(!fromSite(sender,C.IC_ORIGIN))throw Error('review_expired');
+ if(!fromSite(sender,C.IC_ORIGIN))throw expired('sender_site');
  const item=[...pending.values()].find(value=>value.session_id===message.session_id&&value.request_id===message.request_id&&value.ic_tab_id===sender.tab.id);
- if(!item||item.completed||normalizedICURL(sender.url)!==item.ic_url)throw Error('review_expired');
+ if(!item)throw expired('session_missing');
+ if(item.completed)throw expired('session_completed');
+ if(normalizedICURL(sender.url)!==item.ic_url)throw expired('ic_url_binding');
  const retry=message.action==='finish'&&item.pendingFinish&&same(item.pendingFinish,message.payload);
  const receiptResult=message.type==='ic_result'&&item.finishConfirmed===true;
- if(item.expires_at<=Date.now()&&!retry&&!receiptResult)throw Error('review_expired');
- if(item.pendingFinish&&!retry&&!['ic_result','ic_review_ping'].includes(message.type))throw Error('report_retry_required');
+ if(item.expires_at<=Date.now()&&!retry&&!receiptResult)throw expired('session_expired');
+ if(item.pendingFinish&&!retry&&!['ic_result','ic_review_ping'].includes(message.type)){lastDiag='report_retry_required';throw Error('report_retry_required');}
  return item;
 }
 async function checkTabs(item){
  const [hub,ic]=await Promise.all([chrome.tabs.get(item.hub_tab_id),chrome.tabs.get(item.ic_tab_id)]);
- if(new URL(hub.url).href!==item.hub_url||normalizedICURL(ic.url)!==item.ic_url)throw Error('review_expired');
+ if(new URL(hub.url).href!==item.hub_url)throw expired('hub_url_binding');
+ if(normalizedICURL(ic.url)!==item.ic_url)throw expired('ic_tab_url_binding');
 }
 async function relay(message,sender){
  if(!P.UUID.test(message.call_id))throw Error('invalid_browser_operation');
@@ -78,7 +85,7 @@ async function prepare(request,sender){
  const target=tabs.length?await chrome.tabs.update(tabs[0].id,{active:true}):await chrome.tabs.create({url:C.IC_ORIGIN,active:true});
  if([...pending.values()].some(item=>!item.completed&&item.ic_tab_id===target.id))return P.response(request.request_id,'companion_busy');
  const original_ic_url=target.url||(await chrome.tabs.get(target.id)).url,ic_url=normalizedICURL(original_ic_url);
- if(!ic_url)return P.response(request.request_id,'gradebook_required');
+ if(!ic_url)return {...P.response(request.request_id,'gradebook_required'),diag:'ic_url_unsupported'};
  const expires_at=Math.min(Date.now()+P.REVIEW_TTL_MS,Date.parse(request.review.checked_at)+P.REVIEW_TTL_MS);
  const item={request_id:request.request_id,session_id:crypto.randomUUID(),review:request.review,hub_tab_id:sender.tab.id,hub_url:new URL(sender.url).href,ic_tab_id:target.id,original_ic_url,ic_url,expires_at,pendingFinish:null,busy:false,completed:false};
  pending.set(sender.tab.id,item);
@@ -96,7 +103,9 @@ async function prepare(request,sender){
  }catch{
   console.warn('School Workflow Hub companion: '+stage+'_failed');
   item.completed=true;
-  return P.response(request.request_id,'gradebook_required');
+  // The stage travels only to the extension's own hub content script, which
+  // logs it in the dashboard tab console and strips it before the page bridge.
+  return {...P.response(request.request_id,'gradebook_required'),diag:stage+'_failed'};
  }
 }
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
@@ -106,7 +115,8 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
   try{findSession(message,sender);respond({ok:true});}catch{respond({ok:false,code:'review_expired'});}return;
  }
  if(message?.type==='ic_hub_call'){
-  relay(message,sender).then(data=>respond({ok:true,call_id:message.call_id,session_id:message.session_id,data}),error=>respond({ok:false,call_id:message.call_id,session_id:message.session_id,code:P.safeError(error)}));return true;
+  lastDiag='';
+  relay(message,sender).then(data=>respond({ok:true,call_id:message.call_id,session_id:message.session_id,data}),error=>respond({ok:false,call_id:message.call_id,session_id:message.session_id,code:P.safeError(error),diag:lastDiag||undefined}));return true;
  }
  if(message?.type==='ic_result'){
   publish(message,sender).then(respond,error=>respond({ok:false,code:P.safeError(error)}));return true;

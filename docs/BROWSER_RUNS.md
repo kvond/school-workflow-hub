@@ -137,6 +137,21 @@ are accepted; do not treat a teacher-supervised browser path as unattended
 readiness. Source, destination and history checks remain requirements for each
 actual execution, without regrading the reviewed Page 2 records.
 
+## Scoped acceptance — September 17, 2026
+
+With companion 0.2.3 in the signed-in school browser on the teacher's Mac, a
+teacher-initiated supervised Page 2 review completed end to end for the
+selected existing grades of one live assignment: authenticated fresh workbook
+read, exact section/assignment/term/points-scale match, per-student identity
+verification against the rendered Student Summary, ownership claim on the
+shared grading run, matching-grade comparison, and destination reload. Both
+selected grades already matched the workbook, so no grade was changed; the
+review reported "2 grades already match", saved an attributed private receipt,
+and the dashboard read the same stored report back after a full reload. This
+verifies the read/verify/skip path and receipt persistence. An actual new
+grade write with IC readback remains deliberately unexercised, and the school
+Windows computer's companion remains unverified.
+
 ## Scoped acceptance — September 16, 2026
 
 The hosted school session successfully reserved and renewed the canonical roster
