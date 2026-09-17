@@ -3,8 +3,9 @@ import {safeLink} from './contract.mjs';
 import {showRunInstructions} from './browser-runs.mjs';
 import {buildPostingReview,renderPostingReview} from './grade-posting.mjs';
 import {createCompanionClient,companionMessage} from './browser-companion.mjs';
+import {mountControlPanel} from './control-panel.mjs';
 const $=id=>document.getElementById(id);
-const allowed=['agenda','feedback','summary','research'];
+const allowed=['control','agenda','feedback','summary','research'];
 const researchURL='https://github.com/kvond/answerable-skills/blob/a9a8fc1992c6564dac68d818f3597f11671f9667/skills/formative-pipeline-v2/SKILL.md';
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function btn(text,fn,disabled=false){const n=el('button',text);n.type='button';n.disabled=disabled;if(fn)n.addEventListener('click',fn);if(disabled)n.title='Requires authenticated HTTPS, authorization, and verified end-to-end execution for this action.';return n;}
@@ -151,5 +152,7 @@ qhead.append(btn('Refresh submissions',()=>retrieveRecords()));summaryActions.ap
 function loadResults(){clearInventory();renderPrivateRecords();}
 renderScope();loadResults();retrieveRecords();
 const research=$('page-research');heading(research,'Research workspace','Keep research evidence separate from student-facing feedback. Reuse versioned instructions and the same private workflow records.');const rg=el('div',undefined,'section-grid');const instructions=panel('Shared research instructions','A relevant skill was located in your answerable-skills repository. Its referenced codebook and current applicability still need review before research execution is enabled.');instructions.append(link('Open versioned research workflow ↗',researchURL),el('p','Pinned repository version · access requires your repository permissions. This is an instruction source, not the student-data store.','hint'));actions(instructions,btn('Run research workflow',null,true));const evidence=panel('Evidence & coding record','Research observations must link back to approved private evidence and the applied instruction version. Unknown response timing remains unknown.');metrics(evidence,['Accepted observations','Needs review','Verified evidence links']);empty(evidence,'Research data not connected','There is no student research data in this preview or its source files.');const history=panel('Provenance & review history','The shared backend holds the persistent record. This page will display its accepted results and unresolved reviews, without creating a second store.',true);history.append(el('p','Instruction/codebook acceptance: Pending · Authenticated data access: Not verified · Last run: Not checked','readiness'));rg.append(instructions,evidence,history);research.append(rg);
-function navigate(){const requested=location.hash.slice(1);const page=allowed.includes(requested)?requested:'agenda';for(const id of allowed)$('page-'+id).hidden=id!==page;for(const a of document.querySelectorAll('[data-page]')){if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');}document.title=`${{agenda:'Teaching Agenda',feedback:'Submissions & feedback',summary:'Teacher summary',research:'Research'}[page]} · Agenda`;}
+mountControlPanel($('page-control'));
+
+function navigate(){const requested=location.hash.slice(1);const page=allowed.includes(requested)?requested:'control';for(const id of allowed)$('page-'+id).hidden=id!==page;for(const a of document.querySelectorAll('[data-page]')){if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');}document.title=`${{control:'Control panel',agenda:'Teaching Agenda',feedback:'Submissions & feedback',summary:'Teacher summary',research:'Research'}[page]} · Agenda`;}
 window.addEventListener('hashchange',navigate);navigate();

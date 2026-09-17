@@ -13,7 +13,7 @@ class Element extends EventTarget{
  get allText(){return this.textContent+' '+this.children.map(c=>c.allText).join(' ');}
 }
 class Document extends EventTarget{
- constructor(){super();this.nodes=new Map();for(const id of ['date','page-agenda','page-feedback','page-summary','page-research','detail','detail-body','detail-title']){const e=new Element(this,'div');e.id=id;this.nodes.set(id,e);}this.nodes.get('date').value='2026-09-16';this.links=['agenda','feedback','summary','research'].map(page=>{const e=new Element(this,'a');e.dataset.page=page;return e;});}
+ constructor(){super();this.nodes=new Map();for(const id of ['date','page-control','page-agenda','page-feedback','page-summary','page-research','detail','detail-body','detail-title']){const e=new Element(this,'div');e.id=id;this.nodes.set(id,e);}this.nodes.get('date').value='2026-09-16';this.links=['control','agenda','feedback','summary','research'].map(page=>{const e=new Element(this,'a');e.dataset.page=page;return e;});}
  createElement(tag){return new Element(this,tag);}
  getElementById(id){return this.nodes.get(id);}
  querySelectorAll(query){assert.equal(query,'[data-page]');return this.links;}

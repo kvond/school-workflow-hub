@@ -18,10 +18,12 @@ ASSETS = {
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
         "review-view.mjs", "agenda-connection.mjs", "agenda-editor.mjs", "teaching-results.mjs", "learning-progress.mjs",
         "browser-runs.mjs", "grading-records.mjs", "grade-posting.mjs", "browser-companion.mjs",
+        "control-panel.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
         "workspace.partial.preview.json", "teacher-prompts.json",
+        "run-directions.json",
     )},
 }
 SECURITY_HEADERS = [

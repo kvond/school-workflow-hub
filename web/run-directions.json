@@ -1,0 +1,56 @@
+{
+ "schema_version": "hub-run-directions/v1",
+ "note": "Template only. Every {{placeholder}} is filled from private configuration that is never stored in this repository. Without that configuration the panel shows the placeholders unfilled and names what is missing, rather than inventing a value.",
+ "placeholders": {
+  "timezone": "Scheduling timezone, for example the school's local zone.",
+  "school_year": "School year label.",
+  "school_account": "The school account that must be signed in.",
+  "infinite_campus_url": "Infinite Campus sign-in URL.",
+  "dashboard_url": "This dashboard's hosted URL.",
+  "agenda_url": "The current Agenda workbook.",
+  "roster_workbook_url": "The selected roster workbook.",
+  "assessment_history_url": "The private assessment history Sheet.",
+  "roster_sections": "Per-section IC section numbers and the worksheet name ranges to compare.",
+  "roster_protected_cells": "Cells and entries that must be preserved, such as the TA entry and standing tasks.",
+  "checkpoint_override": "Optional. One checkpoint's confirmed assignment mapping, supplied only while it applies."
+ },
+ "directions": {
+  "roster_completion": {
+   "title": "Roster check and completion grading",
+   "destination": "school_claude",
+   "cadence": "Weekday morning; rosters on Friday",
+   "sections": [
+    {
+     "heading": "Task",
+     "body": "- Run my AIHS roster-check and completion-grading workflow. This is a recurring execution task, not a request to create another schedule.\n- Every weekday, check eligible due and unfinished work for Biology, both Forensics sections, and Anatomy. On Fridays, first check all five rosters. Use {{timezone}} and school year {{school_year}}.\n- I authorize these checks, private assessment-history logging, and posting verified completion scores to Infinite Campus under the requirements below."
+    },
+    {
+     "heading": "Access and sources",
+     "body": "Use my authenticated school Chrome session and approved tools. Verify the signed-in school account: {{school_account}}\nInfinite Campus: {{infinite_campus_url}}\nShared dashboard: {{dashboard_url}}\nAgenda: {{agenda_url}}\nSelected roster workbook: {{roster_workbook_url}}\nPrivate assessment history: {{assessment_history_url}}\nUse that exact history Sheet. It has Setup, Assessments, Item evidence, and Posting log tabs. Verify school ownership and Restricted access before writing. Do not create another history file or use the personal-account duplicate.\nRead current Agenda instructions, Feedback Prompts including Prompt 1, and assignment-specific submission routing. Verify connector identity separately from browser identity. No IC admin API exists. Do not assume access to earlier chats, local files, GitHub, or another account's login.\nIf the scheduled runtime cannot access the authenticated school browser, stop affected work and report the concrete connection problem. Respect school restrictions and required product approvals."
+    },
+    {
+     "heading": "Shared run ownership",
+     "body": "Before each roster or grading operation, open: Dashboard -> Connection details -> Automation run records.\nSelect the workflow, refresh status, and Reserve browser run. Retain the same tab throughout. If another worker owns the run, skip rather than compete. Renew before the 15-minute expiry and immediately before every school write; stop writes if renewal fails.\nAfter an expired or interrupted run, inspect prior records and destination effects before continuing. A recovered completed request is not permission to repeat school actions."
+    },
+    {
+     "heading": "Roster check",
+     "body": "Compare current active, incoming, and dropped IC enrollments with both worksheet name lists, using the sections and ranges in {{roster_sections}}.\nReread current boundaries and name order before comparing. Use stable student identities and report ambiguous matches.\nReport discrepancies without automatically adding, deleting, sorting, or rewriting roster rows. Preserve former students, both lists, attendance and grade history, and every protected cell listed in {{roster_protected_cells}}."
+    },
+    {
+     "heading": "Grading",
+     "body": "For each eligible assignment:\n1. Verify current section, assigned student, exact IC assignment and score category, checkpoint stage, due time, and individual extensions. A deadline later today has not yet passed.\n2. Inspect actual student responses and complete assignment-specific submission history, not only recently modified files. Verify identity, source revision, required marker inventory, and the live Prompt 1 readiness rules.\n3. Assess meaningful attempts addressing the requested work. Text length, filled boxes, copied prompt text, and correctness are not substitutes for completion evidence. Keep NOTES, BANK, and DRAFT counts separate; exclude optional work; use N/A for zero denominators. Apply the live policy's arithmetic and rounding.\n4. Inaccessible files, incomplete scans, ambiguous identities, missing markers, and unreadable responses require review, not a zero. Missing work remains unscored through the full 14th day. Any later zero requires a fresh complete scan and verified individual deadline.\n5. Before an IC write, append the assessment and supporting item evidence to the private history Sheet and reread them successfully. Retain stable assessment and run IDs, student and assignment IDs, stage, source and revision references, item judgments, calculation, policy reference, timestamps, and original IC value. Store student excerpts as literal text, never formulas.\n6. Renew shared ownership and freshly reread the exact IC cell. Skip matching scores. Preserve teacher-entered scores, overrides, exemptions, earlier stages, and grade history. Report conflicting existing values rather than overwriting them by assumption.\n7. Append a prepared posting record and then a write-attempt record. Save the permitted score in IC, reload, and verify the same student and assignment. Append the actual observed value and a verified event only after successful readback. Verify the first real score completely before proceeding to additional writes.\nKeep history append-only. Link corrections and later assessments to prior records. If IC may have changed but logging failed, reconcile the live grade before retrying. Never repeat a grade write merely to repair logging. Private-history persistence and IC readback are separate requirements."
+    },
+    {
+     "heading": "Current checkpoint",
+     "body": "{{checkpoint_override}}",
+     "optional": true,
+     "note": "A checkpoint mapping applies to one checkpoint only. Remove it once that checkpoint has passed; a stale mapping grades the wrong assignment."
+    },
+    {
+     "heading": "Run report and notifications",
+     "body": "Save a factual Private run report JSON through Automation run records:\n  workflow: \"roster\" or \"grading\"\n  outcome: \"checked\", \"needs_review\", or \"posted\"\n  summary: factual string, maximum 2000 characters\n  counts: integer checked, changed, and needs_review\n  evidence: up to 30 objects with kind, reference, and actual ISO checked_at timestamp\nAllowed evidence kinds: source_read, workbook_readback, grade_readback, review_note. Keep references under 1000 characters. Use \"posted\" only for actual changes with verified destination readback.\nConfirm the receipt survives refresh or reload. If report saving is uncertain, retry the unchanged cached report in the same tab without repeating school actions. A browser report is a summary, not a substitute for detailed assessment history or proof of an IC write. Preserve prior results and baselines on incomplete checks.\nReport checked, assessed, posted, skipped, and blocked counts, with specific next actions. Notify me only about meaningful findings, completed work, failures, or required action. Stay quiet when nothing actionable has changed.\nDo not email, print, publish student reports, change sharing, alter assignments or due dates, or collect research data. Continue within this authorization without repeated general check-ins; pause for concrete ambiguities, failed prerequisites, or required platform approvals."
+    }
+   ]
+  }
+ }
+}
