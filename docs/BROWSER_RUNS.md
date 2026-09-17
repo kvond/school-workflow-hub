@@ -49,6 +49,22 @@ Save followed by reload/readback. Synthetic validation does not establish live
 acceptance. An existing-score check verifies the read/skip path; live posting
 remains unverified until an authorized write and matching IC readback occur.
 
+Live-session findings the companion now accounts for (0.2.2): Infinite Campus
+renders the Student Summary panel header before its body; closed summary panels
+linger in the document with layout boxes and sit inside `ic-multiscore`, so
+panel reads must be a single consistent pass bound to the routed student, and
+score-panel checks must exclude summary-dialog content. The companion is a
+Chrome unpacked extension: content-script changes only take effect after the
+extension itself is reloaded, and the packaged folder must stay at the path
+Chrome recorded at install (repackage and re-load unpacked after moving it).
+`gradebook_required` on a fresh review normally means the matching Score panel
+is not open in the single signed-in Infinite Campus tab; `choose_one_ic_tab`
+means more than one Infinite Campus tab exists in that browser. A stopped or
+expired earlier run leaves `recovery_required` on the shared grading record;
+inspect the actual score panel, then reserve the run and save an accurate
+private report through `/api/browser-runs` (the Automation run records panel)
+to clear it — release keeps recovery in place by design.
+
 ## Worker procedure
 
 1. Verify the school browser account, current school/year/sections, live Agenda
