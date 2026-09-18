@@ -42,11 +42,19 @@ class DetectionTests(unittest.TestCase):
         also = detect_declarations("Will start Energy next class.", "", "2026-09-14")
         self.assertIsNone(also["start"])
 
-    def test_explicit_deadline_exception_needs_a_real_date(self):
+    def test_explicit_deadline_exception_needs_the_word_deadline_and_a_date(self):
         found = detect_declarations("Deadline exception: due 10/3 for this one.", "", "2026-09-14")
         self.assertEqual(found["exception"]["date"], "2026-10-03")
         vague = detect_declarations("The deadline feels tight.", "", "2026-09-14")
         self.assertIsNone(vague["exception"])
+
+    def test_routine_due_mentions_in_lesson_text_are_never_exceptions(self):
+        # Real plan text observed live: an ordinary turn-in instruction.
+        text = ("9/16 start with 02 slide 16 and finish\n"
+                "Energy-loss pyramid / 10% rule stations + write-up (long)\n"
+                "Notes.Intro to Energy due 9/16 Write Revisions and turn in.")
+        found = detect_declarations(text, "", "2026-09-16")
+        self.assertEqual(found, {"start": None, "intention": None, "exception": None})
 
     def test_plain_lesson_text_triggers_nothing(self):
         found = detect_declarations("Intro to Energy lesson · Autotroph vs heterotroph", "", "2026-09-14")
