@@ -42,11 +42,11 @@ function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';scope.assignmentKey='all';renderScope();renderPrivateRecords();});classLabel.append(select);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';scope.assignmentKey='all';resetProcess();renderScope();renderPrivateRecords();});classLabel.append(select);
  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','Matched sections'));sectionSelect.firstChild.value='matched';
  sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);
  const lessonLabel=el('label','Lesson name');lessonSelect=el('select');lessonSelect.setAttribute('aria-label','Feedback lesson');lessonSelect.append(el('option','All lessons'));lessonSelect.firstChild.value='all';
- lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;renderPrivateRecords()});lessonLabel.append(lessonSelect);
+ lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;resetProcess();renderPrivateRecords()});lessonLabel.append(lessonSelect);
  const workLabel=el('label','Work');workSelect=el('select');workSelect.setAttribute('aria-label','Feedback checkpoint');for(const [v,name]of [['all','Notes & drafts'],['initial','Notes'],['final','Drafts']]){const o=el('option',name);o.value=v;workSelect.append(o);}workSelect.value=scope.stage;
  workSelect.addEventListener('change',()=>{scope.stage=workSelect.value;renderPrivateRecords()});workLabel.append(workSelect);
  bar.append(classLabel,sectionLabel,lessonLabel,workLabel);
@@ -119,10 +119,42 @@ async function scanSubmissions(){
  finally{if(generation===scanGeneration)scan.disabled=false;}
 }
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
-const reviewBox=el('div',undefined,'assessment-review');
+// Process work: find and assess the selected lesson's submissions by name — the
+// lesson's turn-in sources are resolved from where its recorded work actually
+// lives, so no date is needed. The review workspace opens below.
+const processStatus=el('p','','hint');processStatus.setAttribute('role','status');
+const processRow=el('div',undefined,'action-row');processRow.append(btn('Process work',()=>processWork()));queue.append(processRow,processStatus);
+const reviewBox=el('div',undefined,'assessment-review');queue.append(reviewBox);
 const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=mountSubmissionMonitor(monitorBox,{onFiles:(list,deadline)=>assessmentReview?.setFiles(list,deadline)});advancedIntake.append(monitorBox);
-assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});advancedIntake.append(reviewBox);
+assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});
 const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);advancedIntake.append(inventoryDetails);
+const LESSON_INTAKE={
+ lesson_has_no_recorded_submissions:'This lesson has no recorded submissions yet, so its turn-in folder is not known. Use “Assess new submissions” (with the lesson date) once to establish it.',
+ submission_folder_access_required:'The runtime reader cannot see this lesson’s submission files yet. Share their folder with the reader as Viewer, then Process work again.',
+ lesson_sources_too_scattered:'This lesson’s submissions are spread across too many folders to scan automatically. Review them in Drive or use the dated path.',
+ submission_folder_inactive:'A source folder for this lesson is trashed or is not a folder. Check it in Drive, then Process work again.',
+ submission_scan_incomplete:'The source scan hit a bound before completing. Nothing was assessed; try Process work again.',
+ submission_shortcut_needs_review:'A source folder contains a shortcut, which the scan never follows. Replace it with the real file, then Process work again.',
+ invalid_submission_scope:'The lesson selection was not valid. Reload the page and choose the lesson again.',
+ sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
+function resetProcess(){try{assessmentReview&&assessmentReview.update({classKey:scope.classKey,ready:false});}catch(e){}if(processStatus)processStatus.textContent='';}
+async function processWork(){
+ if(!scope.assignmentKey||scope.assignmentKey==='all'){processStatus.textContent='Choose a specific lesson name first, then Process work.';return;}
+ const classKey=scope.classKey,assignmentKey=scope.assignmentKey;
+ processStatus.textContent='Finding this lesson’s submissions…';
+ try{
+  const r=await fetch('/api/submission-inventory?'+new URLSearchParams({class_key:classKey,assignment:assignmentKey}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
+  const d=await r.json();
+  if(scope.classKey!==classKey||scope.assignmentKey!==assignmentKey)return;// selection moved on
+  if(!r.ok)throw Error(LESSON_INTAKE[d.error]||'The lesson’s submissions could not be checked. Nothing was assessed.');
+  if(d.schema_version!=='hub-submission-inventory/v1'||d.class_key!==classKey||d.assignment_key!==assignmentKey||!Array.isArray(d.files)||d.external_writes!==0)throw Error('The lesson’s submissions could not be verified.');
+  assessmentReview.update({classKey,assignmentKey,date:'lesson:'+assignmentKey,ready:true});
+  assessmentReview.setFiles(d.files,null);
+  const eligible=d.files.filter(f=>f.stage!=='assessed').length;
+  const extra=d.sources_unreadable?(' · '+d.sources_unreadable+' source file(s) not shared with the reader'):'';
+  processStatus.textContent=d.files.length?(d.files.length+' submission'+(d.files.length===1?'':'s')+' found in '+(d.folder_name||'the lesson’s sources')+' · '+eligible+' not yet assessed'+extra+'. Review and generate feedback below.'):('No submission files found in this lesson’s sources'+extra+'.');
+ }catch(e){processStatus.textContent=e.message||'Process work could not run.';}
+}
 const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Print the selected lesson’s student feedback as a packet (one student per page), or print a single student from their row above. Printing uses the saved reports and makes no new AI calls.'));const reportActions=el('div',undefined,'action-row');const packetStatus=el('p','','hint');packetStatus.setAttribute('role','status');promptAction(reportActions,'Copy feedback instructions','feedback');reportActions.append(btn('Print feedback packet',()=>{const rows=recordState.status==='loaded'?filterRecords(recordState.data,scope.classKey,sectionId,scope.assignmentKey,scope.stage):[];const n=printFeedbackPacket(rows);packetStatus.textContent=n?('Printing '+n+' student report'+(n===1?'':'s')+'.'):'No saved feedback to print for this selection yet.';}));reports.append(reportActions,packetStatus);
 async function reviewGrades(){
  const selection={classKey:scope.classKey,sectionId};
