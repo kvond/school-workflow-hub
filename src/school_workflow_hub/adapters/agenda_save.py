@@ -11,8 +11,38 @@ import uuid
 from .hosted_agenda import authenticated_reader, service_token, ConnectionError
 from .dated_agenda import read_day, grid, COURSES
 from .firestore_state import configured_store
+from . import topic_starts
 from ..core.cloud_state import CloudState, Conflict
 from ..core.runs import content_hash
+from ..workflows.submission_monitor import stream_scope
+
+
+def _topic_record(assertion, day, course, values, config, store, *, record=True):
+    """Topic starts, intentions and deadline exceptions declared in this save.
+
+    "Today" is the saved dashboard date, including backdated notes. Failures
+    here never fail the save itself, but they are reported, not hidden.
+    """
+    try:
+        result = read_day(assertion, day, config)
+        lesson = next(l for l in result['lessons'] if l['class_key'] == course)
+        folder = lesson.get('turnin_folder') or ''
+        prefix = 'https://drive.google.com/drive/folders/'
+        if not folder.startswith(prefix):
+            return {'recorded': None, 'reason': 'no_turnin_mapping'}
+        scope = stream_scope(course, folder[len(prefix):])
+        outcome = {'recorded': None}
+        if record:
+            outcome = topic_starts.record_declarations(
+                store, scope, day, values['plan'], values['notes'],
+                source_kind='dashboard_save')
+        deadline = topic_starts.deadline_status(assertion, scope, config, store)
+        outcome['deadline'] = {k: deadline.get(k) for k in (
+            'status', 'start_date', 'due_date', 'basis', 'meetings',
+            'provisional', 'conflicts', 'exception', 'ic_alignment')}
+        return outcome
+    except Exception:
+        return {'recorded': 'record_failed'}
 
 WRITE_SCOPE = 'https://www.googleapis.com/auth/spreadsheets'
 
@@ -83,9 +113,12 @@ def capability(assertion, day, course, config):
         'matchCase': True, 'matchEntireCell': True, 'includeFormulas': False,
         'range': {'sheetId': identity['sheet'], 'startRowIndex': identity['row'] - 1,
                   'endRowIndex': identity['row'], 'startColumnIndex': column, 'endColumnIndex': column + 1}}}])
-    CloudState(configured_store(config)).read_task('task_' + '0' * 64)
+    store = CloudState(configured_store(config))
+    store.read_task('task_' + '0' * 64)
+    topic = _topic_record(assertion, day, course, values, config, store, record=False)
     return {'schema_version': 'hub-agenda-save/v1', 'save_enabled': True,
-            'revision': revision, 'values': values, 'date': day, 'class_key': course}
+            'revision': revision, 'values': values, 'date': day, 'class_key': course,
+            'topic': topic}
 
 
 def save(assertion, payload, config):
@@ -110,7 +143,9 @@ def save(assertion, payload, config):
     if claim.completed:
         if current != desired:
             raise Conflict('saved_then_changed_reload')
-        return {'status': 'saved', 'revision': revision, 'values': current, 'readback_verified': True}
+        topic = _topic_record(assertion, day, course, desired, config, store)
+        return {'status': 'saved', 'revision': revision, 'values': current,
+                'readback_verified': True, 'topic': topic}
     if revision != payload['revision'] and current != desired:
         store.release_for_review(claim, 'agenda_changed_reload')
         raise Conflict('agenda_changed_reload')
@@ -128,4 +163,6 @@ def save(assertion, payload, config):
     if after_identity != identity or after != desired:
         raise ConnectionError('agenda_readback_failed')
     store.finish(claim, records={'receipt': {'revision': revision, 'readback_verified': True}})
-    return {'status': 'saved', 'revision': revision, 'values': after, 'readback_verified': True}
+    topic = _topic_record(assertion, day, course, desired, config, store)
+    return {'status': 'saved', 'revision': revision, 'values': after,
+            'readback_verified': True, 'topic': topic}

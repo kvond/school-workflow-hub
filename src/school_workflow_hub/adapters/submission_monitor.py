@@ -17,7 +17,10 @@ from .hosted_agenda import ConnectionError, service_token
 from .submission_inventory import DriveReader, collect
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
-from ..workflows.submission_monitor import CLASS_KEYS, advance_state, stream_scope
+from ..workflows.submission_monitor import (
+    CLASS_KEYS, DERIVATION_VERSION, advance_state, stream_scope,
+)
+from . import topic_starts
 
 OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
@@ -55,6 +58,7 @@ def _drive_scan(assertion, day, class_key, config):
     return {"class_key": class_key, "folder_id": folder_id, "folder_name": root["name"],
             "assignment_label": lesson["assignment_label"], "date": day,
             "observed_at": _now(),
+            "day_plan": lesson.get("plan") or "", "day_notes": lesson.get("notes") or "",
             "coverage": {"complete": True, "folders_checked": folders, "forms_found": forms},
             "files": [{"id": f["id"], "name": f["name"], "modified_at": f.get("modifiedTime"),
                        "version": f.get("version")} for f in files]}
@@ -67,17 +71,31 @@ def _mappings(assertion, class_key, config):
         file_id = row.get("source_file_id")
         if row.get("class_key") != class_key or not file_id or not row.get("student_id"):
             continue
-        marker = row.get("source_snapshot_date") or row.get("checked_date") or ""
+        # Bind the assessment to the strongest revision evidence the workbook
+        # offers: a full check timestamp beats a date, and a bare date can never
+        # prove a same-day edit was covered.
+        marker, precision = "", "unknown"
+        checked = str(row.get("checked_at") or "")
+        import re as _re
+        if _re.fullmatch(r"\d{4}-\d{2}-\d{2}[T ].+", checked):
+            marker, precision = checked, "timestamp"
+        else:
+            day_marker = str(row.get("source_snapshot_date") or row.get("checked_date") or "")
+            if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_marker):
+                marker, precision = day_marker, "date"
         entry = {"student_id": str(row["student_id"]), "section_id": str(row.get("section_id") or "-"),
                  "identity_basis": str(row.get("identity_basis") or "workbook")[:64],
-                 "assessed_marker": str(marker)[:40] or "unknown",
+                 "assessed_marker": (marker or "unknown")[:40],
+                 "marker_precision": precision,
                  "ic_posting_status": str(row.get("ic_posting_status") or "unverified")[:200]}
         prior = by_file.get(file_id)
         if prior and prior["student_id"] != entry["student_id"]:
             # Two students recorded for one file: leave it unmatched for review.
             conflicted.add(file_id)
             continue
-        if prior is None or entry["assessed_marker"] >= prior["assessed_marker"]:
+        rank = {"unknown": 0, "date": 1, "timestamp": 2}
+        if prior is None or (rank[entry["marker_precision"]], entry["assessed_marker"]) >= (
+                rank[prior["marker_precision"]], prior["assessed_marker"]):
             by_file[file_id] = entry
     for file_id in conflicted:
         by_file.pop(file_id, None)
@@ -142,7 +160,8 @@ def _previous(store, task):
     return records, receipt
 
 
-def _summary(state, events, *, unchanged, attempt, schedule):
+def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
+             deadline=None):
     files = state["files"]
     listed = []
     for file_id, record in sorted(files.items(), key=lambda kv: kv[1]["name"])[:MAX_LISTED]:
@@ -168,7 +187,10 @@ def _summary(state, events, *, unchanged, attempt, schedule):
               "needs_review": len(state["needs_review"])}
     return {"schema_version": STATUS_VERSION, "configured": True,
             "stream": state["stream"], "date": state["date"], "due_date": state["due_date"],
-            "due_basis": state["due_basis"], "observed_at": state["observed_at"],
+            "due_basis": state["due_basis"],
+            "deadline": deadline if deadline is not None else state.get("deadline"),
+            "topic_declaration": declaration,
+            "observed_at": state["observed_at"],
             "baseline_established_at": state["baseline_established_at"],
             "scan_count": state["scan_count"], "coverage": state["coverage"],
             "roster": state["roster"], "counts": counts, "files": listed,
@@ -204,6 +226,20 @@ def scan_and_persist(assertion, day, class_key, config):
         raise
     task_id = store.create_task(scope)
     task = store.read_task(task_id)
+    # The day's own Plan/Notes may declare a topic start, an intention or an
+    # explicit deadline exception; record it before deriving the deadline, so
+    # notes written directly in Sheets are honored too. "Today" is the scanned
+    # dashboard date, never the wall clock.
+    declaration = topic_starts.record_declarations(
+        store, scope, day, scan.get("day_plan"), scan.get("day_notes"),
+        source_kind="monitor_scan")
+    calendar = topic_starts.read_week_calendar(assertion, config)
+    deadline = topic_starts.deadline_status(assertion, scope, config, store,
+                                            calendar=calendar)
+    due_date, due_basis = deadline["due_date"], deadline["basis"]
+    deadline_hash = content_hash({k: deadline.get(k) for k in
+                                  ("status", "start_date", "due_date", "basis",
+                                   "meetings", "provisional", "conflicts", "exception")})
     records_prior, receipt_prior = _previous(store, task)
     previous = records_prior["state"] if records_prior else None
     baseline = (task or {}).get("baseline") or {}
@@ -213,24 +249,32 @@ def scan_and_persist(assertion, day, class_key, config):
     maps_hash = content_hash(_stable_mappings(mappings))
     if (previous is not None and baseline.get("source_revision") == fingerprint
             and previous.get("mappings_fingerprint") == maps_hash
-            and previous.get("due_date") == day):
-        # Nothing observable changed: no new run, no new events, no duplicates.
+            and previous.get("deadline_fingerprint") == deadline_hash
+            and previous.get("derivation_version") == DERIVATION_VERSION):
+        # Nothing observable changed and the derivation logic is current:
+        # no new run, no new events, no duplicates.
         _record_attempt(store, scope, "complete", None, receipt_prior["run_id"])
         return _summary(previous, records_prior["events"], unchanged=True,
-                        attempt=_read_attempt(store, scope), schedule=_schedule(config))
+                        attempt=_read_attempt(store, scope), schedule=_schedule(config),
+                        declaration=declaration)
     input_hash = content_hash({"scope": scope, "checkpoint": checkpoint,
-                               "scan": fingerprint, "due": day, "mappings": maps_hash})
+                               "scan": fingerprint, "due": due_date, "basis": due_basis,
+                               "deadline": deadline_hash, "mappings": maps_hash,
+                               "derivation": DERIVATION_VERSION})
     claim = store.claim(task_id, owner=OWNER, request_id="scan-" + input_hash[:32],
                         input_hash=input_hash, ttl_seconds=120)
     if claim.completed:
         records = _read_run_records(store, task_id, claim.run_id)
         _record_attempt(store, scope, "complete", None, claim.run_id)
         return _summary(records["state"], records["events"], unchanged=True,
-                        attempt=_read_attempt(store, scope), schedule=_schedule(config))
+                        attempt=_read_attempt(store, scope), schedule=_schedule(config),
+                        declaration=declaration)
     try:
-        result = advance_state(previous, scan, mappings=mappings, due_date=day,
-                               as_of=_now())
+        result = advance_state(previous, scan, mappings=mappings, due_date=due_date,
+                               due_basis=due_basis, as_of=_now())
         result["state"]["mappings_fingerprint"] = maps_hash
+        result["state"]["deadline"] = deadline
+        result["state"]["deadline_fingerprint"] = deadline_hash
         baseline = {"scope": "submission-monitor:" + class_key + ":" + scan["folder_id"],
                     "source_revision": fingerprint, "observed_at": scan["observed_at"],
                     "fingerprint": result["fingerprint"]}
@@ -248,7 +292,8 @@ def scan_and_persist(assertion, day, class_key, config):
         raise ConnectionError("monitor_scan_invalid") from None
     _record_attempt(store, scope, "complete", None, claim.run_id)
     return _summary(result["state"], result["events"], unchanged=False,
-                    attempt=_read_attempt(store, scope), schedule=_schedule(config))
+                    attempt=_read_attempt(store, scope), schedule=_schedule(config),
+                    declaration=declaration)
 
 
 def _stable_mappings(mappings):
@@ -264,13 +309,22 @@ def read_status(assertion, day, class_key, config):
     task = store.read_task(key("task", scope))
     attempt = _read_attempt(store, scope)
     schedule = _schedule(config)
+    # A fresh calculated deadline for display; reading never records anything.
+    try:
+        deadline = topic_starts.deadline_status(assertion, scope, config, store)
+    except Exception:
+        deadline = {"status": "deadline_unavailable", "due_date": None,
+                    "basis": "deadline_unavailable", "meetings": [],
+                    "provisional": True, "conflicts": [],
+                    "ic_alignment": "calculated_not_verified_in_ic"}
     if not task or not task.get("last_result"):
         return {"schema_version": STATUS_VERSION, "configured": True,
                 "stream": {"class_key": class_key, "folder_id": folder_id},
                 "status": "no_complete_scan_recorded", "counts": None, "files": [],
                 "needs_review": [], "events_last_scan": [], "unchanged_rerun": False,
+                "deadline": deadline, "topic_declaration": None,
                 "last_attempt": attempt, "automation": schedule,
                 "external_writes": 0, "run_enabled": False}
     records = _read_run_records(store, key("task", scope), task["last_result"]["run_id"])
     return _summary(records["state"], records["events"], unchanged=False, attempt=attempt,
-                    schedule=schedule)
+                    schedule=schedule, deadline=deadline)

@@ -121,6 +121,20 @@ async function checkSaving(c,day,lesson,sequence){
  }catch(error){if(sequence!==loadSequence)return;saveAccess.set(key,{error:error.message});}
  if(selected===day)render();
 }
+function topicNote(topic){
+ const line=(d)=>{
+  if(!d)return '';
+  const day=v=>v?new Date(v+'T12:00:00').toLocaleDateString():'—';
+  if(d.status==='start_conflict_needs_review')return ' · Conflicting topic starts recorded — review needed';
+  if(d.basis==='teacher_exception')return ' · Deadline exception recorded: due '+day(d.due_date);
+  if(d.due_date)return ' · Topic started '+day(d.start_date)+' → 3 meetings '+(d.meetings||[]).map(day).join(', ')+' → final revised work due end of '+day(d.due_date)+' (calculated, not yet in Infinite Campus)';
+  if(d.start_date)return ' · Topic start '+day(d.start_date)+' recorded; deadline provisional until the calendar ahead is filled in';
+  return '';
+ };
+ if(!topic)return '';
+ if(topic.recorded==='record_failed')return ' · Topic start could not be recorded — check the monitoring panel';
+ return line(topic.deadline);
+}
 async function saveLesson(c){
  const day=selected,key=draftKey(c),d=draft(c),access=saveAccess.get(key);
  if(!access?.revision||d.saving)return;
@@ -132,7 +146,7 @@ async function saveLesson(c){
   const result=await response.json();
   if(!response.ok||result.status!=='saved'||result.readback_verified!==true||!equalFields(result.values,values))throw Error(response.status===409?'Agenda changed or another save is running. Your edits are still here.':result.error||'Save could not be verified');
   access.revision=result.revision;access.values=result.values;
-  d.dirty=JSON.stringify(fields(d))!==signature;d.message=d.dirty?'Unsaved changes':'Saved to Agenda · verified';d.requestId=null;d.pendingSignature=null;
+  d.dirty=JSON.stringify(fields(d))!==signature;d.message=d.dirty?'Unsaved changes':'Saved to Agenda · verified'+topicNote(result.topic);d.requestId=null;d.pendingSignature=null;
   const lesson=liveDays.get(day)?.lessons.find(l=>c.key.endsWith(':'+l.class_key));if(lesson)Object.assign(lesson,result.values);
  }catch(error){d.message='Not saved: '+error.message;d.dirty=true;}
  finally{d.saving=false;dirty=[...drafts.values()].some(v=>v.dirty);$('draft-status').hidden=!dirty;if(selected===day)render();}

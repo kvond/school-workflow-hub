@@ -39,6 +39,11 @@ class Harness:
         self.port = MemoryCAS()
         self.scan = drive_scan([entry(FILE_A)])
         self.maps = mappings()
+        # A synthetic Weeks calendar covering the fixture dates.
+        from school_workflow_hub.workflows.topic_deadline import parse_week_calendar
+        from datetime import date as _date
+        self.calendar = {"2026-09-14": parse_week_calendar(
+            _date(2026, 9, 14), "Sep 14 – Sep 18, 2026\nFri 09/18 = A Friday → Bio + Forensics")}
 
     def __enter__(self):
         self.patches = [
@@ -50,6 +55,8 @@ class Harness:
             patch.object(hosted, "_lesson",
                          lambda assertion, day, class_key, config: (None, None, FOLDER)),
             patch.object(hosted, "_now", lambda: self.port.now.isoformat()),
+            patch.object(hosted.topic_starts, "read_week_calendar",
+                         lambda assertion, config: dict(self.calendar)),
         ]
         for item in self.patches:
             item.start()
@@ -130,6 +137,84 @@ class HostedScanTests(unittest.TestCase):
         with Harness():
             status = hosted.read_status(None, "2026-09-14", "biology", CONFIG)
             self.assertEqual(status["status"], "no_complete_scan_recorded")
+
+
+class DeadlineIntegrationTests(unittest.TestCase):
+    def test_start_note_seen_by_a_scan_sets_the_third_meeting_deadline(self):
+        with Harness() as h:
+            h.scan = drive_scan([entry(FILE_A)])
+            h.scan["day_plan"] = "Started Energy today."
+            result = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertEqual(result["topic_declaration"]["recorded"], "start")
+            self.assertEqual(result["deadline"]["meetings"],
+                             ["2026-09-14", "2026-09-16", "2026-09-18"])
+            self.assertEqual(result["due_date"], "2026-09-18")
+            self.assertEqual(result["due_basis"], "third_meeting_rule")
+            self.assertEqual(result["deadline"]["ic_alignment"],
+                             "calculated_not_verified_in_ic")
+
+    def test_repeated_saves_and_scans_never_duplicate_the_start(self):
+        with Harness() as h:
+            h.scan["day_plan"] = "Started Energy today."
+            hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            h.port.advance(120)
+            h.scan = drive_scan([entry(FILE_A)], observed="2026-09-15T11:02:00+00:00")
+            h.scan["day_plan"] = "Started Energy today."
+            rerun = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertTrue(rerun["unchanged_rerun"])
+            self.assertEqual(rerun["topic_declaration"]["recorded"],
+                             "start_already_recorded")
+
+    def test_contradictory_start_is_flagged_not_guessed(self):
+        with Harness() as h:
+            h.scan["day_plan"] = "Started Energy today."
+            hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            h.port.advance(120)
+            h.scan = drive_scan([entry(FILE_A)], observed="2026-09-15T11:02:00+00:00")
+            h.scan["day_plan"] = "Started Energy today."
+            second = hosted.scan_and_persist(None, "2026-09-16", "biology", CONFIG)
+            self.assertTrue(second["topic_declaration"]["conflict"])
+            self.assertEqual(second["deadline"]["status"], "start_conflict_needs_review")
+
+    def test_the_navigation_date_is_never_the_deadline(self):
+        with Harness() as h:
+            h.scan["day_plan"] = "Started Energy today."
+            hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            h.port.advance(120)
+            h.scan = drive_scan([entry(FILE_A)], observed="2026-09-15T11:02:00+00:00")
+            h.scan["date"] = "2026-09-16"
+            later = hosted.scan_and_persist(None, "2026-09-16", "biology", CONFIG)
+            self.assertEqual(later["due_date"], "2026-09-18")
+            self.assertEqual(later["due_basis"], "third_meeting_rule")
+
+    def test_teacher_exception_overrides_the_third_meeting(self):
+        with Harness() as h:
+            h.scan["day_plan"] = "Started Energy today. Deadline exception: due 9/25."
+            result = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertEqual(result["due_date"], "2026-09-25")
+            self.assertEqual(result["due_basis"], "teacher_exception")
+
+    def test_old_derivation_state_is_recomputed_without_losing_history(self):
+        with Harness() as h:
+            import school_workflow_hub.workflows.submission_monitor as core
+            with patch.object(core, "DERIVATION_VERSION", 1), \
+                 patch.object(hosted, "DERIVATION_VERSION", 1):
+                first = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertEqual(first["scan_count"], 1)
+            h.port.advance(120)
+            h.scan = drive_scan([entry(FILE_A)], observed="2026-09-15T11:02:00+00:00")
+            recomputed = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertFalse(recomputed["unchanged_rerun"])
+            self.assertEqual(recomputed["scan_count"], 2)
+            self.assertEqual(recomputed["counts"]["events_this_scan"]
+                             if "events_this_scan" in (recomputed["counts"] or {}) else
+                             len(recomputed["events_last_scan"]), 0)
+            kept = [f for f in recomputed["files"] if f["file_id"] == FILE_A][0]
+            self.assertEqual(kept["first_observed_at"], "2026-09-15T11:00:00+00:00")
+            h.port.advance(120)
+            h.scan = drive_scan([entry(FILE_A)], observed="2026-09-15T11:04:00+00:00")
+            settled = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertTrue(settled["unchanged_rerun"])
 
 
 class EndpointTests(unittest.TestCase):
