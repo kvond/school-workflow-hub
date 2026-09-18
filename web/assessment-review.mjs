@@ -32,6 +32,11 @@ const FAILURES={
  assessment_readback_failed:'The saved rows did not read back as expected. Check the workbook before retrying.',
  assessment_save_busy:'Another request for this student and assignment is still running. Wait, then retry.',
  grading_records_not_connected:'The private grading workbook is not connected.',
+ // Server-side Drive access is the Cloud Run service identity, never a local
+ // AI account: these are server permission problems, not your sign-in.
+ assessment_source_access_required:'The hub’s service account cannot read this document (server-side Drive access, not your sign-in). Share the file or its folder with the runtime reader as Viewer, then retry.',
+ assessment_source_unavailable:'The document could not be read from Drive right now (a server-side source problem, not your sign-in). Retry shortly.',
+ assessment_source_unsupported:'This file type cannot be exported as text for assessment.',
  sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
 const explain=code=>FAILURES[code]||('The request could not be completed ('+code+'). Nothing was saved.');
 

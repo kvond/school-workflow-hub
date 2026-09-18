@@ -72,7 +72,7 @@ export function renderRecords(root,state,{classKey,sectionId='matched'}){
 export function printFeedback(row){
  const doc=document;
  doc.querySelector('.print-sheet')?.remove();
- const sheet=node(doc.body,'div');sheet.className='print-sheet';
+ const sheet=node(doc.body,'div');sheet.className='print-sheet';doc.body.append(sheet);
  sheet.append(node(doc.body,'h1',(row.display_name||'Student')+' · '+row.assignment_title));
  const meta=node(doc.body,'p',(row.section_name||'')+' · Feedback prepared '+time(row.checked_at));meta.className='hint';sheet.append(meta);
  sheet.append(node(doc.body,'p','Content / notes: '+score(row,'content_score')+'    Revision: '+score(row,'revision_score')));
