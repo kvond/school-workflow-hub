@@ -6,6 +6,7 @@ shortcuts or accepts a browser-provided folder ID. No student state is written.
 from datetime import datetime, timezone
 import re
 from .dated_agenda import read_day
+from .grading_records import read_records
 from .hosted_agenda import ConnectionError, service_token
 from ..core.cloud_state import content_hash
 
@@ -74,12 +75,15 @@ def lesson_folder_name(name, course, week):
     return bool(re.search(r'\bCycle\s*\d{1,2}\b', name))
 
 
-def collect(reader, folder_id, *, course, week):
+def collect(reader, folder_id, *, course, week, skip_name_guard=False):
     root = reader.metadata(folder_id)
     if root.get('trashed') is not False or root.get('mimeType') != FOLDER:
         raise ConnectionError('submission_folder_inactive')
     # Reject stale course-level mappings; require a specific lesson folder.
-    if not lesson_folder_name(root.get('name', ''), course, week):
+    # The lesson-name path derives the folder from the assignment's own
+    # submission files (ground truth), so the Agenda-week name guard — which
+    # only catches wrong-date mappings — does not apply and is skipped.
+    if not skip_name_guard and not lesson_folder_name(root.get('name', ''), course, week):
         raise ConnectionError('submission_lesson_mapping_required')
     queue = [(folder_id, 0)]
     seen, files, forms, pages = set(), [], [], 0
@@ -116,6 +120,98 @@ def collect(reader, folder_id, *, course, week):
                 raise ConnectionError('submission_scan_incomplete')
             cursors.add(cursor)
     return root, sorted(files, key=lambda f: f['id']), len(seen), len(forms)
+
+
+CLASS_COURSE = {'biology': 'Biology', 'forensics': 'Forensics', 'anatomy': 'Anatomy'}
+MAX_SOURCE_FILES = 200
+MAX_LESSON_FOLDERS = 6
+
+
+def _lesson_source_files(records, class_key, assignment_key):
+    ids = []
+    for row in records.get('submissions', []):
+        if row.get('class_key') != class_key or row.get('assignment_key') != assignment_key:
+            continue
+        fid = str(row.get('source_file_id') or '')
+        if re.fullmatch(r'[A-Za-z0-9_-]{20,128}', fid) and fid not in ids:
+            ids.append(fid)
+        if len(ids) >= MAX_SOURCE_FILES:
+            break
+    return ids
+
+
+def resolve_lesson_folders(reader, records, class_key, assignment_key):
+    """Distinct, live parent folders of this assignment's known submissions.
+
+    Ground truth: an assignment's turn-in sources are wherever its already
+    recorded submission files live — a turn-in folder, a Form's file-responses
+    folder, or an earlier-cycle folder. Returns the distinct parent folders so
+    the scan covers every verified source, never a folder guessed from a date.
+    Files the runtime reader cannot currently see are skipped (their sharing is
+    a separate, surfaced dependency), not treated as a hard failure.
+    """
+    file_ids = _lesson_source_files(records, class_key, assignment_key)
+    if not file_ids:
+        raise ConnectionError('lesson_has_no_recorded_submissions')
+    folders, unreadable = [], 0
+    for fid in file_ids:
+        try:
+            meta = reader.metadata(fid)
+        except ConnectionError:
+            unreadable += 1
+            continue
+        for parent in meta.get('parents', []) or []:
+            if parent not in folders:
+                folders.append(parent)
+        if len(folders) > MAX_LESSON_FOLDERS:
+            raise ConnectionError('lesson_sources_too_scattered')
+    if not folders:
+        raise ConnectionError('submission_folder_access_required')
+    return folders, unreadable
+
+
+def read_lesson_inventory(assertion, class_key, assignment_key, config):
+    """Inventory a lesson's submissions by lesson name (no date), by scanning the
+    union of the folders that its recorded submission files actually live in."""
+    if class_key not in CLASS_COURSE:
+        raise ConnectionError('invalid_submission_scope')
+    if not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}', assignment_key or ''):
+        raise ConnectionError('invalid_submission_scope')
+    records = read_records(assertion, config)
+    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''),
+                                     'https://www.googleapis.com/auth/drive.metadata.readonly'))
+    course = CLASS_COURSE[class_key]
+    folders, unreadable = resolve_lesson_folders(reader, records, class_key, assignment_key)
+    assessed = {str(r.get('source_file_id') or '') for r in records.get('submissions', [])
+                if r.get('class_key') == class_key and r.get('assignment_key') == assignment_key
+                and r.get('status') in {'assessed', 'roster_matched'}}
+    seen_ids, files, total_folders, total_forms, names = set(), [], 0, 0, []
+    for folder_id in folders:
+        root, found, checked, forms = collect(reader, folder_id, course=course, week=None,
+                                              skip_name_guard=True)
+        names.append(root.get('name', ''))
+        total_folders += checked
+        total_forms += forms
+        for f in found:
+            if f['id'] in seen_ids:
+                continue
+            seen_ids.add(f['id'])
+            files.append(f)
+    files.sort(key=lambda f: f['id'])
+    return {'schema_version': 'hub-submission-inventory/v1', 'class_key': class_key,
+            'assignment_key': assignment_key, 'folder_name': ' + '.join(names),
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+            'source_revision': content_hash({'assignment': assignment_key, 'files': files}),
+            'folders_checked': total_folders, 'forms_found': total_forms,
+            'sources_unreadable': unreadable,
+            'files': [{'file_id': f['id'], 'name': f['name'],
+                       'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
+                       'modified_at': f.get('modifiedTime'), 'version': f.get('version'),
+                       'status': 'present',
+                       'stage': 'assessed' if f['id'] in assessed else 'awaiting_assessment'}
+                      for f in files],
+            'coverage': 'visible_files_only', 'assessment_status': 'not_assessed',
+            'roster_verified': False, 'external_writes': 0}
 
 
 def read_inventory(assertion, day, class_key, config):

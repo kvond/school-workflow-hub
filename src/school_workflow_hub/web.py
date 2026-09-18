@@ -304,14 +304,19 @@ def application(environ, start_response, *, teaching_provider=None):
             teaching_provider_configured=teaching_provider is not None))
     if path == "/api/submission-inventory" and method == "GET":
         from urllib.parse import parse_qs
-        from .adapters.submission_inventory import read_inventory
+        from .adapters.submission_inventory import read_inventory, read_lesson_inventory
         from .adapters.hosted_agenda import ConnectionError
         try:
             query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
-            if set(query) != {"date", "class_key"} or any(len(v) != 1 for v in query.values()):
+            if any(len(v) != 1 for v in query.values()):
                 raise ValueError()
-            return respond("200 OK", read_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
-                query["date"][0], query["class_key"][0], os.environ))
+            if set(query) == {"date", "class_key"}:
+                return respond("200 OK", read_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                    query["date"][0], query["class_key"][0], os.environ))
+            if set(query) == {"class_key", "assignment"}:
+                return respond("200 OK", read_lesson_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                    query["class_key"][0], query["assignment"][0], os.environ))
+            raise ValueError()
         except ConnectionError as error:
             return respond("403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable",
                            {"error": str(error), "external_writes": 0})

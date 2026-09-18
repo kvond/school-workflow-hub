@@ -99,7 +99,9 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   if(!files.length){state.textContent='No monitored submissions yet. Refresh or scan the submission monitoring panel above.';return;}
   state.textContent=providerReady?.blocked?explain(providerReady.blocked):'Provider ready ('+(providerReady?.model||'model pending')+'). '+budgetLine();
   const fileSelect=select(form,files.map(f=>[f.file_id,f.name+' · '+(f.stage||'')]),files[0].file_id);
-  const assignment=select(form,[['','Select the assignment…',true],...knownAssignments(scope.classKey)],'');
+  const knownForClass=knownAssignments(scope.classKey);
+  const preselect=scope?.assignmentKey&&knownForClass.some(([k])=>k===scope.assignmentKey)?scope.assignmentKey:'';
+  const assignment=select(form,[['','Select the assignment…',true],...knownForClass],preselect);
   const suggestion=suggestedStage();
   const stage=select(form,[['final','final — NOTES + BANK due, revisions due'],['initial','initial — NOTES only due']],suggestion.stage);
   const stageWhy=node(form,'p',suggestion.why+' You can change the checkpoint.','hint');
