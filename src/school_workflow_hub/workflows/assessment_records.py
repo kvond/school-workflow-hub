@@ -203,12 +203,68 @@ def record_identity(packet):
 
 
 def record_id(packet):
-    """Deterministic: the same submission version assessed at the same stage
-    under the same policy is the same record, so reruns cannot duplicate it."""
+    """Deterministic: an identical reviewed assessment of the same submission
+    version is the same record, so exact reruns cannot duplicate it, while a
+    genuinely re-reviewed assessment (different judgments or feedback) becomes
+    a new record that supersedes the earlier one instead of colliding."""
     return "asmt-" + content_hash({
         "assignment": packet["assignment_key"], "identity": record_identity(packet),
         "sha256": packet["source"]["sha256"], "stage": packet["stage"],
-        "policy": POLICY_VERSION})[:24]
+        "policy": POLICY_VERSION,
+        "assessment": content_hash({"responses": packet["responses"],
+                                    "feedback": packet["feedback"]})})[:24]
+
+
+MANIFEST_SECTIONS = {"NOTES_IDS": "notes_ids", "DRAFT_IDS": "draft_ids",
+                     "OPTIONAL_IDS": "optional_ids", "BANK_IDS": "bank_ids"}
+
+
+def derive_manifest(source_text):
+    """The distributed requirement read from the deck's own manifest header.
+
+    The header is the teacher's distributed contract: the marker-inventory tag,
+    a VERSION label, per-category counts, and one id per line under each
+    section. A deck without the header (an older or self-modified version)
+    raises assessment_manifest_missing and stays a manual-reconciliation case;
+    a header whose lists disagree with its own counts is never guessed at.
+    """
+    if not isinstance(source_text, str) or not source_text:
+        raise ValueError("invalid_assessment_source")
+    inventory = re.search(r"\[\[MARKER-INVENTORY:[A-Za-z0-9_-]{1,40}\]\]", source_text)
+    if not inventory:
+        raise ValueError("assessment_manifest_missing")
+    lines = [line.strip() for line in
+             source_text[inventory.start():inventory.start() + 4000].splitlines()]
+    version = next((line for line in lines if line.startswith("VERSION=")), "")
+    counts_line = next((line for line in lines if re.match(r"NOTES=\d+", line)), "")
+    counts = dict(re.findall(r"([A-Z_]+)=(\d+)", counts_line))
+    sections = {name: [] for name in MANIFEST_SECTIONS.values()}
+    current = None
+    for line in lines:
+        if not line:
+            current = None
+            continue
+        if line.endswith("=") and line[:-1] in MANIFEST_SECTIONS:
+            current = MANIFEST_SECTIONS[line[:-1]]
+            continue
+        if "=" in line or ":" in line:
+            current = None
+            continue
+        if current and _question_id(line):
+            sections[current].append(line)
+    expected = {"notes_ids": counts.get("NOTES"), "draft_ids": counts.get("DRAFT"),
+                "optional_ids": counts.get("OPTIONAL"),
+                "bank_ids": counts.get("BANK_TERMS")}
+    for key, want in expected.items():
+        ids = sections[key]
+        if want is None or len(ids) != int(want) or len(set(ids)) != len(ids):
+            raise ValueError("assessment_manifest_unparsed")
+    if not version or len(version) > 160:
+        raise ValueError("assessment_manifest_unparsed")
+    return {"inventory_line": inventory.group(0), "version_label": version,
+            "notes_ids": sections["notes_ids"], "bank_ids": sections["bank_ids"],
+            "draft_ids": sections["draft_ids"],
+            "optional_ids": sections["optional_ids"]}
 
 
 def _flag(value):

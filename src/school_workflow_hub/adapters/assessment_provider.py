@@ -21,9 +21,8 @@ API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-5"
 MAX_OUTPUT_TOKENS = 8000
-REQUEST_KEYS = {"file_id", "class_key", "section_id", "section_name",
-                "assignment_key", "stage", "stage_reference", "identity",
-                "manifest", "ic_assignment_id", "comparison_status"}
+REQUEST_KEYS = {"file_id", "class_key", "stage", "stage_reference",
+                "assignment_key", "section_id", "section_name", "identity"}
 
 SYSTEM = """You are the assessment assistant inside a teacher's private grading
 workflow. You will receive the teacher's own assessment instructions, one
@@ -150,17 +149,55 @@ def _extract_json(text):
     return result
 
 
+def _prior_row(assertion, config, file_id, class_key):
+    from .grading_records import read_records
+    records = read_records(assertion, config)
+    rows = [row for row in records.get("submissions", [])
+            if row.get("source_file_id") == file_id
+            and row.get("class_key") == class_key
+            and row.get("status") != "superseded"]
+    rows.sort(key=lambda row: row.get("checked_at", ""))
+    return rows[-1] if rows else None
+
+
+def _filled_identity(request_identity, prior):
+    """Teacher-entered fields win; blanks fill from the file's newest workbook
+    row, so a re-assessment keeps identity continuity without retyping."""
+    identity = {key: str(request_identity.get(key) or "")
+                for key in ("student_id", "student_id_kind", "learner_key",
+                            "display_name", "identity_basis")}
+    if prior:
+        for key in identity:
+            identity[key] = identity[key] or str(prior.get(key) or "")
+    return identity
+
+
+def _comparison(prior, sha):
+    if prior is None:
+        return "First recorded assessment for this student; no earlier snapshot to compare."
+    sameness = ("same source version" if prior.get("source_sha256") == sha
+                else "different source version")
+    return ("Compared with " + (prior.get("checked_date") or "earlier") + " "
+            + (prior.get("assessment_stage") or "recorded") + " assessment (exact "
+            + (prior.get("content_score_exact") or "n/a") + "); " + sameness + ".")[:300]
+
+
 def draft(assertion, request, config):
     """One drafted packet for review; no storage, no school writes."""
     audience, allowed = _identity_configuration(config)
     authorize(assertion, audience, allowed)
     if not configured(config):
         raise ConnectionError("provider_not_configured")
-    if not isinstance(request, dict) or set(request) != REQUEST_KEYS:
+    if (not isinstance(request, dict) or set(request) != REQUEST_KEYS
+            or not isinstance(request.get("identity"), dict)):
         raise ValueError("invalid_provider_request")
     capture = assessment_save.capture(assertion, request["file_id"], config)
     completion_prompt, feedback_prompt = _teacher_prompts()
-    manifest = request["manifest"]
+    # The distributed requirement comes from the deck's own manifest header,
+    # never from the browser; a headerless deck stays a manual case.
+    manifest = assessment_records.derive_manifest(capture["text"])
+    prior = _prior_row(assertion, config, request["file_id"], request["class_key"])
+    identity = _filled_identity(request["identity"], prior)
     user = ("TEACHER COMPLETION INSTRUCTIONS:\n" + completion_prompt
             + "\n\nTEACHER FEEDBACK INSTRUCTIONS:\n" + feedback_prompt
             + "\n\nDISTRIBUTED MANIFEST (required items):\n"
@@ -174,7 +211,7 @@ def draft(assertion, request, config):
               "section_name": request["section_name"],
               "assignment_key": request["assignment_key"], "stage": request["stage"],
               "stage_reference": request["stage_reference"],
-              "identity": request["identity"],
+              "identity": identity,
               "source": {"file_id": capture["file"]["id"],
                          "url": "https://docs.google.com/presentation/d/"
                                 + capture["file"]["id"] + "/edit",
@@ -183,8 +220,8 @@ def draft(assertion, request, config):
                          "sha256": capture["sha256"]},
               "manifest": manifest, "responses": result["responses"],
               "feedback": result["feedback"],
-              "comparison_status": request["comparison_status"],
-              "ic_assignment_id": request["ic_assignment_id"]}
+              "comparison_status": _comparison(prior, capture["sha256"]),
+              "ic_assignment_id": str((prior or {}).get("ic_assignment_id") or "")}
     # The same validator the save path uses; a draft that fails here is
     # reported, never repaired silently and never stored.
     assessment_records.validate_packet(packet, capture["text"])

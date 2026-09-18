@@ -14,9 +14,7 @@ def request():
     return {"file_id": base["source"]["file_id"], "class_key": base["class_key"],
             "section_id": base["section_id"], "section_name": base["section_name"],
             "assignment_key": base["assignment_key"], "stage": base["stage"],
-            "stage_reference": base["stage_reference"], "identity": base["identity"],
-            "manifest": base["manifest"], "ic_assignment_id": base["ic_assignment_id"],
-            "comparison_status": base["comparison_status"]}
+            "stage_reference": base["stage_reference"], "identity": base["identity"]}
 
 
 class ProviderTests(unittest.TestCase):
@@ -37,6 +35,7 @@ class ProviderTests(unittest.TestCase):
              patch.object(provider.assessment_save, "capture",
                           lambda assertion, file_id, config: dict(CAPTURE, text=SOURCE)), \
              patch.object(provider, "_teacher_prompts", lambda: ("P1", "P2")), \
+             patch.object(provider, "_prior_row", lambda *a: None), \
              patch.object(provider, "_call", lambda config, system, user: (
                  model_output, {"input_tokens": 11, "output_tokens": 7, "model": "m"})):
             result = provider.draft(None, request(), CONFIG)
@@ -56,6 +55,7 @@ class ProviderTests(unittest.TestCase):
              patch.object(provider.assessment_save, "capture",
                           lambda assertion, file_id, config: dict(CAPTURE, text=SOURCE)), \
              patch.object(provider, "_teacher_prompts", lambda: ("P1", "P2")), \
+             patch.object(provider, "_prior_row", lambda *a: None), \
              patch.object(provider, "_call", lambda config, system, user: (bad, {})):
             with self.assertRaises(ValueError) as caught:
                 provider.draft(None, request(), CONFIG)
