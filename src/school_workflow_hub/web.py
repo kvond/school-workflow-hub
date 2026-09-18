@@ -153,6 +153,56 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
 
+    if path == "/api/assessment-save":
+        from .adapters import assessment_save
+        from .adapters.hosted_agenda import ConnectionError
+        from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
+        import re as _re
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if method == "GET":
+                from urllib.parse import parse_qs
+                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
+                if set(query) != {"file_id"} or len(query["file_id"]) != 1:
+                    raise ValueError("invalid_assessment_source")
+                return respond("200 OK", assessment_save.capture(
+                    assertion, query["file_id"][0], os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "save_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 400000:
+                raise ValueError("invalid_assessment_save")
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", assessment_save.save(assertion, payload, os.environ))
+        except Busy:
+            return respond("409 Conflict", {"error": "assessment_save_busy"})
+        except LeaseLost:
+            return respond("409 Conflict", {"error": "assessment_claim_expired"})
+        except Conflict as error:
+            code = str(error)
+            if code not in {"submission_changed_reassess", "assessment_record_conflict"}:
+                code = "assessment_save_conflict"
+            return respond("409 Conflict", {"error": code})
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable", {"error": str(error)})
+        except (ValueError, KeyError, TypeError, OverflowError) as error:
+            # Only this module's fixed validation codes may cross the boundary.
+            code = str(error)
+            if not _re.fullmatch(r"[a-z0-9_]{1,64}", code):
+                code = "invalid_assessment_save"
+            return respond("400 Bad Request", {"error": code})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "assessment_state_unavailable"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "assessment_save_unavailable"})
+
     if path == "/api/submission-monitor":
         from .adapters.submission_monitor import read_status, scan_and_persist
         from .adapters.hosted_agenda import ConnectionError
