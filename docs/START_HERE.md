@@ -23,9 +23,27 @@ selected verified writes and record an attributed receipt. Each computer uses
 its own school session; credentials and cookies are never copied to the server
 or between computers. It does not enable a schedule or regrade submitted work.
 The [browser companion](../browser-extension/README.md) implements the Page 2
-review and bounded executor for the current assignment's Score panel. Its
-synthetic tests pass; installation and live IC write/readback acceptance remain
-separate requirements. A stored browser report alone does not prove a write.
+review and bounded executor for the current assignment's Score panel.
+
+Page 2 grading status as of the evening of September 17, 2026:
+
+- Mac read/verify/skip/receipt path: **live verified** end to end with an
+  executor-completed supervised run (matching grades skipped, no school write,
+  attributed receipt saved and read back through the dashboard after reload).
+- Companion **0.2.3** is the accepted Mac build; `main` matches it exactly.
+- An actual new blank-grade posting with IC readback is **not yet live-tested**.
+  The first genuinely blank reviewed grade that needs posting is that
+  acceptance; never change a correct grade to test writing.
+- The Windows computer's companion is **not yet installed or tested**.
+- Known minor UI defect: the Page 2 review modal's "Review & post in school
+  browser" button stays disabled after a failed attempt; close and reopen the
+  review to retry. Cosmetic only.
+- The private workbook connection is repaired and reads live records through
+  the authenticated dashboard. Do not reopen that investigation without fresh
+  evidence of an actual failed read.
+- Live-session behavior the companion depends on is recorded in
+  [BROWSER_RUNS.md](BROWSER_RUNS.md) and the companion README; a stored browser
+  report alone still does not prove a write.
 
 ```sh
 python3 scripts/hub_status.py --json
@@ -54,6 +72,29 @@ The live Agenda prompt cells are the runtime instruction source;
 text under `prompts/` is historical and cannot override feedback v2. Research
 definitions preserve the approved authorial separation; other proposed criteria
 still require teacher review. Collection and student coding remain deferred.
+
+## Next session state — after the September 17 evening acceptance
+
+The Mac Page 2 read/verify/skip/receipt path works and is recorded above; do
+not rework it without fresh evidence. What remains for the broader system, in
+priority order:
+
+1. Submission monitoring across the two-week post-due window: current rosters,
+   detection of new, late and modified submissions, cumulative submission
+   history preserved, individual extensions respected. Failed or partial scans
+   never establish missing work, and nothing is zeroed during the grace period.
+2. Grading the new and modified submissions that monitoring surfaces, using the
+   current Agenda prompts for completion, feedback and class summaries, feeding
+   the same reviewed-workbook path Page 2 already posts from.
+3. Agenda-to-IC date alignment and two-way Agenda plan/note saving with
+   readback (sequence items 2 and 5 below).
+4. Roster updates through the existing `hub-roster-sync/v1` boundary once its
+   IC reader and roster-workbook writer are accepted.
+5. Windows acceptance: install the packaged companion in the school Windows
+   browser's own signed-in profile and repeat the supervised review there. Mac
+   acceptance does not transfer.
+6. First live blank-grade posting with IC readback, when a genuinely blank
+   reviewed grade needs it.
 
 ## Next implementation sequence
 
@@ -102,7 +143,8 @@ use the integration record for this reconciliation's validation.
 
 The Page 2 posting exception authorizes implementation and supervised execution
 only after source, identity, assignment, current-grade and ownership checks.
-It does not establish a working executor. Other unconnected Run, email and
+The executor's read/verify/skip path is live-accepted on the Mac; its write
+path and the Windows install are not. Other unconnected Run, email and
 printing actions still require their own integration and acceptance. Preserve
 stable file/slide IDs and grade history. Keep student records, source IDs,
 credentials and browser profiles out of GitHub.
