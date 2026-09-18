@@ -92,7 +92,7 @@ export function renderStatus(root,data){
  root.append(node(root,'p','Observation only: file evidence is metadata for inspection, not proof of who submitted, an assessment, or grounds for a zero.','hint'));
 }
 
-export function mountSubmissionMonitor(container,{fetcher}={}){
+export function mountSubmissionMonitor(container,{fetcher,onFiles}={}){
  const doc=container.ownerDocument;const request=fetcher||((url,options)=>fetch(url,options));
  const head=node(container,'h3','Submission monitoring');
  const status=node(container,'div');status.setAttribute('aria-live','polite');
@@ -115,6 +115,7 @@ export function mountSubmissionMonitor(container,{fetcher}={}){
    if(mine!==generation)return;
    if(!response.ok)throw Error(describeFailure(data.error));
    renderStatus(status,validateStatus(data));
+   onFiles?.(Array.isArray(data.files)?data.files:[]);
    state.textContent=kind==='scan'?(data.unchanged_rerun?'Scan complete: nothing changed since the last scan; no duplicate events were created.':'Scan complete and saved.'):'Stored monitoring state loaded. Refresh never starts a scan.';
   }catch(error){if(mine===generation)state.textContent=error.message||'Monitoring is unavailable.';}
   finally{if(mine===generation){refresh.disabled=scan.disabled=false;}}
@@ -127,7 +128,7 @@ export function mountSubmissionMonitor(container,{fetcher}={}){
   const changed=!scope||scope.date!==next.date||scope.classKey!==next.classKey||(!scope.ready&&next.ready);
   scope=next;
   if(next.ready&&changed)load('status');
-  if(!next.ready){generation++;state.textContent='Load a lesson to see its monitoring state.';status.replaceChildren();refresh.disabled=scan.disabled=true;}
+  if(!next.ready){generation++;state.textContent='Load a lesson to see its monitoring state.';status.replaceChildren();refresh.disabled=scan.disabled=true;onFiles?.([]);}
   else{refresh.disabled=scan.disabled=false;}
  }};
 }

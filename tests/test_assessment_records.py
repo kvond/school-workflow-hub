@@ -3,7 +3,19 @@ import unittest
 
 from school_workflow_hub.workflows import assessment_records as ar
 
-SOURCE = ("[[MARKER-INVENTORY:T01]] VERSION=T01-test-2026-09-01-r1\n"
+HEADER = ("Test manifest\n"
+          "[[MARKER-INVENTORY:T01]]\n"
+          "VERSION=T01-test-2026-09-01-r1\n"
+          "NOTES=2  DRAFT=1  OPTIONAL=1  BANK_TERMS=1\n"
+          "Required: NOTES, DRAFT, BANK. Optional: OPTIONAL.\n"
+          "NOTES_IDS=\n" "N1\nN2\n"
+          "DRAFT_IDS=\n" "D1\n"
+          "OPTIONAL_IDS=\n" "OPT1\n"
+          "PERMITTED_PAIRS=\n" "D1\n" "N2: NOTES-only.\n"
+          "BANK_IDS=\n" "Term one\n"
+          "CHECKPOINTS=UNVERIFIED; do not infer due dates.\n")
+SOURCE = (HEADER +
+          "[[MARKER-INVENTORY:T01]] VERSION=T01-test-2026-09-01-r1\n"
           "N1 What did you notice?\nanswer one in my own words\n"
           "N2 Explain the rule.\n\n"
           "B1 Term one\nbank answer own words\n"
@@ -128,7 +140,7 @@ class CompletionTests(unittest.TestCase):
             ar.completion(held)
         self.assertEqual(str(caught.exception), "assessment_not_ready")
 
-    def test_record_id_binds_assignment_identity_version_stage_policy(self):
+    def test_record_id_binds_version_stage_policy_and_reviewed_content(self):
         base = ar.record_id(packet())
         self.assertTrue(base.startswith("asmt-") and len(base) == 29)
         self.assertEqual(base, ar.record_id(packet()))
@@ -136,6 +148,29 @@ class CompletionTests(unittest.TestCase):
         changed["source"] = dict(changed["source"], sha256="b" * 64)
         self.assertNotEqual(base, ar.record_id(changed))
         self.assertNotEqual(base, ar.record_id(packet(stage="initial")))
+        rereviewed = packet()
+        rereviewed["responses"][0]["judgment"] = "printed_copy"
+        self.assertNotEqual(base, ar.record_id(rereviewed))
+        reworded = packet(feedback="A different report.")
+        self.assertNotEqual(base, ar.record_id(reworded))
+
+    def test_manifest_derives_from_the_deck_header(self):
+        manifest = ar.derive_manifest(SOURCE)
+        self.assertEqual(manifest["inventory_line"], "[[MARKER-INVENTORY:T01]]")
+        self.assertEqual(manifest["version_label"], "VERSION=T01-test-2026-09-01-r1")
+        self.assertEqual(manifest["notes_ids"], ["N1", "N2"])
+        self.assertEqual(manifest["bank_ids"], ["Term one"])
+        self.assertEqual(manifest["draft_ids"], ["D1"])
+        self.assertEqual(manifest["optional_ids"], ["OPT1"])
+
+    def test_headerless_or_inconsistent_decks_are_manual_cases(self):
+        with self.assertRaises(ValueError) as caught:
+            ar.derive_manifest("no manifest anywhere\nN1 answer\n")
+        self.assertEqual(str(caught.exception), "assessment_manifest_missing")
+        broken = SOURCE.replace("NOTES=2", "NOTES=3", 1)
+        with self.assertRaises(ValueError) as caught:
+            ar.derive_manifest(broken)
+        self.assertEqual(str(caught.exception), "assessment_manifest_unparsed")
 
 
 class RowTests(unittest.TestCase):

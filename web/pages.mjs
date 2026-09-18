@@ -5,8 +5,9 @@ import {buildPostingReview,renderPostingReview} from './grade-posting.mjs';
 import {createCompanionClient,companionMessage} from './browser-companion.mjs';
 import {mountControlPanel} from './control-panel.mjs';
 import {mountSubmissionMonitor} from './submission-monitor.mjs';
+import {mountAssessmentReview} from './assessment-review.mjs';
 const $=id=>document.getElementById(id);
-let submissionMonitor;
+let submissionMonitor,assessmentReview;
 const allowed=['control','agenda','feedback','summary','research'];
 const researchURL='https://github.com/kvond/answerable-skills/blob/a9a8fc1992c6564dac68d818f3597f11671f9667/skills/formative-pipeline-v2/SKILL.md';
 function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
@@ -55,6 +56,7 @@ function renderScope(){
  const lesson=scope.data?.lessons.find(l=>l.class_key===scope.classKey);
  const monitorReady=Boolean(scope.data&&!scope.loading&&!scope.error&&lesson?.turnin_folder);
  submissionMonitor?.update({date:scope.date,classKey:scope.classKey,ready:monitorReady});
+ assessmentReview?.update({date:scope.date,classKey:scope.classKey,ready:monitorReady});
  for(const v of views){
   v.select.value=scope.classKey;v.date.value=scope.date;v.load.disabled=scope.loading;
   v.context.replaceChildren();v.context.append(el('strong',lesson?.title||'Choose a date and load its lesson'));
@@ -106,7 +108,9 @@ async function scanSubmissions(){
  finally{if(generation===scanGeneration)scan.disabled=false;}
 }
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
-const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=mountSubmissionMonitor(monitorBox);queue.append(monitorBox);
+const reviewBox=el('div',undefined,'assessment-review');
+const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=mountSubmissionMonitor(monitorBox,{onFiles:list=>assessmentReview?.setFiles(list)});queue.append(monitorBox);
+assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});queue.append(reviewBox);
 const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);queue.append(inventoryDetails);
 const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Open each student’s report from the list above.'));const reportActions=el('div',undefined,'action-row');promptAction(reportActions,'Copy feedback instructions','feedback');heldAction(reportActions,'Print feedback documents','Needs current feedback documents, a verified school printer, and your direction.');reports.append(reportActions);
 async function reviewGrades(){
