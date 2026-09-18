@@ -211,7 +211,12 @@ def application(environ, start_response, *, teaching_provider=None):
             assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
             if method == "GET":
                 if environ.get("QUERY_STRING", ""):
-                    raise ValueError("invalid_provider_request")
+                    from urllib.parse import parse_qs
+                    query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
+                    if set(query) != {"draft_for"} or len(query["draft_for"]) != 1:
+                        raise ValueError("invalid_provider_request")
+                    return respond("200 OK", assessment_provider.stored_draft_for(
+                        assertion, query["draft_for"][0], os.environ))
                 return respond("200 OK", assessment_provider.status(assertion, os.environ))
             if method != "POST":
                 return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
