@@ -32,11 +32,36 @@ local machine or an open browser tab, and it never assigns a grade or a zero.
 
 - **Assignment identity is the folder, never the due date.** A deadline change
   emits `due_date_changed` and keeps the same stream and history.
-- **Date-only deadlines include the whole local day**, and the grace window
-  includes the full fourteenth day, in the school timezone, reusing the
-  existing `due_completion.boundaries` rules. Verified individual extensions
-  move a matched student's window; no extension source is integrated yet, so
-  none are applied silently.
+- **The deadline is the third actual class meeting, never the navigation
+  date.** The teacher declares an actual start by writing it in the day's Plan
+  or Notes ("Started Energy today" — past tense; "Plan to start" is only an
+  intention) either through the dashboard's Save to Agenda flow or directly in
+  Sheets, where a later scan of that day picks it up; the selected dashboard
+  date is meeting 1 even for a backdated note. Meetings 2 and 3 come from the
+  Agenda's own Weeks calendar (`workflows/topic_deadline.py`): fixed weekday
+  patterns per class, ⚠ closure lines, and the per-week A/B Friday
+  designation. The final revised submission is due at the end of the third
+  meeting's local day whether or not the topic is finished; only an explicit
+  teacher deadline exception ("deadline/due <date>" in the day's text)
+  overrides it. Repeated saves never duplicate a start, a contradictory start
+  is flagged for review instead of resolved, an unfilled calendar makes the
+  deadline provisional instead of guessed, and every derived deadline is
+  labeled calculated — never verified in Infinite Campus. Date-only deadlines
+  still include the whole local day and the grace window still includes the
+  full fourteenth day via the existing `due_completion.boundaries` rules;
+  verified individual extensions move a matched student's window, and no
+  extension source is integrated yet, so none are applied silently.
+- **Assessment currency is revision-bound, not date-bound.** A file edited at
+  3 p.m. after a 9 a.m. assessment returns to awaiting reassessment the same
+  day: a full workbook check timestamp is compared as an instant, a date-only
+  marker can never prove currency for a file modified on or after that day,
+  and unknown evidence proves nothing. Earlier assessments and grades are
+  never altered by this.
+- **Derived state is versioned.** `DERIVATION_VERSION` travels with each
+  stored state; an unchanged rerun only replays a stored result when the
+  derivation logic that produced it is current, otherwise the state is
+  recomputed from the retained evidence with history, events and receipts
+  preserved.
 - **First scan = baseline.** Existing files are `first_observed`, never "just
   submitted" and never late.
 - **Metadata is evidence, not judgment.** `modifiedTime`/`version` changes mean

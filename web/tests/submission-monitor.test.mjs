@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor} from '../submission-monitor.mjs';
+import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine} from '../submission-monitor.mjs';
 
 class Element{
  constructor(doc,tag){this.ownerDocument=doc;this.tagName=tag;this.children=[];this.textContent='';this.attributes={};this.listeners={};this.disabled=false;}
@@ -65,6 +65,19 @@ test('first-scan state explains the baseline without late claims',()=>{
  renderStatus(target,validateStatus({schema_version:'hub-submission-monitor-status/v1',external_writes:0,run_enabled:false,status:'no_complete_scan_recorded',last_attempt:null,automation:{active:false}}));
  assert.match(target.allText,/first-observed baseline/);
  assert.match(target.allText,/never late/);
+});
+
+test('the deadline line states the rule honestly in every state',()=>{
+ assert.match(deadlineLine(null),/not available/);
+ assert.match(deadlineLine({status:'no_topic_start_recorded'}),/Started <topic>/);
+ assert.match(deadlineLine({status:'no_topic_start_recorded'}),/third class meeting/);
+ const calculated={status:'calculated',start_date:'2026-09-14',due_date:'2026-09-18',basis:'third_meeting_rule',provisional:false,meetings:['2026-09-14','2026-09-16','2026-09-18'],conflicts:[]};
+ assert.match(deadlineLine(calculated),/third meeting/);
+ assert.match(deadlineLine(calculated),/Unfinished topics do not move it/);
+ assert.match(deadlineLine(calculated),/not yet verified in Infinite Campus/);
+ assert.match(deadlineLine({...calculated,status:'start_conflict_needs_review',conflicts:['2026-09-16']}),/Conflicting topic start/);
+ assert.match(deadlineLine({...calculated,basis:'teacher_exception',due_date:'2026-09-25'}),/exception/);
+ assert.match(deadlineLine({...calculated,provisional:true,due_date:null}),/provisional/);
 });
 
 test('a scope update refreshes status but a scan happens only from its button',async()=>{

@@ -28,9 +28,10 @@ def mappings(by_file=None, checked="2026-09-05T15:00:00+00:00"):
     return {"source": "grading_workbook", "checked_at": checked, "by_file": by_file or {}}
 
 
-def mapping(student="9001", marker="2026-09-05"):
+def mapping(student="9001", marker="2026-09-05", precision="date"):
     return {"student_id": student, "section_id": "101", "identity_basis": "workbook",
-            "assessed_marker": marker, "ic_posting_status": "content=unverified"}
+            "assessed_marker": marker, "marker_precision": precision,
+            "ic_posting_status": "content=unverified"}
 
 
 def advance(previous, current, **kwargs):
@@ -156,6 +157,36 @@ class IdentityAndAssessment(unittest.TestCase):
         rerun = advance(result["state"], scan(
             [entry(FILE_A)], observed="2026-09-06T16:00:00+00:00"), mappings=current)
         self.assertNotIn(FILE_A, rerun["state"]["awaiting_assessment"])
+
+    def test_same_day_edit_after_a_timestamped_assessment_returns_to_awaiting(self):
+        # Assessed 9:00, edited 15:00 the same day: awaiting again.
+        edited = scan([entry(FILE_A, modified="2026-09-04T15:00:00+00:00")])
+        morning = mappings({FILE_A: mapping(marker="2026-09-04T09:00:00+00:00",
+                                            precision="timestamp")})
+        result = advance(None, edited, mappings=morning)
+        self.assertIn(FILE_A, result["state"]["awaiting_assessment"])
+        evening = mappings({FILE_A: mapping(marker="2026-09-04T16:00:00+00:00",
+                                            precision="timestamp")})
+        covered = advance(None, edited, mappings=evening)
+        self.assertNotIn(FILE_A, covered["state"]["awaiting_assessment"])
+
+    def test_date_only_evidence_cannot_prove_same_day_currency(self):
+        edited = scan([entry(FILE_A, modified="2026-09-04T15:00:00+00:00")])
+        same_day = mappings({FILE_A: mapping(marker="2026-09-04", precision="date")})
+        self.assertIn(FILE_A, advance(None, edited, mappings=same_day)
+                      ["state"]["awaiting_assessment"])
+        next_day = mappings({FILE_A: mapping(marker="2026-09-05", precision="date")})
+        self.assertNotIn(FILE_A, advance(None, edited, mappings=next_day)
+                         ["state"]["awaiting_assessment"])
+        unknown = mappings({FILE_A: mapping(marker="unknown", precision="unknown")})
+        self.assertIn(FILE_A, advance(None, edited, mappings=unknown)
+                      ["state"]["awaiting_assessment"])
+
+    def test_due_basis_travels_with_the_derived_deadline(self):
+        result = advance(None, scan([entry(FILE_A)]), due_date="2026-09-08",
+                         due_basis="third_meeting_rule")
+        self.assertEqual(result["state"]["due_basis"], "third_meeting_rule")
+        self.assertEqual(result["state"]["due_date"], "2026-09-08")
 
     def test_extension_moves_the_grace_window_for_matched_students_only(self):
         matched = mappings({FILE_A: mapping(student="9001")})

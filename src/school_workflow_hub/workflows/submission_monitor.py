@@ -18,6 +18,9 @@ from school_workflow_hub.core.runs import content_hash, deterministic_id
 from school_workflow_hub.workflows.due_completion import boundaries, timestamp
 
 VERSION = "hub-submission-monitor/v1"
+# Bump when derivation logic changes so stored state is recomputed from the
+# retained evidence instead of an unchanged rerun replaying obsolete output.
+DERIVATION_VERSION = 2
 CLASS_KEYS = {"biology", "forensics", "anatomy"}
 TIMEZONE_NAME = "America/New_York"
 MAX_FILES = 500
@@ -77,6 +80,7 @@ def _validate_mappings(mappings):
                 or not _text(value.get("student_id"), 64) or not _text(value.get("section_id"), 64)
                 or not _text(value.get("identity_basis"), 64)
                 or not _text(value.get("assessed_marker"), 40)
+                or value.get("marker_precision") not in ("timestamp", "date", "unknown")
                 or not _text(value.get("ic_posting_status"), 200)):
             raise ValueError("invalid_monitor_mappings")
 
@@ -103,13 +107,16 @@ def _timing(is_baseline, due_end, modified, observed):
     return "modified_after_due_needs_review"
 
 
-def advance_state(previous, scan, *, mappings, due_date, extensions=None, as_of):
+def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
+                  extensions=None, as_of):
     """Advance one stream. previous is the last complete state or None.
 
-    due_date is the Agenda lesson date (date-only deadlines include the whole
-    local day; the grace window includes the full fourteenth day). extensions
-    maps student_id to an approved individual due date and applies only to
-    files with a verified student match; it never hides an unmatched file.
+    due_date is the derived topic deadline (date-only deadlines include the
+    whole local day; the grace window includes the full fourteenth day), and
+    due_basis says where it came from — the scanned navigation date is never a
+    deadline by itself. extensions map student_id to an approved individual due
+    date and apply only to files with a verified student match; they never hide
+    an unmatched file.
     """
     _validate_scan(scan)
     _validate_mappings(mappings)
@@ -152,6 +159,7 @@ def advance_state(previous, scan, *, mappings, due_date, extensions=None, as_of)
             match = {"student_id": mapping["student_id"], "section_id": mapping["section_id"],
                      "identity_basis": mapping["identity_basis"],
                      "assessed_marker": mapping["assessed_marker"],
+                     "marker_precision": mapping["marker_precision"],
                      "ic_posting_status": mapping["ic_posting_status"]}
         due_end, grace_end = _cutoff(due_date, mapping and extensions.get(mapping["student_id"]))
         modified = timestamp(item["modified_at"])
@@ -216,8 +224,25 @@ def advance_state(previous, scan, *, mappings, due_date, extensions=None, as_of)
     if len(files) > MAX_FILES or len(events) > MAX_EVENTS:
         raise ValueError("monitor_state_limit")
 
-    def marker(value):
-        return value and re.sub(r"[^0-9]", "", value)[:8]
+    def assessed_covers_current(record, match):
+        """Only evidence that binds the assessment to the current revision counts.
+
+        A same-day edit after an assessment must return to awaiting: a full
+        assessment timestamp is compared as an instant, a date-only marker can
+        never prove currency for a file modified on or after that same day, and
+        unknown evidence never proves anything.
+        """
+        precision = match["marker_precision"]
+        if precision == "timestamp":
+            try:
+                return timestamp(record["modified_at"]) <= timestamp(match["assessed_marker"])
+            except ValueError:
+                return False
+        if precision == "date":
+            day = re.sub(r"[^0-9]", "", match["assessed_marker"])[:8]
+            modified_day = re.sub(r"[^0-9]", "", record["modified_at"])[:8]
+            return bool(day) and len(day) == 8 and modified_day < day
+        return False
 
     awaiting, review = [], []
     for file_id, record in sorted(files.items()):
@@ -228,17 +253,15 @@ def advance_state(previous, scan, *, mappings, due_date, extensions=None, as_of)
         if match is None:
             review.append({"file_id": file_id, "reason": "unmatched_identity_needs_review"})
             awaiting.append(file_id)
-        elif (not marker(match["assessed_marker"])
-                or marker(record["modified_at"]) > marker(match["assessed_marker"])):
-            # An unreadable assessment marker means the assessment linkage is
-            # unproven, so the file conservatively stays awaiting assessment.
+        elif not assessed_covers_current(record, match):
             awaiting.append(file_id)
         if record["timing"] == "modified_after_due_needs_review":
             review.append({"file_id": file_id, "reason": "after_due_evidence_needs_review"})
 
-    state = {"schema_version": VERSION, "stream": stream,
+    state = {"schema_version": VERSION, "derivation_version": DERIVATION_VERSION,
+             "stream": stream,
              "observed_at": scan["observed_at"], "date": scan["date"], "due_date": due_date,
-             "due_basis": "agenda_lesson_date" if due_date else "unverified",
+             "due_basis": due_basis,
              "timezone": TIMEZONE_NAME,
              "coverage": {"complete": True,
                           "folders_checked": scan["coverage"].get("folders_checked"),

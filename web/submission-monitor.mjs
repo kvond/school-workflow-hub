@@ -34,6 +34,18 @@ const EVENTS={first_observed:'First observed',appeared:'New file appeared',modif
 
 function node(root,tag,text,cls){const n=root.ownerDocument.createElement(tag);if(text!==undefined)n.textContent=String(text);if(cls)n.setAttribute('class',cls);return n;}
 const when=value=>value?new Date(value).toLocaleString():'never';
+const onDay=value=>value?new Date(value+'T12:00:00').toLocaleDateString():'—';
+
+export function deadlineLine(deadline){
+ if(!deadline)return 'Deadline: not available.';
+ if(deadline.status==='no_topic_start_recorded')return 'No topic start recorded for this assignment. Write "Started <topic>" in the day\u2019s Plan or Notes and save it: that dashboard date becomes meeting 1, and the final revised submission is due at the end of the third class meeting\u2019s day.';
+ if(deadline.status==='deadline_unavailable')return 'The deadline could not be derived right now; the stored observations are unaffected.';
+ const meetings=(deadline.meetings||[]).map(onDay).join(' · ');
+ if(deadline.status==='start_conflict_needs_review')return 'Conflicting topic start dates were written ('+[deadline.start_date,...(deadline.conflicts||[])].map(onDay).join(' vs ')+'). Review which is right; the deadline is held until then.';
+ if(deadline.basis==='teacher_exception')return 'Topic started '+onDay(deadline.start_date)+' \u00b7 teacher deadline exception: final revised work due end of '+onDay(deadline.due_date)+'. Calculated from your notes \u2014 not yet verified in Infinite Campus.';
+ if(deadline.provisional||!deadline.due_date)return 'Topic started '+onDay(deadline.start_date)+' \u00b7 counted meetings so far: '+(meetings||'none')+' \u00b7 the calendar ahead is not filled in yet, so the third-meeting deadline is provisional.';
+ return 'Topic started '+onDay(deadline.start_date)+' \u00b7 meetings '+meetings+' \u00b7 final revised work due end of '+onDay(deadline.due_date)+' (third meeting). Unfinished topics do not move it. Calculated from the Agenda calendar \u2014 not yet verified in Infinite Campus.';
+}
 
 export function renderStatus(root,data){
  root.replaceChildren();
@@ -43,6 +55,7 @@ export function renderStatus(root,data){
  const attemptLine=attempt?('Last scan attempt '+when(attempt.last_attempt_at)+' · '+(attempt.outcome==='complete'?'complete':'failed')+' · last complete scan '+when(attempt.last_success_at)):'No scan attempts recorded for this assignment.';
  root.append(node(root,'p',attemptLine));
  if(attempt&&attempt.outcome==='failed')root.append(node(root,'p',describeFailure(attempt.reason),'error'));
+ root.append(node(root,'p',deadlineLine(data.deadline),'hint'));
  if(data.status==='no_complete_scan_recorded'){root.append(node(root,'p','No complete scan is recorded yet. Scan submissions to establish the first-observed baseline; existing files will be labeled first observed, never late.','hint'));return;}
  root.append(node(root,'p','Assignment '+data.stream.assignment_label+' · scanned '+when(data.observed_at)+' · scan '+data.scan_count+' · baseline since '+when(data.baseline_established_at)+(data.unchanged_rerun?' · unchanged since the last scan':'')));
  root.append(node(root,'p','Coverage: complete visible-file scan, '+data.coverage.folders_checked+' folders. Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));

@@ -1,7 +1,7 @@
 {
   "agenda-connection.mjs": "a399247f2b4e21d4b2d057f1348dad4733f018c4d56059a93172dc1e84b15f51",
   "agenda-editor.mjs": "3b16f6dbfbec1f0674379cca555c13c69f43467d4e1926f623b584613990f5ec",
-  "app.mjs": "460d83e57f0e73aa800ba067e9be4761f80b68a82aa259bcbcef16ee5f2e2c10",
+  "app.mjs": "1a636ed99bcf34b57e346137fa3fa50d4754fbd0dccce1a1e4401624a743e2f7",
   "browser-companion.mjs": "366db7180f17b56b2379d1f1513d7fb30fd45dca18853abe901e3f65bfc99149",
   "browser-runs.mjs": "3f8f8f0a60900e5b19742864da503dc37b978a8758abe838b985822d534e5e16",
   "completion-view.mjs": "a59d811ce7bc36ec3cda9349c2490e56f25431f0aec3bf11b8c45409a7f6ef14",
@@ -17,7 +17,7 @@
   "review-view.mjs": "80224c157b5aac78ac910475d9c5e87824a2264d62260e3e107bbf662ac12dc7",
   "run-directions.json": "b9a5ee137f2184c98f0c69ea50fa3f8972c2a139d284455ab59626d7964c9084",
   "styles.css": "61be338379361fd8c71ebaf063c710da9b00f6f08624e88b06ac0474be61a734",
-  "submission-monitor.mjs": "46564e8ed614662af06c3960ddce45a8603bb75cb53761f02fa04b0bb977614e",
+  "submission-monitor.mjs": "bd2b5374ec5f4de6d3c7636bd9b75bfd69565080e4c79343fb44db298c484ae2",
   "teacher-prompts.json": "5735bc3ae123ba7259196efce4457b09397655d3302dc1cfec3130f3680be231",
   "teaching-results.mjs": "d3d0b352a740919fab81d9129f611baa5aba50394d3e6ea5ee5fba6b3c291668",
   "workspace-contract.mjs": "9ec41fef1286425d17cd67b9a8e9d6a02497a0be0562310ba8282e0f7659acbc",
