@@ -40,4 +40,5 @@ header{padding:10px 4.5%}.mark{width:34px;height:34px;font-size:25px;border-radi
  body.print-feedback-active .print-sheet .student-feedback-text{white-space:pre-wrap}
  body.print-feedback-active .print-sheet h1{font-size:16pt}
  body.print-feedback-active .print-sheet h2{font-size:13pt;margin-top:1.2rem}
+ body.print-feedback-active .print-sheet+.print-sheet{break-before:page;page-break-before:always}
 }
