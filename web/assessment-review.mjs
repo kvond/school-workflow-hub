@@ -50,7 +50,8 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  const form=node(container,'div',undefined,'assessment-form');
  const review=node(container,'div');review.setAttribute('aria-live','polite');
  container.append(state,form,review);
- let scope=null,files=[],generation=0,providerReady=null;
+ let scope=null,files=[],generation=0,providerReady=null,busy=false;
+ const signature=list=>list.map(f=>f.file_id+':'+(f.stage||'')).join('|');
 
  async function providerStatus(){
   try{
@@ -71,6 +72,9 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  }
 
  function renderForm(){
+  // Never rebuild the form under the teacher's hands: an in-flight draft or
+  // review keeps every typed value and its live buttons.
+  if(busy)return;
   form.replaceChildren();
   if(!scope?.ready){state.textContent='Load a lesson to draft assessments for its submissions.';return;}
   if(!files.length){state.textContent='No monitored submissions yet. Refresh or scan the submission monitoring panel above.';return;}
@@ -99,7 +103,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    node(form,'p','Blank identity fields are filled automatically from the file’s newest workbook row when one exists.','hint'),
    generate);
   generate.addEventListener('click',async()=>{
-   const mine=++generation;review.replaceChildren();
+   const mine=++generation;review.replaceChildren();busy=true;
    const chosen=files.find(f=>f.file_id===fileSelect.value);
    generate.disabled=true;state.textContent='Capturing the document and drafting judgments… this can take a minute.';
    try{
@@ -119,7 +123,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     if(d.schema_version!=='hub-assessment-provider/v1'||d.status!=='draft_ready'||d.external_writes!==0)throw Error('The draft could not be verified.');
     state.textContent='Draft ready for your review. Nothing has been saved.';
     renderDraft(d,chosen);
-   }catch(error){if(mine===generation)state.textContent=error.message||'Drafting failed; nothing was saved.';}
+   }catch(error){busy=false;if(mine===generation)state.textContent=error.message||'Drafting failed; nothing was saved.';}
    finally{if(mine===generation)generate.disabled=false;}
   });
  }
@@ -180,14 +184,24 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      node(review,'p','Record '+d.record_id+' · Content/notes '+(d.content_score??'—')+' (exact '+(d.content_score_exact||'—')+') · Revision '+(d.revision_score??'not due')+(d.revision_score_exact?' (exact '+d.revision_score_exact+')':'')+' · '+d.answers+' answer rows.'),
      node(review,'p',(d.superseded?.length?('Superseded earlier record(s): '+d.superseded.join(', ')+'.'):'No earlier record superseded.')+' Readback verified against the live workbook.','hint'));
     review.append(receipt);save.remove();
-    onSaved?.();
+    busy=false;onSaved?.();
    }catch(error){saveState.textContent=error.message||'The save failed; check the workbook state before retrying.';save.disabled=false;}
   });
  }
 
  providerStatus().then(()=>{if(scope?.ready)renderForm();});
  return {
-  update(next){scope=next;if(!next.ready){generation++;files=[];review.replaceChildren();}renderForm();},
-  setFiles(list){files=Array.isArray(list)?list.filter(f=>f.status==='present'):[];renderForm();}
+  update(next){
+   const changed=!scope||scope.date!==next.date||scope.classKey!==next.classKey||scope.ready!==next.ready;
+   scope=next;
+   if(!next.ready){generation++;busy=false;files=[];review.replaceChildren();}
+   if(changed)renderForm();
+  },
+  setFiles(list){
+   const next=(Array.isArray(list)?list:[]).filter(f=>f.status==='present');
+   const changed=signature(next)!==signature(files);
+   files=next;
+   if(changed)renderForm();
+  }
  };
 }
