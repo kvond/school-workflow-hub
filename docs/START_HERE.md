@@ -1,186 +1,194 @@
-# Shared entry point for the School Workflow Hub
+# School Workflow Hub — start here
 
-## Assessment workflow status as of September 18, 2026
+## Current teacher decision: simplify, do not restart (September 18, 2026)
 
-Dashboard-operated grading is live (PRs #14–#22, service revision from commit
-on `main`). From Page 2 the teacher can: **Load lesson → Generate feedback for
-this submission / Generate pending feedback for this lesson → review the draft
-(judgments, levels, evidence quotes, report) → Save reviewed assessment to the
-workbook → reopen via View work & feedback → Print feedback**.
+The teacher needs two usable operations, not more prompts or exposed machinery:
+**roster/completion grading, available on schedule and through a manual button**;
+and **printable student feedback, using collected submissions or one ZIP upload**.
+The daily Agenda and the existing cloud service, workbook, state, approved
+Anthropic connection and browser companion remain the system. Do not rebuild.
 
-- `/api/assessment-save`: capture-bound saves (fresh export + content hash;
-  evidence excerpts must be literal substrings; Python-only arithmetic;
-  supersede + strict readback). Four A4 Biology Cycle 02 submissions are
-  assessed and saved; one (a pre-redraft deck without the manifest header) is
-  held for manual reconciliation, never treated as missing.
-- `/api/assessment-run`: Anthropic drafting on the Cloud Run identity —
-  workspace **School Workflow Hub**, model `claude-sonnet-5`, key in Secret
-  Manager `hub-anthropic-api-key` bound as `HUB_ANTHROPIC_API_KEY` (never in
-  the repo or logs). Live Agenda prompts are read at draft time (stale-prompt
-  refusal). Billing guards, all live-verified: already-assessed unchanged
-  content and stored drafts never re-bill; drafts persist server-side per
-  content hash and survive refreshes; a claim serializes duplicates. Budget:
-  $5/month workspace hard limit; teacher-approved $5 total pilot budget;
-  **$0 spent so far** (no eligible pending submission has needed a call yet).
-- Everything server-side runs under the runtime service account: no local
-  AI-to-Drive connector is in the assessment path; a school laptop only needs
-  the IAP dashboard sign-in. Panel messages distinguish dashboard sign-in
-  failures from server-side Drive access failures.
-- IC handoff: saved rows flow into the existing Page 2 posting review
-  unchanged (verified listing all new records); no grade has been posted.
+This document is the delivery contract, not a statement that these operations
+are complete. The teacher currently reports that posting and printing do not
+work for her. Earlier component tests and matching-grade checks do not override
+that report. A docs change, provider connection or scan is not live acceptance.
 
-Updated September 17, 2026. This private repository is the canonical code and
-handoff location for authorized agents. Keep deterministic workflow logic here
-and school data in the approved private runtime. Continue the existing Agenda
-and backend; do not create another dashboard, task database or routine agent-only
-workflow.
+The active implementation worker owns the live browser, router and recovery.
+Other agents must not compete for those tabs, move the same files, or start
+another runtime. Use shared sources directly; do not make the teacher relay
+instructions, logs, artifacts or implementation decisions between agents.
 
-## Read these first
+## Immediate priority: preserve student work
 
-1. [AGENTS.md](../AGENTS.md): ownership and implementation boundaries.
-2. [Python integration](PYTHON_INTEGRATION_20260916.md): module map, validation and remaining connections.
-3. [Cloud readiness](CLOUD_READINESS.md): latest recorded hosted acceptance and the next one-lesson milestone.
-4. [Capabilities](../config/capabilities.json): code evidence and scoped remaining work.
-5. [Current prompts](AGENDA_PROMPTS.md) and [feedback v2](FEEDBACK_V2.md): authoritative instructions and the accepted report layout.
-6. [Submission monitoring](SUBMISSION_MONITORING.md): the hosted turn-in folder watcher and its dashboard panel.
-7. [Browser run coordination](BROWSER_RUNS.md): the separately authorized browser-assisted roster/grading path when a district IC API is unavailable. It reuses private cloud state and does not turn browser reports into server-verified school results.
+The active worker reports finding student submissions in Drive trash after an
+older intake tree was trashed. Treat this as a recovery incident before further
+folder cleanup, model calls or interface polishing. It is a report requiring
+file-by-file readback, not proof that recovery has completed.
 
-Current Page 2 scope: the teacher authorized supervised posting of the existing
-reviewed workbook grades from a signed-in school Chrome or Edge browser on their
-Mac or school Windows computer. This narrow exception permits a connected local
-browser worker, including an assistant, to claim the shared run, perform the
-selected verified writes and record an attributed receipt. Each computer uses
-its own school session; credentials and cookies are never copied to the server
-or between computers. It does not enable a schedule or regrade submitted work.
-The [browser companion](../browser-extension/README.md) implements the Page 2
-review and bounded executor for the current assignment's Score panel.
+- Record the affected file IDs, original parents and trash state privately.
+- Recover verified student artifacts into verified active private destinations
+  while preserving their IDs, contents, response links and assessment history.
+  Verify each file is untrashed, not beneath a trashed ancestor, readable by the
+  intended runtime, and accounted for in the submission list.
+- Do not restore an entire obsolete system to recover a few files; do not
+  permanently delete anything, empty trash, copy away provenance, or broaden
+  inherited permissions. If file-only recovery cannot succeed without another
+  change, diagnose and request only the necessary bounded action.
+- Stop additional mass moves, destructive setup/reset functions and trigger
+  changes until recovery and routing effects are reconciled. Do not rerun
+  SETUP merely because it ran without throwing an exception.
+- Distinguish distinct files, student/assignment submissions, versions and log
+  events. A recovered file is not a newly submitted or late assignment.
 
-Page 2 grading status as of the evening of September 17, 2026:
+## Operation 1: roster and completion grading
 
-- Mac read/verify/skip/receipt path: **live verified** end to end with an
-  executor-completed supervised run (matching grades skipped, no school write,
-  attributed receipt saved and read back through the dashboard after reload).
-- Companion **0.2.3** is the accepted Mac build; `main` matches it exactly.
-- An actual new blank-grade posting with IC readback is **not yet live-tested**.
-  The first genuinely blank reviewed grade that needs posting is that
-  acceptance; never change a correct grade to test writing.
-- The Windows computer's companion is **not yet installed or tested**.
-- Known minor UI defect: the Page 2 review modal's "Review & post in school
-  browser" button stays disabled after a failed attempt; close and reopen the
-  review to retry. Cosmetic only.
-- The private workbook connection is repaired and reads live records through
-  the authenticated dashboard. Do not reopen that investigation without fresh
-  evidence of an actual failed read.
-- Live-session behavior the companion depends on is recorded in
-  [BROWSER_RUNS.md](BROWSER_RUNS.md) and the companion README; a stored browser
-  report alone still does not prove a write.
+**Teacher-facing contract:** choose Class/section, Lesson title, and Notes or
+Drafts; use the existing Student work table; press **Run grading now**. The
+scheduled routine must invoke the same operation with its verified scope, not
+an AI prompt, a second grading implementation, or a button that copies text.
 
-```sh
-python3 scripts/hub_status.py --json
-python3 scripts/cloud_validation.py
-```
+Retain the requested weekday routine and the fuller Friday roster check for
+all configured sections. Recover the exact existing cadence and timezone from
+private configuration rather than inventing another schedule. Reuse the same
+claims, idempotency, reviewed records and receipt model for manual/scheduled
+runs. Do not create duplicate chat reminders or scheduler jobs.
 
-These commands use the standard library. Status inspection reads the repository;
-validation runs the full synthetic suite and verifies identical replay. Neither
-command performs a live health check, loads student records or activates a job.
+The operation must read current roster evidence, collect the selected work,
+assess meaningful completion under the live Prompt 1, calculate scores in Python,
+and hand the exact permitted grades to the verified IC destination executor.
+Keep notes/content and draft/revision components separate. At the initial
+checkpoint only NOTES are due; final content includes required NOTES + BANK,
+while Revision uses required DRAFT. Optional work is excluded and zero
+denominators are N/A. Do not replace meaningful-attempt review with a nonempty
+textbox count. Preserve source versions, earlier scores and teacher overrides.
 
-## What is established
+**Execution truth:** Cloud Run can host the processing and schedule entry point;
+cloud hosting does not supply an Infinite Campus session, API, or grade writer.
+The existing Mac companion has a recorded read/verify/skip/receipt acceptance,
+not a general unattended write acceptance. A working manual confirmation must
+not be bypassed or silently relabeled scheduled posting.
 
-The September 15 acceptance records in `CLOUD_READINESS.md` and
-`PRIVATE_CLOUD_STATE.md` verify hosted signed-IAP authentication, Agenda metadata,
-dated class lessons and prompts. Firestore write/readback, competing ownership
-rejection, retry receipts and persistence across service revisions were verified
-with a fictional record. These are recorded observations, not a new health check.
+Use an existing authorized IC integration if one is actually available;
+otherwise use the accepted school-browser path, including the teacher's
+approved home-Mac interim option where technically supported. Verify the
+actual worker invocation and supervision limits. An idle chat or open tab is
+not a worker. No copying cookies, passwords, browser profiles or tokens.
 
-The September 16 reconciliation publishes the previously local workspace,
-Dashboard navigation and research draft modules alongside the newer teaching
-results, feedback, learning history and cloud-state implementation. Pure Python
-composition remains distinct from a live provider or destination executor.
+Show simple actual outcomes: **Running / Needs your confirmation / Blocked /
+Finished**. When confirmation or authentication is required, the dashboard
+must say so. Retain the requested unattended outcome as unfinished until a
+real scheduled execution with required authority and destination readback is
+proved. Do not call a queued proposal or saved receipt an IC update.
 
-The live Agenda prompt cells are the runtime instruction source;
-`web/teacher-prompts.json` is the reviewed release reference. The September 14
-text under `prompts/` is historical and cannot override feedback v2. Research
-definitions preserve the approved authorial separation; other proposed criteria
-still require teacher review. Collection and student coding remain deferred.
+Roster discrepancies and uncertain identities require review; no automatic
+roster deletion or conflicting-grade overwrite is newly authorized here.
+Perform exact save/reload/readback for each authorized IC write and reconcile
+uncertain outcomes before retries. A first real needed write is the test, never
+a change to an already-correct grade manufactured for acceptance.
 
-## Next session state — after the September 17 evening acceptance
+## Operation 2: student feedback, automatic intake or ZIP
 
-The Mac Page 2 read/verify/skip/receipt path works and is recorded above; do
-not rework it without fresh evidence. What remains for the broader system, in
-priority order:
+**Teacher-facing contract:** use the same Class/section and Lesson title;
+choose the revised work; **Generate feedback -> review/save -> Print or download
+feedback**. When automatic intake is unavailable, **Upload ZIP** is an explicit
+accepted fallback in this same dashboard. The teacher selects the class and
+lesson, uploads one archive of the actual student files, and uses the SAME
+assessment/save/print path. Do not require a local AI-to-Drive connector or a
+separate AI conversation. Do not postpone usable ZIP intake until every folder
+or router in Drive has been repaired.
 
-1. Submission monitoring across the two-week post-due window: **live accepted
-   September 18** for all three classes' current lessons (see
-   [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md) for exactly what was
-   verified and what remains synthetic-only). Remaining pieces: a scan
-   schedule (separate explicit approval plus a scheduler-authorized entry
-   path), and live change detection against a genuinely edited student file.
-2. Grading the new and modified submissions that monitoring surfaces, using the
-   current Agenda prompts for completion, feedback and class summaries, feeding
-   the same reviewed-workbook path Page 2 already posts from.
-3. Agenda-to-IC date alignment and two-way Agenda plan/note saving with
-   readback (sequence items 2 and 5 below).
-4. Roster updates through the existing `hub-roster-sync/v1` boundary once its
-   IC reader and roster-workbook writer are accepted.
-5. Windows acceptance: install the packaged companion in the school Windows
-   browser's own signed-in profile and repeat the supervised review there. Mac
-   acceptance does not transfer.
-6. First live blank-grade posting with IC readback, when a genuinely blank
-   reviewed grade needs it.
+ZIP intake is a requested implementation, not verified existing functionality.
+Authenticate it, limit archive/file/expanded size, reject path traversal,
+symlinks and unsupported/link-only entries, and keep actual source content in
+the existing approved private storage. Preserve uploaded-file hashes and source
+provenance separately from Google Drive revision evidence. Re-uploading the
+same content must not duplicate grading or model calls. Do not claim an uploaded
+file is an exact live Drive revision without verifying that linkage. Imported
+work does not establish complete class coverage or its original turn-in time.
 
-## Next implementation sequence
+Use the current Agenda feedback policy. Match Initial and Revision boxes by
+question and actual labeled response fields, not export order. Conceptual and
+explanation judgments are separate from completion scores. A blank Initial does
+not cancel meaningful Revision credit. Do not invent growth, timing or quotes.
 
-1. Recheck the existing hosted service and runtime access when beginning live
-   integration. Reuse its identity and Firestore store rather than creating them
-   again. Verify the backup/restore approach before relying on real student history.
-2. Connect one actual due lesson's active submission folder and current IC
-   assignment/roster readers. Resolve stable identities, individual extensions,
-   full pagination, cumulative history and exact document revisions. A recent
-   14-day crawl alone cannot prove a learner never submitted.
-3. Supply actual reviewed writing assessments to the accepted completion and
-   feedback functions. Preserve prior versions. Missing or ambiguous evidence is
-   a review state, never permission to invent quotes, growth or student zeros.
-4. Bind that result to the existing private state/claim service and inject the
-   `hub-teaching-results/v1` provider into the existing HTTP app. Verify Page 2 and
-   Page 3 show the same stored scope and revisions after reload.
-5. Complete two-way Agenda plan/note saving with authoritative weekly/list
-   mapping, concurrent-edit rejection and destination readback.
-6. Implement and accept each authorized IC, feedback-filing, email or requested
-   print destination separately. A stored proposal is not successful delivery.
-7. Verify the full supervised lesson before enabling unattended execution.
-   Coordinate existing schedules; do not create duplicate jobs. Research follows
-   teaching-workflow acceptance.
+Save reviewed student reports and a readable class packet. Printing and
+reopening saved feedback must not bill another model call. Serve the actual
+PDF through the authenticated dashboard so direct school-Drive access on the
+work laptop is not a prerequisite. Verify nonblank print output, sensible page
+breaks and the exact reflection prompt, with teacher-only notes excluded.
 
-The current priority is Agenda-to-IC alignment and real teaching inputs. The
-older parent-page/Schoology-first sequence and claims that hosting does not
-exist are superseded. Older 252/322/361/382-test counts are historical checkpoints;
-use the integration record for this reconciliation's validation.
+Create the teacher summary document in the verified private Drive location
+associated with the student work, after checking inherited access. Page 03 is
+**Class/lesson -> Open summary document** (and a direct authenticated download
+where needed), not an inline paragraph. Preserve document identity and history;
+exclude generated reports/summaries from student-submission discovery.
 
-## Contract and ownership boundaries
+## Source collection: one root, not one assumed folder
 
-- `agenda-operations/v1` remains the strict operation-status projection.
-- `agenda-workspace/v1` is a host-injected library wrapper for planning and
-  private views. It is not a replacement for the deployed Page 2/Page 3 provider.
-- `hub-teaching-results/v1` is the existing authenticated teaching-results
-  boundary for dated lesson composition; its actual private provider is still
-  missing. Page 2 reads the separate existing private grading workbook through
-  `hub-grading-records/v1`; see [the workbook contract](PRIVATE_GRADING_WORKBOOK.md).
-- `hub-roster-sync/v1` is the authenticated shared status boundary at
-  `/api/roster-sync`; it reuses the cloud task/lease model and remains
-  status-only until its IC reader and roster-workbook writer are accepted.
-- Firestore is the hosted task/result store. SQLite helpers remain offline
-  synthetic fixtures; do not introduce operational dual writes.
-- Cloud deployment, credentials, billing, Actions enable variables and schedules
-  remain with the cloud owner. This integration publishes code only.
+The approved **00 ALL TURN IN** root is the default discovery boundary; its
+actual ID remains in private configuration. Read the current Agenda Feedback
+Prompts and [FEEDBACK_V2.md](FEEDBACK_V2.md). The assignment may occupy loose
+files, multiple direct-upload folders and nested Form upload folders. The
+TurnIn Map is a locator, not a completeness guarantee or the assignment's ID.
 
-The Page 2 posting exception authorizes implementation and supervised execution
-only after source, identity, assignment, current-grade and ownership checks.
-The executor's read/verify/skip path is live-accepted on the Mac; its write
-path and the Windows install are not. Other unconnected Run, email and
-printing actions still require their own integration and acceptance. Preserve
-stable file/slide IDs and grade history. Keep student records, source IDs,
-credentials and browser profiles out of GitHub.
+Reconcile actual Forms responses, file references and verified assignment /
+student identities across authorized sources. Legacy intake outside the root
+is an explicit recovery/coverage item, not permission to expand sharing. Do not
+restore the deprecated root. Preserve original links and all earlier/later
+submissions; deduplicate references, not distinct versions. No zeros or
+all-caught-up claims from incomplete coverage. Repair future routing while
+keeping recovered work and ZIP feedback usable; directory tidiness is not the
+delivery milestone.
 
-For every continuation, record the code revision, checks, exact remaining scope
-and evidence level. A code pass is not a school read, hosted deployment or live
-end-to-end result. Update existing task records rather than creating duplicates.
+## Screen scope and acceptance
+
+Page 02 contains the three selectors, one Student work table, and the actions
+above. Hide raw scans, changes-since-scan logs, IDs, prompts and developer
+controls under Details. Show only concise coverage and actionable student holds.
+Do not add more competing panels. Lesson title, not navigation date, selects
+an assignment. The confirmed third-meeting final deadline still applies:
+actual start is meeting 1; unfinished teaching does not extend it; use the
+verified section calendar and America/New_York; keep the 14-day window separate.
+
+First recover the endangered submissions. Then prove one real class/lesson can
+produce saved completion scores and printable feedback using automatic intake
+OR the ZIP fallback. Verify both necessary IC components through authorized
+writes. Test the actual manual button and scheduled path separately. Complete
+remaining scope without replacing working components. No fake Form submissions,
+student edits or grade changes to manufacture acceptance.
+
+Track honestly: **implemented / tested with fixtures / observed live / teacher
+path verified**. The present report of failed posting and printing remains open
+until the actual normal controls pass. Windows reading/printing and Windows IC
+posting are separate checks; do not block home-Mac delivery on Windows companion
+installation or claim it works without checking.
+
+## Budget, ownership and durable continuation
+
+Development stays on the existing paid Claude allowance. Runtime AI calls use
+only the approved Anthropic workspace/key through protected secret storage.
+Retain the original $5 total pilot/batch budget INCLUDING prior calls and retries,
+plus the workspace cap; no purchases, auto-reload, new providers or budget
+increases. A scheduled-grading requirement does not replenish or expand that
+API approval. Account for actual usage; reuse saved work for verification.
+
+The existing live implementation worker handles the permitted deployment and
+browser work. Reconcile older code-only/no-model wording in AGENTS.md with the
+teacher's subsequently approved, budget-bounded hosted provider; do not disable
+it or use stale prose to commission another architecture. Preserve all actual
+security, school-write, human-confirmation and credential boundaries.
+
+Update this entry point in place, retain detailed evidence in approved private
+state, and commit tested code without student records or school identifiers.
+Do not ask the teacher to commission each next engineering step. A genuinely
+new permission, paid scope or unclear teaching fact may require one precise
+approval; routine navigation and debugging do not.
+
+Detailed references (read only as needed): [AGENTS.md](../AGENTS.md),
+[BROWSER_RUNS.md](BROWSER_RUNS.md), [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md),
+[FEEDBACK_V2.md](FEEDBACK_V2.md), [AGENDA_SAVE.md](AGENDA_SAVE.md),
+[TEACHING_RESULTS_INTEGRATION.md](TEACHING_RESULTS_INTEGRATION.md),
+[ROSTER_SYNC_INTEGRATION.md](ROSTER_SYNC_INTEGRATION.md), and
+[capability evidence](../config/capabilities.json). Prior checkpoints remain in
+Git history; this file is the current delivery contract, not another parallel
+handoff or a claim that changing these instructions repaired the application.
