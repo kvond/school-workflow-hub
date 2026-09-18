@@ -71,12 +71,28 @@ list where every failure carries one specific recovery action.
 
 ## Verification state
 
-647 backend tests (including the monitoring state machine: new, late-evidence,
+648 backend tests (including the monitoring state machine: new, late-evidence,
 modified, replacement, ambiguous identity, extension, deadline change, partial
 page, permission failure, interrupted/concurrent worker) and 36 frontend tests
-pass with identical synthetic replay. Live acceptance requires the runtime
-reader to hold Viewer on the active submissions folder tree; until that grant,
-hosted scans fail with `submission_folder_access_required` and the recorded
-attempt says exactly that. Scheduled execution is not enabled; enabling it is a
-separate explicit approval (cadence + scope) that would point an authorized
-scheduler at the same endpoint.
+pass with identical synthetic replay.
+
+Live acceptance, September 18, 2026: with the teacher-approved Viewer grant for
+the runtime reader on the turn-in root and the project's Drive API enabled
+(both were required; an unconfigured API and a missing grant produce the same
+Drive 403, which is why the earlier inventory check never succeeded live), the
+hosted scan completed for all three classes' current lessons. One class's tree
+held five real student files: all were labeled first-observed at baseline, one
+carried a verified workbook match and assessed stage, and four stayed visible
+as unmatched/awaiting review. The other two trees scanned complete with a Form
+and no loose files, recorded as exactly that. A rerun with unchanged inputs
+returned the stored result (`unchanged_rerun`) with no new documents, a failed
+pre-grant scan left a durable failed attempt without touching any baseline, and
+a baseline written by one service revision read back intact from the next
+revision. The dashboard panel rendered the same stored state after reload.
+
+Live change detection (a student actually modifying or adding a document
+between scans) has not been demonstrated against real work — no student file
+was edited to manufacture an event — and remains covered by the synthetic
+cases only. Scheduled execution is not enabled; enabling it is a separate
+explicit approval (cadence + scope), and the scan endpoint's same-origin gate
+means a scheduler integration will also need its own authorized entry path.

@@ -80,9 +80,14 @@ test('a scope update refreshes status but a scan happens only from its button',a
  panel.update({date:'2026-09-14',classKey:'biology',ready:true});
  await new Promise(r=>setTimeout(r,0));
  assert.equal(calls.length,1); // unchanged scope: no re-fetch, never a scan
+ panel.update({date:'2026-09-14',classKey:'biology',ready:false});
+ panel.update({date:'2026-09-14',classKey:'biology',ready:true});
+ await new Promise(r=>setTimeout(r,0));
+ assert.equal(calls.length,2); // becoming ready again re-reads status
+ assert.equal(calls[1].method,'GET');
  const buttons=container.children.filter(c=>c.tagName==='div').flatMap(d=>d.children).filter(c=>c.tagName==='button');
  const scan=buttons.find(b=>b.textContent==='Scan submissions now');
  await scan.listeners.click();
  await new Promise(r=>setTimeout(r,0));
- assert.equal(calls[1].method,'POST');
+ assert.equal(calls.at(-1).method,'POST');
 });

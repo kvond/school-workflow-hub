@@ -80,13 +80,12 @@ The Mac Page 2 read/verify/skip/receipt path works and is recorded above; do
 not rework it without fresh evidence. What remains for the broader system, in
 priority order:
 
-1. Submission monitoring across the two-week post-due window: implemented as
-   the hosted `/api/submission-monitor` endpoint and Page 2 panel (see
-   [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md)); cumulative per-file
-   history, first-observed baselines, conservative late evidence, durable
-   idempotent cloud persistence and synthetic acceptance are in place. Live
-   acceptance still needs the runtime reader's Viewer grant on the submissions
-   folder tree, and a scan schedule remains a separate explicit approval.
+1. Submission monitoring across the two-week post-due window: **live accepted
+   September 18** for all three classes' current lessons (see
+   [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md) for exactly what was
+   verified and what remains synthetic-only). Remaining pieces: a scan
+   schedule (separate explicit approval plus a scheduler-authorized entry
+   path), and live change detection against a genuinely edited student file.
 2. Grading the new and modified submissions that monitoring surfaces, using the
    current Agenda prompts for completion, feedback and class summaries, feeding
    the same reviewed-workbook path Page 2 already posts from.
