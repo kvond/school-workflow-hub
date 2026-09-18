@@ -1,4 +1,4 @@
-import {createRecordsLoader,renderRecords,renderSummaries,sectionOptions} from './grading-records.mjs';
+import {createRecordsLoader,renderRecords,renderSummaries,sectionOptions,lessonOptions,filterRecords,printFeedbackPacket} from './grading-records.mjs';
 import {safeLink} from './contract.mjs';
 import {showRunInstructions} from './browser-runs.mjs';
 import {buildPostingReview,renderPostingReview} from './grade-posting.mjs';
@@ -32,24 +32,35 @@ function agendaPrompts(refresh=false){
 async function copyPrompt(kind){const titles={completion:'Completion check',feedback:'Student feedback',summary:'Teacher class summary'};$('detail-title').textContent=titles[kind];const body=$('detail-body');body.replaceChildren(el('p','Loading your supplied instructions…'));$('detail').showModal();try{const r=await fetch('./teacher-prompts.json',{cache:'no-store'});if(!r.ok)throw Error();const p=await r.json();const live=await agendaPrompts(true);const original=live.prompts[kind];const lesson=scope.data?.lessons.find(l=>l.class_key===scope.classKey);const context=lesson?'Selected lesson context (Agenda read-only):\nClass: '+classes[scope.classKey]+'\nDate: '+scope.date+'\nTopic: '+lesson.title+'\nTeacher Slides: '+(lesson.teacher_slides||'Not supplied')+'\nTurn-in folder: '+(lesson.turnin_folder||'Not supplied')+'\nStudent evidence: supply privately; the dashboard has not collected it.\n\n':'';const workflow=kind==='completion'?p.workflows?.due_completion?.instructions:'';if(kind==='completion'&&typeof workflow!=='string')throw Error();const text=typeof original==='string'?context+(workflow||'')+original:original;if(typeof text!=='string')throw Error();const area=el('textarea');area.readOnly=true;area.value=text;area.setAttribute('aria-label',titles[kind]+' instructions');const status=el('p','','hint'),copy=btn('Copy instructions',async()=>{try{await navigator.clipboard.writeText(text);status.textContent='Copied instructions.';}catch{area.focus();area.select();status.textContent='Use your browser’s copy command on the selected text.';}});body.replaceChildren(el('p',`${live.source}. ${live.change_rule} ${live.alignment_review_needed?"Agenda prompts differ from the packaged version: review the matching skills and Agenda pages before execution.":""} This is not a running job.`),area,copy,status,el('p','Agenda prompt fingerprint: '+live.sha256[kind],'hint'));}catch{body.replaceChildren(el('p','Agenda instructions could not be loaded. Retry or open the Agenda prompt link. Nothing was executed.','error'));}}
 
 const classes={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy'};
-let scope={date:$('date').value,classKey:'biology',data:null,loading:false,error:''};
-let recordState={status:'empty'},sectionId='matched',sectionSelect;
+let scope={date:$('date').value,classKey:'biology',assignmentKey:'all',stage:'all',data:null,loading:false,error:''};
+let recordState={status:'empty'},sectionId='matched',sectionSelect,lessonSelect,workSelect;
 const views=[];
+// Page 02 primary selectors: Class / section → Lesson name → Notes or Drafts.
+// No lesson-date picker in this row — a date is only used, internally, by the
+// collapsed "Assess new submissions" section for finding a turn-in folder.
 function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';renderScope();loadResults()});classLabel.append(select);
- const dateLabel=el('label','Lesson date'),date=el('input');date.type='date';date.value=scope.date;date.setAttribute('aria-label',page+' date');dateLabel.append(date);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';scope.assignmentKey='all';renderScope();renderPrivateRecords();});classLabel.append(select);
+ const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','Matched sections'));sectionSelect.firstChild.value='matched';
+ sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);
+ const lessonLabel=el('label','Lesson name');lessonSelect=el('select');lessonSelect.setAttribute('aria-label','Feedback lesson');lessonSelect.append(el('option','All lessons'));lessonSelect.firstChild.value='all';
+ lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;renderPrivateRecords()});lessonLabel.append(lessonSelect);
+ const workLabel=el('label','Work');workSelect=el('select');workSelect.setAttribute('aria-label','Feedback checkpoint');for(const [v,name]of [['all','Notes & drafts'],['initial','Notes'],['final','Drafts']]){const o=el('option',name);o.value=v;workSelect.append(o);}workSelect.value=scope.stage;
+ workSelect.addEventListener('change',()=>{scope.stage=workSelect.value;renderPrivateRecords()});workLabel.append(workSelect);
+ bar.append(classLabel,sectionLabel,lessonLabel,workLabel);
+ // Advanced, collapsed: assessing brand-new submissions still needs the lesson's
+ // Agenda date to resolve its turn-in folder. Kept out of the primary flow.
+ const advanced=el('details',undefined,'workflow-details');
+ const dateLabel=el('label','Lesson date (advanced)'),date=el('input');date.type='date';date.value=scope.date;date.setAttribute('aria-label','Assess new submissions date');dateLabel.append(date);
  date.addEventListener('change',()=>requestDay(date.value));
- const load=btn('Load lesson',()=>requestDay(date.value));bar.append(classLabel);
- if(page==='Feedback'){
-  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','Matched sections'));sectionSelect.firstChild.value='matched';
-  sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);bar.append(sectionLabel);
- }
- bar.append(dateLabel,load);
- const context=el('section',undefined,'lesson-context');const notice=el('p','','hint');notice.setAttribute('role','status');
- target.append(bar,context,notice);views.push({select,date,load,context,notice});
+ const load=btn('Load lesson',()=>requestDay(date.value));
+ const advBar=el('div',undefined,'workspace-controls');advBar.append(dateLabel,load);
+ advanced.append(el('summary','Assess new submissions (Process work)'),el('p','Assessing brand-new work still uses this lesson’s Agenda date to find its turn-in folder. Pick the date, Load lesson, then scan and draft below. Reviewing, grading and printing already-assessed work needs only the selectors above. Lesson-name-driven processing is the next step.','hint'),advBar);
+ const context=el('section',undefined,'lesson-context');const notice=el('p','','hint');notice.setAttribute('role','status');advanced.append(context,notice);
+ target.append(bar,advanced);views.push({select,date,load,context,notice});
+ return advanced;
 }
 function requestDay(date){document.dispatchEvent(new CustomEvent('agenda-request-day',{detail:{date}}));}
 function renderScope(){
@@ -82,8 +93,8 @@ function promptAction(target,label,kind){
  agendaPrompts().then(d=>{a.href=d.links[kind];a.hidden=false;a.title=d.change_rule;}).catch(()=>{a.replaceWith(el('span','Agenda prompt link unavailable','hint'));});
 }
 function heldAction(target,label,reason){const button=btn(label,null,true);button.title=reason;target.append(button);}
-const feedback=$('page-feedback');compactHeading(feedback,'Submissions & feedback');scopeBar(feedback,'Feedback');
-feedback.append(el('p','Submissions include all recorded assignments for this class. Lesson date selects the Agenda links and folder check.','hint'));
+const feedback=$('page-feedback');compactHeading(feedback,'Submissions & feedback');const advancedIntake=scopeBar(feedback,'Feedback');
+feedback.append(el('p','Choose the class/section, lesson name, and Notes or Drafts to review that lesson’s student work, grade it, and print feedback. Assessing brand-new submissions is inside “Assess new submissions” above.','hint'));
 const feedbackGrid=el('div',undefined,'section-grid');
 const queue=el('section',undefined,'surface wide');const qhead=el('div',undefined,'section-heading');qhead.append(el('h2','Student work'));promptAction(qhead,'Copy completion instructions','completion');queue.append(qhead);
 const inventory=el('div');inventory.setAttribute('aria-live','polite');
@@ -109,10 +120,10 @@ async function scanSubmissions(){
 }
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
 const reviewBox=el('div',undefined,'assessment-review');
-const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=mountSubmissionMonitor(monitorBox,{onFiles:(list,deadline)=>assessmentReview?.setFiles(list,deadline)});queue.append(monitorBox);
-assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});queue.append(reviewBox);
-const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);queue.append(inventoryDetails);
-const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Open each student’s report from the list above.'));const reportActions=el('div',undefined,'action-row');promptAction(reportActions,'Copy feedback instructions','feedback');heldAction(reportActions,'Print feedback documents','Needs current feedback documents, a verified school printer, and your direction.');reports.append(reportActions);
+const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=mountSubmissionMonitor(monitorBox,{onFiles:(list,deadline)=>assessmentReview?.setFiles(list,deadline)});advancedIntake.append(monitorBox);
+assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});advancedIntake.append(reviewBox);
+const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);advancedIntake.append(inventoryDetails);
+const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Print the selected lesson’s student feedback as a packet (one student per page), or print a single student from their row above. Printing uses the saved reports and makes no new AI calls.'));const reportActions=el('div',undefined,'action-row');const packetStatus=el('p','','hint');packetStatus.setAttribute('role','status');promptAction(reportActions,'Copy feedback instructions','feedback');reportActions.append(btn('Print feedback packet',()=>{const rows=recordState.status==='loaded'?filterRecords(recordState.data,scope.classKey,sectionId,scope.assignmentKey,scope.stage):[];const n=printFeedbackPacket(rows);packetStatus.textContent=n?('Printing '+n+' student report'+(n===1?'':'s')+'.'):'No saved feedback to print for this selection yet.';}));reports.append(reportActions,packetStatus);
 async function reviewGrades(){
  const selection={classKey:scope.classKey,sectionId};
  const modal=$('detail'),body=el('div');
@@ -154,7 +165,9 @@ const summaryActions=el('div',undefined,'action-row summary-actions');promptActi
 const summaryResults=el('div',undefined,'section-grid');summaryResults.setAttribute('aria-live','polite');summary.append(summaryResults);
 function renderPrivateRecords(){
  if(sectionSelect){const options=recordState.status==='loaded'?sectionOptions(recordState.data,scope.classKey):[];sectionSelect.replaceChildren();for(const [id,name]of [['matched','Matched sections'],['all','All records'],...options]){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId))sectionId='matched';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
- renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId});renderSummaries(summaryResults,recordState);
+ if(lessonSelect){const lessons=recordState.status==='loaded'?lessonOptions(recordState.data,scope.classKey):[];lessonSelect.replaceChildren();for(const [id,name]of [['all','All lessons'],...lessons]){const option=el('option',name);option.value=id;lessonSelect.append(option);}if(scope.assignmentKey!=='all'&&!lessons.some(([id])=>id===scope.assignmentKey))scope.assignmentKey='all';lessonSelect.value=scope.assignmentKey;lessonSelect.disabled=recordState.status!=='loaded';}
+ if(workSelect)workSelect.value=scope.stage;
+ renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId,assignmentKey:scope.assignmentKey,stage:scope.stage});renderSummaries(summaryResults,recordState);
 }
 const retrieveRecords=createRecordsLoader({onState:state=>{recordState=state;renderPrivateRecords()}});
 qhead.append(btn('Refresh submissions',()=>retrieveRecords()));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));

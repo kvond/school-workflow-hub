@@ -11,8 +11,18 @@ export function sectionOptions(data,classKey){
  for(const row of data.submissions)if(row.class_key===classKey){if(row.section_id)sections.set(row.section_id,row.section_name||row.section_id);else unmatched++;}
  const options=[...sections].sort((a,b)=>a[1].localeCompare(b[1]));if(unmatched)options.push(['',`Unmatched (${unmatched})`]);return options;
 }
-export function filterRecords(data,classKey,sectionId='matched'){
- return data.submissions.filter(row=>row.class_key===classKey&&(sectionId==='all'||(sectionId==='matched'?Boolean(row.section_id):row.section_id===sectionId))).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||'')||a.assignment_title.localeCompare(b.assignment_title));
+// Lesson names for a class come from the workbook's own assignment registry
+// (the same stable identity the table, posting and saving use — never a date).
+// Any assignment_key seen on a submission but absent from the registry is still
+// offered so recovered/older work is never hidden.
+export function lessonOptions(data,classKey){
+ const named=new Map();
+ for(const a of data.assignments||[])if(a.class_key===classKey&&a.assignment_key)named.set(a.assignment_key,a.assignment_title||a.assignment_key);
+ for(const row of data.submissions)if(row.class_key===classKey&&row.assignment_key&&!named.has(row.assignment_key))named.set(row.assignment_key,row.assignment_title||row.assignment_key);
+ return [...named].sort((a,b)=>a[1].localeCompare(b[1]));
+}
+export function filterRecords(data,classKey,sectionId='matched',assignmentKey='all',stage='all'){
+ return data.submissions.filter(row=>row.class_key===classKey&&(assignmentKey==='all'||row.assignment_key===assignmentKey)&&(stage==='all'||row.assessment_stage===stage)&&(sectionId==='all'||(sectionId==='matched'?Boolean(row.section_id):row.section_id===sectionId))).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||'')||a.assignment_title.localeCompare(b.assignment_title));
 }
 export function createRecordsLoader({fetcher=fetch,onState}){
  let generation=0,controller;
@@ -35,10 +45,11 @@ export function score(row,key){
  if(row.hold_reason||['identity_unverified','superseded'].includes(row.status)||!Number.isFinite(row[key]))return '—';
  return `${Number(row[key].toFixed(2))} / 10`;
 }
-export function renderRecords(root,state,{classKey,sectionId='matched'}){
+const CHECKPOINT={initial:'Notes checkpoint',final:'Drafts checkpoint'};
+export function renderRecords(root,state,{classKey,sectionId='matched',assignmentKey='all',stage='all'}){
  root.replaceChildren();
  if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
- const rows=filterRecords(state.data,classKey,sectionId),included=rows.filter(r=>r.included_in_counts);
+ const rows=filterRecords(state.data,classKey,sectionId,assignmentKey,stage),included=rows.filter(r=>r.included_in_counts);
  line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with matched submissions · ${included.length} records · checked ${time(state.data.checked_at)}`,'hint');
  if(sectionId==='matched'){
   const unmatched=state.data.submissions.filter(r=>r.class_key===classKey&&!r.section_id).length;
@@ -50,7 +61,7 @@ export function renderRecords(root,state,{classKey,sectionId='matched'}){
  for(const row of rows){
   const tr=node(root,'tr'),student=node(root,'td');student.append(node(root,'strong',row.display_name||'Identity needs matching'));line(student,row.section_name||'Unmatched','hint');tr.append(student);
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));
-  const cell=node(root,'td');line(cell,label(row.status));const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
+  const cell=node(root,'td');line(cell,label(row.status));if(CHECKPOINT[row.assessment_stage])line(cell,CHECKPOINT[row.assessment_stage],'hint');const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
   if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,'Excluded from class counts until identity and current submission are resolved.','hint');
   if(row.feedback){line(details,row.feedback,'student-feedback-text');
    const print=node(details,'button','Print feedback');print.type='button';print.className='print-feedback-button';
@@ -67,11 +78,11 @@ export function renderRecords(root,state,{classKey,sectionId='matched'}){
  }
  table.append(body);const wrap=node(root,'div');wrap.className='work-table-wrap';wrap.append(table);root.append(wrap);
 }
-// A print-only sheet of the student-facing report: scores, the report text and
-// a written-reflection space. Teacher-only evidence notes never print.
-export function printFeedback(row){
- const doc=document;
- doc.querySelector('.print-sheet')?.remove();
+// One print-only sheet of a student-facing report: scores, the report text and
+// a written-reflection space. Teacher-only evidence notes never print. Each
+// sheet is a top-level sibling so the print CSS shows every sheet and starts
+// each subsequent student on a new page. Returns the created sheet.
+export function appendSheet(doc,row){
  const sheet=node(doc.body,'div');sheet.className='print-sheet';doc.body.append(sheet);
  sheet.append(node(doc.body,'h1',(row.display_name||'Student')+' · '+row.assignment_title));
  const meta=node(doc.body,'p',(row.section_name||'')+' · Feedback prepared '+time(row.checked_at));meta.className='hint';sheet.append(meta);
@@ -80,11 +91,29 @@ export function printFeedback(row){
  sheet.append(node(doc.body,'h2','My reflection'));
  sheet.append(node(doc.body,'p','What is one thing this feedback tells you to do next, in your own words?'));
  for(let i=0;i<6;i++){const ruled=node(doc.body,'div');ruled.className='reflection-line';sheet.append(ruled);}
+ return sheet;
+}
+function printSheets(){
+ const doc=document;
  doc.body.classList.add('print-feedback-active');
- const done=()=>{doc.body.classList.remove('print-feedback-active');sheet.remove();window.removeEventListener('afterprint',done);};
+ const done=()=>{doc.body.classList.remove('print-feedback-active');doc.querySelectorAll('.print-sheet').forEach(s=>s.remove());window.removeEventListener('afterprint',done);};
  window.addEventListener('afterprint',done);
  window.print();
  setTimeout(done,60000);
+}
+export function printFeedback(row){
+ document.querySelectorAll('.print-sheet').forEach(s=>s.remove());
+ appendSheet(document,row);
+ printSheets();
+}
+// A multi-student packet: one report per student, each starting on a new page.
+export function printFeedbackPacket(rows){
+ const withReport=(rows||[]).filter(r=>r.feedback);
+ if(!withReport.length)return 0;
+ document.querySelectorAll('.print-sheet').forEach(s=>s.remove());
+ for(const row of withReport)appendSheet(document,row);
+ printSheets();
+ return withReport.length;
 }
 
 export function renderSummaries(root,state){
