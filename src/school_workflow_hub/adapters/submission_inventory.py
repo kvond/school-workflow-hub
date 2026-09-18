@@ -50,12 +50,36 @@ class DriveReader:
         return self.get('files', params)
 
 
+# The teacher's own folder naming: A&P is the anatomy course label in Drive.
+COURSE_ALIASES = {'Anatomy': ('Anatomy', 'A&P')}
+
+
+def lesson_folder_name(name, course, week):
+    """A specific turn-in folder for this course, never a whole-course folder.
+
+    The lesson binding itself comes from the Agenda TurnIn Map row, which is
+    already matched on the exact lesson title and week. This name check is
+    defense in depth: the right course (including the teacher's own aliases),
+    a Turn In-specific folder, and either the same week label or a cycle label,
+    because one cycle's turn-in folder deliberately serves several weeks.
+    """
+    dash = r'\s+[—–-]\s+'
+    aliases = '|'.join(re.escape(a) for a in COURSE_ALIASES.get(course, (course,)))
+    if not re.match('(?:' + aliases + ')' + dash, name) or 'Turn In' not in name:
+        return False
+    labeled = re.search(r'\b(?:Wk|Week)\s*0?(\d{1,2})\b', name)
+    if labeled:
+        agenda = re.search(r'\b(?:Wk|Week)\s*0?(\d{1,2})\b', week or '')
+        return bool(agenda) and labeled[1] == agenda[1]
+    return bool(re.search(r'\bCycle\s*\d{1,2}\b', name))
+
+
 def collect(reader, folder_id, *, course, week):
     root = reader.metadata(folder_id)
     if root.get('trashed') is not False or root.get('mimeType') != FOLDER:
         raise ConnectionError('submission_folder_inactive')
     # Reject stale course-level mappings; require a specific lesson folder.
-    if not re.match(re.escape(course) + r'\s+[—–-]\s+' + re.escape(week) + r'\s+[—–-]', root.get('name', '')):
+    if not lesson_folder_name(root.get('name', ''), course, week):
         raise ConnectionError('submission_lesson_mapping_required')
     queue = [(folder_id, 0)]
     seen, files, forms, pages = set(), [], [], 0

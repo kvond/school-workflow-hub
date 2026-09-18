@@ -22,6 +22,18 @@ class InventoryTests(unittest.TestCase):
     def test_wrong_lesson_rejected(self):
         with self.assertRaisesRegex(ConnectionError,'mapping'):
             collect(Reader(),ROOT,course='Forensics',week='Wk 04')
+    def test_teacher_folder_naming_is_accepted_without_losing_the_guard(self):
+        from school_workflow_hub.adapters.submission_inventory import lesson_folder_name
+        # The teacher's real names: a course alias and a cycle-labeled folder.
+        self.assertTrue(lesson_folder_name('A&P — Wk 03 — Introduction to Anatomy (cont.) — Turn In','Anatomy','Wk 03'))
+        self.assertTrue(lesson_folder_name('Biology — Cycle 02 — Ecosystems & Feeding Relationships — Turn In','Biology','Wk 03'))
+        # The protections stay: wrong week, whole-course folder, wrong course,
+        # and a cycle folder without any unit label are still rejected.
+        self.assertFalse(lesson_folder_name('A&P — Wk 02 — Old Lesson — Turn In','Anatomy','Wk 03'))
+        self.assertFalse(lesson_folder_name('Biology','Biology','Wk 03'))
+        self.assertFalse(lesson_folder_name('Biology — Turn In','Biology','Wk 03'))
+        self.assertFalse(lesson_folder_name('Forensics — Wk 03 — Observation — Turn In','Biology','Wk 03'))
+        self.assertFalse(lesson_folder_name('Biology — Cycle 02 — Ecosystems','Biology','Wk 03'))
     def test_partial_rejected(self):
         reader=Reader()
         reader.children=lambda *_:{'files':[],'incompleteSearch':True}
