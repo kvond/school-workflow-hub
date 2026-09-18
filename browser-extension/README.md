@@ -4,15 +4,20 @@ This Chrome/Edge extension is the supervised Page 2 grade-posting candidate for
 macOS and Windows. Code and synthetic tests do not establish a successful live
 installation or grade write. Test each authorized browser/profile separately.
 
-## Current acceptance state — September 17, 2026
+## Current acceptance state — September 17, 2026 (evening)
 
-**The installed Mac integration is incomplete.** Installation in the authorized
-school Chrome profile and the Hub's `companion_available` status were observed.
-The selected IC scores were manually read as matching their recorded
-grades. That was a manual comparison, not an executor-completed read/skip run.
-No completed grading receipt or live grade write/readback has been verified.
-The next live acceptance pass was interrupted after browser fixes. Do not infer
-that the installed package contains every subsequent repository change.
+**The Mac read/verify/skip path is live-verified with companion 0.2.3.** An
+executor-completed supervised review ran end to end in the authorized school
+Chrome profile on the teacher's Mac: fresh authenticated workbook read, exact
+assignment/section/term/points-scale match, per-student identity verification,
+shared-run ownership claim, matching-grade comparison, destination reload, and
+an attributed private receipt that the dashboard read back after a full page
+reload. Both selected grades already matched, so no grade was changed; that is
+the verified read/verify/skip acceptance, not a write acceptance.
+
+**A live blank-grade write with IC readback has not yet been exercised.** The
+first genuinely blank reviewed grade that needs posting serves as that
+acceptance; never change a correct grade to test writing.
 
 Windows has not been installed or tested. The code and package are portable;
 the authenticated school session and live acceptance are specific to each
