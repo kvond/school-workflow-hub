@@ -234,3 +234,46 @@ class RowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CENSUS_SOURCE = ("Pre-manifest deck\n"
+                 "[[NOTES:C02:Q-ONE]]\nfirst answer words\n"
+                 "[[NOTES:C02:Q-TWO]]\n\n"
+                 "[[NOTES:C02:Q-ONE]]\nduplicate marker box\n")
+
+
+class CensusTests(unittest.TestCase):
+    def test_headerless_decks_fall_back_to_a_documented_census(self):
+        manifest = ar.derive_manifest(CENSUS_SOURCE)
+        self.assertEqual(manifest["inventory_basis"], "marker_census")
+        self.assertEqual(manifest["notes_ids"], ["Q-ONE", "Q-TWO"])
+        self.assertEqual(manifest["bank_ids"], [])
+        self.assertIn("duplicated marker", manifest["reconciliation_note"])
+        self.assertIn("manual-reconciliation", manifest["reconciliation_note"])
+
+    def test_census_packets_are_reverified_against_the_capture(self):
+        manifest = ar.derive_manifest(CENSUS_SOURCE)
+        item = packet()
+        item["manifest"] = manifest
+        item["responses"] = [
+            response("Q-ONE", "NOTES", "meaningful_attempt", "first answer words"),
+            response("Q-TWO", "NOTES", "blank", "", conceptual="Evidence unavailable",
+                     explanation="Evidence unavailable"),
+        ]
+        self.assertIs(ar.validate_packet(item, CENSUS_SOURCE), item)
+        result = ar.completion(item)
+        self.assertEqual(result["scores"]["content_notes"]["exact_value"], "5")
+        # Zero DRAFT denominator is N/A even at the final checkpoint.
+        self.assertEqual(result["scores"]["revision"]["status"], "N/A")
+        rows = ar.build_rows(item, result, dict(CAPTURE, text=CENSUS_SOURCE),
+                             now="2026-09-18T18:00:00+00:00")
+        self.assertIn("manual-reconciliation", rows["submission"]["reconciliation_basis"])
+        tampered = dict(item, manifest=dict(manifest, notes_ids=["Q-ONE"]))
+        with self.assertRaises(ValueError) as caught:
+            ar.validate_packet(tampered, CENSUS_SOURCE)
+        self.assertEqual(str(caught.exception), "assessment_manifest_not_in_source")
+
+    def test_markerless_text_is_still_a_manual_hold(self):
+        with self.assertRaises(ValueError) as caught:
+            ar.derive_manifest("plain notes with no markers at all")
+        self.assertEqual(str(caught.exception), "assessment_manifest_missing")
