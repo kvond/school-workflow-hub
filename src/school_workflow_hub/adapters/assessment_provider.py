@@ -80,9 +80,15 @@ def model_name(config):
 def status(assertion, config):
     audience, allowed = _identity_configuration(config)
     authorize(assertion, audience, allowed)
+    ready = configured(config)
+    # A fixed dependency code, never the key or its length: absent means the
+    # secret binding did not reach the runtime; malformed means it did but the
+    # stored value is not an API key.
+    dependency = None if ready else (
+        "runtime_key_missing" if not _key(config) else "runtime_key_malformed")
     return {"schema_version": "hub-assessment-provider/v1",
-            "configured": configured(config),
-            "model": model_name(config) if configured(config) else None,
+            "configured": ready, "dependency": dependency,
+            "model": model_name(config) if ready else None,
             "external_writes": 0}
 
 
