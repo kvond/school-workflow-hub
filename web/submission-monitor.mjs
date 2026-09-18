@@ -109,7 +109,9 @@ export function mountSubmissionMonitor(container,{fetcher}={}){
  refresh.addEventListener('click',()=>load('status'));
  scan.addEventListener('click',()=>load('scan'));
  return {update(next){
-  const changed=!scope||scope.date!==next.date||scope.classKey!==next.classKey;
+  // Becoming ready for the same lesson (agenda finished loading) also counts
+  // as a change, so the teacher never has to press Refresh after Load lesson.
+  const changed=!scope||scope.date!==next.date||scope.classKey!==next.classKey||(!scope.ready&&next.ready);
   scope=next;
   if(next.ready&&changed)load('status');
   if(!next.ready){generation++;state.textContent='Load a lesson to see its monitoring state.';status.replaceChildren();refresh.disabled=scan.disabled=true;}
