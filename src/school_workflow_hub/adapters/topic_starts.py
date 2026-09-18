@@ -13,7 +13,7 @@ from .dated_agenda import grid, source_date, value
 from .hosted_agenda import authenticated_reader, ConnectionError
 from ..core.cloud_state import CloudState, Conflict, key
 from ..workflows.topic_deadline import (
-    derive_deadline, detect_declarations, parse_week_calendar,
+    _EXCEPTION, derive_deadline, detect_declarations, parse_week_calendar,
 )
 
 START_VERSION = "hub-topic-start/v1"
@@ -116,7 +116,11 @@ def deadline_status(assertion, scope, config, store, calendar=None):
                 "basis": "no_topic_start_recorded", "meetings": [], "provisional": False,
                 "conflicts": [], "exception": None,
                 "ic_alignment": "calculated_not_verified_in_ic"}
-    exceptions = state.get("exceptions") or []
+    # Re-validate stored excerpts against the current detector, so an entry a
+    # looser earlier rule recorded from routine lesson text stops applying
+    # without deleting the stored evidence.
+    exceptions = [e for e in (state.get("exceptions") or [])
+                  if _EXCEPTION.search(e.get("excerpt") or "")]
     exception = sorted(exceptions, key=lambda e: e["recorded_at"])[-1]["date"] if exceptions else None
     calendar = calendar if calendar is not None else read_week_calendar(assertion, config)
     derived = derive_deadline(scope["class_key"], state["start"]["date"], calendar,

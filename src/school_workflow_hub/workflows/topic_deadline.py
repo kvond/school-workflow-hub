@@ -25,8 +25,10 @@ _TODAY_START = re.compile(r"\bstart(?:ing|ed)?\b[^\n.;]{0,40}\btoday\b", re.IGNO
 _INTENTION = re.compile(
     r"\b(?:plan(?:ning)?\s+to|will|going\s+to|hope\s+to|want\s+to|next\s+(?:class|week|time)|tomorrow)\b"
     r"[^\n.;]{0,40}\bstart", re.IGNORECASE)
+# Routine lesson text says "due <date>" all the time; only the teacher's own
+# word "deadline" next to a date declares an explicit deadline exception.
 _EXCEPTION = re.compile(
-    r"\b(?:deadline|due)\b[^\n.;]{0,40}?\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)",
+    r"\bdeadline\b[^\n.;]{0,40}?\b(\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)",
     re.IGNORECASE)
 
 
