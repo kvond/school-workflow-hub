@@ -203,6 +203,40 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond("503 Service Unavailable", {"error": "assessment_save_unavailable"})
 
+    if path == "/api/assessment-run":
+        from .adapters import assessment_provider
+        from .adapters.hosted_agenda import ConnectionError
+        import re as _re
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if method == "GET":
+                if environ.get("QUERY_STRING", ""):
+                    raise ValueError("invalid_provider_request")
+                return respond("200 OK", assessment_provider.status(assertion, os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "save_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 100000:
+                raise ValueError("invalid_provider_request")
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", assessment_provider.draft(assertion, payload, os.environ))
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable", {"error": str(error)})
+        except (ValueError, KeyError, TypeError, OverflowError) as error:
+            code = str(error)
+            if not _re.fullmatch(r"[a-z0-9_]{1,64}", code):
+                code = "invalid_provider_request"
+            return respond("400 Bad Request", {"error": code})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "provider_unavailable"})
+
     if path == "/api/submission-monitor":
         from .adapters.submission_monitor import read_status, scan_and_persist
         from .adapters.hosted_agenda import ConnectionError
