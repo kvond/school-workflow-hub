@@ -1,0 +1,276 @@
+"""Hosted submission monitoring: bounded Drive scan into durable private state.
+
+The scan reuses the existing lesson-folder reader bounds, matches files only
+through the reviewed grading workbook's own source references, and persists
+observations with the existing cloud task/claim/record model, so reruns with
+unchanged inputs return the stored result instead of new events, concurrent
+workers cannot commit conflicting baselines, and a failed or partial scan
+records a failed attempt without touching the last complete baseline.
+No grades, zeros, schedules or school writes happen here.
+"""
+from datetime import datetime, timezone
+
+from .dated_agenda import read_day
+from .firestore_state import configured_store
+from .grading_records import read_records
+from .hosted_agenda import ConnectionError, service_token
+from .submission_inventory import DriveReader, collect
+from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
+from ..core.runs import content_hash
+from ..workflows.submission_monitor import CLASS_KEYS, advance_state, stream_scope
+
+OWNER = "hosted-submission-monitor"
+ATTEMPT_VERSION = "hub-monitor-attempt/v1"
+STATUS_VERSION = "hub-submission-monitor-status/v1"
+MAX_LISTED = 120
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _lesson(assertion, day, class_key, config):
+    if class_key not in CLASS_KEYS:
+        raise ConnectionError("invalid_submission_scope")
+    agenda = read_day(assertion, day, config)
+    lesson = next((l for l in agenda["lessons"] if l["class_key"] == class_key), None)
+    if lesson is None:
+        raise ConnectionError("submission_lesson_mapping_required")
+    folder = lesson.get("turnin_folder") or ""
+    prefix = "https://drive.google.com/drive/folders/"
+    if not folder.startswith(prefix) or not lesson.get("assignment_label"):
+        raise ConnectionError("submission_lesson_mapping_required")
+    return agenda, lesson, folder[len(prefix):]
+
+
+def _drive_scan(assertion, day, class_key, config):
+    agenda, lesson, folder_id = _lesson(assertion, day, class_key, config)
+    reader = DriveReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", ""),
+                                       "https://www.googleapis.com/auth/drive.metadata.readonly"))
+    course = {"biology": "Biology", "forensics": "Forensics", "anatomy": "Anatomy"}[class_key]
+    root, files, folders, forms = collect(reader, folder_id, course=course, week=agenda["week"])
+    fresh = read_day(assertion, day, config)
+    if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
+        raise ConnectionError("submission_agenda_changed")
+    return {"class_key": class_key, "folder_id": folder_id, "folder_name": root["name"],
+            "assignment_label": lesson["assignment_label"], "date": day,
+            "observed_at": _now(),
+            "coverage": {"complete": True, "folders_checked": folders, "forms_found": forms},
+            "files": [{"id": f["id"], "name": f["name"], "modified_at": f.get("modifiedTime"),
+                       "version": f.get("version")} for f in files]}
+
+
+def _mappings(assertion, class_key, config):
+    records = read_records(assertion, config)
+    by_file, conflicted = {}, set()
+    for row in records.get("submissions", []):
+        file_id = row.get("source_file_id")
+        if row.get("class_key") != class_key or not file_id or not row.get("student_id"):
+            continue
+        marker = row.get("source_snapshot_date") or row.get("checked_date") or ""
+        entry = {"student_id": str(row["student_id"]), "section_id": str(row.get("section_id") or "-"),
+                 "identity_basis": str(row.get("identity_basis") or "workbook")[:64],
+                 "assessed_marker": str(marker)[:40] or "unknown",
+                 "ic_posting_status": str(row.get("ic_posting_status") or "unverified")[:200]}
+        prior = by_file.get(file_id)
+        if prior and prior["student_id"] != entry["student_id"]:
+            # Two students recorded for one file: leave it unmatched for review.
+            conflicted.add(file_id)
+            continue
+        if prior is None or entry["assessed_marker"] >= prior["assessed_marker"]:
+            by_file[file_id] = entry
+    for file_id in conflicted:
+        by_file.pop(file_id, None)
+    return {"source": "grading_workbook", "checked_at": records["checked_at"],
+            "by_file": by_file}
+
+
+def _attempt_id(scope):
+    return key("attempt", scope)
+
+
+def _record_attempt(store, scope, outcome, reason, run_id=None):
+    """Best-effort CAS status pointer; run records keep the real history."""
+    try:
+        attempt_id = _attempt_id(scope)
+        for _ in range(3):
+            snapshot = store.port.read([attempt_id])
+            doc = snapshot.documents[attempt_id]
+            value = dict(doc.value) if doc else {"schema_version": ATTEMPT_VERSION,
+                                                 "scope": dict(scope), "last_success_at": None,
+                                                 "last_run_id": None}
+            value.update(last_attempt_at=snapshot.read_time, outcome=outcome,
+                         reason=reason or None)
+            if outcome == "complete":
+                value.update(last_success_at=snapshot.read_time, last_run_id=run_id)
+            try:
+                store.port.commit({attempt_id: (value, doc.version if doc else None)})
+                return
+            except Conflict:
+                continue
+    except Exception:
+        return
+
+
+def _read_attempt(store, scope):
+    try:
+        doc = store.port.read([_attempt_id(scope)]).documents[_attempt_id(scope)]
+        return dict(doc.value) if doc else None
+    except Exception:
+        return None
+
+
+def _record_ids(task_id, run_id):
+    return {name: key("record", {"task": task_id, "run": run_id, "name": name})
+            for name in ("state", "events")}
+
+
+def _read_run_records(store, task_id, run_id):
+    ids = _record_ids(task_id, run_id)
+    snapshot = store.port.read(list(ids.values()))
+    docs = {name: snapshot.documents[record_id] for name, record_id in ids.items()}
+    if any(doc is None for doc in docs.values()):
+        raise StoreUnavailable("monitor_state_unavailable")
+    return {name: doc.value["payload"] for name, doc in docs.items()}
+
+
+def _previous(store, task):
+    receipt = (task or {}).get("last_result")
+    if not task or not receipt:
+        return None, None
+    records = _read_run_records(store, key("task", task["scope"]), receipt["run_id"])
+    return records, receipt
+
+
+def _summary(state, events, *, unchanged, attempt, schedule):
+    files = state["files"]
+    listed = []
+    for file_id, record in sorted(files.items(), key=lambda kv: kv[1]["name"])[:MAX_LISTED]:
+        match = record.get("match")
+        assessed = bool(match)
+        # ic_status_recorded repeats the workbook's own posting note; it is a
+        # recorded claim, never proof of a verified gradebook readback.
+        listed.append({"file_id": file_id, "name": record["name"], "status": record["status"],
+                       "timing": record["timing"], "modified_at": record["modified_at"],
+                       "first_observed_at": record["first_observed_at"],
+                       "student_id": match["student_id"] if match else None,
+                       "section_id": match["section_id"] if match else None,
+                       "ic_status_recorded": match["ic_posting_status"] if match else None,
+                       "stage": ("assessed" if assessed and file_id not in
+                                 state["awaiting_assessment"] else
+                                 "awaiting_assessment" if assessed or
+                                 file_id in state["awaiting_assessment"] else "detected")})
+    counts = {"present": sum(1 for f in files.values() if f["status"] == "present"),
+              "inaccessible": sum(1 for f in files.values() if f["status"] != "present"),
+              "unmatched": sum(1 for f in files.values()
+                               if not f.get("match") and f["status"] == "present"),
+              "awaiting_assessment": len(state["awaiting_assessment"]),
+              "needs_review": len(state["needs_review"])}
+    return {"schema_version": STATUS_VERSION, "configured": True,
+            "stream": state["stream"], "date": state["date"], "due_date": state["due_date"],
+            "due_basis": state["due_basis"], "observed_at": state["observed_at"],
+            "baseline_established_at": state["baseline_established_at"],
+            "scan_count": state["scan_count"], "coverage": state["coverage"],
+            "roster": state["roster"], "counts": counts, "files": listed,
+            "needs_review": state["needs_review"][:MAX_LISTED],
+            "events_last_scan": events[:MAX_LISTED], "unchanged_rerun": unchanged,
+            "last_attempt": attempt, "automation": schedule,
+            "external_writes": 0, "run_enabled": False}
+
+
+def _schedule(config):
+    cadence = (config.get("HUB_MONITOR_SCHEDULE") or "").strip()
+    return {"active": bool(cadence), "cadence": cadence or None,
+            "basis": "configured_scheduler" if cadence else "manual_scans_only"}
+
+
+def scan_and_persist(assertion, day, class_key, config):
+    """One authenticated scan: complete read or a recorded failed attempt."""
+    store = CloudState(configured_store(config))
+    scope = None
+    try:
+        scan = _drive_scan(assertion, day, class_key, config)
+        scope = stream_scope(class_key, scan["folder_id"])
+        mappings = _mappings(assertion, class_key, config)
+    except ConnectionError as error:
+        if scope is None:
+            try:
+                _, _, folder_id = _lesson(assertion, day, class_key, config)
+                scope = stream_scope(class_key, folder_id)
+            except Exception:
+                scope = None
+        if scope:
+            _record_attempt(store, scope, "failed", str(error))
+        raise
+    task_id = store.create_task(scope)
+    task = store.read_task(task_id)
+    records_prior, receipt_prior = _previous(store, task)
+    previous = records_prior["state"] if records_prior else None
+    baseline = (task or {}).get("baseline") or {}
+    checkpoint = baseline.get("checkpoint_token")
+    fingerprint = content_hash({"files": sorted(
+        (f["id"], f["modified_at"], f.get("version")) for f in scan["files"])})
+    maps_hash = content_hash(_stable_mappings(mappings))
+    if (previous is not None and baseline.get("source_revision") == fingerprint
+            and previous.get("mappings_fingerprint") == maps_hash
+            and previous.get("due_date") == day):
+        # Nothing observable changed: no new run, no new events, no duplicates.
+        _record_attempt(store, scope, "complete", None, receipt_prior["run_id"])
+        return _summary(previous, records_prior["events"], unchanged=True,
+                        attempt=_read_attempt(store, scope), schedule=_schedule(config))
+    input_hash = content_hash({"scope": scope, "checkpoint": checkpoint,
+                               "scan": fingerprint, "due": day, "mappings": maps_hash})
+    claim = store.claim(task_id, owner=OWNER, request_id="scan-" + input_hash[:32],
+                        input_hash=input_hash, ttl_seconds=120)
+    if claim.completed:
+        records = _read_run_records(store, task_id, claim.run_id)
+        _record_attempt(store, scope, "complete", None, claim.run_id)
+        return _summary(records["state"], records["events"], unchanged=True,
+                        attempt=_read_attempt(store, scope), schedule=_schedule(config))
+    try:
+        result = advance_state(previous, scan, mappings=mappings, due_date=day,
+                               as_of=_now())
+        result["state"]["mappings_fingerprint"] = maps_hash
+        baseline = {"scope": "submission-monitor:" + class_key + ":" + scan["folder_id"],
+                    "source_revision": fingerprint, "observed_at": scan["observed_at"],
+                    "fingerprint": result["fingerprint"]}
+        store.finish(claim, records={"state": result["state"], "events": result["events"]},
+                     baseline=baseline, expected_checkpoint=checkpoint, complete_scan=True)
+    except (Busy, Conflict, LeaseLost):
+        _record_attempt(store, scope, "failed", "monitor_scan_conflict")
+        raise
+    except ValueError as error:
+        try:
+            store.release_for_review(claim, "needs_review")
+        except Exception:
+            pass
+        _record_attempt(store, scope, "failed", str(error))
+        raise ConnectionError("monitor_scan_invalid") from None
+    _record_attempt(store, scope, "complete", None, claim.run_id)
+    return _summary(result["state"], result["events"], unchanged=False,
+                    attempt=_read_attempt(store, scope), schedule=_schedule(config))
+
+
+def _stable_mappings(mappings):
+    return {"checked": "", "by_file": {k: [v["student_id"], v["assessed_marker"]]
+                                       for k, v in sorted(mappings["by_file"].items())}}
+
+
+def read_status(assertion, day, class_key, config):
+    """Status read only: never scans, never writes observations."""
+    _, _, folder_id = _lesson(assertion, day, class_key, config)
+    scope = stream_scope(class_key, folder_id)
+    store = CloudState(configured_store(config))
+    task = store.read_task(key("task", scope))
+    attempt = _read_attempt(store, scope)
+    schedule = _schedule(config)
+    if not task or not task.get("last_result"):
+        return {"schema_version": STATUS_VERSION, "configured": True,
+                "stream": {"class_key": class_key, "folder_id": folder_id},
+                "status": "no_complete_scan_recorded", "counts": None, "files": [],
+                "needs_review": [], "events_last_scan": [], "unchanged_rerun": False,
+                "last_attempt": attempt, "automation": schedule,
+                "external_writes": 0, "run_enabled": False}
+    records = _read_run_records(store, key("task", scope), task["last_result"]["run_id"])
+    return _summary(records["state"], records["events"], unchanged=False, attempt=attempt,
+                    schedule=schedule)

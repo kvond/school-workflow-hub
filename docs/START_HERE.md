@@ -13,7 +13,8 @@ workflow.
 3. [Cloud readiness](CLOUD_READINESS.md): latest recorded hosted acceptance and the next one-lesson milestone.
 4. [Capabilities](../config/capabilities.json): code evidence and scoped remaining work.
 5. [Current prompts](AGENDA_PROMPTS.md) and [feedback v2](FEEDBACK_V2.md): authoritative instructions and the accepted report layout.
-6. [Browser run coordination](BROWSER_RUNS.md): the separately authorized browser-assisted roster/grading path when a district IC API is unavailable. It reuses private cloud state and does not turn browser reports into server-verified school results.
+6. [Submission monitoring](SUBMISSION_MONITORING.md): the hosted turn-in folder watcher and its dashboard panel.
+7. [Browser run coordination](BROWSER_RUNS.md): the separately authorized browser-assisted roster/grading path when a district IC API is unavailable. It reuses private cloud state and does not turn browser reports into server-verified school results.
 
 Current Page 2 scope: the teacher authorized supervised posting of the existing
 reviewed workbook grades from a signed-in school Chrome or Edge browser on their
@@ -79,10 +80,13 @@ The Mac Page 2 read/verify/skip/receipt path works and is recorded above; do
 not rework it without fresh evidence. What remains for the broader system, in
 priority order:
 
-1. Submission monitoring across the two-week post-due window: current rosters,
-   detection of new, late and modified submissions, cumulative submission
-   history preserved, individual extensions respected. Failed or partial scans
-   never establish missing work, and nothing is zeroed during the grace period.
+1. Submission monitoring across the two-week post-due window: implemented as
+   the hosted `/api/submission-monitor` endpoint and Page 2 panel (see
+   [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md)); cumulative per-file
+   history, first-observed baselines, conservative late evidence, durable
+   idempotent cloud persistence and synthetic acceptance are in place. Live
+   acceptance still needs the runtime reader's Viewer grant on the submissions
+   folder tree, and a scan schedule remains a separate explicit approval.
 2. Grading the new and modified submissions that monitoring surfaces, using the
    current Agenda prompts for completion, feedback and class summaries, feeding
    the same reviewed-workbook path Page 2 already posts from.

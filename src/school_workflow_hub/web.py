@@ -18,7 +18,7 @@ ASSETS = {
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
         "review-view.mjs", "agenda-connection.mjs", "agenda-editor.mjs", "teaching-results.mjs", "learning-progress.mjs",
         "browser-runs.mjs", "grading-records.mjs", "grade-posting.mjs", "browser-companion.mjs",
-        "control-panel.mjs",
+        "control-panel.mjs", "submission-monitor.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -152,6 +152,53 @@ def application(environ, start_response, *, teaching_provider=None):
             return respond('400 Bad Request', {'error': 'invalid_agenda_save'})
         except Exception:
             return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
+
+    if path == "/api/submission-monitor":
+        from .adapters.submission_monitor import read_status, scan_and_persist
+        from .adapters.hosted_agenda import ConnectionError
+        from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if method == "GET":
+                from urllib.parse import parse_qs
+                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
+                if set(query) != {"date", "class_key"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError()
+                return respond("200 OK", read_status(assertion, query["date"][0],
+                                                     query["class_key"][0], os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            # A scan persists observations, so it needs the same explicit
+            # same-origin JSON gate as the other state-changing endpoints.
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "monitor_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 256:
+                raise ValueError()
+            data = json.loads(environ["wsgi.input"].read(length))
+            if (not isinstance(data, dict) or set(data) != {"action", "date", "class_key"}
+                    or data["action"] != "scan"):
+                raise ValueError()
+            return respond("200 OK", scan_and_persist(assertion, data["date"],
+                                                      data["class_key"], os.environ))
+        except Busy:
+            return respond("409 Conflict", {"error": "monitor_scan_in_progress"})
+        except (Conflict, LeaseLost):
+            return respond("409 Conflict", {"error": "monitor_scan_conflict"})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "monitor_state_unavailable"})
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable",
+                           {"error": str(error), "external_writes": 0})
+        except (ValueError, KeyError, TypeError, OverflowError):
+            return respond("400 Bad Request", {"error": "invalid_monitor_request"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "monitor_unavailable"})
 
     # Remaining endpoints are read-only.
     if method not in ("GET", "HEAD"):
