@@ -48,10 +48,16 @@ def _text(value, limit, *, required=False, multiline=False):
     return value
 
 
+def _question_id(value):
+    # The teacher's Concept Bank terms are marker ids too ("Trophic level"),
+    # so interior spaces are part of the id vocabulary.
+    return (isinstance(value, str) and value == value.strip()
+            and bool(re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", value)))
+
+
 def _ids(value):
     if (not isinstance(value, list) or len(value) > 200
-            or any(not isinstance(q, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", q)
-                   for q in value)
+            or any(not _question_id(q) for q in value)
             or len(set(value)) != len(value)):
         raise ValueError("invalid_assessment_manifest")
     return tuple(value)
@@ -139,7 +145,7 @@ def validate_packet(packet, source_text):
                 or response["explanation_level"] not in EXPLANATION_LEVELS):
             raise ValueError("invalid_assessment_response")
         qid = response["question_id"]
-        if not isinstance(qid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", qid):
+        if not _question_id(qid):
             raise ValueError("invalid_assessment_response")
         if (response["category"], qid) in seen:
             raise ValueError("duplicate_assessment_response")
@@ -182,7 +188,7 @@ def completion(packet):
     assessed = tuple(
         AssessedResponse(category=r["category"], question_id=r["question_id"],
                          judgment=r["judgment"],
-                         evidence_reference=evidence + ":" + r["question_id"],
+                         evidence_reference=evidence + ":" + r["question_id"].replace(" ", "_"),
                          optional=r["optional"])
         for r in packet["responses"])
     result = assess_completion(readiness, assessed, stage=packet["stage"])
