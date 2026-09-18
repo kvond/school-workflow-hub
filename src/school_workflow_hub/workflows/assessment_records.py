@@ -114,15 +114,26 @@ def validate_packet(packet, source_text):
         raise ValueError("invalid_assessment_source")
 
     manifest = packet["manifest"]
-    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_KEYS:
+    if (not isinstance(manifest, dict) or not MANIFEST_KEYS <= set(manifest)
+            or not set(manifest) <= MANIFEST_KEYS | {"inventory_basis",
+                                                     "reconciliation_note"}):
         raise ValueError("invalid_assessment_manifest")
     inventory = _text(manifest["inventory_line"], 300, required=True)
     version_label = _text(manifest["version_label"], 160, required=True)
     if not inventory.startswith("[[MARKER-INVENTORY:"):
         raise ValueError("invalid_assessment_manifest")
+    if manifest.get("inventory_basis") == "marker_census":
+        # A reconciled manifest is never trusted from the packet: the census is
+        # recomputed from this capture and must match exactly, and the
+        # documented reconciliation note travels with the record.
+        _text(manifest.get("reconciliation_note", ""), 400, required=True)
+        observed = census_manifest(source_text)
+        if any(list(manifest[key]) != observed[key] for key in
+               ("notes_ids", "bank_ids", "draft_ids", "optional_ids")):
+            raise ValueError("assessment_manifest_not_in_source")
     # The inventory line and version label bind the packet to the distributed
     # version actually present in this capture, not a remembered one.
-    if inventory not in source_text or version_label not in source_text:
+    elif inventory not in source_text or version_label not in source_text:
         raise ValueError("assessment_manifest_not_in_source")
     required = {"NOTES": _ids(manifest["notes_ids"]), "BANK": _ids(manifest["bank_ids"]),
                 "DRAFT": _ids(manifest["draft_ids"])}
@@ -217,6 +228,43 @@ def record_id(packet):
 
 MANIFEST_SECTIONS = {"NOTES_IDS": "notes_ids", "DRAFT_IDS": "draft_ids",
                      "OPTIONAL_IDS": "optional_ids", "BANK_IDS": "bank_ids"}
+_MARKER = re.compile(r"\[\[(NOTES|BANK|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:"
+                     r"([A-Za-z0-9 _-]{1,80})\]\]")
+
+
+def census_manifest(source_text):
+    """The teacher's manual-reconciliation fallback: requirements read from the
+    deck's own marker fields when no manifest header was ever distributed.
+
+    Every id comes from a literal marker tag in this capture (duplicates
+    counted once and noted); a category with no markers has a zero denominator,
+    which the completion policy reports as N/A — absence of BANK markers in the
+    student's distributed version is template evidence here, never a penalty
+    and never an assumption that BANK work is missing elsewhere.
+    """
+    seen = {"NOTES": [], "BANK": [], "DRAFT": [], "OPTIONAL": []}
+    duplicates = 0
+    for match in _MARKER.finditer(source_text):
+        category, qid = match.group(1), match.group(2).strip()
+        if not _question_id(qid):
+            continue
+        if qid in seen[category]:
+            duplicates += 1
+            continue
+        seen[category].append(qid)
+    if not any(seen.values()):
+        raise ValueError("assessment_manifest_missing")
+    note = ("No manifest header in this deck (pre-manifest distributed version); "
+            "requirements taken from its own observed marker fields per the "
+            "manual-reconciliation rule: "
+            + ", ".join(str(len(seen[c])) + " " + c for c in CATEGORIES)
+            + ((", " + str(duplicates) + " duplicated marker(s) counted once")
+               if duplicates else "") + ".")
+    return {"inventory_line": "[[MARKER-INVENTORY:census]]",
+            "version_label": "census-of-observed-markers",
+            "inventory_basis": "marker_census", "reconciliation_note": note[:400],
+            "notes_ids": seen["NOTES"], "bank_ids": seen["BANK"],
+            "draft_ids": seen["DRAFT"], "optional_ids": seen["OPTIONAL"]}
 
 
 def derive_manifest(source_text):
@@ -224,15 +272,15 @@ def derive_manifest(source_text):
 
     The header is the teacher's distributed contract: the marker-inventory tag,
     a VERSION label, per-category counts, and one id per line under each
-    section. A deck without the header (an older or self-modified version)
-    raises assessment_manifest_missing and stays a manual-reconciliation case;
-    a header whose lists disagree with its own counts is never guessed at.
+    section. A deck without the header falls back to the teacher's documented
+    census reconciliation over the deck's own marker fields; a header whose
+    lists disagree with its own counts is never guessed at.
     """
     if not isinstance(source_text, str) or not source_text:
         raise ValueError("invalid_assessment_source")
     inventory = re.search(r"\[\[MARKER-INVENTORY:[A-Za-z0-9_-]{1,40}\]\]", source_text)
     if not inventory:
-        raise ValueError("assessment_manifest_missing")
+        return census_manifest(source_text)
     lines = [line.strip() for line in
              source_text[inventory.start():inventory.start() + 4000].splitlines()]
     version = next((line for line in lines if line.startswith("VERSION=")), "")
@@ -262,6 +310,7 @@ def derive_manifest(source_text):
     if not version or len(version) > 160:
         raise ValueError("assessment_manifest_unparsed")
     return {"inventory_line": inventory.group(0), "version_label": version,
+            "inventory_basis": "deck_header",
             "notes_ids": sections["notes_ids"], "bank_ids": sections["bank_ids"],
             "draft_ids": sections["draft_ids"],
             "optional_ids": sections["optional_ids"]}
@@ -309,7 +358,9 @@ def build_rows(packet, result, capture, *, now, prior_score_exact="", prior_hold
         "source_snapshot_date": capture["captured_at"][:10],
         "status": "assessed", "assessment_stage": packet["stage"],
         "assessment_version": ASSESSMENT_VERSION,
-        "reconciliation_basis": packet["stage_reference"],
+        "reconciliation_basis": (packet["stage_reference"]
+                                 + ((" | " + packet["manifest"]["reconciliation_note"])
+                                    if packet["manifest"].get("reconciliation_note") else "")),
         "content_score": content["value"], "content_score_exact": content["exact_value"] or "",
         "content_points_possible": str(content["out_of"]),
         "revision_score": revision["value"],
