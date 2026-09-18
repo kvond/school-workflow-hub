@@ -24,6 +24,8 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(provider.configured({}))
         self.assertFalse(provider.configured({"HUB_ANTHROPIC_API_KEY": "wrong"}))
         self.assertTrue(provider.configured(CONFIG))
+        pasted = {"HUB_ANTHROPIC_API_KEY": CONFIG["HUB_ANTHROPIC_API_KEY"] + "\n"}
+        self.assertTrue(provider.configured(pasted))
 
     def test_draft_builds_a_validated_packet_with_python_arithmetic(self):
         base = packet()
