@@ -67,9 +67,19 @@ def _drive_scan(assertion, day, class_key, config):
 def _mappings(assertion, class_key, config):
     records = read_records(assertion, config)
     by_file, conflicted = {}, set()
+    import re as _re
     for row in records.get("submissions", []):
         file_id = row.get("source_file_id")
-        if row.get("class_key") != class_key or not file_id or not row.get("student_id"):
+        # Identity for monitoring display: the IC student number when the row
+        # has one, else an opaque prefix of the reviewed roster learner key.
+        # Roster-matched assessments are real assessments; the panel must not
+        # keep showing their files as awaiting.
+        identity = str(row.get("student_id") or "")
+        if not identity and row.get("status") in {"assessed", "roster_matched"}:
+            learner = str(row.get("learner_key") or "")
+            if _re.fullmatch(r"roster:[a-f0-9]{8,64}", learner):
+                identity = "roster:" + learner[7:23]
+        if row.get("class_key") != class_key or not file_id or not identity:
             continue
         # Bind the assessment to the strongest revision evidence the workbook
         # offers: a full check timestamp beats a date, and a bare date can never
@@ -83,7 +93,7 @@ def _mappings(assertion, class_key, config):
             day_marker = str(row.get("source_snapshot_date") or row.get("checked_date") or "")
             if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_marker):
                 marker, precision = day_marker, "date"
-        entry = {"student_id": str(row["student_id"]), "section_id": str(row.get("section_id") or "-"),
+        entry = {"student_id": identity, "section_id": str(row.get("section_id") or "-"),
                  "identity_basis": str(row.get("identity_basis") or "workbook")[:64],
                  "assessed_marker": (marker or "unknown")[:40],
                  "marker_precision": precision,

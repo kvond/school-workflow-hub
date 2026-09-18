@@ -20,7 +20,7 @@ from school_workflow_hub.workflows.due_completion import boundaries, timestamp
 VERSION = "hub-submission-monitor/v1"
 # Bump when derivation logic changes so stored state is recomputed from the
 # retained evidence instead of an unchanged rerun replaying obsolete output.
-DERIVATION_VERSION = 2
+DERIVATION_VERSION = 3
 CLASS_KEYS = {"biology", "forensics", "anatomy"}
 TIMEZONE_NAME = "America/New_York"
 MAX_FILES = 500

@@ -253,3 +253,34 @@ class EndpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MappingIdentityTests(unittest.TestCase):
+    def test_roster_learner_rows_map_files_and_held_rows_do_not(self):
+        rows = [
+            {"class_key": "biology", "source_file_id": FILE_A, "student_id": "90522",
+             "learner_key": "roster:" + "a" * 64, "status": "assessed",
+             "section_id": "26716", "identity_basis": "ic", "checked_at": "2026-09-15T12:00:00+00:00",
+             "ic_posting_status": "unposted"},
+            {"class_key": "biology", "source_file_id": FILE_B, "student_id": "",
+             "learner_key": "roster:" + "b" * 64, "status": "assessed",
+             "section_id": "26716", "identity_basis": "roster", "checked_at": "2026-09-15T12:00:00+00:00",
+             "ic_posting_status": "unposted"},
+            {"class_key": "biology", "source_file_id": "c" * 24, "student_id": "",
+             "learner_key": "roster:" + "c" * 64, "status": "identity_unverified",
+             "section_id": "", "identity_basis": "held", "checked_at": "",
+             "ic_posting_status": ""},
+        ]
+        with patch.object(hosted, "read_records", lambda assertion, config: {
+                "submissions": rows, "checked_at": "2026-09-15T12:00:00+00:00"}):
+            result = hosted._mappings(None, "biology", {})
+        self.assertEqual(result["by_file"][FILE_A]["student_id"], "90522")
+        roster = result["by_file"][FILE_B]
+        self.assertEqual(roster["student_id"], "roster:" + "b" * 16)
+        self.assertEqual(roster["marker_precision"], "timestamp")
+        self.assertNotIn("c" * 24, result["by_file"])
+        # The stable fingerprint sees the roster identity, so a newly assessed
+        # roster student changes the scan input and triggers a recompute.
+        from school_workflow_hub.adapters.submission_monitor import _stable_mappings
+        self.assertIn("roster:" + "b" * 16,
+                      json.dumps(_stable_mappings(result)))
