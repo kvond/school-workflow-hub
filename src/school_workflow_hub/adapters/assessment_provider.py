@@ -60,9 +60,14 @@ Return ONLY one JSON object, no prose, of this shape:
 """
 
 
+def _key(config):
+    # Console-pasted secrets often carry a trailing newline; a key never
+    # contains whitespace, so stripping cannot corrupt a real one.
+    return (config.get("HUB_ANTHROPIC_API_KEY") or "").strip()
+
+
 def configured(config):
-    return bool(re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{20,200}",
-                             config.get("HUB_ANTHROPIC_API_KEY", "")))
+    return bool(re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{20,200}", _key(config)))
 
 
 def model_name(config):
@@ -100,7 +105,7 @@ def _call(config, system, user):
             session.trust_env = False
             response = session.post(API_URL, json=body, timeout=(5, 240),
                                     allow_redirects=False, headers={
-                                        "x-api-key": config["HUB_ANTHROPIC_API_KEY"],
+                                        "x-api-key": _key(config),
                                         "anthropic-version": API_VERSION})
     except Exception:
         raise ConnectionError("provider_unavailable") from None
