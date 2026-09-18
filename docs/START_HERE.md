@@ -1,5 +1,34 @@
 # Shared entry point for the School Workflow Hub
 
+## Assessment workflow status as of September 18, 2026
+
+Dashboard-operated grading is live (PRs #14–#22, service revision from commit
+on `main`). From Page 2 the teacher can: **Load lesson → Generate feedback for
+this submission / Generate pending feedback for this lesson → review the draft
+(judgments, levels, evidence quotes, report) → Save reviewed assessment to the
+workbook → reopen via View work & feedback → Print feedback**.
+
+- `/api/assessment-save`: capture-bound saves (fresh export + content hash;
+  evidence excerpts must be literal substrings; Python-only arithmetic;
+  supersede + strict readback). Four A4 Biology Cycle 02 submissions are
+  assessed and saved; one (a pre-redraft deck without the manifest header) is
+  held for manual reconciliation, never treated as missing.
+- `/api/assessment-run`: Anthropic drafting on the Cloud Run identity —
+  workspace **School Workflow Hub**, model `claude-sonnet-5`, key in Secret
+  Manager `hub-anthropic-api-key` bound as `HUB_ANTHROPIC_API_KEY` (never in
+  the repo or logs). Live Agenda prompts are read at draft time (stale-prompt
+  refusal). Billing guards, all live-verified: already-assessed unchanged
+  content and stored drafts never re-bill; drafts persist server-side per
+  content hash and survive refreshes; a claim serializes duplicates. Budget:
+  $5/month workspace hard limit; teacher-approved $5 total pilot budget;
+  **$0 spent so far** (no eligible pending submission has needed a call yet).
+- Everything server-side runs under the runtime service account: no local
+  AI-to-Drive connector is in the assessment path; a school laptop only needs
+  the IAP dashboard sign-in. Panel messages distinguish dashboard sign-in
+  failures from server-side Drive access failures.
+- IC handoff: saved rows flow into the existing Page 2 posting review
+  unchanged (verified listing all new records); no grade has been posted.
+
 Updated September 17, 2026. This private repository is the canonical code and
 handoff location for authorized agents. Keep deterministic workflow logic here
 and school data in the approved private runtime. Continue the existing Agenda
