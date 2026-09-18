@@ -49,6 +49,28 @@ Rules that are not negotiable:
 - Cover every required item exactly once; include an optional item only if the
   student attempted it.
 
+Initial and revised answers:
+- Where a question has both an Initial and a Revision box, they are separate
+  labeled fields for the same question id: the NOTES item is the initial box
+  and the DRAFT item is the revised box. Pair them by the question id and the
+  labels near the boxes (for example "01 / Your First Answer", "02 / Your
+  Revised Answer", "Your revised answer"), never by the order text happens to
+  appear in the export.
+- Bind every quotation to the correct labeled field. A quote that exists
+  somewhere else in the document is not evidence for this field.
+- A blank Initial box never cancels credit for a meaningful Revision, and a
+  written Revision never back-fills a blank Initial.
+- Compare the two answers only as written; never invent timing or improvement.
+
+Judgment evidence standards:
+- Never infer AI authorship or copying from writing style, vocabulary or
+  polish. printed_copy requires concrete evidence in the text itself: a
+  near-verbatim match of provided course material, a citation artifact, or
+  pasted coaching/template output sitting where the student's own words
+  belong.
+- Ambiguous or unreadable evidence is the "review" judgment, never a guessed
+  blank or meaningful_attempt.
+
 Return ONLY one JSON object, no prose, of this shape:
 {"responses": [{"question_id": str, "category": "NOTES"|"BANK"|"DRAFT",
   "judgment": str, "response_excerpt": str, "evidence_note": str (<=400 chars,
@@ -91,13 +113,24 @@ def status(assertion, config):
             "external_writes": 0}
 
 
-def _teacher_prompts():
+def _teacher_prompts(assertion, config):
+    """The CURRENT authoritative Agenda instructions, read live at draft time.
+
+    The live read also compares against the packaged copy; a mismatch is fine
+    (the live text wins and its hashes travel with the draft), but a failed
+    live read refuses the draft rather than silently grading on a stale copy.
+    """
+    from .agenda_prompts import read_prompts
     try:
-        from ..web import ASSET_ROOT
-        data = json.loads((ASSET_ROOT / "teacher-prompts.json").read_text("utf-8"))
-        return data["prompts"]["completion"], data["prompts"]["feedback"]
+        live = read_prompts(assertion, config)
+    except ConnectionError:
+        raise
     except Exception:
         raise ConnectionError("provider_prompts_unavailable") from None
+    return (live["prompts"]["completion"], live["prompts"]["feedback"],
+            {"version_label": live.get("version_label", ""),
+             "sha256": live.get("sha256", {}),
+             "bundled_matches": live.get("bundled_matches", {})})
 
 
 def _call(config, system, user):
@@ -160,15 +193,32 @@ def _prior_row(assertion, config, file_id, class_key):
     return rows[-1] if rows else None
 
 
-def _filled_identity(request_identity, prior):
+def _filled_identity(request_identity, prior, *, class_key, section_id):
     """Teacher-entered fields win; blanks fill from the file's newest workbook
-    row, so a re-assessment keeps identity continuity without retyping."""
+    row. A teacher-confirmed name with no IC number gets a derived roster
+    learner key here on the server — the teacher never types seeds or keys,
+    and the basis records that the key is a bookkeeping identity, not proof."""
+    import hashlib
     identity = {key: str(request_identity.get(key) or "")
                 for key in ("student_id", "student_id_kind", "learner_key",
                             "display_name", "identity_basis")}
     if prior:
         for key in identity:
             identity[key] = identity[key] or str(prior.get(key) or "")
+    if not identity["student_id_kind"]:
+        identity["student_id_kind"] = ("local_student_number"
+                                       if identity["student_id"] else "roster_match")
+    if (not identity["student_id"] and not identity["learner_key"]
+            and identity["display_name"]):
+        seed = ("roster|" + class_key + "|" + section_id + "|"
+                + " ".join(identity["display_name"].lower().split()))
+        identity["learner_key"] = "roster:" + hashlib.sha256(
+            seed.encode("utf-8")).hexdigest()
+        note = ("Teacher-confirmed name match recorded from the dashboard; "
+                "learner key derived from class, section and confirmed name — "
+                "a bookkeeping identity, not an IC-verified number.")
+        identity["identity_basis"] = ((identity["identity_basis"] + " ")
+                                      if identity["identity_basis"] else "") + note
     return identity
 
 
@@ -182,8 +232,68 @@ def _comparison(prior, sha):
             + (prior.get("content_score_exact") or "n/a") + "); " + sameness + ".")[:300]
 
 
+def _draft_doc_id(file_id, sha):
+    from ..core.cloud_state import key
+    return key("draftpkt", {"file": file_id, "sha": sha})
+
+
+def _stored_draft(store, file_id, sha):
+    doc_id = _draft_doc_id(file_id, sha)
+    doc = store.port.read([doc_id]).documents[doc_id]
+    return dict(doc.value) if doc else None
+
+
+def _store_draft(store, file_id, sha, payload):
+    """Best-effort CAS persist so a paid draft survives page refreshes; a
+    concurrent identical draft keeps whichever landed first."""
+    from ..core.cloud_state import Conflict
+    doc_id = _draft_doc_id(file_id, sha)
+    try:
+        store.port.commit({doc_id: (payload, None)})
+    except Conflict:
+        pass
+    except Exception:
+        pass
+
+
+def _draft_reply(stored, *, cached):
+    packet = stored["packet"]
+    scores = assessment_records.completion(packet)
+    return {"schema_version": "hub-assessment-provider/v1", "status": "draft_ready",
+            "cached": cached, "packet": packet, "scores": scores["scores"],
+            "counts": scores["counts"],
+            "record_id": assessment_records.record_id(packet),
+            "source": dict(packet["source"]),
+            "prompts": stored.get("prompts") or {},
+            "usage": stored.get("usage") or {}, "drafted_at": stored.get("drafted_at"),
+            "external_writes": 0}
+
+
+def stored_draft_for(assertion, file_id, config):
+    """Recover the persisted draft for the file's CURRENT content, if any."""
+    from .firestore_state import configured_store
+    from ..core.cloud_state import CloudState
+    capture = assessment_save.capture(assertion, file_id, config)
+    store = CloudState(configured_store(config))
+    stored = _stored_draft(store, file_id, capture["sha256"])
+    if stored is None:
+        return {"schema_version": "hub-assessment-provider/v1", "status": "no_draft",
+                "source": {"file_id": file_id, "sha256": capture["sha256"],
+                           "modified_at": capture["file"]["modified_at"]},
+                "external_writes": 0}
+    return _draft_reply(stored, cached=True)
+
+
 def draft(assertion, request, config):
-    """One drafted packet for review; no storage, no school writes."""
+    """One drafted packet for review; nothing is graded, posted or saved.
+
+    Billing guards: an assessed row for this exact content returns
+    already_assessed with no model call; a persisted draft for this exact
+    content is returned as-is with no model call; a claim stops concurrent
+    duplicate calls for the same content.
+    """
+    from .firestore_state import configured_store
+    from ..core.cloud_state import Busy, CloudState
     audience, allowed = _identity_configuration(config)
     authorize(assertion, audience, allowed)
     if not configured(config):
@@ -192,45 +302,82 @@ def draft(assertion, request, config):
             or not isinstance(request.get("identity"), dict)):
         raise ValueError("invalid_provider_request")
     capture = assessment_save.capture(assertion, request["file_id"], config)
-    completion_prompt, feedback_prompt = _teacher_prompts()
+    sha = capture["sha256"]
     # The distributed requirement comes from the deck's own manifest header,
     # never from the browser; a headerless deck stays a manual case.
     manifest = assessment_records.derive_manifest(capture["text"])
+    store = CloudState(configured_store(config))
+    stored = _stored_draft(store, request["file_id"], sha)
+    if stored is not None:
+        return _draft_reply(stored, cached=True)
     prior = _prior_row(assertion, config, request["file_id"], request["class_key"])
-    identity = _filled_identity(request["identity"], prior)
+    if (prior and prior.get("status") == "assessed"
+            and prior.get("source_sha256") == sha
+            and prior.get("assessment_stage") == request["stage"]):
+        return {"schema_version": "hub-assessment-provider/v1",
+                "status": "already_assessed", "record_id": prior.get("record_id"),
+                "checked_at": prior.get("checked_at"),
+                "source": {"file_id": request["file_id"], "sha256": sha,
+                           "modified_at": capture["file"]["modified_at"]},
+                "external_writes": 0}
+    identity = _filled_identity(request["identity"], prior,
+                                class_key=request["class_key"],
+                                section_id=request["section_id"])
+    completion_prompt, feedback_prompt, prompt_meta = _teacher_prompts(assertion, config)
+    task = store.create_task({"workflow": "assessment-draft",
+                              "class_key": request["class_key"],
+                              "assignment_key": sha[:40]})
+    from ..core.runs import content_hash
+    claim = store.claim(task, owner="draft", request_id="draft-" + sha[:32],
+                        input_hash=content_hash({"file": request["file_id"],
+                                                 "sha": sha,
+                                                 "stage": request["stage"]}),
+                        ttl_seconds=240)
+    if claim.completed:
+        stored = _stored_draft(store, request["file_id"], sha)
+        if stored is not None:
+            return _draft_reply(stored, cached=True)
     user = ("TEACHER COMPLETION INSTRUCTIONS:\n" + completion_prompt
             + "\n\nTEACHER FEEDBACK INSTRUCTIONS:\n" + feedback_prompt
             + "\n\nDISTRIBUTED MANIFEST (required items):\n"
             + json.dumps(manifest, sort_keys=True)
             + "\n\nASSESSMENT STAGE: " + str(request["stage"])
             + "\n\nSTUDENT SUBMISSION TEXT (verbatim export):\n" + capture["text"])
-    text, usage = _call(config, SYSTEM, user)
-    result = _extract_json(text)
-    packet = {"schema_version": assessment_records.PACKET_VERSION,
-              "class_key": request["class_key"], "section_id": request["section_id"],
-              "section_name": request["section_name"],
-              "assignment_key": request["assignment_key"], "stage": request["stage"],
-              "stage_reference": request["stage_reference"],
-              "identity": identity,
-              "source": {"file_id": capture["file"]["id"],
-                         "url": "https://docs.google.com/presentation/d/"
-                                + capture["file"]["id"] + "/edit",
-                         "modified_at": capture["file"]["modified_at"],
-                         "version": capture["file"]["version"],
-                         "sha256": capture["sha256"]},
-              "manifest": manifest, "responses": result["responses"],
-              "feedback": result["feedback"],
-              "comparison_status": _comparison(prior, capture["sha256"]),
-              "ic_assignment_id": str((prior or {}).get("ic_assignment_id") or "")}
-    # The same validator the save path uses; a draft that fails here is
-    # reported, never repaired silently and never stored.
-    assessment_records.validate_packet(packet, capture["text"])
-    scores = assessment_records.completion(packet)
-    return {"schema_version": "hub-assessment-provider/v1", "status": "draft_ready",
-            "packet": packet, "scores": scores["scores"], "counts": scores["counts"],
-            "record_id": assessment_records.record_id(packet),
-            "source": {"file_id": capture["file"]["id"],
-                       "modified_at": capture["file"]["modified_at"],
-                       "version": capture["file"]["version"],
-                       "sha256": capture["sha256"]},
-            "usage": usage, "external_writes": 0}
+    try:
+        text, usage = _call(config, SYSTEM, user)
+        result = _extract_json(text)
+        packet = {"schema_version": assessment_records.PACKET_VERSION,
+                  "class_key": request["class_key"], "section_id": request["section_id"],
+                  "section_name": request["section_name"],
+                  "assignment_key": request["assignment_key"], "stage": request["stage"],
+                  "stage_reference": request["stage_reference"],
+                  "identity": identity,
+                  "source": {"file_id": capture["file"]["id"],
+                             "url": "https://docs.google.com/presentation/d/"
+                                    + capture["file"]["id"] + "/edit",
+                             "modified_at": capture["file"]["modified_at"],
+                             "version": capture["file"]["version"],
+                             "sha256": sha},
+                  "manifest": manifest, "responses": result["responses"],
+                  "feedback": result["feedback"],
+                  "comparison_status": _comparison(prior, sha),
+                  "ic_assignment_id": str((prior or {}).get("ic_assignment_id") or "")}
+        # The same validator the save path uses; a draft that fails here is
+        # reported, never repaired silently and never stored.
+        assessment_records.validate_packet(packet, capture["text"])
+        stored = {"schema_version": "hub-assessment-draft/v1", "packet": packet,
+                  "usage": usage, "prompts": prompt_meta,
+                  "drafted_at": assessment_save._now()}
+        _store_draft(store, request["file_id"], sha, stored)
+        store.finish(claim, records={"receipt": {"file": request["file_id"],
+                                                 "sha256": sha,
+                                                 "drafted_at": stored["drafted_at"]}})
+        return _draft_reply(stored, cached=False)
+    except Busy:
+        raise
+    except Exception:
+        try:
+            store.release_for_review(claim, "draft_failed")
+        except Exception:
+            pass
+        raise

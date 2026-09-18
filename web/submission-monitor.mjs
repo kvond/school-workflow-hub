@@ -115,7 +115,7 @@ export function mountSubmissionMonitor(container,{fetcher,onFiles}={}){
    if(mine!==generation)return;
    if(!response.ok)throw Error(describeFailure(data.error));
    renderStatus(status,validateStatus(data));
-   onFiles?.(Array.isArray(data.files)?data.files:[]);
+   onFiles?.(Array.isArray(data.files)?data.files:[],data.deadline||null);
    state.textContent=kind==='scan'?(data.unchanged_rerun?'Scan complete: nothing changed since the last scan; no duplicate events were created.':'Scan complete and saved.'):'Stored monitoring state loaded. Refresh never starts a scan.';
   }catch(error){if(mine===generation)state.textContent=error.message||'Monitoring is unavailable.';}
   finally{if(mine===generation){refresh.disabled=scan.disabled=false;}}

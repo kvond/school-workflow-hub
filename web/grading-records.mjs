@@ -52,7 +52,10 @@ export function renderRecords(root,state,{classKey,sectionId='matched'}){
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));
   const cell=node(root,'td');line(cell,label(row.status));const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
   if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,'Excluded from class counts until identity and current submission are resolved.','hint');
-  if(row.feedback)line(details,row.feedback,'student-feedback-text');link(details,'Open submitted work ↗',row.source_url);
+  if(row.feedback){line(details,row.feedback,'student-feedback-text');
+   const print=node(details,'button','Print feedback');print.type='button';print.className='print-feedback-button';
+   print.addEventListener('click',()=>printFeedback(row));details.append(print);}
+  link(details,'Open submitted work ↗',row.source_url);
   if(!row.hold_reason&&!['identity_unverified','superseded'].includes(row.status)){
    if(row.content_score_exact&&Number.isFinite(row.content_score))line(details,`Content calculation: ${row.content_score_exact} points. Score display rounded to two decimals.`,'hint');
    if(row.revision_score_exact&&Number.isFinite(row.revision_score))line(details,`Revision calculation: ${row.revision_score_exact} points. Score display rounded to two decimals.`,'hint');
@@ -64,6 +67,26 @@ export function renderRecords(root,state,{classKey,sectionId='matched'}){
  }
  table.append(body);const wrap=node(root,'div');wrap.className='work-table-wrap';wrap.append(table);root.append(wrap);
 }
+// A print-only sheet of the student-facing report: scores, the report text and
+// a written-reflection space. Teacher-only evidence notes never print.
+export function printFeedback(row){
+ const doc=document;
+ doc.querySelector('.print-sheet')?.remove();
+ const sheet=node(doc.body,'div');sheet.className='print-sheet';
+ sheet.append(node(doc.body,'h1',(row.display_name||'Student')+' · '+row.assignment_title));
+ const meta=node(doc.body,'p',(row.section_name||'')+' · Feedback prepared '+time(row.checked_at));meta.className='hint';sheet.append(meta);
+ sheet.append(node(doc.body,'p','Content / notes: '+score(row,'content_score')+'    Revision: '+score(row,'revision_score')));
+ const report=node(doc.body,'div');report.className='student-feedback-text';report.textContent=row.feedback||'';sheet.append(report);
+ sheet.append(node(doc.body,'h2','My reflection'));
+ sheet.append(node(doc.body,'p','What is one thing this feedback tells you to do next, in your own words?'));
+ for(let i=0;i<6;i++){const ruled=node(doc.body,'div');ruled.className='reflection-line';sheet.append(ruled);}
+ doc.body.classList.add('print-feedback-active');
+ const done=()=>{doc.body.classList.remove('print-feedback-active');sheet.remove();window.removeEventListener('afterprint',done);};
+ window.addEventListener('afterprint',done);
+ window.print();
+ setTimeout(done,60000);
+}
+
 export function renderSummaries(root,state){
  root.replaceChildren();if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading class summaries…':'Refresh to load class summaries.'));return;}
  const summaries=state.data.summaries;
