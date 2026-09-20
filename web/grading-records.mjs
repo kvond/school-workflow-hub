@@ -41,6 +41,22 @@ function line(root,text,cls){const p=node(root,'p',text);if(cls)p.className=cls;
 function link(root,label,url){if(!safeLink(url)||!String(url).startsWith('https://'))return;const a=node(root,'a',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';a.className='source-link';root.append(a);}
 function time(value){const date=new Date(value);return Number.isNaN(date.valueOf())?'time unavailable':date.toLocaleString();}
 function label(value){return String(value||'Needs review').replaceAll('_',' ');}
+// 'Ada Fictional' -> ['Fictional','Ada']; 'Bo van Fictional' -> ['van Fictional','Bo'].
+// First token is the given name and the rest is the surname, so hyphenated and
+// multi-word surnames survive. A single token is treated as a surname, which is
+// how it sorts. Names are never invented or expanded — an aliased record like
+// 'Daniel P.' keeps its initial rather than gaining a surname it does not have.
+export function splitName(displayName){
+ const parts=String(displayName||'').split(/\s+/).filter(Boolean);
+ if(!parts.length)return ['',''];
+ if(parts.length===1)return [parts[0],''];
+ return [parts.slice(1).join(' '),parts[0]];
+}
+// Surname first, to read against an Infinite Campus gradebook list.
+export function surnameFirst(displayName){
+ const [last,first]=splitName(displayName);
+ return last&&first?last+', '+first:last||first||'';
+}
 export function score(row,key){
  if(row.hold_reason||['identity_unverified','superseded'].includes(row.status)||!Number.isFinite(row[key]))return '—';
  return `${Number(row[key].toFixed(2))} / 10`;
@@ -59,7 +75,8 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
  const table=node(root,'table');table.className='work-table';table.setAttribute('aria-label','Submissions by class and section');const head=node(root,'thead'),hr=node(root,'tr');
  for(const text of ['Student / section','Assignment','Content / notes','Revision','Status / work'])hr.append(node(root,'th',text));head.append(hr);table.append(head);const body=node(root,'tbody');
  for(const row of rows){
-  const tr=node(root,'tr'),student=node(root,'td');student.append(node(root,'strong',row.display_name||'Identity needs matching'));line(student,row.section_name||'Unmatched','hint');tr.append(student);
+  const tr=node(root,'tr'),student=node(root,'td');student.append(node(root,'strong',surnameFirst(row.display_name)||'Identity needs matching'));
+  line(student,(row.section_name||'Unmatched')+(row.student_id?' · IC '+row.student_id:' · no IC number'),'hint');tr.append(student);
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));
   const cell=node(root,'td');line(cell,label(row.status));if(CHECKPOINT[row.assessment_stage])line(cell,CHECKPOINT[row.assessment_stage],'hint');const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
   if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,'Excluded from class counts until identity and current submission are resolved.','hint');

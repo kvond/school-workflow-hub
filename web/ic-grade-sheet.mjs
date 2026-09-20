@@ -8,11 +8,13 @@
 //
 // Blank stays blank. Missing, held, unreadable and not-yet-due work must never
 // reach a gradebook as a zero, so an unscored checkpoint writes no cell at all.
-import {filterRecords, score} from './grading-records.mjs';
+import {filterRecords, score, splitName} from './grading-records.mjs';
 
-export const HEADERS = ['Last name', 'First name', 'Notes score', 'Revision score',
- 'Notes status', 'Revision status', 'IC posting status'];
-const WIDTHS = [20, 16, 12, 14, 16, 17, 18];
+export {splitName};
+
+export const HEADERS = ['Last name', 'First name', 'IC student number',
+ 'Notes score', 'Revision score', 'Notes status', 'Revision status', 'IC posting status'];
+const WIDTHS = [20, 16, 18, 12, 14, 16, 17, 18];
 const READY = 'Ready', REVIEW_NEEDED = 'Review needed', NOT_ASSESSED = 'Not assessed';
 const POSTED = 'Posted', NOT_POSTED = 'Not posted';
 const text = value => typeof value === 'string' ? value : '';
@@ -42,17 +44,6 @@ function columnStatus(rows, value) {
 function postingStatus(rows) {
  return rows.some(row => /^posted\b/.test(text(row.ic_posting_status).trim().toLowerCase())) ? POSTED : NOT_POSTED;
 }
-// 'Ava Martinez' -> ['Martinez','Ava']; 'Katherine von Duyke' -> ['von Duyke','Katherine'].
-// First token is the first name and the rest is the surname, so hyphenated and
-// multi-word surnames survive. A single token is treated as a surname, which is
-// how it should sort. Names are never invented or expanded.
-export function splitName(displayName) {
- const parts = text(displayName).split(/\s+/).filter(Boolean);
- if (!parts.length) return ['', ''];
- if (parts.length === 1) return [parts[0], ''];
- return [parts.slice(1).join(' '), parts[0]];
-}
-
 // One row per student for the selected class/section and lesson. Both score
 // columns are always present, so a Notes-only or Drafts-only view still yields
 // one sheet that covers the whole manual entry.
@@ -67,9 +58,12 @@ export function buildRows(data, classKey, sectionId = 'matched', assignmentKey =
  const rows = [];
  for (const group of students.values()) {
   const [last, first] = splitName(group.find(row => text(row.display_name))?.display_name);
+  // The Infinite Campus Student Number as recorded. Blank means the record has
+  // no IC identity yet — which is a posting gate, not a missing submission.
+  const icNumber = text(group.find(row => text(row.student_id))?.student_id);
   const notes = pickScore(group, 'content_score', 'initial');
   const revision = pickScore(group, 'revision_score', 'final');
-  rows.push([last, first, notes, revision,
+  rows.push([last, first, icNumber, notes, revision,
    columnStatus(group, notes), columnStatus(group, revision), postingStatus(group)]);
  }
  return rows.sort((a, b) => a[0].localeCompare(b[0], undefined, {sensitivity: 'base'})

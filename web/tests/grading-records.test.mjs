@@ -58,8 +58,8 @@ test('unmatched work has a counted option and stays outside default class view',
  assert.deepEqual(filterRecords(data,'biology','').map(r=>r.record_id),['unmatched']);
  assert.equal(filterRecords(data,'biology','all').length,2);
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'biology'});
- assert.match(target.allText,/1 record needs a section match/);assert.doesNotMatch(target.allText,/Unmatched F/);
- renderRecords(target,{status:'loaded',data},{classKey:'biology',sectionId:''});assert.match(target.allText,/Unmatched F/);assert.match(target.allText,/Excluded from class counts/);
+ assert.match(target.allText,/1 record needs a section match/);assert.doesNotMatch(target.allText,/F\., Unmatched/);
+ renderRecords(target,{status:'loaded',data},{classKey:'biology',sectionId:''});assert.match(target.allText,/F\., Unmatched/);assert.match(target.allText,/Excluded from class counts/);
 });
 test('duplicate summary scope and unsupported provenance fail',()=>{
  const data=fixture();data.summaries.push({...data.summaries[0]});assert.throws(()=>validateRecords(data));
@@ -81,7 +81,7 @@ test('private answer text renders literally and identity-held records are visibl
  const data=fixture();data.submissions[1].answers=[{question_id:'q1',stage:'NOTES',response:'<script>fictional</script>',conceptual_level:'Developing',explanation_level:'Names idea'}];
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics'});
  assert.match(target.allText,/1 students with matched submissions/);
- assert.match(target.allText,/Blair F/);assert.match(target.allText,/<script>fictional<\/script>/);
+ assert.match(target.allText,/F\., Blair/);assert.match(target.allText,/<script>fictional<\/script>/);
  assert.match(target.allText,/Excluded from class counts/);assert.doesNotMatch(target.allText,/8 \/ 10/);
 });
 test('failed refresh discards previous private data and does not report missing work',async()=>{

@@ -9,11 +9,11 @@ function fixture() {
   assignments: [{assignment_key: 'BIO-ECO', class_key: 'biology', assignment_title: 'Fictional ecosystems'}],
   submissions: [
    // Both checkpoints for one student: one row per student in the sheet.
-   {record_id: 'r1', class_key: 'biology', section_id: 'a', section_name: 'Period A', student_id: 's1',
+   {record_id: 'r1', class_key: 'biology', section_id: 'a', section_name: 'Period A', student_id: '125935',
     display_name: 'Ada Fictional', assignment_key: 'BIO-ECO', assignment_title: 'Fictional ecosystems',
     assessment_stage: 'initial', status: 'assessed', content_score: 8.25, revision_score: null,
     ic_posting_status: 'posted', answers: [], included_in_counts: true},
-   {record_id: 'r2', class_key: 'biology', section_id: 'a', section_name: 'Period A', student_id: 's1',
+   {record_id: 'r2', class_key: 'biology', section_id: 'a', section_name: 'Period A', student_id: '125935',
     display_name: 'Ada Fictional', assignment_key: 'BIO-ECO', assignment_title: 'Fictional ecosystems',
     assessment_stage: 'final', status: 'assessed', content_score: null, revision_score: 9,
     ic_posting_status: 'posted', answers: [], included_in_counts: true},
@@ -27,7 +27,7 @@ function fixture() {
     assessment_stage: 'initial', status: 'assessed', hold_reason: 'Unreadable upload',
     content_score: 7, revision_score: 7, answers: [], included_in_counts: false},
    // Nothing recorded at either checkpoint.
-   {record_id: 'r5', class_key: 'biology', section_id: 'a', section_name: 'Period A', student_id: 's4',
+   {record_id: 'r5', class_key: 'biology', section_id: 'a', section_name: 'Period A', student_id: '',
     display_name: 'Dee Zeta', assignment_key: 'BIO-ECO', assignment_title: 'Fictional ecosystems',
     assessment_stage: 'initial', status: 'assessed', content_score: null, revision_score: null, answers: [], included_in_counts: true},
    // A different lesson must never leak into the selected one.
@@ -43,23 +43,25 @@ test('one row per student, both score columns, sorted by surname then first name
   [['Aardvark', 'Cy'], ['Fictional', 'Ada'], ['van Fictional', 'Bo'], ['Zeta', 'Dee']]);
  assert.equal(rows.length, 4, 'the other lesson is excluded and the two checkpoints merge into one student row');
  const ada = rows.find(r => r[1] === 'Ada');
- assert.equal(ada[2], 8.25, 'notes score comes from the notes checkpoint');
- assert.equal(ada[3], 9, 'revision score comes from the drafts checkpoint');
- assert.deepEqual([ada[4], ada[5], ada[6]], ['Ready', 'Ready', 'Posted']);
+ assert.equal(ada[2], '125935', 'IC student number is carried as recorded');
+ assert.equal(ada[3], 8.25, 'notes score comes from the notes checkpoint');
+ assert.equal(ada[4], 9, 'revision score comes from the drafts checkpoint');
+ assert.deepEqual([ada[5], ada[6], ada[7]], ['Ready', 'Ready', 'Posted']);
 });
 
 test('unscored, held and missing work stay blank and never become zero', () => {
  const rows = buildRows(fixture(), 'biology', 'a', 'BIO-ECO');
  const held = rows.find(r => r[1] === 'Cy');
- assert.equal(held[2], null, 'a held record is suppressed on the page, so it is blank here too');
- assert.equal(held[3], null);
- assert.deepEqual([held[4], held[5]], ['Review needed', 'Review needed']);
+ assert.equal(held[3], null, 'a held record is suppressed on the page, so it is blank here too');
+ assert.equal(held[4], null);
+ assert.deepEqual([held[5], held[6]], ['Review needed', 'Review needed']);
  const none = rows.find(r => r[1] === 'Dee');
- assert.deepEqual([none[2], none[3], none[4], none[5]], [null, null, 'Not assessed', 'Not assessed']);
- assert.equal(none[6], 'Not posted', 'no recorded IC value reads as not posted');
+ assert.deepEqual([none[3], none[4], none[5], none[6]], [null, null, 'Not assessed', 'Not assessed']);
+ assert.equal(none[7], 'Not posted', 'no recorded IC value reads as not posted');
+ assert.equal(none[2], '', 'no IC number recorded stays blank, never invented');
  const partial = rows.find(r => r[1] === 'Bo');
- assert.deepEqual([partial[2], partial[3], partial[4], partial[5]], [6, null, 'Ready', 'Not assessed']);
- assert.ok(rows.every(row => row.slice(2, 4).every(value => value === null || typeof value === 'number')));
+ assert.deepEqual([partial[3], partial[4], partial[5], partial[6]], [6, null, 'Ready', 'Not assessed']);
+ assert.ok(rows.every(row => row.slice(3, 5).every(value => value === null || typeof value === 'number')));
 });
 
 test('blanking follows the same rule the table uses', () => {
@@ -96,5 +98,6 @@ test('the workbook is a real xlsx package with a frozen bold header', () => {
  assert.ok(body.includes('state="frozen"') && body.includes('ySplit="1"'), 'top row frozen');
  for (const header of HEADERS) assert.ok(body.includes(header));
  assert.ok(body.includes('<v>8.25</v>'), 'scores are numeric cells, not text');
- assert.ok(!/<c r="C\d+"[^>]*><v>0<\/v>/.test(body), 'no fabricated zero scores');
+ assert.ok(body.includes('125935'), 'IC student number is present');
+ assert.ok(!/<c r="D\d+"[^>]*><v>0<\/v>/.test(body), 'no fabricated zero scores');
 });
