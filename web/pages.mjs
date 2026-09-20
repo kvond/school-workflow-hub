@@ -6,6 +6,7 @@ import {createCompanionClient,companionMessage} from './browser-companion.mjs';
 import {mountControlPanel} from './control-panel.mjs';
 import {mountSubmissionMonitor} from './submission-monitor.mjs';
 import {mountAssessmentReview} from './assessment-review.mjs';
+import {mountIcGradeSheet} from './ic-grade-sheet.mjs';
 const $=id=>document.getElementById(id);
 let submissionMonitor,assessmentReview;
 const allowed=['control','agenda','feedback','summary','research'];
@@ -119,6 +120,16 @@ async function scanSubmissions(){
  finally{if(generation===scanGeneration)scan.disabled=false;}
 }
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
+// Directly below the Student work table: the same saved records as a spreadsheet
+// to type into Infinite Campus by hand. Reads what is already loaded — it never
+// assesses, calls an API, or rescans student work.
+const optionText=select=>select?.selectedOptions?.[0]?.textContent||'';
+mountIcGradeSheet(queue,{
+ state:()=>recordState,
+ scope:()=>({classKey:scope.classKey,sectionId,assignmentKey:scope.assignmentKey,
+  classLabel:classes[scope.classKey],
+  sectionLabel:['matched','all'].includes(sectionId)?'':optionText(sectionSelect),
+  lessonLabel:optionText(lessonSelect)})});
 // Process work: find and assess the selected lesson's submissions by name — the
 // lesson's turn-in sources are resolved from where its recorded work actually
 // lives, so no date is needed. The review workspace opens below.
