@@ -40,16 +40,16 @@ const feedback=document.getElementById('page-feedback'),summary=document.getElem
 const select=label=>feedback.all.find(e=>e.tagName==='select'&&e.attributes['aria-label']===label);
 const classSelect=select('Feedback class'),sectionSelect=select('Feedback section');
 const table=()=>feedback.all.find(e=>e.tagName==='table');
-assert.match(table().allText,/Alex F/);assert.doesNotMatch(table().allText,/Blair F/);
+assert.match(table().allText,/F\., Alex/);assert.doesNotMatch(table().allText,/F\., Blair/);
 const collapsed=table().all.find(e=>e.tagName==='details');assert.equal(collapsed.open,undefined);
 assert.match(collapsed.allText,/Fictional first line.\nFictional second line./);assert.match(collapsed.allText,/Content calculation: 60\/13/);assert.match(table().allText,/4.62 \/ 10/);
 assert.equal(sectionSelect.value,'matched');assert.ok(sectionSelect.children.some(e=>e.textContent==='Unmatched (5)'));assert.doesNotMatch(table().allText,/Fictional unmatched/);
-sectionSelect.value='';sectionSelect.dispatchEvent(new Event('change'));assert.match(table().allText,/Fictional unmatched 5/);assert.doesNotMatch(table().allText,/Alex F/);
+sectionSelect.value='';sectionSelect.dispatchEvent(new Event('change'));assert.match(table().allText,/unmatched 5, Fictional/);assert.doesNotMatch(table().allText,/F\., Alex/);
 classSelect.value='forensics';classSelect.dispatchEvent(new Event('change'));
-assert.deepEqual(sectionSelect.children.map(e=>e.value),['matched','all','a','b']);assert.match(table().allText,/Blair F/);assert.match(table().allText,/Devon F/);assert.doesNotMatch(table().allText,/Alex F/);
+assert.deepEqual(sectionSelect.children.map(e=>e.value),['matched','all','a','b']);assert.match(table().allText,/F\., Blair/);assert.match(table().allText,/F\., Devon/);assert.doesNotMatch(table().allText,/F\., Alex/);
 sectionSelect.value='a';sectionSelect.dispatchEvent(new Event('change'));
-assert.match(table().allText,/Blair F/);assert.doesNotMatch(table().allText,/Devon F/);
-feedback.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh submissions').dispatchEvent(new Event('click'));await settle();assert.equal(sectionSelect.value,'a');assert.match(table().allText,/Blair F/);assert.doesNotMatch(table().allText,/Devon F/);
+assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/F\., Devon/);
+feedback.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh submissions').dispatchEvent(new Event('click'));await settle();assert.equal(sectionSelect.value,'a');assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/F\., Devon/);
 // U01: Class/section, Lesson name and Notes/Drafts are the primary selectors; no date picker in the primary row.
 const lessonSelect=select('Feedback lesson'),workSelect=select('Feedback checkpoint');
 assert.ok(lessonSelect&&workSelect,'lesson name and Notes/Drafts selectors exist');
@@ -57,22 +57,22 @@ const primaryBar=feedback.all.find(e=>e.className==='workspace-controls');
 assert.ok(primaryBar&&!primaryBar.all.some(e=>e.tagName==='input'&&e.type==='date'),'no lesson-date input in the primary selector row');
 // U02: choosing a lesson narrows the table, and switching lesson fully replaces the rows.
 sectionSelect.value='all';sectionSelect.dispatchEvent(new Event('change'));
-assert.match(table().allText,/Blair F/);assert.match(table().allText,/Devon F/);
+assert.match(table().allText,/F\., Blair/);assert.match(table().allText,/F\., Devon/);
 lessonSelect.value='FOR-SCENE';lessonSelect.dispatchEvent(new Event('change'));
-assert.match(table().allText,/Devon F/);assert.doesNotMatch(table().allText,/Blair F/);
+assert.match(table().allText,/F\., Devon/);assert.doesNotMatch(table().allText,/F\., Blair/);
 lessonSelect.value='FOR-REASON';lessonSelect.dispatchEvent(new Event('change'));
-assert.match(table().allText,/Blair F/);assert.doesNotMatch(table().allText,/Devon F/);
+assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/F\., Devon/);
 // Notes/Drafts partitions by checkpoint (both fictional forensics rows are final=Drafts).
 lessonSelect.value='all';lessonSelect.dispatchEvent(new Event('change'));
 workSelect.value='initial';workSelect.dispatchEvent(new Event('change'));
-assert.doesNotMatch(feedback.allText,/Blair F/);assert.doesNotMatch(feedback.allText,/Devon F/);
+assert.doesNotMatch(feedback.allText,/F\., Blair/);assert.doesNotMatch(feedback.allText,/F\., Devon/);
 workSelect.value='final';workSelect.dispatchEvent(new Event('change'));
-assert.match(table().allText,/Blair F/);assert.match(table().allText,/Devon F/);
+assert.match(table().allText,/F\., Blair/);assert.match(table().allText,/F\., Devon/);
 workSelect.value='all';workSelect.dispatchEvent(new Event('change'));
 // Changing class resets the lesson selector to All lessons (no stale lesson leaks across classes).
 lessonSelect.value='FOR-REASON';lessonSelect.dispatchEvent(new Event('change'));
 classSelect.value='biology';classSelect.dispatchEvent(new Event('change'));
-assert.equal(lessonSelect.value,'all');assert.match(table().allText,/Alex F/);assert.doesNotMatch(table().allText,/Blair F/);
+assert.equal(lessonSelect.value,'all');assert.match(table().allText,/F\., Alex/);assert.doesNotMatch(table().allText,/F\., Blair/);
 classSelect.value='forensics';classSelect.dispatchEvent(new Event('change'));
 const cards=summary.all.filter(e=>e.tagName==='section'&&e.className==='surface');assert.equal(cards.length,4);assert.ok(cards.every(e=>e.children.filter(c=>c.tagName==='h2').length===1));
 location.hash='#summary';window.dispatchEvent(new Event('hashchange'));assert.equal(summary.hidden,false);assert.equal(feedback.hidden,true);

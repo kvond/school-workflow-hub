@@ -14,7 +14,7 @@ from .dated_agenda import read_day
 from .firestore_state import configured_store
 from .grading_records import read_records
 from .hosted_agenda import ConnectionError, service_token
-from .submission_inventory import DriveReader, collect
+from .submission_inventory import DRIVE_SCOPE, DriveReader, collect
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
@@ -48,8 +48,7 @@ def _lesson(assertion, day, class_key, config):
 
 def _drive_scan(assertion, day, class_key, config):
     agenda, lesson, folder_id = _lesson(assertion, day, class_key, config)
-    reader = DriveReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", ""),
-                                       "https://www.googleapis.com/auth/drive.metadata.readonly"))
+    reader = DriveReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", ""), DRIVE_SCOPE))
     course = {"biology": "Biology", "forensics": "Forensics", "anatomy": "Anatomy"}[class_key]
     root, files, folders, forms = collect(reader, folder_id, course=course, week=agenda["week"])
     fresh = read_day(assertion, day, config)

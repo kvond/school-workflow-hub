@@ -143,7 +143,13 @@ delivery milestone.
 ## Screen scope and acceptance
 
 Page 02 contains the three selectors, one Student work table, and the actions
-above. Hide raw scans, changes-since-scan logs, IDs, prompts and developer
+above. Directly below that table, **Download IC Grade Sheet** writes the selected
+class/section and lesson to an .xlsx for entering grades in Infinite Campus by
+hand: last and first name, both scores, both statuses and the recorded IC posting
+status, one row per student, sorted by surname. It reads the records already
+loaded — it never assesses, calls an API or rescans work — and an unscored, held
+or unreadable checkpoint stays an empty cell, never a zero.
+Hide raw scans, changes-since-scan logs, IDs, prompts and developer
 controls under Details. Show only concise coverage and actionable student holds.
 Do not add more competing panels. Lesson title, not navigation date, selects
 an assignment. The confirmed third-meeting final deadline still applies:
