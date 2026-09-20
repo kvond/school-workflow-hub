@@ -14,6 +14,11 @@ FOLDER = 'application/vnd.google-apps.folder'
 FORM = 'application/vnd.google-apps.form'
 SHORTCUT = 'application/vnd.google-apps.shortcut'
 FIELDS = 'id,name,mimeType,trashed,parents,modifiedTime,version'
+# drive.metadata.readonly returns a file's name but withholds `parents`, so
+# folder resolution silently collects nothing and surfaces as a sharing error
+# the teacher cannot act on. Use the read-only content scope assessment_save
+# already reads with.
+DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly'
 
 
 class DriveReader:
@@ -178,8 +183,7 @@ def read_lesson_inventory(assertion, class_key, assignment_key, config):
     if not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}', assignment_key or ''):
         raise ConnectionError('invalid_submission_scope')
     records = read_records(assertion, config)
-    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''),
-                                     'https://www.googleapis.com/auth/drive.metadata.readonly'))
+    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
     course = CLASS_COURSE[class_key]
     folders, unreadable = resolve_lesson_folders(reader, records, class_key, assignment_key)
     assessed = {str(r.get('source_file_id') or '') for r in records.get('submissions', [])
@@ -222,8 +226,7 @@ def read_inventory(assertion, day, class_key, config):
     match = re.fullmatch(r'https://drive.google.com/drive/folders/([A-Za-z0-9_-]{20,128})', lesson.get('turnin_folder') or '')
     if not match:
         raise ConnectionError('submission_lesson_mapping_required')
-    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''),
-                                     'https://www.googleapis.com/auth/drive.metadata.readonly'))
+    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
     course = {'biology': 'Biology', 'forensics': 'Forensics', 'anatomy': 'Anatomy'}[class_key]
     root, files, folders, forms = collect(reader, match[1], course=course, week=agenda['week'])
     fresh = read_day(assertion, day, config)
