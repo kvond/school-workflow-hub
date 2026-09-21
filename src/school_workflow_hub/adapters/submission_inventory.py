@@ -57,6 +57,21 @@ class DriveReader:
             params['pageToken'] = cursor
         return self.get('files', params)
 
+    def children_of(self, folder_ids, cursor):
+        """One level of several folders at once.
+
+        Drive accepts a disjunction of parents in a single query, so a level
+        costs one request rather than one per folder. Used to locate recorded
+        files without asking each file where it lives — see locate_lesson_folders.
+        """
+        clause = ' or '.join("'" + f + "' in parents" for f in folder_ids)
+        params = {'q': '(' + clause + ') and trashed = false',
+                  'fields': 'nextPageToken,incompleteSearch,files(' + FIELDS + ')',
+                  'pageSize': 100, 'supportsAllDrives': 'true', 'includeItemsFromAllDrives': 'true'}
+        if cursor:
+            params['pageToken'] = cursor
+        return self.get('files', params)
+
 
 def _forbidden_reason(response):
     """Tell a misconfigured reader apart from a genuine sharing gap.
@@ -165,7 +180,57 @@ def _lesson_source_files(records, class_key, assignment_key):
     return ids
 
 
-def resolve_lesson_folders(reader, records, class_key, assignment_key):
+MAX_LOCATE_DEPTH = 5
+MAX_LOCATE_FOLDERS = 400
+MAX_LOCATE_PAGES = 40
+
+
+def locate_lesson_folders(reader, file_ids, root_id):
+    """The folders that directly contain these recorded submission files.
+
+    files.get withholds `parents` for anything merely shared with the runtime
+    reader — the teacher owns this work, the reader is a viewer — so a file
+    cannot be asked where it lives. files.list does report `parents`, so walk
+    down from the shared submissions root one level at a time, asking for every
+    folder on that level in a single query, and keep the folders the recorded
+    files actually sit in. Ground truth stays the same as before: a lesson's
+    sources are wherever its recorded work is, never a name or a date.
+    """
+    wanted, folders, seen, pages = set(file_ids), [], {root_id}, 0
+    level = [root_id]
+    for _ in range(MAX_LOCATE_DEPTH):
+        if not wanted or not level:
+            break
+        following, cursor, cursors = [], None, set()
+        while True:
+            pages += 1
+            if pages > MAX_LOCATE_PAGES or len(seen) > MAX_LOCATE_FOLDERS:
+                raise ConnectionError('submission_scan_incomplete')
+            page = reader.children_of(level, cursor)
+            if page.get('incompleteSearch') is True or not isinstance(page.get('files'), list):
+                raise ConnectionError('submission_scan_incomplete')
+            for item in page['files']:
+                parent = next(iter(item.get('parents') or []), None)
+                if item['id'] in wanted:
+                    wanted.discard(item['id'])
+                    if parent and parent not in folders:
+                        folders.append(parent)
+                        if len(folders) > MAX_LESSON_FOLDERS:
+                            raise ConnectionError('lesson_sources_too_scattered')
+                elif item.get('mimeType') == FOLDER and item['id'] not in seen:
+                    seen.add(item['id'])
+                    following.append(item['id'])
+            cursor = page.get('nextPageToken')
+            if not cursor:
+                break
+            if cursor in cursors:
+                raise ConnectionError('submission_scan_incomplete')
+            cursors.add(cursor)
+        level = following
+    return folders
+
+
+def resolve_lesson_folders(reader, records, class_key, assignment_key, root_id=''):
     """Distinct, live parent folders of this assignment's known submissions.
 
     Ground truth: an assignment's turn-in sources are wherever its already
@@ -193,9 +258,14 @@ def resolve_lesson_folders(reader, records, class_key, assignment_key):
                 folders.append(parent)
         if len(folders) > MAX_LESSON_FOLDERS:
             raise ConnectionError('lesson_sources_too_scattered')
+    if not folders and not blocked:
+        # Every file read, none reporting a parent: Drive does that for content
+        # the reader can see but does not own. Find the folders from the root
+        # instead of asking the files.
+        if not root_id:
+            raise ConnectionError('submission_root_not_configured')
+        folders = locate_lesson_folders(reader, file_ids, root_id)
     if not folders:
-        # Readable files that report no parent are a reader problem too, not a
-        # sharing one: Drive withholds `parents` from an under-scoped token.
         raise ConnectionError(blocked or 'submission_parents_unavailable')
     return folders, unreadable
 
@@ -210,7 +280,8 @@ def read_lesson_inventory(assertion, class_key, assignment_key, config):
     records = read_records(assertion, config)
     reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
     course = CLASS_COURSE[class_key]
-    folders, unreadable = resolve_lesson_folders(reader, records, class_key, assignment_key)
+    folders, unreadable = resolve_lesson_folders(
+        reader, records, class_key, assignment_key, config.get('HUB_SUBMISSIONS_ROOT_FOLDER', ''))
     assessed = {str(r.get('source_file_id') or '') for r in records.get('submissions', [])
                 if r.get('class_key') == class_key and r.get('assignment_key') == assignment_key
                 and r.get('status') in {'assessed', 'roster_matched'}}

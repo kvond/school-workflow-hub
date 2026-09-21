@@ -86,11 +86,17 @@ class FolderResolutionTests(TestCase):
             self._resolve(Reader())
 
     def test_readable_files_reporting_no_parent_are_not_a_sharing_problem(self):
+        """With a root to search, a file that turns up nowhere under it is
+        still not a sharing fault — and must not be reported as one."""
         class Reader:
             def metadata(self, file_id):
                 return {"id": file_id, "name": "Fictional submission"}
+
+            def children_of(self, folder_ids, cursor):
+                return {"files": [], "incompleteSearch": False}
         with self.assertRaisesRegex(inv.ConnectionError, "submission_parents_unavailable"):
-            self._resolve(Reader())
+            inv.resolve_lesson_folders(Reader(), self.records, "forensics", "forensics:F03",
+                                       "1" + "r" * 32)
 
     def test_resolved_parents_are_returned(self):
         class Reader:
@@ -128,3 +134,89 @@ class DriveReaderWiringTests(TestCase):
     def test_a_404_reaches_the_caller_as_a_sharing_error(self):
         with self.assertRaisesRegex(inv.ConnectionError, "submission_folder_access_required"):
             self._reader(Response(404)).metadata("1" + "a" * 32)
+
+
+class LocateLessonFoldersTests(TestCase):
+    """Drive reports `parents` from files.list but not from files.get for
+    content the reader can see and does not own, so folders are found by
+    descending from the shared root and matching the recorded files."""
+
+    ROOT = "1" + "r" * 32
+    COURSE = "1" + "c" * 32
+    LESSON = "1" + "l" * 32
+    WANTED = "1" + "w" * 32
+
+    def _reader(self, tree, calls=None):
+        class Reader:
+            def children_of(self, folder_ids, cursor):
+                if calls is not None:
+                    calls.append(sorted(folder_ids))
+                files = [f for parent in folder_ids for f in tree.get(parent, [])]
+                return {"files": files, "incompleteSearch": False}
+        return Reader()
+
+    def _tree(self):
+        folder = inv.FOLDER
+        return {
+            self.ROOT: [{"id": self.COURSE, "name": "Forensics", "mimeType": folder,
+                         "parents": [self.ROOT], "trashed": False}],
+            self.COURSE: [{"id": self.LESSON, "name": "Wk 03 — Turn In", "mimeType": folder,
+                           "parents": [self.COURSE], "trashed": False}],
+            self.LESSON: [{"id": self.WANTED, "name": "s.fictional.student — work",
+                           "mimeType": "application/vnd.google-apps.presentation",
+                           "parents": [self.LESSON], "trashed": False}],
+        }
+
+    def test_the_folder_holding_a_recorded_file_is_found(self):
+        folders = inv.locate_lesson_folders(self._reader(self._tree()), [self.WANTED], self.ROOT)
+        self.assertEqual(folders, [self.LESSON])
+
+    def test_a_level_is_one_query_for_every_folder_on_it(self):
+        """A course holds dozens of lesson folders. Asking for them one at a
+        time is dozens of round trips per Process work, so a level must cost
+        one query however many folders are on it."""
+        folder, sibling = inv.FOLDER, "1" + "s" * 32
+        tree = self._tree()
+        tree[self.COURSE] = tree[self.COURSE] + [
+            {"id": sibling, "name": "Wk 04 — Turn In", "mimeType": folder,
+             "parents": [self.COURSE], "trashed": False}]
+        calls = []
+        inv.locate_lesson_folders(self._reader(tree, calls), [self.WANTED], self.ROOT)
+        self.assertEqual(calls[0], [self.ROOT])
+        self.assertEqual(calls[1], [self.COURSE])
+        self.assertEqual(calls[2], sorted([self.LESSON, sibling]),
+                         "both lesson folders must be asked for in one query, not one each")
+        self.assertEqual(len(calls), 3, "one request per level")
+
+    def test_a_file_that_is_nowhere_under_the_root_yields_no_folder(self):
+        folders = inv.locate_lesson_folders(self._reader(self._tree()), ["1" + "z" * 32], self.ROOT)
+        self.assertEqual(folders, [])
+
+    def test_resolution_falls_back_to_the_root_when_drive_withholds_parents(self):
+        records = {"submissions": [{"class_key": "forensics", "assignment_key": "forensics:F03",
+                                    "source_file_id": self.WANTED}]}
+        tree = self._tree()
+
+        class Reader:
+            def metadata(self, file_id):
+                return {"id": file_id, "name": "Fictional submission"}   # no parents
+
+            def children_of(self, folder_ids, cursor):
+                return {"files": [f for p in folder_ids for f in tree.get(p, [])],
+                        "incompleteSearch": False}
+
+        folders, unreadable = inv.resolve_lesson_folders(
+            Reader(), records, "forensics", "forensics:F03", self.ROOT)
+        self.assertEqual(folders, [self.LESSON])
+        self.assertEqual(unreadable, 0)
+
+    def test_without_a_configured_root_the_message_names_the_setting(self):
+        records = {"submissions": [{"class_key": "forensics", "assignment_key": "forensics:F03",
+                                    "source_file_id": self.WANTED}]}
+
+        class Reader:
+            def metadata(self, file_id):
+                return {"id": file_id}
+
+        with self.assertRaisesRegex(inv.ConnectionError, "submission_root_not_configured"):
+            inv.resolve_lesson_folders(Reader(), records, "forensics", "forensics:F03")
