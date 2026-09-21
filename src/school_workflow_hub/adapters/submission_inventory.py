@@ -32,7 +32,9 @@ class DriveReader:
         try:
             response = self.session.get('https://www.googleapis.com/drive/v3/' + path,
                                         params=params, timeout=(5, 15), allow_redirects=False)
-            if response.status_code in (403, 404):
+            if response.status_code == 403:
+                raise ConnectionError(_forbidden_reason(response))
+            if response.status_code == 404:
                 raise ConnectionError('submission_folder_access_required')
             if response.status_code != 200:
                 raise ConnectionError('submission_source_unavailable')
@@ -55,6 +57,24 @@ class DriveReader:
             params['pageToken'] = cursor
         return self.get('files', params)
 
+
+def _forbidden_reason(response):
+    """Tell a misconfigured reader apart from a genuine sharing gap.
+
+    Drive answers both with 403. Reporting a scope fault as a sharing fault
+    sends the teacher to re-share folders that were never the problem, so the
+    two must stay distinct all the way to the screen. Any unreadable body is
+    treated as the sharing case, which is the one she can act on.
+    """
+    try:
+        error = response.json().get('error', {})
+        reasons = {str(d.get('reason', '')) for d in error.get('details', []) or []}
+        reasons.update(str(e.get('reason', '')) for e in error.get('errors', []) or [])
+    except Exception:
+        return 'submission_folder_access_required'
+    if 'ACCESS_TOKEN_SCOPE_INSUFFICIENT' in reasons or 'insufficientPermissions' in reasons:
+        return 'submission_reader_scope_missing'
+    return 'submission_folder_access_required'
 
 # The teacher's own folder naming: A&P is the anatomy course label in Drive.
 COURSE_ALIASES = {'Anatomy': ('Anatomy', 'A&P')}
@@ -158,12 +178,15 @@ def resolve_lesson_folders(reader, records, class_key, assignment_key):
     file_ids = _lesson_source_files(records, class_key, assignment_key)
     if not file_ids:
         raise ConnectionError('lesson_has_no_recorded_submissions')
-    folders, unreadable = [], 0
+    folders, unreadable, blocked = [], 0, None
     for fid in file_ids:
         try:
             meta = reader.metadata(fid)
-        except ConnectionError:
+        except ConnectionError as error:
+            # Keep why the read failed. Collapsing a misconfigured reader into
+            # the sharing case sends the teacher to fix folders that are fine.
             unreadable += 1
+            blocked = blocked or str(error)
             continue
         for parent in meta.get('parents', []) or []:
             if parent not in folders:
@@ -171,7 +194,9 @@ def resolve_lesson_folders(reader, records, class_key, assignment_key):
         if len(folders) > MAX_LESSON_FOLDERS:
             raise ConnectionError('lesson_sources_too_scattered')
     if not folders:
-        raise ConnectionError('submission_folder_access_required')
+        # Readable files that report no parent are a reader problem too, not a
+        # sharing one: Drive withholds `parents` from an under-scoped token.
+        raise ConnectionError(blocked or 'submission_parents_unavailable')
     return folders, unreadable
 
 
