@@ -49,8 +49,13 @@ def _drive_scan(assertion, day, class_key, config):
     fresh = read_day(assertion, day, config)
     if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
         raise ConnectionError("submission_agenda_changed")
+    # Bind persisted monitoring evidence to the configured editable Form, but
+    # store only a one-way hash. If deployment configuration accidentally points
+    # at a different Form, the next complete scan must establish a fresh
+    # first-observed baseline instead of labeling historical submissions as new.
     source_id = content_hash({"class_key": class_key,
-                              "assignment_label": assignment_label})[:40]
+                              "assignment_label": assignment_label,
+                              "form_source": str(config.get("HUB_TURNIN_FORM_ID", ""))})[:40]
     return {"class_key": class_key, "source_id": source_id,
             "source_name": "Shared Form responses · 00 ALL TURN IN",
             "source_kind": "form_responses_root_verified",
@@ -259,10 +264,17 @@ def scan_and_persist(assertion, day, class_key, config):
     previous = records_prior["state"] if records_prior else None
     baseline = (task or {}).get("baseline") or {}
     checkpoint = baseline.get("checkpoint_token")
+    scan_source_id = str(scan.get("source_id") or scan.get("folder_id") or "")
+    previous_source_id = str(((previous or {}).get("stream") or {}).get("source_id")
+                             or ((previous or {}).get("stream") or {}).get("folder_id")
+                             or "")
+    source_changed = bool(previous is not None and scan_source_id and previous_source_id
+                          and scan_source_id != previous_source_id)
     fingerprint = content_hash({"files": sorted(
         (f["id"], f["modified_at"], f.get("version")) for f in scan["files"])})
     maps_hash = content_hash(_stable_mappings(mappings))
-    if (previous is not None and baseline.get("source_revision") == fingerprint
+    if (previous is not None and not source_changed
+            and baseline.get("source_revision") == fingerprint
             and previous.get("mappings_fingerprint") == maps_hash
             and previous.get("deadline_fingerprint") == deadline_hash
             and previous.get("derivation_version") == DERIVATION_VERSION):
@@ -273,7 +285,8 @@ def scan_and_persist(assertion, day, class_key, config):
                         attempt=_read_attempt(store, scope), schedule=_schedule(config),
                         declaration=declaration)
     input_hash = content_hash({"scope": scope, "checkpoint": checkpoint,
-                               "scan": fingerprint, "due": due_date, "basis": due_basis,
+                               "source": scan_source_id, "scan": fingerprint,
+                               "due": due_date, "basis": due_basis,
                                "deadline": deadline_hash, "mappings": maps_hash,
                                "derivation": DERIVATION_VERSION})
     claim = store.claim(task_id, owner=OWNER, request_id="scan-" + input_hash[:32],
@@ -285,8 +298,13 @@ def scan_and_persist(assertion, day, class_key, config):
                         attempt=_read_attempt(store, scope), schedule=_schedule(config),
                         declaration=declaration)
     try:
-        result = advance_state(previous, scan, mappings=mappings, due_date=due_date,
-                               due_basis=due_basis, as_of=_now())
+        # A different configured source is not evidence that previously unseen
+        # files appeared after the old baseline. Rebaseline the observation
+        # stream while retaining the assignment task, deadline declarations and
+        # durable audit history.
+        prior_for_advance = None if source_changed else previous
+        result = advance_state(prior_for_advance, scan, mappings=mappings,
+                               due_date=due_date, due_basis=due_basis, as_of=_now())
         result["state"]["mappings_fingerprint"] = maps_hash
         result["state"]["deadline"] = deadline
         result["state"]["deadline_fingerprint"] = deadline_hash
