@@ -58,6 +58,31 @@ def _student_name_hint(name):
         return None
     return tail
 
+def _assignment_key_hint(file_id, name, class_key, assignment_label, records):
+    """Conservative assignment-key hint; never used as proof of student identity."""
+    week = re.search(r"\bWk\s*0?(\d{1,2})\b", str(assignment_label or ""))
+    allowed = set()
+    if class_key == "forensics" and week:
+        prefix = "forensics:F" + f"{int(week.group(1)):02d}"
+        allowed = {str(a.get("assignment_key") or "")
+                   for a in records.get("assignments", []) or []
+                   if a.get("class_key") == class_key
+                   and str(a.get("assignment_key") or "").startswith(prefix)}
+    known = {str(r.get("assignment_key") or "")
+             for r in records.get("submissions", []) or []
+             if r.get("class_key") == class_key and r.get("source_file_id") == file_id
+             and str(r.get("assignment_key") or "") in allowed}
+    if len(known) == 1:
+        return next(iter(known))
+    if class_key == "forensics" and week and int(week.group(1)) == 3:
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower())
+        if "observation" in normalized and "deductive" in normalized:
+            return "forensics:F03-Observation"
+        if "inductive" in normalized and "deductive" in normalized:
+            return "forensics:F03ID"
+    return None
+
+
 def _drive_scan(assertion, day, class_key, config):
     """Historical name retained for callers/tests; source is now Form + root."""
     _, lesson, assignment_label = _lesson(assertion, day, class_key, config)
@@ -104,7 +129,9 @@ def _drive_scan(assertion, day, class_key, config):
                        "modified_at": f.get("modifiedTime"),
                        "version": f.get("version"),
                        "submitted_at": f.get("submitted_at"),
-                       "student_hint": _student_name_hint(f.get("name"))}
+                       "student_hint": _student_name_hint(f.get("name")),
+                       "assignment_key_hint": _assignment_key_hint(
+                           f.get("id"), f.get("name"), class_key, assignment_label, records)}
                       for f in files]}
 
 def _mappings(assertion, class_key, config, files=()):
@@ -248,6 +275,7 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
                        "student_hint": record.get("student_hint"),
                        "student_name": (match or {}).get("student_name"),
                        "section_name": (match or {}).get("section_name"),
+                       "assignment_key": record.get("assignment_key_hint"),
                        "timing": record["timing"], "modified_at": record["modified_at"],
                        "first_observed_at": record["first_observed_at"],
                        "student_id": match["student_id"] if match else None,
