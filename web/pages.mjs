@@ -75,7 +75,8 @@ function renderScope(){
   if(lesson){
    const links=el('div',undefined,'action-row');
    if(lesson.teacher_slides&&safeLink(lesson.teacher_slides))links.append(link('Teacher Slides ↗',lesson.teacher_slides));
-   if(lesson.turnin_form&&safeLink(lesson.turnin_form))links.append(link('Turn-in Form ↗',lesson.turnin_form));\n   if(lesson.turnin_folder&&safeLink(lesson.turnin_folder))links.append(link('TurnIn Map locator ↗',lesson.turnin_folder));
+   if(lesson.turnin_form&&safeLink(lesson.turnin_form))links.append(link('Turn-in Form ↗',lesson.turnin_form));
+   if(lesson.turnin_folder&&safeLink(lesson.turnin_folder))links.append(link('TurnIn Map locator ↗',lesson.turnin_folder));
    const folder=lesson.links.find(l=>l.label==='Lesson folder');if(folder&&safeLink(folder.url))links.append(link('Lesson materials ↗',folder.url));
    v.context.append(links);
    if(lesson.assignment_label)v.context.append(el('p',lesson.assignment_label,'hint'));
@@ -140,26 +141,22 @@ const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=moun
 assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});
 const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Submission inventory'),scan,inventory);advancedIntake.append(inventoryDetails);
 const LESSON_INTAKE={
- submission_root_not_configured:'The approved 00 ALL TURN IN root is not configured in the deployment.',
+ submission_root_not_configured:'The dashboard has not been told where 00 ALL TURN IN lives. This is a deployment setting.',
  submission_reader_scope_missing:'The dashboard’s Drive read permission is misconfigured.',
- submission_form_not_configured:'The shared turn-in Form API id is not configured in the deployment.',
- submission_form_access_required:'The runtime reader cannot read the shared turn-in Form responses. Share the editable Form with the reader, then Process work again.',
- submission_form_not_found:'The configured turn-in Form could not be found.',
- submission_form_rate_limited:'Google Forms rate-limited this request. Try Process work again shortly.',
- submission_form_unavailable:'Google Forms could not be read right now.',
- submission_form_scan_incomplete:'The Form response read was incomplete. Nothing was assessed.',
- submission_root_coverage_incomplete:'One or more assignment-linked files could not be verified inside 00 ALL TURN IN. Nothing was called missing.',
- submission_assignment_required:'The selected lesson has no exact assignment label for the shared Form.',
- submission_folder_inactive:'The approved turn-in root is inactive or unavailable.',
- submission_scan_incomplete:'The approved-root verification hit a bound before completing. Nothing was assessed.',
- submission_shortcut_needs_review:'A submission reference resolves through a shortcut; it is held for review.',
+ submission_parents_unavailable:'The dashboard can read this lesson’s saved files but cannot verify where they live.',
+ lesson_has_no_recorded_submissions:'This lesson has no saved assessment source yet. Use “Assess new submissions” with the lesson date once; that path now reads the shared Form directly.',
+ submission_folder_access_required:'The runtime reader cannot see one of this lesson’s verified source folders.',
+ lesson_sources_too_scattered:'This lesson’s recorded submissions are spread across too many verified source folders for the bounded scan.',
+ submission_folder_inactive:'A verified source folder is inactive or unavailable.',
+ submission_scan_incomplete:'The verified-source scan hit a bound before completing. Nothing was assessed.',
+ submission_shortcut_needs_review:'A verified source contains a shortcut; it is held for review.',
  invalid_submission_scope:'The lesson selection was not valid. Reload the page and choose the lesson again.',
  sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
 function resetProcess(){try{assessmentReview&&assessmentReview.update({classKey:scope.classKey,ready:false});}catch(e){}if(processStatus)processStatus.textContent='';}
 async function processWork(){
  if(!scope.assignmentKey||scope.assignmentKey==='all'){processStatus.textContent='Choose a specific lesson name first, then Process work.';return;}
  const classKey=scope.classKey,assignmentKey=scope.assignmentKey;
- processStatus.textContent='Finding this assignment’s Form responses and verifying its files…';
+ processStatus.textContent='Finding this lesson’s verified saved submission sources…';
  try{
   const r=await fetch('/api/submission-inventory?'+new URLSearchParams({class_key:classKey,assignment:assignmentKey}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
   const d=await r.json();
