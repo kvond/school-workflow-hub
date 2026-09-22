@@ -26,6 +26,7 @@ OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
 STATUS_VERSION = "hub-submission-monitor-status/v1"
 MAX_LISTED = 120
+DISCOVERY_VERSION = 2
 
 
 def _now():
@@ -60,9 +61,10 @@ def _drive_scan(assertion, day, class_key, config):
     # first-observed baseline instead of labeling historical submissions as new.
     source_id = content_hash({"class_key": class_key,
                               "assignment_label": assignment_label,
-                              "form_source": str(config.get("HUB_TURNIN_FORM_ID", ""))})[:40]
+                              "form_source": str(config.get("HUB_TURNIN_FORM_ID", "")),
+                              "discovery_version": DISCOVERY_VERSION})[:40]
     return {"class_key": class_key, "source_id": source_id,
-            "source_name": "Shared Form responses · 00 ALL TURN IN",
+            "source_name": "Current Form + recorded assignment evidence · 00 ALL TURN IN",
             "source_kind": "form_responses_root_verified",
             "assignment_label": assignment_label, "date": day,
             "observed_at": _now(),
