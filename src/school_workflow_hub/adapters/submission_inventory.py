@@ -392,7 +392,7 @@ def read_inventory(assertion, day, class_key, config):
                 if re.fullmatch(r'[A-Za-z0-9_-]{20,128}', root_id) else '')
     return {'schema_version': 'hub-submission-inventory/v1', 'date': day,
             'class_key': class_key, 'assignment': lesson['assignment_label'],
-            'folder_name': 'Shared Form responses · 00 ALL TURN IN',
+            'folder_name': 'Assignment Form + exact lesson folder · 00 ALL TURN IN',
             'folder_url': root_url, 'checked_at': datetime.now(timezone.utc).isoformat(),
             'source_revision': content_hash({'lesson': lesson, 'files': files}),
             'folders_checked': evidence['root_folders_checked'], 'forms_found': 1,
