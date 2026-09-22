@@ -196,6 +196,7 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
         modified = timestamp(item["modified_at"])
         record = {"name": item["name"], "modified_at": item["modified_at"],
                   "version": item.get("version"), "status": "present", "match": match,
+                  "student_hint": item.get("student_hint"),
                   "grace_ends_at": grace_end.isoformat() if grace_end else None}
         if prior is None:
             kind = "first_observed" if previous is None else "appeared"
@@ -315,7 +316,11 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
              or scan["observed_at"], "external_writes": 0}
     fingerprint = content_hash({"files": {k: {"m": v["modified_at"], "v": v.get("version"),
                                               "s": v["status"]} for k, v in files.items()}})
+    candidate_students = {str(f.get("student_hint") or "").casefold()
+                          for f in files.values()
+                          if f["status"] == "present" and f.get("student_hint")}
     counts = {"present": sum(1 for f in files.values() if f["status"] == "present"),
+              "candidate_students": len(candidate_students),
               "inaccessible": sum(1 for f in files.values() if f["status"] != "present"),
               "matched": sum(1 for f in files.values() if f.get("match") and f["status"] == "present"),
               "unmatched": sum(1 for f in files.values() if not f.get("match") and f["status"] == "present"),
