@@ -45,6 +45,18 @@ def _lesson(assertion, day, class_key, config):
     return agenda, lesson, lesson["assignment_label"]
 
 
+
+def _student_name_hint(name):
+    """Conservative display hint from school-generated upload filenames only."""
+    text = str(name or "")
+    if not re.match(r"^s\.[^\s]+\s+—\s+", text, re.I):
+        return None
+    tail = text.rsplit(" - ", 1)[-1]
+    tail = re.sub(r"\.(?:pptx|ppt|pdf)$", "", tail, flags=re.I).strip()
+    if not 2 <= len(tail.split()) <= 6 or len(tail) > 100:
+        return None
+    return tail
+
 def _drive_scan(assertion, day, class_key, config):
     """Historical name retained for callers/tests; source is now Form + root."""
     _, lesson, assignment_label = _lesson(assertion, day, class_key, config)
@@ -90,7 +102,8 @@ def _drive_scan(assertion, day, class_key, config):
             "files": [{"id": f["id"], "name": f["name"],
                        "modified_at": f.get("modifiedTime"),
                        "version": f.get("version"),
-                       "submitted_at": f.get("submitted_at")}
+                       "submitted_at": f.get("submitted_at"),
+                       "student_hint": _student_name_hint(f.get("name"))}
                       for f in files]}
 
 def _mappings(assertion, class_key, config):
