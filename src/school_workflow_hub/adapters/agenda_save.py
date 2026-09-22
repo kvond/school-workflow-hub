@@ -14,7 +14,7 @@ from .firestore_state import configured_store
 from . import topic_starts
 from ..core.cloud_state import CloudState, Conflict
 from ..core.runs import content_hash
-from ..workflows.submission_monitor import stream_scope
+from ..workflows.submission_monitor import assignment_scope
 
 
 def _topic_record(assertion, day, course, values, config, store, *, record=True):
@@ -26,11 +26,10 @@ def _topic_record(assertion, day, course, values, config, store, *, record=True)
     try:
         result = read_day(assertion, day, config)
         lesson = next(l for l in result['lessons'] if l['class_key'] == course)
-        folder = lesson.get('turnin_folder') or ''
-        prefix = 'https://drive.google.com/drive/folders/'
-        if not folder.startswith(prefix):
+        assignment_label = lesson.get('assignment_label') or ''
+        if not assignment_label or not lesson.get('turnin_form'):
             return {'recorded': None, 'reason': 'no_turnin_mapping'}
-        scope = stream_scope(course, folder[len(prefix):])
+        scope = assignment_scope(course, assignment_label)
         outcome = {'recorded': None}
         if record:
             outcome = topic_starts.record_declarations(
@@ -79,7 +78,7 @@ def target(assertion, day, course, config):
     if lesson['origin'] != 'Weekly Agenda':
         raise ConnectionError('agenda_override_needs_review')
     title = dict(COURSES)[course]
-    match = re.fullmatch(re.escape(title) + r'!A(\d+):R\1', lesson['source_reference'])
+    match = re.fullmatch(re.escape(title) + r'!A(\d+):U\1', lesson['source_reference'])
     if not match:
         raise ConnectionError('agenda_layout_changed')
     row = int(match[1])
