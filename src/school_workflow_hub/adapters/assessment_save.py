@@ -90,8 +90,8 @@ def _pptx_text(raw):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             slides = [name for name in archive.namelist()
-                      if re.fullmatch(r"ppt/slides/slide[0-9]+\\.xml", name)]
-            slides.sort(key=lambda name: int(re.search(r"slide([0-9]+)\\.xml$", name)[1]))
+                      if re.fullmatch(r"ppt/slides/slide[0-9]+\.xml", name)]
+            slides.sort(key=lambda name: int(re.search(r"slide([0-9]+)\.xml$", name)[1]))
             if len(slides) > 500 or sum(archive.getinfo(name).file_size for name in slides) > 5_000_000:
                 raise ConnectionError("assessment_source_too_large")
             chunks = []
@@ -100,12 +100,12 @@ def _pptx_text(raw):
                 root = ElementTree.fromstring(archive.read(name))
                 words = [node.text for node in root.iter(text_tag) if node.text]
                 if words:
-                    chunks.append("\\n".join(words))
+                    chunks.append("\n".join(words))
     except ConnectionError:
         raise
     except (KeyError, OSError, ValueError, zipfile.BadZipFile, ElementTree.ParseError):
         raise ConnectionError("assessment_source_unsupported") from None
-    text = "\\n\\n".join(chunks).replace("\\r\\n", "\\n").lstrip("﻿")
+    text = "\n\n".join(chunks).replace("\r\n", "\n").lstrip("﻿")
     if not text or len(text.encode("utf-8")) > 2_000_000:
         raise ConnectionError("assessment_source_too_large" if text else
                               "assessment_source_unsupported")
