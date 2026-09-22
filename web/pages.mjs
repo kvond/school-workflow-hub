@@ -114,11 +114,11 @@ async function scanSubmissions(){
   if(!r.ok)throw Error(messages[d.error]||'The submission source could not be checked. No work was assessed.');
   if(d.schema_version!=='hub-submission-inventory/v1'||d.date!==day||d.class_key!==classKey||!Array.isArray(d.files)||d.external_writes!==0)throw Error('Submission scope could not be verified.');
   const legacyGap=d.legacy_outside_root_files??0;
-  inventory.replaceChildren(el('h3',d.folder_name),el('p',`${d.files.length} assignment-matched files verified in the approved root · ${d.matching_responses??0} matching current Form responses · ${d.folders_checked} folders verified · ${new Date(d.checked_at).toLocaleString()}`));
+  inventory.replaceChildren(el('h3',d.folder_name),el('p',`${d.files.length} current assignment files verified in the approved root · ${d.matching_responses??0} matching current Form responses · ${d.folders_checked} folders verified · ${new Date(d.checked_at).toLocaleString()}`));
   if(legacyGap)inventory.append(el('p',`${legacyGap} recorded historical file${legacyGap===1?' is':'s are'} still outside 00 ALL TURN IN. They remain a coverage gap and are not being called missing.`,'hint'));
   if(safeLink(d.folder_url))inventory.append(link('Open turn-in folder ↗',d.folder_url));
   for(const file of d.files){const row=el('p');if(safeLink(file.url))row.append(link(file.name,file.url));inventory.append(row);}
-  inventory.append(el('p','File inventory only. Current Form responses and already-recorded assignment evidence are reconciled, then files are verified inside the approved root. Historical files outside that root stay explicitly flagged rather than silently excluded or called missing.','hint'));
+  inventory.append(el('p','File inventory only. Current Form responses are verified inside the approved root. Already-recorded work from the older intake tree stays visible in Student work and is explicitly reported as legacy coverage rather than being called missing.','hint'));
  }catch(e){if(generation===scanGeneration&&e.name!=='AbortError')inventory.replaceChildren(el('p',e.message,'error'));}
  finally{if(generation===scanGeneration)scan.disabled=false;}
 }
