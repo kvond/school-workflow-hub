@@ -16,6 +16,7 @@ from .grading_records import read_records
 from .hosted_agenda import ConnectionError
 from .forms_submissions import (collect_assignment_submissions,
                                 historical_assignment_file_ids)
+from .roster_matching import read_roster, match_files
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
@@ -93,16 +94,15 @@ def _drive_scan(assertion, day, class_key, config):
                        "submitted_at": f.get("submitted_at")}
                       for f in files]}
 
-def _mappings(assertion, class_key, config):
+def _mappings(assertion, class_key, config, files=()):
     records = read_records(assertion, config)
     by_file, conflicted = {}, set()
     import re as _re
+
+    # Preserve the strongest existing identity first: a reviewed grading row
+    # bound to this exact Drive file ID.
     for row in records.get("submissions", []):
         file_id = row.get("source_file_id")
-        # Identity for monitoring display: the IC student number when the row
-        # has one, else an opaque prefix of the reviewed roster learner key.
-        # Roster-matched assessments are real assessments; the panel must not
-        # keep showing their files as awaiting.
         identity = str(row.get("student_id") or "")
         if not identity and row.get("status") in {"assessed", "roster_matched"}:
             learner = str(row.get("learner_key") or "")
@@ -110,12 +110,8 @@ def _mappings(assertion, class_key, config):
                 identity = "roster:" + learner[7:23]
         if row.get("class_key") != class_key or not file_id or not identity:
             continue
-        # Bind the assessment to the strongest revision evidence the workbook
-        # offers: a full check timestamp beats a date, and a bare date can never
-        # prove a same-day edit was covered.
         marker, precision = "", "unknown"
         checked = str(row.get("checked_at") or "")
-        import re as _re
         if _re.fullmatch(r"\d{4}-\d{2}-\d{2}[T ].+", checked):
             marker, precision = checked, "timestamp"
         else:
@@ -129,7 +125,6 @@ def _mappings(assertion, class_key, config):
                  "ic_posting_status": str(row.get("ic_posting_status") or "unverified")[:200]}
         prior = by_file.get(file_id)
         if prior and prior["student_id"] != entry["student_id"]:
-            # Two students recorded for one file: leave it unmatched for review.
             conflicted.add(file_id)
             continue
         rank = {"unknown": 0, "date": 1, "timestamp": 2}
@@ -138,9 +133,30 @@ def _mappings(assertion, class_key, config):
             by_file[file_id] = entry
     for file_id in conflicted:
         by_file.pop(file_id, None)
-    return {"source": "grading_workbook", "checked_at": records["checked_at"],
-            "by_file": by_file}
 
+    # New files have no grading row yet. Match them against the current roster
+    # by the Google Forms submitter-name suffix, but only when that name maps to
+    # exactly one active roster row in this class. Existing reviewed file-ID
+    # mappings always win.
+    section_ids = {}
+    for row in records.get("submissions", []):
+        name = str(row.get("section_name") or "")
+        section = str(row.get("section_id") or "")
+        if row.get("class_key") == class_key and name and section:
+            section_ids.setdefault(name, section)
+    try:
+        roster_matches = match_files(files, class_key, read_roster(config), section_ids)
+        for file_id, entry in roster_matches.items():
+            if file_id not in by_file:
+                by_file[file_id] = entry
+        roster_status = "current_roster_plus_grading_workbook"
+    except ConnectionError:
+        # A roster read failure must not erase already verified grading matches.
+        # Unmatched new files remain visible for review.
+        roster_status = "grading_workbook_only_roster_unavailable"
+
+    return {"source": "grading_workbook", "checked_at": records["checked_at"],
+            "coverage": roster_status, "by_file": by_file}
 
 def _attempt_id(scope):
     return key("attempt", scope)
@@ -252,7 +268,7 @@ def scan_and_persist(assertion, day, class_key, config):
     try:
         scan = _drive_scan(assertion, day, class_key, config)
         scope = assignment_scope(class_key, scan["assignment_label"])
-        mappings = _mappings(assertion, class_key, config)
+        mappings = _mappings(assertion, class_key, config, scan["files"])
     except ConnectionError as error:
         if scope is None:
             try:
