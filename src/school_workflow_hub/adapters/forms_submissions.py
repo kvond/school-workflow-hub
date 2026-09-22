@@ -65,12 +65,6 @@ def form_id(parsed, config):
         resolved = mapping.get(public)
         if resolved:
             return resolved
-    # Current school setup uses one shared responder Form.  This single-form
-    # fallback keeps Cloud Run configuration simple while the explicit map is
-    # available if the workflow later grows to multiple Forms.
-    single = str(config.get("HUB_SUBMISSION_FORM_ID") or "").strip()
-    if single and _ID.fullmatch(single):
-        return single
     raise ConnectionError("submission_form_mapping_required")
 
 
