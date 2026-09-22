@@ -373,8 +373,13 @@ def read_inventory(assertion, day, class_key, config):
     lesson = next(l for l in agenda['lessons'] if l['class_key'] == class_key)
     if not lesson.get('assignment_label') or not lesson.get('turnin_form'):
         raise ConnectionError('submission_lesson_mapping_required')
-    from .forms_submissions import collect_assignment_submissions
-    files, evidence = collect_assignment_submissions(config, lesson['assignment_label'])
+    from .forms_submissions import (collect_assignment_submissions,
+                                     historical_assignment_file_ids)
+    records = read_records(assertion, config)
+    known_file_ids = historical_assignment_file_ids(
+        records, class_key, lesson['assignment_label'])
+    files, evidence = collect_assignment_submissions(
+        config, lesson['assignment_label'], known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next(l for l in fresh['lessons'] if l['class_key'] == class_key) != lesson:
         raise ConnectionError('submission_agenda_changed')
@@ -389,6 +394,8 @@ def read_inventory(assertion, day, class_key, config):
             'folders_checked': evidence['root_folders_checked'], 'forms_found': 1,
             'responses_checked': evidence['responses_checked'],
             'matching_responses': evidence['matching_responses'],
+            'known_recorded_files': evidence.get('known_recorded_files', 0),
+            'legacy_outside_root_files': evidence.get('legacy_outside_root_files', 0),
             'files': [{'file_id': f['id'], 'name': f['name'],
                        'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
                        'modified_at': f.get('modifiedTime'), 'version': f.get('version'),
