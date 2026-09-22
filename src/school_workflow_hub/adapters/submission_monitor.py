@@ -234,8 +234,12 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
                                  state["awaiting_assessment"] else
                                  "awaiting_assessment" if assessed or
                                  file_id in state["awaiting_assessment"] else "detected")})
+    matched_present = [f for f in files.values()
+                       if f.get("match") and f["status"] == "present"]
     counts = {"present": sum(1 for f in files.values() if f["status"] == "present"),
               "inaccessible": sum(1 for f in files.values() if f["status"] != "present"),
+              "matched": len(matched_present),
+              "matched_students": len({f["match"]["student_id"] for f in matched_present}),
               "unmatched": sum(1 for f in files.values()
                                if not f.get("match") and f["status"] == "present"),
               "awaiting_assessment": len(state["awaiting_assessment"]),
