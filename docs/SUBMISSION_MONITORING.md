@@ -1,37 +1,42 @@
 # Hosted submission monitoring
 
-Page 2's **Submission monitoring** panel watches each mapped turn-in folder
-throughout the post-due window and records what actually changed, durably, in
-the existing private cloud state. It is deterministic hosted Python behind
-`GET/POST /api/submission-monitor`; it does not depend on a chat session, a
-local machine or an open browser tab, and it never assigns a grade or a zero.
+Page 2's **Submission monitoring** panel watches one exact assignment throughout
+the post-due window and records what actually changed, durably, in the existing
+private cloud state. Discovery is form-first: the shared Google Form supplies
+assignment-bound upload file IDs, then every candidate is verified beneath the
+approved `00 ALL TURN IN` root. The TurnIn Map remains a locator, not a
+completeness boundary. The monitor is deterministic hosted Python behind
+`GET/POST /api/submission-monitor`; it never assigns a grade or a zero.
 
 ## What one scan does
 
-1. Resolves the lesson's specific turn-in folder from the live Agenda TurnIn
-   Map (`date` + `class_key`), exactly like the existing inventory check: no
-   browser-supplied folder IDs, no shortcuts, bounded pages/depth/records, and
-   any incomplete read fails the whole scan.
-2. Reads the reviewed grading workbook's own submission rows and takes their
-   `source_file_id` references as the only verified student↔file matches.
-   Display names are never used to infer identity. Conflicting rows for one
-   file leave it unmatched for review.
-3. Advances the stream state in `workflows/submission_monitor.py`: cumulative
-   per-file history keyed by Drive file ID, first-observed labeling on the
-   baseline scan, and a closed event vocabulary — `first_observed`, `appeared`,
-   `modified`, `inaccessible`, `reappeared`, `matched`, `due_date_changed`,
-   `possible_replacement`.
-4. Persists through the existing `CloudState` task/claim/record model
-   (`adapters/submission_monitor.py`): scope
-   `{workflow: submission-monitor, class_key, assignment_key: folder-<id>}`,
-   short lease, immutable per-run records (`state`, `events`), baseline
-   checkpoint compare-and-set, plus one small CAS attempt pointer per stream
-   for last-attempted / last-successful scan.
+1. Resolves the dated lesson from the live Agenda and requires its exact
+   assignment label plus the shared prefilled `_turnInURL`.
+2. Calls the Google Forms responses API with the runtime reader's
+   `forms.responses.readonly` token. A response belongs to the lesson only
+   when one of its text answers exactly equals the Agenda assignment label.
+   File-upload answers supply Drive file IDs directly; zero responses is a
+   clean empty state.
+3. Verifies every Form-referenced file beneath the configured
+   `HUB_SUBMISSIONS_ROOT_FOLDER` using the existing `drive.readonly` reader.
+   A referenced file that cannot be verified under that root makes coverage
+   incomplete; it never becomes evidence that a student is missing.
+4. Reads the reviewed grading workbook only for already-verified
+   student↔file mappings. It is not a prerequisite for discovering new work.
+5. Advances and persists the existing monitor state, idempotency claims,
+   revision evidence, deadlines and event history. The durable stream identity
+   is class + exact assignment label, not a reused course folder.
+
+Runtime configuration additionally requires `HUB_TURNIN_FORM_ID`, the editable
+/API Form ID for the shared turn-in Form. The runtime service account must be
+able to read that Form's responses. No Form, Drive, or student-file writes are
+performed by this read path.
 
 ## The rules the implementation encodes
 
-- **Assignment identity is the folder, never the due date.** A deadline change
-  emits `due_date_changed` and keeps the same stream and history.
+- **Assignment identity is the exact assignment label within the class, never a
+  reused course folder and never the due date.** A deadline change emits
+  `due_date_changed` and keeps the same stream and history.
 - **The deadline is the third actual class meeting, never the navigation
   date.** The teacher declares an actual start by writing it in the day's Plan
   or Notes ("Started Energy today" — past tense; "Plan to start" is only an
@@ -101,7 +106,7 @@ modified, replacement, ambiguous identity, extension, deadline change, partial
 page, permission failure, interrupted/concurrent worker) and 36 frontend tests
 pass with identical synthetic replay.
 
-Live acceptance, September 18, 2026: with the teacher-approved Viewer grant for
+Historical folder-reader acceptance, September 18, 2026: with the teacher-approved Viewer grant for
 the runtime reader on the turn-in root and the project's Drive API enabled
 (both were required; an unconfigured API and a missing grant produce the same
 Drive 403, which is why the earlier inventory check never succeeded live), the
@@ -121,3 +126,13 @@ was edited to manufacture an event — and remains covered by the synthetic
 cases only. Scheduled execution is not enabled; enabling it is a separate
 explicit approval (cadence + scope), and the scan endpoint's same-origin gate
 means a scheduler integration will also need its own authorized entry path.
+
+
+## Form-first rollout note — September 22, 2026
+
+The form-first refactor is intentionally separate from the September 18
+folder-reader acceptance. It must pass synthetic tests and one supervised live
+lesson after deployment before being described as live-verified. The rollout
+must enable the Google Forms API, configure the editable/API Form ID, and give
+the existing runtime reader access to that Form. Existing Drive-root read
+authority remains unchanged.
