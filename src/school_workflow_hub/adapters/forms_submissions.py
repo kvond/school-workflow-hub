@@ -341,6 +341,13 @@ def collect_assignment_submissions(config, assignment_label, *, form_id=None,
     # from the Form's own File-responses folder.
     candidates = list(refs)
     legacy_known = [file_id for file_id in known if file_id not in refs]
+    course_root_id = str(course_root_id or "")
+    if not candidates and not FILE_ID.fullmatch(course_root_id):
+        return [], {**evidence, "root_folders_checked": 0,
+                    "root_verified_files": 0, "known_recorded_files": len(known),
+                    "legacy_outside_root_files": len(legacy_known),
+                    "form_refs_outside_root": 0, "lesson_folder_files": 0,
+                    "lesson_folder_id": None}
 
     drive_token = service_token(service_email, DRIVE_SCOPE)
     drive = DriveReader(drive_token)
@@ -353,7 +360,6 @@ def collect_assignment_submissions(config, assignment_label, *, form_id=None,
         found, folders_checked = locate_files_under_root(drive, candidates, root_id)
     missing_form = sorted(set(refs) - set(found))
 
-    course_root_id = str(course_root_id or "")
     folder_files, lesson_checked, lesson_folder_id = ({}, 0, None)
     if FILE_ID.fullmatch(course_root_id):
         course_found, course_checked = locate_files_under_root(
