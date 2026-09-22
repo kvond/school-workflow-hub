@@ -53,7 +53,7 @@ class Harness:
             patch.object(hosted, "_mappings",
                          lambda assertion, class_key, config: dict(self.maps)),
             patch.object(hosted, "_lesson",
-                         lambda assertion, day, class_key, config: (None, None, FOLDER)),
+                         lambda assertion, day, class_key, config: (None, None, {}, FOLDER)),
             patch.object(hosted, "_now", lambda: self.port.now.isoformat()),
             patch.object(hosted.topic_starts, "read_week_calendar",
                          lambda assertion, config: dict(self.calendar)),
