@@ -53,6 +53,15 @@ class SharedFormTests(unittest.TestCase):
         self.assertEqual(evidence["responses_checked"], 2)
         self.assertEqual(evidence["matching_responses"], 1)
 
+    def test_assignment_specific_form_accepts_all_responses_without_label_question(self):
+        reader = Reader([{"responses": [
+            form_response("anything", ((FILE_A, "one.pptx"),)),
+            form_response("different", ((FILE_B, "two.pptx"),)),
+        ]}])
+        refs, evidence = response_file_refs(reader, FORM, None)
+        self.assertEqual(set(refs), {FILE_A, FILE_B})
+        self.assertEqual(evidence["matching_responses"], 2)
+
     def test_zero_responses_is_clean_empty_state(self):
         refs, evidence = response_file_refs(
             Reader([{"responses": []}]), FORM, "Biology assignment")
