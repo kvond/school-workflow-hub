@@ -241,17 +241,17 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
         if len(known) > MAX_FILES:
             raise ConnectionError("submission_scan_incomplete")
 
+    # Current Form response IDs are the only candidates that must be proved
+    # inside the approved root. Historical workbook IDs may come from the
+    # explicitly deprecated pre-root intake tree; do not crawl the whole root
+    # trying to rediscover them. Report them as named legacy coverage instead.
     candidates = list(refs)
-    for file_id in known:
-        if file_id not in refs:
-            candidates.append(file_id)
-    if len(candidates) > MAX_FILES:
-        raise ConnectionError("submission_scan_incomplete")
+    legacy_known = [file_id for file_id in known if file_id not in refs]
 
     if not candidates:
         return [], {**evidence, "root_folders_checked": 0,
                     "root_verified_files": 0, "known_recorded_files": len(known),
-                    "legacy_outside_root_files": 0}
+                    "legacy_outside_root_files": len(legacy_known)}
 
     drive_token = service_token(service_email, DRIVE_SCOPE)
     drive = DriveReader(drive_token)
@@ -266,7 +266,6 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
         # cannot prove where it lives. That is incomplete current coverage and
         # must fail closed.
         raise ConnectionError("submission_root_coverage_incomplete")
-    missing_known = sorted(set(known) - set(found))
 
     files = []
     for file_id in sorted(found):
@@ -285,4 +284,4 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
                       "assignment_evidence": "form_response" if ref else "grading_record"})
     return files, {**evidence, "root_folders_checked": folders_checked,
                    "root_verified_files": len(files), "known_recorded_files": len(known),
-                   "legacy_outside_root_files": len(missing_known)}
+                   "legacy_outside_root_files": len(legacy_known)}
