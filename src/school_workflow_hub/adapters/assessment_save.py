@@ -29,6 +29,7 @@ DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 WRITE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 EXPORTABLE = {"application/vnd.google-apps.presentation",
               "application/vnd.google-apps.document"}
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 NUMERIC = ("content_score", "revision_score")
 
 
@@ -79,6 +80,38 @@ def _batch(source, token, requests):
         raise ConnectionError("assessment_write_uncertain") from None
 
 
+def _pptx_text(raw):
+    """Extract visible slide text from a student-uploaded PowerPoint safely."""
+    import io
+    import zipfile
+    from xml.etree import ElementTree
+    if not raw or len(raw) > 25_000_000:
+        raise ConnectionError("assessment_source_too_large")
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            slides = [name for name in archive.namelist()
+                      if re.fullmatch(r"ppt/slides/slide[0-9]+\\.xml", name)]
+            slides.sort(key=lambda name: int(re.search(r"slide([0-9]+)\\.xml$", name)[1]))
+            if len(slides) > 500 or sum(archive.getinfo(name).file_size for name in slides) > 5_000_000:
+                raise ConnectionError("assessment_source_too_large")
+            chunks = []
+            text_tag = "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
+            for name in slides:
+                root = ElementTree.fromstring(archive.read(name))
+                words = [node.text for node in root.iter(text_tag) if node.text]
+                if words:
+                    chunks.append("\\n".join(words))
+    except ConnectionError:
+        raise
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile, ElementTree.ParseError):
+        raise ConnectionError("assessment_source_unsupported") from None
+    text = "\\n\\n".join(chunks).replace("\\r\\n", "\\n").lstrip("﻿")
+    if not text or len(text.encode("utf-8")) > 2_000_000:
+        raise ConnectionError("assessment_source_too_large" if text else
+                              "assessment_source_unsupported")
+    return text
+
+
 def capture(assertion, file_id, config):
     """Authenticated fresh export of one submission: metadata, text, hash."""
     audience, allowed = _identity_configuration(config)
@@ -91,13 +124,19 @@ def capture(assertion, file_id, config):
                    "supportsAllDrives": "true"})
     if not isinstance(meta, dict) or meta.get("id") != file_id or meta.get("trashed") is not False:
         raise ConnectionError("assessment_source_unavailable")
-    if meta.get("mimeType") not in EXPORTABLE:
+    mime = meta.get("mimeType")
+    if mime in EXPORTABLE:
+        raw = _drive(token, "files/" + file_id + "/export", {"mimeType": "text/plain"},
+                     binary=True)
+        if not raw or len(raw) > 2_000_000:
+            raise ConnectionError("assessment_source_too_large")
+        text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
+    elif mime == PPTX:
+        raw = _drive(token, "files/" + file_id,
+                     {"alt": "media", "supportsAllDrives": "true"}, binary=True)
+        text = _pptx_text(raw)
+    else:
         raise ConnectionError("assessment_source_unsupported")
-    raw = _drive(token, "files/" + file_id + "/export", {"mimeType": "text/plain"},
-                 binary=True)
-    if not raw or len(raw) > 2_000_000:
-        raise ConnectionError("assessment_source_too_large")
-    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
     return {"schema_version": CAPTURE_VERSION,
             "file": {"id": meta["id"], "name": str(meta.get("name", ""))[:200],
                      "mime_type": meta["mimeType"],
