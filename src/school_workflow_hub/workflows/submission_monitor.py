@@ -187,7 +187,10 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
         mapping = mappings["by_file"].get(file_id)
         match = None
         if mapping:
-            match = {"student_id": mapping["student_id"], "section_id": mapping["section_id"],
+            match = {"student_id": mapping["student_id"],
+                     "student_name": mapping.get("student_name"),
+                     "section_id": mapping["section_id"],
+                     "section_name": mapping.get("section_name"),
                      "identity_basis": mapping["identity_basis"],
                      "assessed_marker": mapping["assessed_marker"],
                      "marker_precision": mapping["marker_precision"],
@@ -307,8 +310,9 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
                           "known_recorded_files": scan["coverage"].get("known_recorded_files", 0),
                           "legacy_outside_root_files": scan["coverage"].get(
                               "legacy_outside_root_files", 0)},
-             "roster": {"source": "grading_workbook", "checked_at": mappings["checked_at"],
-                        "coverage": "verified_file_mappings_only",
+             "roster": {"source": mappings.get("roster_source") or "grading_workbook",
+                        "checked_at": mappings.get("roster_checked_at") or mappings["checked_at"],
+                        "coverage": "Rosters_name_match_plus_saved_assessment_identity",
                         "ic_roster_reader": "not_integrated"},
              "files": files, "awaiting_assessment": sorted(set(awaiting)),
              "needs_review": review, "scan_count": ((previous or {}).get("scan_count") or 0) + 1,
