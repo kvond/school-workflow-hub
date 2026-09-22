@@ -301,6 +301,9 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
                           "responses_checked": scan["coverage"].get("responses_checked"),
                           "matching_responses": scan["coverage"].get("matching_responses"),
                           "root_verified_files": scan["coverage"].get("root_verified_files"),
+                          "lesson_folder_files": scan["coverage"].get("lesson_folder_files", 0),
+                          "form_refs_outside_root": scan["coverage"].get(
+                              "form_refs_outside_root", 0),
                           "known_recorded_files": scan["coverage"].get("known_recorded_files", 0),
                           "legacy_outside_root_files": scan["coverage"].get(
                               "legacy_outside_root_files", 0)},
@@ -313,9 +316,12 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
              or scan["observed_at"], "external_writes": 0}
     fingerprint = content_hash({"files": {k: {"m": v["modified_at"], "v": v.get("version"),
                                               "s": v["status"]} for k, v in files.items()}})
+    matched_present = [f for f in files.values()
+                       if f.get("match") and f["status"] == "present"]
     counts = {"present": sum(1 for f in files.values() if f["status"] == "present"),
               "inaccessible": sum(1 for f in files.values() if f["status"] != "present"),
-              "matched": sum(1 for f in files.values() if f.get("match") and f["status"] == "present"),
+              "matched": len(matched_present),
+              "matched_students": len({f["match"]["student_id"] for f in matched_present}),
               "unmatched": sum(1 for f in files.values() if not f.get("match") and f["status"] == "present"),
               "awaiting_assessment": len(state["awaiting_assessment"]),
               "needs_review": len(review), "events_this_scan": len(events)}
