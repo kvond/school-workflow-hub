@@ -26,7 +26,7 @@ OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
 STATUS_VERSION = "hub-submission-monitor-status/v1"
 MAX_LISTED = 120
-DISCOVERY_VERSION = 2
+DISCOVERY_VERSION = 3
 
 
 def _now():
@@ -64,7 +64,7 @@ def _drive_scan(assertion, day, class_key, config):
                               "form_source": str(config.get("HUB_TURNIN_FORM_ID", "")),
                               "discovery_version": DISCOVERY_VERSION})[:40]
     return {"class_key": class_key, "source_id": source_id,
-            "source_name": "Current Form + recorded assignment evidence · 00 ALL TURN IN",
+            "source_name": "Current Form responses · 00 ALL TURN IN",
             "source_kind": "form_responses_root_verified",
             "assignment_label": assignment_label, "date": day,
             "observed_at": _now(),
