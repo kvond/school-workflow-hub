@@ -1,9 +1,9 @@
-"""Form-first submission discovery, verified against the approved Drive root.
+"""Assignment submission discovery, verified against the approved Drive root.
 
-The shared Google Form is the durable submission index: an exact assignment
-answer selects responses and each FileUpload answer supplies a Drive file ID.
-Those IDs are never trusted by themselves. Every candidate must also be found
-beneath HUB_SUBMISSIONS_ROOT_FOLDER before it can enter grading/monitoring.
+The lesson's Google Form supplies current FileUpload references. The exact
+approved lesson folder supplements that index because earlier routing moved
+some valid uploads after submission. Off-root Form references stay explicit
+coverage gaps and never suppress verified work or become missing-work claims.
 
 This module is read-only. It creates/moves no files and submits no Forms.
 """
@@ -304,9 +304,9 @@ def collect_assignment_submissions(config, assignment_label, *, form_id=None,
     """Read form references and return only files verified below the approved root.
 
     known_file_ids are assignment-bound file IDs already present in the grading
-    workbook. They are historical evidence only: IDs not also referenced by the
-    current shared Form are counted as legacy coverage and are never silently
-    pulled into the current approved-root scan.
+    workbook. They are historical evidence only. Current intake comes from the
+    lesson Form plus the exact approved lesson folder; recorded files elsewhere
+    remain explicit legacy coverage.
     """
     configured_form_id = str(config.get("HUB_TURNIN_FORM_ID", ""))
     form_id = str(form_id or "")
