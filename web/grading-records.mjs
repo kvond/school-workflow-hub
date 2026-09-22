@@ -66,7 +66,7 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
  root.replaceChildren();
  if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
  const rows=filterRecords(state.data,classKey,sectionId,assignmentKey,stage),included=rows.filter(r=>r.included_in_counts);
- line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with matched submissions · ${included.length} records · checked ${time(state.data.checked_at)}`,'hint');
+ line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with saved matched assessment records · ${included.length} saved records · checked ${time(state.data.checked_at)}`,'hint');
  if(sectionId==='matched'){
   const unmatched=state.data.submissions.filter(r=>r.class_key===classKey&&!r.section_id).length;
   if(unmatched)line(root,`${unmatched} ${unmatched===1?'record needs':'records need'} a section match. Choose Unmatched in Section to review them.`,'hint');
