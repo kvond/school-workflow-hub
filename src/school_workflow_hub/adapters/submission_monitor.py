@@ -13,7 +13,8 @@ from .dated_agenda import read_day
 from .firestore_state import configured_store
 from .grading_records import read_records
 from .hosted_agenda import ConnectionError
-from .forms_submissions import collect_assignment_submissions
+from .forms_submissions import (collect_assignment_submissions,
+                                historical_assignment_file_ids)
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
@@ -45,7 +46,11 @@ def _lesson(assertion, day, class_key, config):
 def _drive_scan(assertion, day, class_key, config):
     """Historical name retained for callers/tests; source is now Form + root."""
     _, lesson, assignment_label = _lesson(assertion, day, class_key, config)
-    files, evidence = collect_assignment_submissions(config, assignment_label)
+    records = read_records(assertion, config)
+    known_file_ids = historical_assignment_file_ids(
+        records, class_key, assignment_label)
+    files, evidence = collect_assignment_submissions(
+        config, assignment_label, known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
         raise ConnectionError("submission_agenda_changed")
@@ -67,7 +72,10 @@ def _drive_scan(assertion, day, class_key, config):
                          "forms_found": 1,
                          "responses_checked": evidence["responses_checked"],
                          "matching_responses": evidence["matching_responses"],
-                         "root_verified_files": evidence["root_verified_files"]},
+                         "root_verified_files": evidence["root_verified_files"],
+                         "known_recorded_files": evidence.get("known_recorded_files", 0),
+                         "legacy_outside_root_files": evidence.get(
+                             "legacy_outside_root_files", 0)},
             "files": [{"id": f["id"], "name": f["name"],
                        "modified_at": f.get("modifiedTime"),
                        "version": f.get("version"),
