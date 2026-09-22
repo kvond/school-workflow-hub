@@ -55,7 +55,7 @@ def turnin_form(raw):
         query = parse_qs(url.query, max_num_fields=20, keep_blank_values=False)
         values = []
         for key, items in query.items():
-            if not re.fullmatch(r'entry\\.[0-9]+', key):
+            if not re.fullmatch(r'entry\.[0-9]+', key):
                 continue
             for item in items:
                 if isinstance(item, str) and 0 < len(item) <= 200 and item not in values:
