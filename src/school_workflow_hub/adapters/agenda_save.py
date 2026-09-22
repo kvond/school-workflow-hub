@@ -15,6 +15,7 @@ from . import topic_starts
 from ..core.cloud_state import CloudState, Conflict
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import stream_scope
+from .submission_sources import resolve_source
 
 
 def _topic_record(assertion, day, course, values, config, store, *, record=True):
@@ -26,11 +27,10 @@ def _topic_record(assertion, day, course, values, config, store, *, record=True)
     try:
         result = read_day(assertion, day, config)
         lesson = next(l for l in result['lessons'] if l['class_key'] == course)
-        folder = lesson.get('turnin_folder') or ''
-        prefix = 'https://drive.google.com/drive/folders/'
-        if not folder.startswith(prefix):
-            return {'recorded': None, 'reason': 'no_turnin_mapping'}
-        scope = stream_scope(course, folder[len(prefix):])
+        try:
+            scope = stream_scope(course, resolve_source(lesson, config))
+        except ConnectionError as error:
+            return {'recorded': None, 'reason': str(error)}
         outcome = {'recorded': None}
         if record:
             outcome = topic_starts.record_declarations(

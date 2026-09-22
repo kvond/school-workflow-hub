@@ -9,7 +9,21 @@ export function validateStatus(data){
 }
 
 // One specific recovery action per failure; never a generic shrug.
-const FAILURES={
+export const FORM_FAILURES={
+ submission_form_mapping_required:'The submission Form needs its assignment mapping configured in the hub. Contact the hub maintainer; your files have not been changed.',
+ submission_form_link_invalid:'The Agenda submission link is not a supported Google Form link. Check the lesson’s submit link.',
+ submission_form_mapping_conflict:'The configured Form or assignment question does not match. Ask the hub maintainer to check the mapping.',
+ submission_form_assignment_mismatch:'The submit link names a different assignment from the Agenda mapping. Check the selected lesson’s submit link.',
+ submission_form_access_required:'The hub cannot read this Form’s responses. The Form owner needs to check the reader’s access.',
+ submission_forms_scope_missing:'The hub’s permission to read Form responses is missing. Ask the hub maintainer to configure it.',
+ submission_forms_api_disabled:'The Forms API is not enabled for the hub. Ask the hub maintainer to enable it.',
+ submission_forms_rate_limited:'Google temporarily limited the response read. Wait a minute, then try again.',
+ submission_forms_unavailable:'The Form response service is unavailable. Try again in a few minutes.',
+ submission_form_scan_incomplete:'The response read did not finish. The previous successful scan is preserved; try again or ask the hub maintainer to check the read limits.',
+ submission_form_upload_question_required:'This Form has no supported file-upload question. Check the selected submission Form.',
+ submission_form_changed:'The Form changed during the read. Reload the lesson and try again.',
+ submission_file_access_required:'A submitted file could not be read. The Form owner needs to check its access or trash status.'};
+const FAILURES={...FORM_FAILURES,
  submission_folder_access_required:'The cloud service cannot read this turn-in folder. Share the submissions folder tree with the hub runtime reader as Viewer, then Scan again.',
  submission_lesson_mapping_required:'This lesson has no specific turn-in folder mapping. Add its TurnIn Map row in the Agenda, then Scan again.',
  submission_scan_incomplete:'The folder read hit a bound before completing. No baseline was replaced; Scan again once the folder is reachable.',
@@ -58,7 +72,10 @@ export function renderStatus(root,data){
  root.append(node(root,'p',deadlineLine(data.deadline),'hint'));
  if(data.status==='no_complete_scan_recorded'){root.append(node(root,'p','No complete scan is recorded yet. Scan submissions to establish the first-observed baseline; existing files will be labeled first observed, never late.','hint'));return;}
  root.append(node(root,'p','Assignment '+data.stream.assignment_label+' · scanned '+when(data.observed_at)+' · scan '+data.scan_count+' · baseline since '+when(data.baseline_established_at)+(data.unchanged_rerun?' · unchanged since the last scan':'')));
- root.append(node(root,'p','Coverage: complete visible-file scan, '+data.coverage.folders_checked+' folders. Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
+ const coverage=data.coverage.source==='form_responses'
+  ?'Coverage: uploaded files for this assignment’s Form responses. '+data.coverage.responses_without_upload+' matching responses had no upload. '
+  :'Coverage: complete visible-file scan, '+data.coverage.folders_checked+' folders. ';
+ root.append(node(root,'p',coverage+'Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;
  root.append(node(root,'p',`${c.present} present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
  if(data.events_last_scan.length){
@@ -103,10 +120,10 @@ export function mountSubmissionMonitor(container,{fetcher,onFiles}={}){
  container.append(head,row,state,status);
  let scope=null,generation=0;
  async function load(kind){
-  if(!scope){state.textContent='Load a lesson with a mapped turn-in folder first.';return;}
+  if(!scope){state.textContent='Load a lesson with a submission source first.';return;}
   const mine=++generation,{date,classKey}=scope;
   refresh.disabled=scan.disabled=true;
-  state.textContent=kind==='scan'?'Scanning the turn-in folder and saving observations…':'Reading the stored monitoring state…';
+  state.textContent=kind==='scan'?'Reading submissions and saving observations…':'Reading the stored monitoring state…';
   try{
    const response=kind==='scan'
     ?await request('/api/submission-monitor',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'scan',date,class_key:classKey})})

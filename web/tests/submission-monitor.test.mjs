@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine} from '../submission-monitor.mjs';
+import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine,FORM_FAILURES} from '../submission-monitor.mjs';
 
 class Element{
  constructor(doc,tag){this.ownerDocument=doc;this.tagName=tag;this.children=[];this.textContent='';this.attributes={};this.listeners={};this.disabled=false;}
@@ -65,6 +65,14 @@ test('first-scan state explains the baseline without late claims',()=>{
  renderStatus(target,validateStatus({schema_version:'hub-submission-monitor-status/v1',external_writes:0,run_enabled:false,status:'no_complete_scan_recorded',last_attempt:null,automation:{active:false}}));
  assert.match(target.allText,/first-observed baseline/);
  assert.match(target.allText,/never late/);
+});
+
+test('shared Form coverage stays assignment-scoped and failures stay actionable',()=>{
+ const target=root();renderStatus(target,status({coverage:{source:'form_responses',responses_without_upload:2}}));
+ assert.match(target.allText,/this assignment’s Form responses/);
+ assert.match(target.allText,/2 matching responses had no upload/);
+ assert.doesNotMatch(target.allText,/undefined folders/);
+ for(const code of Object.keys(FORM_FAILURES))assert.notEqual(describeFailure(code),describeFailure('unknown_code'));
 });
 
 test('the deadline line states the rule honestly in every state',()=>{

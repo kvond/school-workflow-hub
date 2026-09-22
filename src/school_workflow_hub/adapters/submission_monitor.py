@@ -15,10 +15,12 @@ from .firestore_state import configured_store
 from .grading_records import read_records
 from .hosted_agenda import ConnectionError, service_token
 from .submission_inventory import DRIVE_SCOPE, DriveReader, collect
+from .submission_sources import resolve_source
+from . import forms_submissions
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
-    CLASS_KEYS, DERIVATION_VERSION, advance_state, stream_scope,
+    CLASS_KEYS, DERIVATION_VERSION, advance_state, stream_scope, scan_source,
 )
 from . import topic_starts
 
@@ -39,15 +41,24 @@ def _lesson(assertion, day, class_key, config):
     lesson = next((l for l in agenda["lessons"] if l["class_key"] == class_key), None)
     if lesson is None:
         raise ConnectionError("submission_lesson_mapping_required")
-    folder = lesson.get("turnin_folder") or ""
-    prefix = "https://drive.google.com/drive/folders/"
-    if not folder.startswith(prefix) or not lesson.get("assignment_label"):
-        raise ConnectionError("submission_lesson_mapping_required")
-    return agenda, lesson, folder[len(prefix):]
+    return agenda, lesson, resolve_source(lesson, config)
 
 
 def _drive_scan(assertion, day, class_key, config):
     agenda, lesson, folder_id = _lesson(assertion, day, class_key, config)
+    if isinstance(folder_id, dict):
+        source = folder_id
+        form, files, coverage = forms_submissions.read(source, config)
+        fresh = read_day(assertion, day, config)
+        if next((l for l in fresh['lessons'] if l['class_key'] == class_key), None) != lesson:
+            raise ConnectionError('submission_agenda_changed')
+        return {'class_key': class_key, 'source': source,
+                'source_name': str(form.get('info', {}).get('title') or lesson['assignment_label'])[:300],
+                'assignment_label': lesson['assignment_label'], 'date': day,
+                'observed_at': _now(), 'day_plan': lesson.get('plan') or '',
+                'day_notes': lesson.get('notes') or '', 'coverage': coverage,
+                'files': [dict(id=f['id'], name=f['name'], modified_at=f['modifiedTime'],
+                               version=f['version'], form_responses=f['form_responses']) for f in files]}
     reader = DriveReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", ""), DRIVE_SCOPE))
     course = {"biology": "Biology", "forensics": "Forensics", "anatomy": "Anatomy"}[class_key]
     root, files, folders, forms = collect(reader, folder_id, course=course, week=agenda["week"])
@@ -221,7 +232,7 @@ def scan_and_persist(assertion, day, class_key, config):
     scope = None
     try:
         scan = _drive_scan(assertion, day, class_key, config)
-        scope = stream_scope(class_key, scan["folder_id"])
+        scope = stream_scope(class_key, scan_source(scan))
         mappings = _mappings(assertion, class_key, config)
     except ConnectionError as error:
         if scope is None:
@@ -253,8 +264,10 @@ def scan_and_persist(assertion, day, class_key, config):
     previous = records_prior["state"] if records_prior else None
     baseline = (task or {}).get("baseline") or {}
     checkpoint = baseline.get("checkpoint_token")
-    fingerprint = content_hash({"files": sorted(
-        (f["id"], f["modified_at"], f.get("version")) for f in scan["files"])})
+    # Page sizes/order can change without changing this assignment's evidence.
+    stable_coverage = {k: v for k, v in scan['coverage'].items() if k != 'pages_read'}
+    fingerprint = content_hash({'files': sorted(scan['files'], key=lambda f: f['id']),
+                                'coverage': stable_coverage})
     maps_hash = content_hash(_stable_mappings(mappings))
     if (previous is not None and baseline.get("source_revision") == fingerprint
             and previous.get("mappings_fingerprint") == maps_hash
@@ -284,7 +297,7 @@ def scan_and_persist(assertion, day, class_key, config):
         result["state"]["mappings_fingerprint"] = maps_hash
         result["state"]["deadline"] = deadline
         result["state"]["deadline_fingerprint"] = deadline_hash
-        baseline = {"scope": "submission-monitor:" + class_key + ":" + scan["folder_id"],
+        baseline = {"scope": "submission-monitor:" + class_key + ":" + (scan.get("folder_id") or scope['assignment_key']),
                     "source_revision": fingerprint, "observed_at": scan["observed_at"],
                     "fingerprint": result["fingerprint"]}
         store.finish(claim, records={"state": result["state"], "events": result["events"]},
@@ -328,7 +341,7 @@ def read_status(assertion, day, class_key, config):
                     "ic_alignment": "calculated_not_verified_in_ic"}
     if not task or not task.get("last_result"):
         return {"schema_version": STATUS_VERSION, "configured": True,
-                "stream": {"class_key": class_key, "folder_id": folder_id},
+                "stream": {"class_key": class_key, **({'source': folder_id} if isinstance(folder_id, dict) else {'folder_id': folder_id})},
                 "status": "no_complete_scan_recorded", "counts": None, "files": [],
                 "needs_review": [], "events_last_scan": [], "unchanged_rerun": False,
                 "deadline": deadline, "topic_declaration": None,

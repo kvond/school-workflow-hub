@@ -36,7 +36,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _drive(token, path, params, *, binary=False):
+def _drive(token, path, params, *, binary=False, max_bytes=2_000_000):
     import requests as http
     try:
         with http.Session() as session:
@@ -44,12 +44,20 @@ def _drive(token, path, params, *, binary=False):
             response = session.get("https://www.googleapis.com/drive/v3/" + path,
                                    params=params,
                                    headers={"Authorization": "Bearer " + token},
-                                   timeout=(5, 30), allow_redirects=False)
+                                   timeout=(5, 30), allow_redirects=False, stream=binary)
             if response.status_code in (403, 404):
                 raise ConnectionError("assessment_source_access_required")
             if response.status_code != 200:
                 raise ConnectionError("assessment_source_unavailable")
-            return response.content if binary else response.json()
+            if not binary:
+                return response.json()
+            chunks, size = [], 0
+            for chunk in response.iter_content(chunk_size=65536):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ConnectionError('assessment_source_too_large')
+                chunks.append(chunk)
+            return b''.join(chunks)
     except ConnectionError:
         raise
     except Exception:
@@ -91,13 +99,23 @@ def capture(assertion, file_id, config):
                    "supportsAllDrives": "true"})
     if not isinstance(meta, dict) or meta.get("id") != file_id or meta.get("trashed") is not False:
         raise ConnectionError("assessment_source_unavailable")
-    if meta.get("mimeType") not in EXPORTABLE:
+    from . import pptx_text
+    if meta.get('mimeType') == pptx_text.MIME:
+        raw = _drive(token, 'files/' + file_id, {'alt': 'media', 'supportsAllDrives': 'true'},
+                     binary=True, max_bytes=pptx_text.MAX_BYTES)
+        text = pptx_text.extract(raw)
+    elif meta.get("mimeType") in EXPORTABLE:
+        raw = _drive(token, "files/" + file_id + "/export", {"mimeType": "text/plain"},
+                     binary=True)
+        if not raw or len(raw) > 2_000_000:
+            raise ConnectionError("assessment_source_too_large")
+        text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
+    else:
         raise ConnectionError("assessment_source_unsupported")
-    raw = _drive(token, "files/" + file_id + "/export", {"mimeType": "text/plain"},
-                 binary=True)
-    if not raw or len(raw) > 2_000_000:
-        raise ConnectionError("assessment_source_too_large")
-    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
+    fresh = _drive(token, 'files/' + file_id,
+                   {'fields': 'id,name,mimeType,trashed,modifiedTime,version', 'supportsAllDrives': 'true'})
+    if fresh != meta:
+        raise ConnectionError('submission_changed_reassess')
     return {"schema_version": CAPTURE_VERSION,
             "file": {"id": meta["id"], "name": str(meta.get("name", ""))[:200],
                      "mime_type": meta["mimeType"],

@@ -132,7 +132,10 @@ files, multiple direct-upload folders and nested Form upload folders. The
 TurnIn Map is a locator, not a completeness guarantee or the assignment's ID.
 
 Reconcile actual Forms responses, file references and verified assignment /
-student identities across authorized sources. Legacy intake outside the root
+student identities across authorized sources. The Form-first reader now supports
+exact assignment selectors within a shared Form; see [submission intake](SUBMISSION_INVENTORY.md)
+for the private binding and live-acceptance requirements. This code change
+does not establish production access or recover historical submissions. Legacy intake outside the root
 is an explicit recovery/coverage item, not permission to expand sharing. Do not
 restore the deprecated root. Preserve original links and all earlier/later
 submissions; deduplicate references, not distinct versions. No zeros or

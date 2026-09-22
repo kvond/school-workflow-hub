@@ -37,6 +37,9 @@ const FAILURES={
  assessment_source_access_required:'The hub’s service account cannot read this document (server-side Drive access, not your sign-in). Share the file or its folder with the runtime reader as Viewer, then retry.',
  assessment_source_unavailable:'The document could not be read from Drive right now (a server-side source problem, not your sign-in). Retry shortly.',
  assessment_source_unsupported:'This file type cannot be exported as text for assessment.',
+ assessment_pptx_invalid:'This PowerPoint file could not be read. Upload a fresh copy of the original deck; no assessment was saved.',
+ assessment_source_no_text:'This presentation has no readable text. Review image-based answers manually; no assessment was saved.',
+ assessment_source_too_large:'This file exceeds the assessment reader’s size limit. No assessment was saved.',
  sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
 const explain=code=>FAILURES[code]||('The request could not be completed ('+code+'). Nothing was saved.');
 

@@ -9,6 +9,8 @@ from .dated_agenda import read_day
 from .grading_records import read_records
 from .hosted_agenda import ConnectionError, service_token
 from ..core.cloud_state import content_hash
+from .submission_sources import resolve_source, form_settings
+from . import forms_submissions
 
 FOLDER = 'application/vnd.google-apps.folder'
 FORM = 'application/vnd.google-apps.form'
@@ -278,6 +280,21 @@ def read_lesson_inventory(assertion, class_key, assignment_key, config):
     if not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}', assignment_key or ''):
         raise ConnectionError('invalid_submission_scope')
     records = read_records(assertion, config)
+    binding = _registered_form(records, class_key, assignment_key, config)
+    if binding:
+        source = resolve_source(binding, config)
+        form, files, coverage = forms_submissions.read(source, config)
+        fresh = read_records(assertion, config)
+        if _registered_form(fresh, class_key, assignment_key, config) != binding:
+            raise ConnectionError('submission_agenda_changed')
+        result = _form_inventory(form, files, coverage, binding, class_key)
+        result['assignment_key'] = assignment_key
+        assessed = {r.get('source_file_id') for r in fresh.get('submissions', [])
+                    if r.get('class_key') == class_key and r.get('assignment_key') == assignment_key
+                    and r.get('status') in {'assessed', 'roster_matched'}}
+        for item in result['files']:
+            item['stage'] = 'assessed' if item['file_id'] in assessed else 'awaiting_assessment'
+        return result
     reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
     course = CLASS_COURSE[class_key]
     folders, unreadable = resolve_lesson_folders(
@@ -319,12 +336,16 @@ def read_inventory(assertion, day, class_key, config):
         raise ConnectionError('invalid_submission_scope')
     agenda = read_day(assertion, day, config)
     lesson = next(l for l in agenda['lessons'] if l['class_key'] == class_key)
-    match = re.fullmatch(r'https://drive.google.com/drive/folders/([A-Za-z0-9_-]{20,128})', lesson.get('turnin_folder') or '')
-    if not match:
-        raise ConnectionError('submission_lesson_mapping_required')
+    source = resolve_source(lesson, config)
+    if isinstance(source, dict):
+        form, files, coverage = forms_submissions.read(source, config)
+        fresh = read_day(assertion, day, config)
+        if next(l for l in fresh['lessons'] if l['class_key'] == class_key) != lesson:
+            raise ConnectionError('submission_agenda_changed')
+        return dict(_form_inventory(form, files, coverage, lesson, class_key), date=day)
     reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
     course = {'biology': 'Biology', 'forensics': 'Forensics', 'anatomy': 'Anatomy'}[class_key]
-    root, files, folders, forms = collect(reader, match[1], course=course, week=agenda['week'])
+    root, files, folders, forms = collect(reader, source, course=course, week=agenda['week'])
     fresh = read_day(assertion, day, config)
     if next(l for l in fresh['lessons'] if l['class_key'] == class_key) != lesson:
         raise ConnectionError('submission_agenda_changed')
@@ -337,3 +358,51 @@ def read_inventory(assertion, day, class_key, config):
                        'modified_at': f.get('modifiedTime'), 'version': f.get('version')} for f in files],
             'coverage': 'visible_files_only', 'assessment_status': 'not_assessed',
             'roster_verified': False, 'external_writes': 0}
+
+
+def _registered_form(records, class_key, assignment_key, config):
+    """Exact private workbook/config binding; never guess from similar titles.
+
+    Optional Assignments columns: turnin_form and turnin_assignment. A config
+    binding is also supported so deployments need not write the workbook.
+    """
+    matches = [r for r in records.get('assignments', [])
+               if r.get('class_key') == class_key and r.get('assignment_key') == assignment_key]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise ConnectionError('submission_lesson_mapping_required')
+    row = matches[0]
+    candidates = []
+    if row.get('turnin_form') or row.get('turnin_assignment'):
+        candidates.append({'turnin_form': row.get('turnin_form'),
+                           'assignment_label': row.get('turnin_assignment')})
+    for form_id, settings in form_settings(config).items():
+        if not isinstance(settings, dict):
+            raise ConnectionError('submission_form_mapping_required')
+        lessons = settings.get('lessons', {})
+        if not isinstance(lessons, dict) or not isinstance(lessons.get(class_key, {}), dict):
+            raise ConnectionError('submission_form_mapping_required')
+        label = lessons.get(class_key, {}).get(assignment_key)
+        if label is not None:
+            candidates.append({'turnin_form': form_id, 'assignment_label': label})
+    if len(candidates) > 1:
+        raise ConnectionError('submission_form_mapping_conflict')
+    return candidates[0] if candidates else None
+
+
+def _form_inventory(form, files, coverage, lesson, class_key):
+    return {'schema_version': 'hub-submission-inventory/v1', 'class_key': class_key,
+            'assignment': lesson['assignment_label'], 'source_kind': 'form',
+            'folder_name': str(form.get('info', {}).get('title') or lesson['assignment_label']),
+            'folder_url': None, 'form_url': form.get('responderUri'),
+            'checked_at': datetime.now(timezone.utc).isoformat(),
+            'source_revision': content_hash({'lesson': lesson, 'files': files, 'coverage': coverage}),
+            'folders_checked': 0, 'forms_found': 1, 'sources_unreadable': 0,
+            'files': [{'file_id': f['id'], 'name': f['name'],
+                       'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
+                       'modified_at': f['modifiedTime'], 'version': f['version'],
+                       'form_responses': f['form_responses'], 'status': 'present',
+                       'stage': 'awaiting_assessment'} for f in files],
+            'coverage': 'selected_form_assignment_only', 'form_coverage': coverage,
+            'assessment_status': 'not_assessed', 'roster_verified': False, 'external_writes': 0}

@@ -1,6 +1,6 @@
 # Hosted submission monitoring
 
-Page 2's **Submission monitoring** panel watches each mapped turn-in folder
+Page 2's **Submission monitoring** panel watches each mapped submission source
 throughout the post-due window and records what actually changed, durably, in
 the existing private cloud state. It is deterministic hosted Python behind
 `GET/POST /api/submission-monitor`; it does not depend on a chat session, a
@@ -8,10 +8,11 @@ local machine or an open browser tab, and it never assigns a grade or a zero.
 
 ## What one scan does
 
-1. Resolves the lesson's specific turn-in folder from the live Agenda TurnIn
-   Map (`date` + `class_key`), exactly like the existing inventory check: no
-   browser-supplied folder IDs, no shortcuts, bounded pages/depth/records, and
-   any incomplete read fails the whole scan.
+1. Resolves the lesson’s Form and exact assignment selector from the Agenda
+   and private configuration, or its specific legacy turn-in folder when there
+   is no Form. Form responses supply uploaded file IDs directly; folder
+   sources retain bounded traversal. See [intake configuration](SUBMISSION_INVENTORY.md).
+   No browser-supplied source IDs are accepted and incomplete reads fail the scan.
 2. Reads the reviewed grading workbook's own submission rows and takes their
    `source_file_id` references as the only verified student↔file matches.
    Display names are never used to infer identity. Conflicting rows for one
@@ -23,15 +24,25 @@ local machine or an open browser tab, and it never assigns a grade or a zero.
    `possible_replacement`.
 4. Persists through the existing `CloudState` task/claim/record model
    (`adapters/submission_monitor.py`): scope
-   `{workflow: submission-monitor, class_key, assignment_key: folder-<id>}`,
+   `{workflow: submission-monitor, class_key, assignment_key: <source-key>}`,
    short lease, immutable per-run records (`state`, `events`), baseline
    checkpoint compare-and-set, plus one small CAS attempt pointer per stream
    for last-attempted / last-successful scan.
 
 ## The rules the implementation encodes
 
-- **Assignment identity is the folder, never the due date.** A deadline change
-  emits `due_date_changed` and keeps the same stream and history.
+- **Assignment identity includes its source and selector, never the due date.**
+  Form streams use `form-<hash>` over the canonical Form ID, assignment question
+  ID and exact assignment answer. Different assignments in one Form cannot share
+  a baseline. Legacy folder streams keep `folder-<id>` unchanged. A deadline
+  change emits `due_date_changed` and keeps the same stream and history.
+- **Migration retains old records; it does not relabel them.** New Form streams
+  establish a first-observed baseline. Old folder histories, deadlines and
+  receipts remain in private state, and workbook assessments retain their file
+  IDs. Course-wide folder history cannot be safely auto-imported into a single
+  Form assignment. Existing historical topic starts need an explicit reviewed
+  reconciliation before deadline continuity is claimed; until then the Form
+  stream reports no verified start. No old task, record, score or receipt is deleted.
 - **The deadline is the third actual class meeting, never the navigation
   date.** The teacher declares an actual start by writing it in the day's Plan
   or Notes ("Started Energy today" — past tense; "Plan to start" is only an
@@ -95,6 +106,11 @@ gradebook verification) — the changes the last scan proved, and a needs-review
 list where every failure carries one specific recovery action.
 
 ## Verification state
+
+The September 22 Form/PPTX change is implemented and tested with synthetic
+inputs only. The folder-based acceptance below is historical and does not
+verify Form response access, assignment bindings or the new capture path.
+
 
 648 backend tests (including the monitoring state machine: new, late-evidence,
 modified, replacement, ambiguous identity, extension, deadline change, partial
