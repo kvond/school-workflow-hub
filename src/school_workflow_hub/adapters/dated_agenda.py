@@ -83,7 +83,7 @@ def read_day(assertion, selected, config=None):
         raise ConnectionError('agenda_layout_changed') from None
     week = value(weeks, wr, 3)
     current = value(weeks, wr, 4) == value(weeks, 5, 7)
-    ranges = tuple("'%s'!A3:R%d" % (title, row) for _, title in COURSES)
+    ranges = tuple("'%s'!A3:U%d" % (title, row) for _, title in COURSES)
     if '🗂 TurnIn Map' in titles:
         ranges += ("'🗂 TurnIn Map'!A1:D160",)
     data = reader.read(source, ranges)
@@ -93,7 +93,7 @@ def read_day(assertion, selected, config=None):
     weekday = ('Mon','Tue','Wed','Thu','Fri','Sat','Sun')[day.weekday()]
     for key, title in COURSES:
         cells = grid(data, title)
-        if value(cells, row, 1) != week or [value(cells,3,c) for c in (3,16,17,18)] != ['Topic','_studentURL','_teacherURL','_folderURL']:
+        if value(cells, row, 1) != week or [value(cells,3,c) for c in (3,16,17,18,21)] != ['Topic','_studentURL','_teacherURL','_folderURL','_turnInURL']:
             raise ConnectionError('agenda_layout_changed')
         expected_days = ('Tue', 'Thu', 'Fri') if key == 'anatomy' else ('Mon', 'Wed', 'Fri')
         if [value(cells,3,c) for c in (4,6,8)] != [d + ' — plan' for d in expected_days]:
@@ -139,11 +139,13 @@ def read_day(assertion, selected, config=None):
             if re.fullmatch(r'[A-Za-z0-9_-]{20,128}',folder_id):
                 turnin_folder = 'https://drive.google.com/drive/folders/' + folder_id
                 assignment_label = value(turnins,targets[0],1)
+        turnin_form = link(value(cells,row,21))
         lessons.append({'class_key':key,'title':value(cells,row,3),'plan':plan,'notes':notes,
-            'teacher_slides':teacher,'turnin_folder':turnin_folder,'assignment_label':assignment_label,'links':resources,'origin':origin,'dashboard_text':extra,
+            'teacher_slides':teacher,'turnin_form':turnin_form,
+            'turnin_folder':turnin_folder,'assignment_label':assignment_label,'links':resources,'origin':origin,'dashboard_text':extra,
             'weekly_plan':value(cells,row,col) if col else '',
             'todo':value(cells,row,10),'prep':value(cells,row,11),
-            'source_reference':f'{title}!A{row}:R{row}'})
+            'source_reference':f'{title}!A{row}:U{row}'})
     return {'schema_version':'hub-agenda-day/v1','status':'source_read','date':selected,
         'week':week,'closures':value(weeks,wr,5),'lessons':lessons,
         'checked_at':datetime.now(timezone.utc).isoformat(),'save_enabled':False,
