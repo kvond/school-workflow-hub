@@ -200,6 +200,7 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
         record = {"name": item["name"], "modified_at": item["modified_at"],
                   "version": item.get("version"), "status": "present", "match": match,
                   "student_hint": item.get("student_hint"),
+                  "assignment_key_hint": item.get("assignment_key_hint"),
                   "grace_ends_at": grace_end.isoformat() if grace_end else None}
         if prior is None:
             kind = "first_observed" if previous is None else "appeared"
