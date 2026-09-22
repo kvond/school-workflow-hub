@@ -76,7 +76,7 @@ export function renderStatus(root,data){
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
  root.append(node(root,'p',coverageText+' Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;
- root.append(node(root,'p',`${c.present} present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
+ root.append(node(root,'p',`${c.present} files present · ${c.candidate_students??0} candidate student names discovered · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
  if(data.events_last_scan.length){
   const h=node(root,'h4','Changes found by the last scan');root.append(h);
   const list=node(root,'ul');
@@ -89,7 +89,10 @@ export function renderStatus(root,data){
   table.append(head);
   for(const f of data.files){
    const tr=node(root,'tr');
-   tr.append(node(root,'td',f.name),node(root,'td',f.student_id?f.student_id+(f.ic_status_recorded?' · IC recorded: '+f.ic_status_recorded:''):'unmatched'),
+   const student=f.student_name
+    ?f.student_name+(f.section_name?' · '+f.section_name:'')+' · roster name match'
+    :(f.student_hint?f.student_hint+' · candidate name; roster match not verified':'unmatched');
+   tr.append(node(root,'td',f.name),node(root,'td',student),
     node(root,'td',(STAGES[f.stage]||f.stage)+(f.status!=='present'?' · inaccessible':'')),
     node(root,'td',TIMINGS[f.timing]||f.timing),node(root,'td',when(f.modified_at)));
    table.append(tr);
