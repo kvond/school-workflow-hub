@@ -112,13 +112,25 @@ def _pptx_text(raw):
                     root = ET.fromstring(archive.read(info))
                 except ET.ParseError:
                     raise ConnectionError("assessment_source_unsupported") from None
-                words = [node.text for node in root.iter(
-                    "{http://schemas.openxmlformats.org/drawingml/2006/main}t")
-                         if isinstance(node.text, str) and node.text]
-                if words:
+                namespace = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                paragraphs = []
+                for paragraph in root.iter("{" + namespace + "}p"):
+                    # A visible marker or student answer may be split across
+                    # styled runs. Rejoin runs within the same PowerPoint
+                    # paragraph before the assessment marker parser sees it.
+                    value = "".join(node.text or "" for node in
+                                    paragraph.iter("{" + namespace + "}t"))
+                    if value:
+                        paragraphs.append(value)
+                if not paragraphs:
+                    fallback = "".join(node.text or "" for node in
+                                       root.iter("{" + namespace + "}t"))
+                    if fallback:
+                        paragraphs.append(fallback)
+                if paragraphs:
                     label = "Slide" if kind == 0 else "Notes"
                     lines.append(f"[{label} {number}]")
-                    lines.extend(words)
+                    lines.extend(paragraphs)
             text = "\n".join(lines).replace("\r\n", "\n").lstrip("\ufeff")
             if not text or len(text.encode("utf-8")) > 2_000_000:
                 raise ConnectionError("assessment_source_too_large")
