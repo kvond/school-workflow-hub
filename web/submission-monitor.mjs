@@ -76,7 +76,7 @@ export function renderStatus(root,data){
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
  root.append(node(root,'p',coverageText+' Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;
- root.append(node(root,'p',`${c.present} present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
+ root.append(node(root,'p',`${c.matched_students??0} matched students · ${c.matched??0} matched files · ${c.present} files present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched files · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
  if(data.events_last_scan.length){
   const h=node(root,'h4','Changes found by the last scan');root.append(h);
   const list=node(root,'ul');
