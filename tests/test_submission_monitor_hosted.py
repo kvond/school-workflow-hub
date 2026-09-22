@@ -16,8 +16,8 @@ FILE_A, FILE_B = "a" * 24, "b" * 24
 CONFIG = {"HUB_STATE_PROBE_ORIGINS": "https://hub.example"}
 
 
-def drive_scan(files, observed="2026-09-15T11:00:00+00:00"):
-    return {"class_key": "biology", "folder_id": FOLDER,
+def drive_scan(files, observed="2026-09-15T11:00:00+00:00", source_id=FOLDER):
+    return {"class_key": "biology", "folder_id": source_id,
             "folder_name": "Biology — Wk 01 — Fictional", "assignment_label": "B01",
             "date": "2026-09-14", "observed_at": observed,
             "coverage": {"complete": True, "folders_checked": 1, "forms_found": 0},
@@ -93,6 +93,26 @@ class HostedScanTests(unittest.TestCase):
                                                                       "completed_"))},
                              {r for r in rows_after_first if r.startswith(("run_", "record_",
                                                                            "completed_"))})
+
+    def test_changed_source_rebaselines_existing_files_as_first_observed(self):
+        with Harness() as h:
+            # First complete scan came from the wrong configured source and saw
+            # nothing. Correcting that source must not label historical files as
+            # newly appeared after the bad baseline.
+            h.scan = drive_scan([])
+            first = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertEqual(first["counts"]["present"], 0)
+            h.port.advance(120)
+            h.scan = drive_scan([entry(FILE_A)],
+                                observed="2026-09-15T11:02:00+00:00",
+                                source_id="z" * 24)
+            corrected = hosted.scan_and_persist(None, "2026-09-14", "biology", CONFIG)
+            self.assertEqual(corrected["counts"]["present"], 1)
+            self.assertEqual(corrected["scan_count"], 1)
+            self.assertEqual({e["kind"] for e in corrected["events_last_scan"]},
+                             {"first_observed"})
+            file_row = [f for f in corrected["files"] if f["file_id"] == FILE_A][0]
+            self.assertEqual(file_row["first_observed_kind"], "first_observed")
 
     def test_changed_scan_appends_events_and_preserves_history(self):
         with Harness() as h:
