@@ -68,8 +68,9 @@ export function renderStatus(root,data){
  if(data.status==='no_complete_scan_recorded'){root.append(node(root,'p','No complete scan is recorded yet. Scan submissions to establish the first-observed baseline; existing files will be labeled first observed, never late.','hint'));return;}
  root.append(node(root,'p','Assignment '+data.stream.assignment_label+' · scanned '+when(data.observed_at)+' · scan '+data.scan_count+' · baseline since '+when(data.baseline_established_at)+(data.unchanged_rerun?' · unchanged since the last scan':'')));
  const coverage=data.coverage||{};
+ const legacyGap=coverage.legacy_outside_root_files??0;
  const coverageText=coverage.source==='form_responses_root_verified'
-  ?('Coverage: exact-assignment Form responses verified inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' matching responses · '+(coverage.root_verified_files??c.present)+' verified files · '+(coverage.folders_checked??0)+' folders checked.')
+  ?('Coverage: current Form responses plus recorded assignment evidence verified inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' matching current Form responses · '+(coverage.root_verified_files??0)+' verified files · '+(coverage.folders_checked??0)+' folders checked.'+(legacyGap?(' '+legacyGap+' recorded historical file'+(legacyGap===1?' is':'s are')+' still outside the approved root and remain a named coverage gap.'):''))
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
  root.append(node(root,'p',coverageText+' Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;
