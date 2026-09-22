@@ -1,12 +1,13 @@
 """Deterministic submission-monitoring state advance. Observation, not judgment.
 
-Consumes one COMPLETE folder scan plus the verified workbook file mappings and
+Consumes one COMPLETE assignment scan plus verified workbook file mappings and
 produces the next cumulative stream state and the events that scan proved.
 Partial or failed scans must never reach this module: the caller stops instead,
 so an earlier complete baseline is never replaced by a worse read.
 
-The stream identity is the class plus the turn-in folder, never the due date,
-so a deadline change cannot duplicate an assignment or orphan its history.
+New streams are identified by class plus exact assignment label, never by the
+shared Form, a reused course folder, or the due date. Legacy folder-bound states
+remain readable for deterministic fixture/history compatibility.
 Drive metadata (modifiedTime, version) is revision EVIDENCE for inspection; it
 is not a captured copy of student writing, not proof of who turned work in, and
 never grounds for a grade or a zero. A file disappearing from a complete scan
