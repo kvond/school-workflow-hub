@@ -157,7 +157,9 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
         stream_prior = (previous or {}).get("stream", {}) if isinstance(previous, dict) else {}
         if (not isinstance(previous, dict) or previous.get("schema_version") != VERSION
                 or stream_prior.get("class_key") != scan["class_key"]
-                or stream_prior.get("assignment_label") != scan["assignment_label"]):
+                or stream_prior.get("assignment_label") != scan["assignment_label"]
+                or (stream_prior.get("folder_id") and scan.get("folder_id")
+                    and stream_prior["folder_id"] != scan["folder_id"])):
             raise ValueError("monitor_stream_mismatch")
         if timestamp(previous["observed_at"]) >= observed:
             raise ValueError("monitor_scan_not_newer")
