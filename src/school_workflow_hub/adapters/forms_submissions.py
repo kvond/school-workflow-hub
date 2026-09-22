@@ -219,8 +219,9 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
     """Read form references and return only files verified below the approved root.
 
     known_file_ids are assignment-bound file IDs already present in the grading
-    workbook. They let an explicitly recorded direct/manual submission remain in
-    scope even when it did not originate from the shared Form.
+    workbook. They are historical evidence only: IDs not also referenced by the
+    current shared Form are counted as legacy coverage and are never silently
+    pulled into the current approved-root scan.
     """
     form_id = str(config.get("HUB_TURNIN_FORM_ID", ""))
     root_id = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", ""))
