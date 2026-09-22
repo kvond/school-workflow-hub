@@ -16,6 +16,7 @@ from .grading_records import read_records
 from .hosted_agenda import ConnectionError
 from .forms_submissions import (collect_assignment_submissions,
                                 historical_assignment_file_ids)
+from .roster_names import read_forensics_roster, match_hint
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
@@ -106,7 +107,7 @@ def _drive_scan(assertion, day, class_key, config):
                        "student_hint": _student_name_hint(f.get("name"))}
                       for f in files]}
 
-def _mappings(assertion, class_key, config):
+def _mappings(assertion, class_key, config, files=()):
     records = read_records(assertion, config)
     by_file, conflicted = {}, set()
     import re as _re
@@ -135,7 +136,9 @@ def _mappings(assertion, class_key, config):
             day_marker = str(row.get("source_snapshot_date") or row.get("checked_date") or "")
             if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_marker):
                 marker, precision = day_marker, "date"
-        entry = {"student_id": identity, "section_id": str(row.get("section_id") or "-"),
+        entry = {"student_id": identity, "student_name": str(row.get("display_name") or "")[:100],
+                 "section_id": str(row.get("section_id") or "-"),
+                 "section_name": str(row.get("section_name") or "")[:100],
                  "identity_basis": str(row.get("identity_basis") or "workbook")[:64],
                  "assessed_marker": (marker or "unknown")[:40],
                  "marker_precision": precision,
@@ -151,7 +154,27 @@ def _mappings(assertion, class_key, config):
             by_file[file_id] = entry
     for file_id in conflicted:
         by_file.pop(file_id, None)
+
+    roster_status = "not_used"
+    roster_checked = None
+    if class_key == "forensics":
+        try:
+            roster = read_forensics_roster(config)
+            roster_status = roster.get("source_title") or "Rosters"
+            roster_checked = roster.get("checked_at")
+            for item in files or ():
+                file_id = str(item.get("id") or "")
+                if not file_id or file_id in by_file:
+                    continue
+                matched = match_hint(roster, item.get("student_hint"))
+                if matched:
+                    by_file[file_id] = matched
+        except ConnectionError:
+            # File discovery must still succeed if the roster source is
+            # temporarily unavailable. Those files remain unmatched for review.
+            roster_status = "unavailable"
     return {"source": "grading_workbook", "checked_at": records["checked_at"],
+            "roster_source": roster_status, "roster_checked_at": roster_checked,
             "by_file": by_file}
 
 
@@ -223,6 +246,8 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
         # recorded claim, never proof of a verified gradebook readback.
         listed.append({"file_id": file_id, "name": record["name"], "status": record["status"],
                        "student_hint": record.get("student_hint"),
+                       "student_name": (match or {}).get("student_name"),
+                       "section_name": (match or {}).get("section_name"),
                        "timing": record["timing"], "modified_at": record["modified_at"],
                        "first_observed_at": record["first_observed_at"],
                        "student_id": match["student_id"] if match else None,
@@ -270,7 +295,7 @@ def scan_and_persist(assertion, day, class_key, config):
     try:
         scan = _drive_scan(assertion, day, class_key, config)
         scope = assignment_scope(class_key, scan["assignment_label"])
-        mappings = _mappings(assertion, class_key, config)
+        mappings = _mappings(assertion, class_key, config, scan.get("files") or [])
     except ConnectionError as error:
         if scope is None:
             try:
