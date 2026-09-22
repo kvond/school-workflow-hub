@@ -230,6 +230,52 @@ def locate_lesson_folders(reader, file_ids, root_id):
     return folders
 
 
+def locate_files_under_root(reader, file_ids, root_id):
+    """Find exact file IDs beneath the approved root without trusting names.
+
+    The Form supplies assignment-bound file IDs; this walk proves those files
+    are actually inside the teacher-approved submission tree. Folder queries are
+    chunked so a large course root never produces an oversized Drive query.
+    """
+    wanted = {str(fid) for fid in file_ids if re.fullmatch(r'[A-Za-z0-9_-]{20,128}', str(fid))}
+    if len(wanted) != len(set(file_ids)):
+        raise ConnectionError('invalid_submission_scope')
+    found, seen, level, pages = {}, {root_id}, [root_id], 0
+    for _ in range(MAX_LOCATE_DEPTH):
+        if not wanted - set(found) or not level:
+            break
+        following = []
+        for start in range(0, len(level), 25):
+            batch = level[start:start + 25]
+            cursor, cursors = None, set()
+            while True:
+                pages += 1
+                if pages > MAX_LOCATE_PAGES or len(seen) > MAX_LOCATE_FOLDERS:
+                    raise ConnectionError('submission_scan_incomplete')
+                page = reader.children_of(batch, cursor)
+                if page.get('incompleteSearch') is True or not isinstance(page.get('files'), list):
+                    raise ConnectionError('submission_scan_incomplete')
+                for item in page['files']:
+                    if item.get('trashed') is not False:
+                        raise ConnectionError('submission_scan_incomplete')
+                    item_id = item.get('id')
+                    if item_id in wanted:
+                        if item.get('mimeType') == SHORTCUT:
+                            raise ConnectionError('submission_shortcut_needs_review')
+                        found[item_id] = item
+                    if item.get('mimeType') == FOLDER and item_id not in seen:
+                        seen.add(item_id)
+                        following.append(item_id)
+                cursor = page.get('nextPageToken')
+                if not cursor:
+                    break
+                if cursor in cursors:
+                    raise ConnectionError('submission_scan_incomplete')
+                cursors.add(cursor)
+        level = following
+    return found, len(seen)
+
+
 def resolve_lesson_folders(reader, records, class_key, assignment_key, root_id=''):
     """Distinct, live parent folders of this assignment's known submissions.
 
@@ -271,69 +317,85 @@ def resolve_lesson_folders(reader, records, class_key, assignment_key, root_id='
 
 
 def read_lesson_inventory(assertion, class_key, assignment_key, config):
-    """Inventory a lesson's submissions by lesson name (no date), by scanning the
-    union of the folders that its recorded submission files actually live in."""
+    """Inventory one selected assignment from the shared Form plus known records.
+
+    This path no longer needs an already-recorded file before it can discover a
+    lesson. The Assignments table supplies the exact assignment title; Form
+    responses supply new file IDs; prior grading rows keep explicitly recorded
+    direct/manual files in scope. Every candidate is verified under 00 ALL TURN
+    IN before it is returned.
+    """
     if class_key not in CLASS_COURSE:
         raise ConnectionError('invalid_submission_scope')
     if not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}', assignment_key or ''):
         raise ConnectionError('invalid_submission_scope')
     records = read_records(assertion, config)
-    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
-    course = CLASS_COURSE[class_key]
-    folders, unreadable = resolve_lesson_folders(
-        reader, records, class_key, assignment_key, config.get('HUB_SUBMISSIONS_ROOT_FOLDER', ''))
+    assignments = [a for a in records.get('assignments', [])
+                   if a.get('assignment_key') == assignment_key
+                   and a.get('class_key') == class_key]
+    if len(assignments) != 1:
+        raise ConnectionError('invalid_submission_scope')
+    assignment_label = str(assignments[0].get('assignment_title') or '')
+    if not assignment_label:
+        raise ConnectionError('submission_assignment_required')
+    known = _lesson_source_files(records, class_key, assignment_key)
+    from .forms_submissions import collect_assignment_submissions
+    files, evidence = collect_assignment_submissions(
+        config, assignment_label, known_file_ids=known)
     assessed = {str(r.get('source_file_id') or '') for r in records.get('submissions', [])
                 if r.get('class_key') == class_key and r.get('assignment_key') == assignment_key
                 and r.get('status') in {'assessed', 'roster_matched'}}
-    seen_ids, files, total_folders, total_forms, names = set(), [], 0, 0, []
-    for folder_id in folders:
-        root, found, checked, forms = collect(reader, folder_id, course=course, week=None,
-                                              skip_name_guard=True)
-        names.append(root.get('name', ''))
-        total_folders += checked
-        total_forms += forms
-        for f in found:
-            if f['id'] in seen_ids:
-                continue
-            seen_ids.add(f['id'])
-            files.append(f)
-    files.sort(key=lambda f: f['id'])
     return {'schema_version': 'hub-submission-inventory/v1', 'class_key': class_key,
-            'assignment_key': assignment_key, 'folder_name': ' + '.join(names),
+            'assignment_key': assignment_key,
+            'folder_name': 'Shared Form responses · 00 ALL TURN IN',
             'checked_at': datetime.now(timezone.utc).isoformat(),
-            'source_revision': content_hash({'assignment': assignment_key, 'files': files}),
-            'folders_checked': total_folders, 'forms_found': total_forms,
-            'sources_unreadable': unreadable,
+            'source_revision': content_hash({'assignment': assignment_key,
+                                             'label': assignment_label,
+                                             'files': files}),
+            'folders_checked': evidence['root_folders_checked'], 'forms_found': 1,
+            'sources_unreadable': 0,
             'files': [{'file_id': f['id'], 'name': f['name'],
                        'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
                        'modified_at': f.get('modifiedTime'), 'version': f.get('version'),
-                       'status': 'present',
+                       'submitted_at': f.get('submitted_at'), 'status': 'present',
                        'stage': 'assessed' if f['id'] in assessed else 'awaiting_assessment'}
                       for f in files],
-            'coverage': 'visible_files_only', 'assessment_status': 'not_assessed',
-            'roster_verified': False, 'external_writes': 0}
+            'coverage': 'form_responses_and_recorded_files_root_verified',
+            'responses_checked': evidence['responses_checked'],
+            'matching_responses': evidence['matching_responses'],
+            'assessment_status': 'not_assessed', 'roster_verified': False,
+            'external_writes': 0}
 
 
 def read_inventory(assertion, day, class_key, config):
-    if class_key not in {'biology', 'forensics', 'anatomy'}:
+    """Dated intake for the advanced Scan button, using the same Form-first source."""
+    if class_key not in CLASS_COURSE:
         raise ConnectionError('invalid_submission_scope')
     agenda = read_day(assertion, day, config)
     lesson = next(l for l in agenda['lessons'] if l['class_key'] == class_key)
-    match = re.fullmatch(r'https://drive.google.com/drive/folders/([A-Za-z0-9_-]{20,128})', lesson.get('turnin_folder') or '')
-    if not match:
+    if not lesson.get('assignment_label') or not lesson.get('turnin_form'):
         raise ConnectionError('submission_lesson_mapping_required')
-    reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
-    course = {'biology': 'Biology', 'forensics': 'Forensics', 'anatomy': 'Anatomy'}[class_key]
-    root, files, folders, forms = collect(reader, match[1], course=course, week=agenda['week'])
+    from .forms_submissions import collect_assignment_submissions
+    files, evidence = collect_assignment_submissions(config, lesson['assignment_label'])
     fresh = read_day(assertion, day, config)
     if next(l for l in fresh['lessons'] if l['class_key'] == class_key) != lesson:
         raise ConnectionError('submission_agenda_changed')
-    return {'schema_version': 'hub-submission-inventory/v1', 'date': day, 'class_key': class_key,
-            'assignment': lesson['assignment_label'], 'folder_name': root['name'],
-            'folder_url': lesson['turnin_folder'], 'checked_at': datetime.now(timezone.utc).isoformat(),
+    root_id = str(config.get('HUB_SUBMISSIONS_ROOT_FOLDER', ''))
+    root_url = ('https://drive.google.com/drive/folders/' + root_id
+                if re.fullmatch(r'[A-Za-z0-9_-]{20,128}', root_id) else '')
+    return {'schema_version': 'hub-submission-inventory/v1', 'date': day,
+            'class_key': class_key, 'assignment': lesson['assignment_label'],
+            'folder_name': 'Shared Form responses · 00 ALL TURN IN',
+            'folder_url': root_url, 'checked_at': datetime.now(timezone.utc).isoformat(),
             'source_revision': content_hash({'lesson': lesson, 'files': files}),
-            'folders_checked': folders, 'forms_found': forms,
-            'files': [{'name': f['name'], 'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
-                       'modified_at': f.get('modifiedTime'), 'version': f.get('version')} for f in files],
-            'coverage': 'visible_files_only', 'assessment_status': 'not_assessed',
-            'roster_verified': False, 'external_writes': 0}
+            'folders_checked': evidence['root_folders_checked'], 'forms_found': 1,
+            'responses_checked': evidence['responses_checked'],
+            'matching_responses': evidence['matching_responses'],
+            'files': [{'file_id': f['id'], 'name': f['name'],
+                       'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
+                       'modified_at': f.get('modifiedTime'), 'version': f.get('version'),
+                       'submitted_at': f.get('submitted_at')} for f in files],
+            'coverage': 'form_responses_root_verified',
+            'assessment_status': 'not_assessed', 'roster_verified': False,
+            'external_writes': 0}
+
