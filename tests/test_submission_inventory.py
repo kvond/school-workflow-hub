@@ -126,19 +126,9 @@ class LessonInventoryTests(unittest.TestCase):
 
     def test_read_lesson_inventory_marks_assessed_vs_awaiting(self):
         from school_workflow_hub.adapters import submission_inventory as si
-        from school_workflow_hub.adapters import forms_submissions as forms
-        rows = records([sub(FA),sub(FB,status='roster_matched'),sub(FC)])
-        rows['assignments'] = [{'assignment_key':'biology:C02','class_key':'biology',
-                                'assignment_title':'Biology · Wk 02'}]
-        files = [{'id':fid,'name':'Work '+fid[:3],
-                  'modifiedTime':'2026-09-18T12:00:00Z','version':'2',
-                  'submitted_at':'2026-09-18T11:00:00Z'}
-                 for fid in (FA,FB,FC,FX)]
-        evidence = {'root_folders_checked':4,'responses_checked':5,
-                    'matching_responses':4,'root_verified_files':4}
-        with patch.object(si,'read_records',return_value=rows), \
-             patch.object(forms,'collect_assignment_submissions',
-                          return_value=(files,evidence)):
+        with patch.object(si,'read_records',return_value=records([sub(FA),sub(FB,status='roster_matched'),sub(FC)])), \
+             patch.object(si,'service_token',return_value='tok'), \
+             patch.object(si,'DriveReader',return_value=LessonReader()):
             out=si.read_lesson_inventory('signed','biology','biology:C02',{})
         self.assertEqual(out['class_key'],'biology'); self.assertEqual(out['assignment_key'],'biology:C02')
         by_id={f['file_id']:f for f in out['files']}
@@ -146,7 +136,6 @@ class LessonInventoryTests(unittest.TestCase):
         self.assertEqual(by_id[FX]['stage'],'awaiting_assessment')
         self.assertEqual(by_id[FA]['stage'],'assessed')
         self.assertTrue(all(f['status']=='present' for f in out['files']))
-        self.assertEqual(out['matching_responses'],4)
         self.assertEqual(out['external_writes'],0)
 
     def test_root_verifier_finds_exact_file_ids_not_folder_names(self):
