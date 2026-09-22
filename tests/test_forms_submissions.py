@@ -130,6 +130,25 @@ class HistoricalCoverageTests(unittest.TestCase):
         self.assertEqual(result["legacy_outside_root_files"], 1)
         self.assertEqual(result["root_verified_files"], 1)
 
+    def test_legacy_only_history_returns_clean_current_empty_state(self):
+        evidence = {"pages": 1, "responses_checked": 9, "matching_responses": 0}
+        with patch.object(forms, "service_token", return_value="tok"), \
+             patch.object(forms, "FormsReader"), \
+             patch.object(forms, "response_file_refs", return_value=({}, evidence)), \
+             patch.object(forms, "DriveReader") as drive_reader, \
+             patch.object(forms, "locate_files_under_root") as locator:
+            files, result = forms.collect_assignment_submissions(
+                {"HUB_TURNIN_FORM_ID": FORM,
+                 "HUB_SUBMISSIONS_ROOT_FOLDER": "r" * 24,
+                 "HUB_READER_SERVICE_ACCOUNT": "reader@example.com"},
+                "Forensics assignment", known_file_ids=(FILE_A, FILE_B))
+        self.assertEqual(files, [])
+        self.assertEqual(result["matching_responses"], 0)
+        self.assertEqual(result["known_recorded_files"], 2)
+        self.assertEqual(result["legacy_outside_root_files"], 2)
+        drive_reader.assert_not_called()
+        locator.assert_not_called()
+
     def test_missing_current_form_file_still_fails_closed(self):
         class RootReader:
             def metadata(self, file_id):
