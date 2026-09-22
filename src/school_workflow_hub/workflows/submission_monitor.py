@@ -301,6 +301,8 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
                           "responses_checked": scan["coverage"].get("responses_checked"),
                           "matching_responses": scan["coverage"].get("matching_responses"),
                           "root_verified_files": scan["coverage"].get("root_verified_files"),
+                          "lesson_folder_files": scan["coverage"].get("lesson_folder_files", 0),
+                          "form_refs_outside_root": scan["coverage"].get("form_refs_outside_root", 0),
                           "known_recorded_files": scan["coverage"].get("known_recorded_files", 0),
                           "legacy_outside_root_files": scan["coverage"].get(
                               "legacy_outside_root_files", 0)},
