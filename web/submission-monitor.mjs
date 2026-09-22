@@ -10,6 +10,8 @@ export function validateStatus(data){
 
 // One specific recovery action per failure; never a generic shrug.
 const FAILURES={
+ submission_folder_access_required:'The legacy folder source cannot be read by the cloud service. Verify Viewer access before retrying.',
+ submission_reader_scope_missing:'The dashboard’s Drive read permission is misconfigured.',
  submission_form_not_configured:'The shared turn-in Form API id is not configured in the cloud service.',
  submission_form_access_required:'The cloud service cannot read responses from the shared turn-in Form. Share the editable Form with the runtime reader, then Scan again.',
  submission_form_not_found:'The configured shared turn-in Form could not be found.',
