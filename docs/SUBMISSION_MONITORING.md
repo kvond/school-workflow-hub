@@ -110,6 +110,13 @@ Keep issue #37 open until the live dashboard shows the four Anatomy Week 02
 submissions under the verified section without duplicate stopgaps; a permitted
 end-to-end wrong-period/free-text case lands with review holds; Biology and
 Forensics are checked unchanged; and the verified Cloud Run revision is recorded.
-No signed-in dashboard browser or deployment-owner runtime configuration was
-available to this implementation pass. Existing recovery and school-write
-boundaries are not bypassed to manufacture acceptance.
+The signed-in dashboard was read successfully on September 22. Read-only API
+baseline: Anatomy has four records, all identity_unverified; Biology has eleven
+records, five identity_unverified; Forensics has seventeen records, none
+identity_unverified. These are record counts, not independently verified unique
+student or recovered-file counts. Readiness reports authentication verified and
+submissions not_connected. The health endpoint returned HTML 404, so no deployed
+revision was established from that request. Private source data remained outside
+the repository. Deployment-owner runtime configuration and router provenance
+remain unverified. Existing recovery and school-write boundaries are not
+bypassed to manufacture acceptance.
