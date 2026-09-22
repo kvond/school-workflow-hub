@@ -104,3 +104,14 @@ test('a scope update refreshes status but a scan happens only from its button',a
  await new Promise(r=>setTimeout(r,0));
  assert.equal(calls.at(-1).method,'POST');
 });
+
+test('shared intake shows typed conflicts and dry-run registration honestly',()=>{
+ const target=root();
+ renderStatus(target,status({coverage:{form_source:'shared_collected_identity',responses_checked:4,root_verified_files:4},
+  intake_receipt:{status:'dry_run',external_writes:0},
+  needs_review:[{file_id:'a'.repeat(24),reason:'typed_section_disagreement'}]}));
+ assert.match(target.allText,/collected school email/);
+ assert.match(target.allText,/Typed class period disagrees/);
+ assert.match(target.allText,/no intake rows were saved/);
+ assert.doesNotMatch(target.allText,/registration verified/);
+});

@@ -9,6 +9,7 @@ Drive writes happen here.
 """
 from datetime import datetime, timezone
 import re
+import uuid
 
 from .dated_agenda import read_day
 from .firestore_state import configured_store
@@ -28,7 +29,7 @@ OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
 STATUS_VERSION = "hub-submission-monitor-status/v1"
 MAX_LISTED = 120
-DISCOVERY_VERSION = 5
+DISCOVERY_VERSION = 6
 
 
 def _now():
@@ -41,7 +42,7 @@ def _lesson(assertion, day, class_key, config):
     agenda = read_day(assertion, day, config)
     lesson = next((l for l in agenda["lessons"] if l["class_key"] == class_key), None)
     if (lesson is None or not lesson.get("assignment_label")
-            or not lesson.get("turnin_form")):
+            or (config.get("HUB_INTAKE_ROUTE") != "shared" and not lesson.get("turnin_form"))):
         raise ConnectionError("submission_lesson_mapping_required")
     return agenda, lesson, lesson["assignment_label"]
 
@@ -50,6 +51,8 @@ def _drive_scan(assertion, day, class_key, config):
     """Historical name retained for callers/tests; source is now Form + root."""
     _, lesson, assignment_label = _lesson(assertion, day, class_key, config)
     records = read_records(assertion, config)
+    if config.get("HUB_INTAKE_ROUTE") == "shared":
+        return _shared_scan(assertion, day, class_key, config, lesson, records)
     known_file_ids = historical_assignment_file_ids(
         records, class_key, assignment_label)
     folder_match = re.search(r"/folders/([A-Za-z0-9_-]{20,128})",
@@ -94,8 +97,59 @@ def _drive_scan(assertion, day, class_key, config):
                        "submitted_at": f.get("submitted_at")}
                       for f in files]}
 
+def _shared_scan(assertion, day, class_key, config, lesson, records):
+    from .shared_form_intake import collect_shared
+    files, evidence = collect_shared(assertion, config, records)
+    selected_decks = {r["url"].split("/d/")[1].split("/")[0]
+                      for r in lesson.get("links", [])
+                      if r.get("label") == "Student Slides" and "/d/" in r.get("url", "")}
+    entries = [r for r in evidence["catalog"]
+               if r["class_key"] == class_key and r["source_deck_id"] in selected_decks]
+    if len(entries) != 1:
+        raise ConnectionError("intake_selected_lesson_ambiguous")
+    selected = entries[0]["assignment_key"]
+    kept = [f for f in files if f.get("assignment_key") == selected]
+    # Unmatched decks remain explicit global review items, never assigned to
+    # whichever class happened to request a scan.
+    ids = {f["id"] for f in kept} | {f["id"] for f in files if not f.get("assignment_key")}
+    review = [r for r in evidence["needs_review"] if r["file_id"] in ids
+              or r["reason"] == "form_reference_outside_approved_root"]
+    return {"class_key": class_key,
+            "source_id": content_hash({"route": "shared", "assignment": selected,
+                                       "form": config.get("HUB_TURNIN_FORM_ID"),
+                                       "root": config.get("HUB_SUBMISSIONS_ROOT_FOLDER"),
+                                       "discovery_version": DISCOVERY_VERSION})[:40],
+            "source_name": "Shared Form · collected email, deck and roster",
+            "source_kind": "form_responses_root_verified",
+            "assignment_label": lesson["assignment_label"], "date": day,
+            "observed_at": _now(), "day_plan": lesson.get("plan") or "",
+            "day_notes": lesson.get("notes") or "",
+            "coverage": {"complete": True, "source": "form_responses_root_verified",
+                         "forms_found": 1, "folders_checked": evidence["root_folders_checked"],
+                         "responses_checked": evidence["responses_checked"],
+                         "matching_responses": len(kept), "root_verified_files": len(kept),
+                         "form_refs_outside_root": evidence["form_refs_outside_root"],
+                         "form_source": evidence["form_source"]},
+            "intake_review": review, "intake_catalog": evidence["catalog"],
+            "intake_write_enabled": config.get("HUB_INTAKE_WORKBOOK_WRITES") == "true" and config.get("HUB_DRY_RUN") != "true",
+            "files": [{**f, "modified_at": f.get("modifiedTime")} for f in kept]}
+
+
 def _mappings(assertion, class_key, config, files=()):
     records = read_records(assertion, config)
+    if config.get("HUB_INTAKE_ROUTE") == "shared":
+        by_file = {}
+        for item in files:
+            person = item.get("roster_match")
+            if not person or person.get("class_key") != class_key or not item.get("section_id"):
+                continue
+            by_file[item["id"]] = {
+                "student_id": person["display_id"], "section_id": item["section_id"],
+                "identity_basis": "collected_email_deck_roster",
+                "assessed_marker": "unknown", "marker_precision": "unknown",
+                "ic_posting_status": "unverified"}
+        return {"source": "grading_workbook", "checked_at": records["checked_at"],
+                "coverage": "collected_email_deck_current_roster", "by_file": by_file}
     by_file, conflicted = {}, set()
     import re as _re
 
@@ -227,6 +281,7 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
         listed.append({"file_id": file_id, "name": record["name"], "status": record["status"],
                        "timing": record["timing"], "modified_at": record["modified_at"],
                        "first_observed_at": record["first_observed_at"],
+                       "first_observed_kind": record["first_observed_kind"],
                        "student_id": match["student_id"] if match else None,
                        "section_id": match["section_id"] if match else None,
                        "ic_status_recorded": match["ic_posting_status"] if match else None,
@@ -255,6 +310,7 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
             "roster": state["roster"], "counts": counts, "files": listed,
             "needs_review": state["needs_review"][:MAX_LISTED],
             "events_last_scan": events[:MAX_LISTED], "unchanged_rerun": unchanged,
+            "intake_receipt": state.get("intake_receipt"),
             "last_attempt": attempt, "automation": schedule,
             "external_writes": 0, "run_enabled": False}
 
@@ -310,7 +366,10 @@ def scan_and_persist(assertion, day, class_key, config):
     source_changed = bool(previous is not None and scan_source_id and previous_source_id
                           and scan_source_id != previous_source_id)
     fingerprint = content_hash({"files": sorted(
-        (f["id"], f["modified_at"], f.get("version")) for f in scan["files"])})
+        (f["id"], f["modified_at"], f.get("version"), f.get("intake_holds", [])) for f in scan["files"]),
+        "intake_review": scan.get("intake_review", []),
+        "intake_write_enabled": scan.get("intake_write_enabled", False),
+        "intake_catalog": scan.get("intake_catalog", [])})
     maps_hash = content_hash(_stable_mappings(mappings))
     if (previous is not None and not source_changed
             and baseline.get("source_revision") == fingerprint
@@ -328,7 +387,9 @@ def scan_and_persist(assertion, day, class_key, config):
                                "due": due_date, "basis": due_basis,
                                "deadline": deadline_hash, "mappings": maps_hash,
                                "derivation": DERIVATION_VERSION})
-    claim = store.claim(task_id, owner=OWNER, request_id="scan-" + input_hash[:32],
+    request_id = ("scan-" + uuid.uuid4().hex if config.get("HUB_INTAKE_ROUTE") == "shared"
+                  else "scan-" + input_hash[:32])
+    claim = store.claim(task_id, owner=OWNER, request_id=request_id,
                         input_hash=input_hash, ttl_seconds=120)
     if claim.completed:
         records = _read_run_records(store, task_id, claim.run_id)
@@ -341,9 +402,21 @@ def scan_and_persist(assertion, day, class_key, config):
         # files appeared after the old baseline. Rebaseline the observation
         # stream while retaining the assignment task, deadline declarations and
         # durable audit history.
+        intake_receipt = None
+        if config.get("HUB_INTAKE_ROUTE") == "shared":
+            from .intake_records import reconcile
+            intake_task = store.create_task({"workflow": "shared-intake-workbook", "scope": "all-classes"})
+            intake_claim = store.claim(intake_task, owner=OWNER,
+                request_id="intake-" + uuid.uuid4().hex, input_hash=input_hash, ttl_seconds=120)
+            if not intake_claim.completed:
+                intake_receipt = reconcile(assertion, config, scan["intake_catalog"],
+                    scan["files"], _now(), lambda: store.renew(intake_claim))
+                store.finish(intake_claim, records={"receipt": intake_receipt})
+            store.renew(claim)
         prior_for_advance = None if source_changed else previous
         result = advance_state(prior_for_advance, scan, mappings=mappings,
                                due_date=due_date, due_basis=due_basis, as_of=_now())
+        result["state"]["intake_receipt"] = intake_receipt
         result["state"]["mappings_fingerprint"] = maps_hash
         result["state"]["deadline"] = deadline
         result["state"]["deadline_fingerprint"] = deadline_hash
@@ -354,6 +427,11 @@ def scan_and_persist(assertion, day, class_key, config):
                      baseline=baseline, expected_checkpoint=checkpoint, complete_scan=True)
     except (Busy, Conflict, LeaseLost):
         _record_attempt(store, scope, "failed", "monitor_scan_conflict")
+        raise
+    except ConnectionError as error:
+        _record_attempt(store, scope, "failed", str(error))
+        # Leave an uncertain writer claim in place; next action fresh-reads the
+        # workbook after the lease expires. Never blindly replay a Sheets batch.
         raise
     except ValueError as error:
         try:
@@ -369,7 +447,7 @@ def scan_and_persist(assertion, day, class_key, config):
 
 
 def _stable_mappings(mappings):
-    return {"checked": "", "by_file": {k: [v["student_id"], v["assessed_marker"]]
+    return {"checked": "", "by_file": {k: [v["student_id"], v["assessed_marker"], v["section_id"], v["identity_basis"]]
                                        for k, v in sorted(mappings["by_file"].items())}}
 
 

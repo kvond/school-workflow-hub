@@ -14,12 +14,11 @@ import unicodedata
 from .google_sheets import SheetsReader, SheetsReadError
 from .hosted_agenda import ConnectionError, service_token
 
-DEFAULT_ROSTER_SPREADSHEET_ID = "1jmaxOjkmLeC-gMWHDHHySZ3lP36wtp5lFdYEl1CRguI"
 ROSTER_RANGES = (
-    "'A2 Forensics'!A1:B40",
-    "'A3 Forensics'!A1:B40",
-    "'A4 Biology'!A1:B40",
-    "'B3 A&P'!A1:B40",
+    "'A2 Forensics'!A1:B200",
+    "'A3 Forensics'!A1:B200",
+    "'A4 Biology'!A1:B200",
+    "'B3 A&P'!A1:B200",
 )
 CLASS_TABS = {
     "forensics": ("A2 Forensics", "A3 Forensics"),
@@ -56,8 +55,9 @@ def _rows(data):
 
 
 def read_roster(config):
-    roster_id = str(config.get("HUB_ROSTER_SPREADSHEET_ID")
-                    or DEFAULT_ROSTER_SPREADSHEET_ID)
+    roster_id = str(config.get("HUB_ROSTER_SPREADSHEET_ID") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", roster_id):
+        raise ConnectionError("roster_source_not_configured")
     try:
         reader = SheetsReader(service_token(
             config.get("HUB_READER_SERVICE_ACCOUNT", "")))
@@ -69,42 +69,77 @@ def read_roster(config):
     except Exception:
         raise ConnectionError("roster_source_unavailable") from None
 
+    return parse_roster(data)
+
+
+def parse_roster(data):
+    """Explicitly accept Last/First headers, headerless pairs and Last, First.
+
+    A title row is recognized by its exact configured tab name. Blank rows do
+    not terminate a roster. Malformed populated rows fail closed, not disappear.
+    """
     tables = _rows(data)
     entries = []
     for class_key, tabs in CLASS_TABS.items():
         for tab in tabs:
-            rows = tables.get(tab, [])
-            started = False
-            for _, cells in rows:
-                last = cells[0].strip() if cells else ""
-                first = cells[1].strip() if len(cells) > 1 else ""
-                if not started:
-                    if _norm(last) == "last name" and _norm(first) == "first name":
-                        started = True
+            for position, cells in tables.get(tab, []):
+                cells = [c.strip() for c in cells]
+                if not any(cells):
                     continue
-                if not last and not first:
-                    break
-                # Stop if an embedded second roster begins inside a legacy tab.
-                if _norm(last).endswith("forensics") or _norm(last) in {
-                        "a4 biology", "b3 a p"}:
-                    break
-                if not last or not first or _norm(last) == "last name":
+                last, first = (cells + ["", ""])[:2]
+                if _norm(last) == _norm(tab) and not first:
                     continue
-                first_key = _first_base(first)
-                last_key = _norm(last)
-                if not first_key or not last_key:
+                if _norm(last) == "last name" and _norm(first) == "first name":
                     continue
+                layout = "last_first_columns"
+                if last and not first and "," in last:
+                    last, first = [part.strip() for part in last.split(",", 1)]
+                    layout = "last_comma_full_first"
+                if (not last or not first or any(cells[2:])
+                        or not _first_base(first) or not _norm(last)):
+                    raise ConnectionError("roster_layout_needs_review")
+                first_key, last_key = _first_base(first), _norm(last)
                 digest = hashlib.sha256(
                     ("roster|" + class_key + "|" + tab + "|" + first_key + "|" +
                      last_key).encode("utf-8")).hexdigest()
-                entries.append({
-                    "class_key": class_key, "section_name": tab,
+                entries.append({"class_key": class_key, "section_name": tab,
                     "first": first, "last": last,
                     "name_key": first_key + " " + last_key,
                     "learner_key": "roster:" + digest,
                     "display_id": "roster:" + digest[:24],
-                })
+                    "roster_row": position, "layout": layout})
     return entries
+
+
+def _aliases(row):
+    legal = _first_base(row["first"])
+    firsts = {legal, legal.split()[0]}
+    firsts.update(_norm(n) for n in re.findall(r"\(([^)]+)\)", row["first"]))
+    return {_norm(f + " " + row["last"]) for f in firsts if f}
+
+
+def match_respondent(email, entries, domains, prefix="s."):
+    """Conservative unique roster match from collected school email only.
+
+    Domain and the school's username prefix are private configuration. Numbers
+    are never stripped and initials are never guessed. Explicit nickname and
+    middle-name alternatives are considered across ALL classes before routing.
+    """
+    email = str(email or "").strip().lower()
+    if email.count("@") != 1:
+        return None, "respondent_email_missing"
+    local, domain = email.split("@")
+    if domain not in {str(d).strip().lower() for d in domains if str(d).strip()}:
+        return None, "respondent_email_domain_unverified"
+    if prefix and local.startswith(prefix):
+        local = local[len(prefix):]
+    # Compare components; do not infer a person from an initial or filename.
+    compact = lambda value: re.sub(r"[^a-z0-9]", "", _norm(value))
+    matches = [r for r in entries if any(compact(n) == compact(local)
+                                        for n in _aliases(r))]
+    if len(matches) != 1:
+        return None, "roster_identity_ambiguous" if matches else "roster_identity_unmatched"
+    return matches[0], None
 
 
 def _submitted_name(file_name):

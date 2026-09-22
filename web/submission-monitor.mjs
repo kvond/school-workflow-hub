@@ -71,10 +71,14 @@ export function renderStatus(root,data){
  const legacyGap=coverage.legacy_outside_root_files??0;
  const offRoot=coverage.form_refs_outside_root??0;
  const folderFiles=coverage.lesson_folder_files??0;
- const coverageText=coverage.source==='form_responses_root_verified'
+ const shared=coverage.form_source==='shared_collected_identity';
+ const coverageText=shared
+  ?('Coverage: shared Form · '+(coverage.responses_checked??0)+' responses checked · '+(coverage.root_verified_files??0)+' files matched to this lesson inside the approved root. '+offRoot+' off-root references require review.')
+  :coverage.source==='form_responses_root_verified'
   ?('Coverage: assignment Form + exact lesson folder inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' Form responses · '+folderFiles+' files in the exact lesson folder · '+(coverage.root_verified_files??0)+' verified files total · '+(coverage.folders_checked??0)+' folders checked.'+(offRoot?(' '+offRoot+' Form-linked file'+(offRoot===1?' is':'s are')+' still outside the approved root; '+(offRoot===1?'it is':'they are')+' held as a coverage gap, not called missing.'):'')+(legacyGap?(' '+legacyGap+' already-recorded historical file'+(legacyGap===1?' is':'s are')+' outside current intake; '+(legacyGap===1?'it remains':'they remain')+' a named coverage gap.'):''))
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
- root.append(node(root,'p',coverageText+' Student matches use prior reviewed grading identities plus unique matches from the current roster workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so ambiguous work stays listed for review rather than being called missing.','hint'));
+ root.append(node(root,'p',coverageText+(shared?' Identity uses collected school email, uploaded-deck evidence and the current roster. Typed disagreements remain held for review.':' Student matches use prior reviewed grading identities plus the current roster workbook; the live IC roster reader is not integrated, so ambiguous work stays listed for review.'),'hint'));
+ if(data.intake_receipt)root.append(node(root,'p',data.intake_receipt.status==='verified'?'Intake workbook registration verified.':'Intake workbook registration is in dry-run mode; no intake rows were saved.','hint'));
  const c=data.counts;
  root.append(node(root,'p',`${c.matched_students??0} matched students · ${c.matched??0} matched files · ${c.present} files present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched files · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
  if(data.events_last_scan.length){
@@ -98,7 +102,13 @@ export function renderStatus(root,data){
  }
  if(data.needs_review.length){
   root.append(node(root,'h4','Needs your review'));
-  const reasons={unmatched_identity_needs_review:'No verified student match yet; review and record it in the grading workbook.',
+  const reasons={typed_section_disagreement:'Typed class period disagrees with the roster; review it.',
+   typed_assignment_disagreement:'Typed assignment differs from the matched deck; review it.',
+   typed_name_disagreement:'Typed name differs from the email/roster identity; review it.',
+   deck_unmatched_or_revision_changed:'Uploaded deck could not be matched to one current lesson version.',
+   deck_ambiguous:'Uploaded deck matches more than one lesson; choose after review.',
+   form_reference_outside_approved_root:'Form upload is outside the approved root; verify recovery or router copy provenance.',
+   unmatched_identity_needs_review:'No verified student match yet; review and record it in the grading workbook.',
    after_due_evidence_needs_review:'The document changed after the due date; inspect before assessing.',
    inaccessible_needs_review:'Previously observed work is no longer readable; check folder access before any conclusion.'};
   const list=node(root,'ul');

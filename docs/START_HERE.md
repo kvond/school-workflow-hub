@@ -123,6 +123,15 @@ associated with the student work, after checking inherited access. Page 03 is
 where needed), not an inline paragraph. Preserve document identity and history;
 exclude generated reports/summaries from student-submission discovery.
 
+## Shared Form intake — issue #37
+
+The teacher chose option A on September 22: keep the shared Form and identify
+submissions by collected email, uploaded-deck evidence and the roster. Typed
+answers are cross-checks only. The implementation and synthetic tests are in
+[SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md); private runtime activation,
+router copy-provenance, stopgap replacement and dashboard acceptance remain
+unverified. This is not a deployment or recovery-completion claim.
+
 ## Source collection: one root, not one assumed folder
 
 The approved **00 ALL TURN IN** root is the default discovery boundary; its

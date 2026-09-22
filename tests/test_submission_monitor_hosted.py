@@ -51,7 +51,7 @@ class Harness:
             patch.object(hosted, "_drive_scan",
                          lambda assertion, day, class_key, config: dict(self.scan)),
             patch.object(hosted, "_mappings",
-                         lambda assertion, class_key, config: dict(self.maps)),
+                         lambda assertion, class_key, config, files=(): dict(self.maps)),
             patch.object(hosted, "_lesson",
                          lambda assertion, day, class_key, config: (None, None, "B01")),
             patch.object(hosted, "_now", lambda: self.port.now.isoformat()),

@@ -35,7 +35,7 @@ class FormsReader:
             raise ConnectionError("submission_form_not_configured")
         params = {
             "pageSize": 500,
-            "fields": "nextPageToken,responses(responseId,createTime,lastSubmittedTime,answers)",
+            "fields": "nextPageToken,responses(responseId,createTime,lastSubmittedTime,respondentEmail,answers)",
         }
         if cursor:
             params["pageToken"] = cursor
@@ -121,7 +121,7 @@ def _file_values(answer, submitted_at):
     return result
 
 
-def response_file_refs(reader, form_id, assignment_label=None):
+def response_file_refs(reader, form_id, assignment_label=None, *, collected_identity=False):
     """Return FileUpload references from all complete responses.
 
     For an assignment-specific Form, assignment_label is None and every response
@@ -158,13 +158,30 @@ def response_file_refs(reader, form_id, assignment_label=None):
             if assignment_label is not None and assignment_label not in text:
                 continue
             matched += 1
+            identity = {}
+            if collected_identity:
+                email = response.get("respondentEmail", "")
+                if not isinstance(email, str) or len(email) > 254:
+                    raise ConnectionError("submission_form_response_invalid")
+                identity = {"respondent_email": email.strip().lower(),
+                            "response_id": str(response.get("responseId") or ""),
+                            "typed_answers": {qid: _text_values(answer)
+                                              for qid, answer in answers.items()
+                                              if _text_values(answer)}}
             for answer in answers.values():
                 for ref in _file_values(answer, submitted_at):
+                    ref.update(identity)
                     prior = refs.get(ref["id"])
+                    if collected_identity and prior and (
+                            prior.get("respondent_email") != ref.get("respondent_email")
+                            or prior.get("typed_answers") != ref.get("typed_answers")):
+                        ref["identity_conflict"] = True
+                    if prior and prior.get("identity_conflict"):
+                        ref["identity_conflict"] = True
                     if prior and (prior["form_name"], prior["form_mime_type"]) != (
                             ref["form_name"], ref["form_mime_type"]):
                         raise ConnectionError("submission_form_response_invalid")
-                    if not prior or ref["submitted_at"] > prior["submitted_at"]:
+                    if not prior or ref["submitted_at"] >= prior["submitted_at"] or ref.get("identity_conflict"):
                         refs[ref["id"]] = ref
                     if len(refs) > MAX_FILES:
                         raise ConnectionError("submission_form_scan_incomplete")
