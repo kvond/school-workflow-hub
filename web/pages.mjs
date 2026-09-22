@@ -58,7 +58,7 @@ function scopeBar(target,page){
  date.addEventListener('change',()=>requestDay(date.value));
  const load=btn('Load lesson',()=>requestDay(date.value));
  const advBar=el('div',undefined,'workspace-controls');advBar.append(dateLabel,load);
- advanced.append(el('summary','Assess new submissions (Process work)'),el('p','Assessing brand-new work still uses this lesson’s Agenda date to find its turn-in folder. Pick the date, Load lesson, then scan and draft below. Reviewing, grading and printing already-assessed work needs only the selectors above. Lesson-name-driven processing is the next step.','hint'),advBar);
+ advanced.append(el('summary','Assess new submissions (Process work)'),el('p','Assessing brand-new work uses this lesson’s Agenda date to resolve its exact shared-Form assignment, then verifies uploaded files inside the approved turn-in root. Pick the date, Load lesson, then scan and draft below. Reviewing, grading and printing already-assessed work needs only the selectors above.','hint'),advBar);
  const context=el('section',undefined,'lesson-context');const notice=el('p','','hint');notice.setAttribute('role','status');advanced.append(context,notice);
  target.append(bar,advanced);views.push({select,date,load,context,notice});
  return advanced;
@@ -66,7 +66,7 @@ function scopeBar(target,page){
 function requestDay(date){document.dispatchEvent(new CustomEvent('agenda-request-day',{detail:{date}}));}
 function renderScope(){
  const lesson=scope.data?.lessons.find(l=>l.class_key===scope.classKey);
- const monitorReady=Boolean(scope.data&&!scope.loading&&!scope.error&&lesson?.turnin_folder);
+ const monitorReady=Boolean(scope.data&&!scope.loading&&!scope.error&&lesson?.turnin_form&&lesson?.assignment_label);
  submissionMonitor?.update({date:scope.date,classKey:scope.classKey,ready:monitorReady});
  assessmentReview?.update({date:scope.date,classKey:scope.classKey,ready:monitorReady});
  for(const v of views){
@@ -75,11 +75,12 @@ function renderScope(){
   if(lesson){
    const links=el('div',undefined,'action-row');
    if(lesson.teacher_slides&&safeLink(lesson.teacher_slides))links.append(link('Teacher Slides ↗',lesson.teacher_slides));
-   if(lesson.turnin_folder&&safeLink(lesson.turnin_folder))links.append(link('Agenda turn-in folder ↗',lesson.turnin_folder));
+   if(lesson.turnin_form&&safeLink(lesson.turnin_form))links.append(link('Turn-in Form ↗',lesson.turnin_form));
+   if(lesson.turnin_folder&&safeLink(lesson.turnin_folder))links.append(link('TurnIn Map locator ↗',lesson.turnin_folder));
    const folder=lesson.links.find(l=>l.label==='Lesson folder');if(folder&&safeLink(folder.url))links.append(link('Lesson materials ↗',folder.url));
    v.context.append(links);
    if(lesson.assignment_label)v.context.append(el('p',lesson.assignment_label,'hint'));
-   if(!lesson.turnin_folder)v.context.append(el('p','Turn-in folder mapping unavailable for this lesson.','hint'));
+   if(!lesson.turnin_form)v.context.append(el('p','Assignment-bound turn-in Form mapping unavailable for this lesson.','hint'));
   }
   v.notice.textContent=scope.loading?'Loading lesson…':scope.error||(scope.data?'Agenda read '+new Date(scope.data.checked_at).toLocaleString()+'. Assessed results are checked separately below.':'Lesson source not loaded.');
  }
@@ -99,23 +100,23 @@ feedback.append(el('p','Choose the class/section, lesson name, and Notes or Draf
 const feedbackGrid=el('div',undefined,'section-grid');
 const queue=el('section',undefined,'surface wide');const qhead=el('div',undefined,'section-heading');qhead.append(el('h2','Student work'));promptAction(qhead,'Copy completion instructions','completion');queue.append(qhead);
 const inventory=el('div');inventory.setAttribute('aria-live','polite');
-const scan=btn('Check lesson folder',()=>scanSubmissions());
+const scan=btn('Check submissions',()=>scanSubmissions());
 let scanGeneration=0,scanController;
 function clearInventory(){scanGeneration++;scanController?.abort();inventory.replaceChildren();scan.disabled=!scope.data||scope.loading||!!scope.error;}
 async function scanSubmissions(){
  const generation=++scanGeneration,day=scope.date,classKey=scope.classKey;
  scanController?.abort();scanController=new AbortController();scan.disabled=true;
- inventory.replaceChildren(el('p','Checking the lesson folder and nested uploads…'));
+ inventory.replaceChildren(el('p','Checking exact-assignment Form responses and verifying uploaded files inside the approved turn-in root…'));
  try{
   const r=await fetch('/api/submission-inventory?'+new URLSearchParams({date:day,class_key:classKey}),{cache:'no-store',credentials:'same-origin',redirect:'error',signal:scanController.signal});
   const d=await r.json();if(generation!==scanGeneration)return;
-  const messages={submission_root_not_configured:'The dashboard has not been told where your submissions live, so it cannot find this lesson\u2019s folder. This is a deployment setting, not something to fix in Drive.',submission_reader_scope_missing:'The dashboard\u2019s own Drive permission is misconfigured, so it cannot read any submission. This is a deployment fault \u2014 re-sharing folders will not help.',submission_parents_unavailable:'The dashboard can read this lesson\u2019s files but not where they live, so it cannot work out which folder to scan. This is a deployment fault, not a sharing one.',submission_folder_access_required:'The cloud service cannot read this folder yet. Share the active turn-in folder with the dashboard service account as Viewer, then retry.',submission_lesson_mapping_required:'The Agenda needs a specific lesson turn-in folder. Its current mapping is unavailable or points to a whole course.',submission_scan_incomplete:'The folder check was incomplete. No student conclusions were made.',submission_agenda_changed:'The Agenda changed during the check. Load the lesson again.',submission_folder_inactive:'The mapped folder is inactive. Its Agenda link needs repair.'};
+  const messages={submission_root_not_configured:'The approved 00 ALL TURN IN root is not configured in the deployment.',submission_reader_scope_missing:'The dashboard’s Drive read permission is misconfigured.',submission_form_not_configured:'The shared turn-in Form API id is not configured in the deployment.',submission_form_access_required:'The cloud service account cannot read responses from the shared turn-in Form. Share the editable Form with the runtime reader, then retry.',submission_form_not_found:'The configured turn-in Form could not be found.',submission_form_rate_limited:'Google Forms rate-limited this check. Try again shortly.',submission_form_unavailable:'Google Forms could not be read right now.',submission_form_scan_incomplete:'The Form response read was incomplete. No student conclusions were made.',submission_root_coverage_incomplete:'The Form references a file that could not be verified inside 00 ALL TURN IN. Nothing was called missing.',submission_assignment_required:'The lesson does not have an exact assignment label for filtering the shared Form.',submission_lesson_mapping_required:'The Agenda does not expose an assignment-bound turn-in Form for this lesson.',submission_scan_incomplete:'The approved-root verification was incomplete. No student conclusions were made.',submission_agenda_changed:'The Agenda changed during the check. Load the lesson again.',submission_folder_inactive:'The approved submission root is inactive or unavailable.'};
   if(!r.ok)throw Error(messages[d.error]||'The submission source could not be checked. No work was assessed.');
   if(d.schema_version!=='hub-submission-inventory/v1'||d.date!==day||d.class_key!==classKey||!Array.isArray(d.files)||d.external_writes!==0)throw Error('Submission scope could not be verified.');
-  inventory.replaceChildren(el('h3',d.folder_name),el('p',`${d.files.length} visible files · ${d.folders_checked} folders checked · ${new Date(d.checked_at).toLocaleString()}`));
+  inventory.replaceChildren(el('h3',d.folder_name),el('p',`${d.files.length} assignment-matched files · ${d.matching_responses??0} matching Form responses · ${d.folders_checked} folders verified · ${new Date(d.checked_at).toLocaleString()}`));
   if(safeLink(d.folder_url))inventory.append(link('Open turn-in folder ↗',d.folder_url));
   for(const file of d.files){const row=el('p');if(safeLink(file.url))row.append(link(file.name,file.url));inventory.append(row);}
-  inventory.append(el('p','File inventory only. Student matching, due dates, completion scores and feedback are not verified. An empty folder does not establish missing work.','hint'));
+  inventory.append(el('p','File inventory only. The files are assignment-matched and verified inside the approved root; student identity, completion scores and feedback are separate checks. Zero Form responses is a clean no-submission-yet state, not a zero grade.','hint'));
  }catch(e){if(generation===scanGeneration&&e.name!=='AbortError')inventory.replaceChildren(el('p',e.message,'error'));}
  finally{if(generation===scanGeneration)scan.disabled=false;}
 }
@@ -138,24 +139,24 @@ const processRow=el('div',undefined,'action-row');processRow.append(btn('Process
 const reviewBox=el('div',undefined,'assessment-review');queue.append(reviewBox);
 const monitorBox=el('div',undefined,'submission-monitor');submissionMonitor=mountSubmissionMonitor(monitorBox,{onFiles:(list,deadline)=>assessmentReview?.setFiles(list,deadline)});advancedIntake.append(monitorBox);
 assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});
-const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Lesson folder inventory'),scan,inventory);advancedIntake.append(inventoryDetails);
+const inventoryDetails=el('details',undefined,'workflow-details');inventoryDetails.append(el('summary','Submission inventory'),scan,inventory);advancedIntake.append(inventoryDetails);
 const LESSON_INTAKE={
- submission_root_not_configured:'The dashboard has not been told where your submissions live, so it cannot find this lesson\u2019s folder. This is a deployment setting, not something to fix in Drive.',
- submission_reader_scope_missing:'The dashboard\u2019s own Drive permission is misconfigured, so it cannot read any submission. This is a deployment fault \u2014 re-sharing folders will not help.',
- submission_parents_unavailable:'The dashboard can read this lesson\u2019s files but not where they live, so it cannot work out which folder to scan. This is a deployment fault, not a sharing one.',
- lesson_has_no_recorded_submissions:'This lesson has no recorded submissions yet, so its turn-in folder is not known. Use “Assess new submissions” (with the lesson date) once to establish it.',
- submission_folder_access_required:'The runtime reader cannot see this lesson’s submission files yet. Share their folder with the reader as Viewer, then Process work again.',
- lesson_sources_too_scattered:'This lesson’s submissions are spread across too many folders to scan automatically. Review them in Drive or use the dated path.',
- submission_folder_inactive:'A source folder for this lesson is trashed or is not a folder. Check it in Drive, then Process work again.',
- submission_scan_incomplete:'The source scan hit a bound before completing. Nothing was assessed; try Process work again.',
- submission_shortcut_needs_review:'A source folder contains a shortcut, which the scan never follows. Replace it with the real file, then Process work again.',
+ submission_root_not_configured:'The dashboard has not been told where 00 ALL TURN IN lives. This is a deployment setting.',
+ submission_reader_scope_missing:'The dashboard’s Drive read permission is misconfigured.',
+ submission_parents_unavailable:'The dashboard can read this lesson’s saved files but cannot verify where they live.',
+ lesson_has_no_recorded_submissions:'This lesson has no saved assessment source yet. Use “Assess new submissions” with the lesson date once; that path now reads the shared Form directly.',
+ submission_folder_access_required:'The runtime reader cannot see one of this lesson’s verified source folders.',
+ lesson_sources_too_scattered:'This lesson’s recorded submissions are spread across too many verified source folders for the bounded scan.',
+ submission_folder_inactive:'A verified source folder is inactive or unavailable.',
+ submission_scan_incomplete:'The verified-source scan hit a bound before completing. Nothing was assessed.',
+ submission_shortcut_needs_review:'A verified source contains a shortcut; it is held for review.',
  invalid_submission_scope:'The lesson selection was not valid. Reload the page and choose the lesson again.',
  sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
 function resetProcess(){try{assessmentReview&&assessmentReview.update({classKey:scope.classKey,ready:false});}catch(e){}if(processStatus)processStatus.textContent='';}
 async function processWork(){
  if(!scope.assignmentKey||scope.assignmentKey==='all'){processStatus.textContent='Choose a specific lesson name first, then Process work.';return;}
  const classKey=scope.classKey,assignmentKey=scope.assignmentKey;
- processStatus.textContent='Finding this lesson’s submissions…';
+ processStatus.textContent='Finding this lesson’s verified saved submission sources…';
  try{
   const r=await fetch('/api/submission-inventory?'+new URLSearchParams({class_key:classKey,assignment:assignmentKey}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
   const d=await r.json();

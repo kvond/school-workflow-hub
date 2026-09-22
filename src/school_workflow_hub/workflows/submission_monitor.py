@@ -1,12 +1,13 @@
 """Deterministic submission-monitoring state advance. Observation, not judgment.
 
-Consumes one COMPLETE folder scan plus the verified workbook file mappings and
+Consumes one COMPLETE assignment scan plus verified workbook file mappings and
 produces the next cumulative stream state and the events that scan proved.
 Partial or failed scans must never reach this module: the caller stops instead,
 so an earlier complete baseline is never replaced by a worse read.
 
-The stream identity is the class plus the turn-in folder, never the due date,
-so a deadline change cannot duplicate an assignment or orphan its history.
+New streams are identified by class plus exact assignment label, never by the
+shared Form, a reused course folder, or the due date. Legacy folder-bound states
+remain readable for deterministic fixture/history compatibility.
 Drive metadata (modifiedTime, version) is revision EVIDENCE for inspection; it
 is not a captured copy of student writing, not proof of who turned work in, and
 never grounds for a grade or a zero. A file disappearing from a complete scan
@@ -20,7 +21,7 @@ from school_workflow_hub.workflows.due_completion import boundaries, timestamp
 VERSION = "hub-submission-monitor/v1"
 # Bump when derivation logic changes so stored state is recomputed from the
 # retained evidence instead of an unchanged rerun replaying obsolete output.
-DERIVATION_VERSION = 3
+DERIVATION_VERSION = 4
 CLASS_KEYS = {"biology", "forensics", "anatomy"}
 TIMEZONE_NAME = "America/New_York"
 MAX_FILES = 500
@@ -35,6 +36,7 @@ TIMINGS = {"not_due_yet", "content_predates_due_turnin_unverified",
 
 
 def stream_scope(class_key, folder_id):
+    """Legacy folder-bound scope retained for stored fixtures and old records."""
     if class_key not in CLASS_KEYS:
         raise ValueError("invalid_monitor_class")
     if not isinstance(folder_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", folder_id):
@@ -43,20 +45,44 @@ def stream_scope(class_key, folder_id):
             "assignment_key": "folder-" + folder_id}
 
 
+def assignment_scope(class_key, assignment_label):
+    """Stable stream identity for the real form-first workflow."""
+    if class_key not in CLASS_KEYS:
+        raise ValueError("invalid_monitor_class")
+    if (not isinstance(assignment_label, str) or not assignment_label.strip()
+            or len(assignment_label) > 200 or any(ord(ch) < 32 for ch in assignment_label)):
+        raise ValueError("invalid_monitor_assignment")
+    return {"workflow": "submission-monitor", "class_key": class_key,
+            "assignment_key": "assignment-" + content_hash({
+                "class_key": class_key, "assignment_label": assignment_label})[:32]}
+
 def _text(value, limit):
     return isinstance(value, str) and 0 < len(value) <= limit
 
 
+def _scan_source(scan):
+    if _text(scan.get("source_id"), 128) and _text(scan.get("source_name"), 300):
+        return {"source_id": scan["source_id"], "source_name": scan["source_name"],
+                "source_kind": scan.get("source_kind") or "submission_source"}
+    if _text(scan.get("folder_id"), 128) and _text(scan.get("folder_name"), 300):
+        return {"source_id": scan["folder_id"], "source_name": scan["folder_name"],
+                "source_kind": "drive_folder", "folder_id": scan["folder_id"]}
+    raise ValueError("invalid_monitor_scan")
+
+
 def _validate_scan(scan):
     if (not isinstance(scan, dict)
-            or not {"class_key", "folder_id", "folder_name", "assignment_label", "date",
+            or not {"class_key", "assignment_label", "date",
                     "observed_at", "coverage", "files"} <= set(scan)
             or scan["class_key"] not in CLASS_KEYS
-            or not _text(scan["folder_id"], 128) or not _text(scan["folder_name"], 300)
             or not _text(scan["assignment_label"], 200)
             or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", scan.get("date") or "")
             or not isinstance(scan["coverage"], dict) or scan["coverage"].get("complete") is not True
             or not isinstance(scan["files"], list) or len(scan["files"]) > MAX_FILES):
+        raise ValueError("invalid_monitor_scan")
+    source = _scan_source(scan)
+    if (not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", source["source_id"])
+            or not _text(source.get("source_kind"), 80)):
         raise ValueError("invalid_monitor_scan")
     timestamp(scan["observed_at"])
     seen = set()
@@ -67,7 +93,6 @@ def _validate_scan(scan):
             raise ValueError("invalid_monitor_scan")
         timestamp(item.get("modified_at") or "")
         seen.add(item["id"])
-
 
 def _validate_mappings(mappings):
     if (not isinstance(mappings, dict)
@@ -132,14 +157,20 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
     if previous is not None:
         stream_prior = (previous or {}).get("stream", {}) if isinstance(previous, dict) else {}
         if (not isinstance(previous, dict) or previous.get("schema_version") != VERSION
-                or stream_prior.get("folder_id") != scan["folder_id"]
-                or stream_prior.get("class_key") != scan["class_key"]):
+                or stream_prior.get("class_key") != scan["class_key"]
+                or stream_prior.get("assignment_label") != scan["assignment_label"]
+                or (stream_prior.get("folder_id") and scan.get("folder_id")
+                    and stream_prior["folder_id"] != scan["folder_id"])):
             raise ValueError("monitor_stream_mismatch")
         if timestamp(previous["observed_at"]) >= observed:
             raise ValueError("monitor_scan_not_newer")
 
-    stream = {"class_key": scan["class_key"], "folder_id": scan["folder_id"],
-              "assignment_label": scan["assignment_label"]}
+    source = _scan_source(scan)
+    stream = {"class_key": scan["class_key"], "assignment_label": scan["assignment_label"],
+              "source_id": source["source_id"], "source_name": source["source_name"],
+              "source_kind": source["source_kind"]}
+    if source.get("folder_id"):
+        stream["folder_id"] = source["folder_id"]
     events, files = [], {}
     prior_files = dict((previous or {}).get("files") or {})
     scanned = {item["id"]: item for item in scan["files"]}
@@ -148,7 +179,7 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
         if kind not in EVENT_KINDS:
             raise ValueError("invalid_monitor_event")
         events.append({"event_id": deterministic_id("submission-event", {
-            "folder": scan["folder_id"], "kind": kind, "file": file_id, "evidence": evidence}),
+            "assignment": scan["assignment_label"], "kind": kind, "file": file_id, "evidence": evidence}),
             "kind": kind, "file_id": file_id, "observed_at": scan["observed_at"], **detail})
 
     for file_id, item in scanned.items():
@@ -264,8 +295,12 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
              "due_basis": due_basis,
              "timezone": TIMEZONE_NAME,
              "coverage": {"complete": True,
-                          "folders_checked": scan["coverage"].get("folders_checked"),
-                          "forms_found": scan["coverage"].get("forms_found")},
+                          "source": scan["coverage"].get("source", source["source_kind"]),
+                          "folders_checked": scan["coverage"].get("folders_checked", 0),
+                          "forms_found": scan["coverage"].get("forms_found", 0),
+                          "responses_checked": scan["coverage"].get("responses_checked"),
+                          "matching_responses": scan["coverage"].get("matching_responses"),
+                          "root_verified_files": scan["coverage"].get("root_verified_files")},
              "roster": {"source": "grading_workbook", "checked_at": mappings["checked_at"],
                         "coverage": "verified_file_mappings_only",
                         "ic_roster_reader": "not_integrated"},

@@ -1,24 +1,23 @@
-"""Hosted submission monitoring: bounded Drive scan into durable private state.
+"""Hosted submission monitoring: form-first discovery into durable private state.
 
-The scan reuses the existing lesson-folder reader bounds, matches files only
-through the reviewed grading workbook's own source references, and persists
-observations with the existing cloud task/claim/record model, so reruns with
-unchanged inputs return the stored result instead of new events, concurrent
-workers cannot commit conflicting baselines, and a failed or partial scan
-records a failed attempt without touching the last complete baseline.
-No grades, zeros, schedules or school writes happen here.
+Each scan selects exact-assignment responses from the shared Google Form and
+then verifies every referenced file inside the approved submission root. The
+reviewed grading workbook supplies only student↔file matches; it is never used
+as a prerequisite for discovering new work. Reruns, claims, and baselines use
+the existing private cloud state. No grades, zeros, schedules, Forms writes, or
+Drive writes happen here.
 """
 from datetime import datetime, timezone
 
 from .dated_agenda import read_day
 from .firestore_state import configured_store
 from .grading_records import read_records
-from .hosted_agenda import ConnectionError, service_token
-from .submission_inventory import DRIVE_SCOPE, DriveReader, collect
+from .hosted_agenda import ConnectionError
+from .forms_submissions import collect_assignment_submissions
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
-    CLASS_KEYS, DERIVATION_VERSION, advance_state, stream_scope,
+    CLASS_KEYS, DERIVATION_VERSION, advance_state, assignment_scope,
 )
 from . import topic_starts
 
@@ -37,31 +36,38 @@ def _lesson(assertion, day, class_key, config):
         raise ConnectionError("invalid_submission_scope")
     agenda = read_day(assertion, day, config)
     lesson = next((l for l in agenda["lessons"] if l["class_key"] == class_key), None)
-    if lesson is None:
+    if (lesson is None or not lesson.get("assignment_label")
+            or not lesson.get("turnin_form")):
         raise ConnectionError("submission_lesson_mapping_required")
-    folder = lesson.get("turnin_folder") or ""
-    prefix = "https://drive.google.com/drive/folders/"
-    if not folder.startswith(prefix) or not lesson.get("assignment_label"):
-        raise ConnectionError("submission_lesson_mapping_required")
-    return agenda, lesson, folder[len(prefix):]
+    return agenda, lesson, lesson["assignment_label"]
 
 
 def _drive_scan(assertion, day, class_key, config):
-    agenda, lesson, folder_id = _lesson(assertion, day, class_key, config)
-    reader = DriveReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", ""), DRIVE_SCOPE))
-    course = {"biology": "Biology", "forensics": "Forensics", "anatomy": "Anatomy"}[class_key]
-    root, files, folders, forms = collect(reader, folder_id, course=course, week=agenda["week"])
+    """Historical name retained for callers/tests; source is now Form + root."""
+    _, lesson, assignment_label = _lesson(assertion, day, class_key, config)
+    files, evidence = collect_assignment_submissions(config, assignment_label)
     fresh = read_day(assertion, day, config)
     if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
         raise ConnectionError("submission_agenda_changed")
-    return {"class_key": class_key, "folder_id": folder_id, "folder_name": root["name"],
-            "assignment_label": lesson["assignment_label"], "date": day,
+    source_id = content_hash({"class_key": class_key,
+                              "assignment_label": assignment_label})[:40]
+    return {"class_key": class_key, "source_id": source_id,
+            "source_name": "Shared Form responses · 00 ALL TURN IN",
+            "source_kind": "form_responses_root_verified",
+            "assignment_label": assignment_label, "date": day,
             "observed_at": _now(),
             "day_plan": lesson.get("plan") or "", "day_notes": lesson.get("notes") or "",
-            "coverage": {"complete": True, "folders_checked": folders, "forms_found": forms},
-            "files": [{"id": f["id"], "name": f["name"], "modified_at": f.get("modifiedTime"),
-                       "version": f.get("version")} for f in files]}
-
+            "coverage": {"complete": True, "source": "form_responses_root_verified",
+                         "folders_checked": evidence["root_folders_checked"],
+                         "forms_found": 1,
+                         "responses_checked": evidence["responses_checked"],
+                         "matching_responses": evidence["matching_responses"],
+                         "root_verified_files": evidence["root_verified_files"]},
+            "files": [{"id": f["id"], "name": f["name"],
+                       "modified_at": f.get("modifiedTime"),
+                       "version": f.get("version"),
+                       "submitted_at": f.get("submitted_at")}
+                      for f in files]}
 
 def _mappings(assertion, class_key, config):
     records = read_records(assertion, config)
@@ -221,13 +227,13 @@ def scan_and_persist(assertion, day, class_key, config):
     scope = None
     try:
         scan = _drive_scan(assertion, day, class_key, config)
-        scope = stream_scope(class_key, scan["folder_id"])
+        scope = assignment_scope(class_key, scan["assignment_label"])
         mappings = _mappings(assertion, class_key, config)
     except ConnectionError as error:
         if scope is None:
             try:
-                _, _, folder_id = _lesson(assertion, day, class_key, config)
-                scope = stream_scope(class_key, folder_id)
+                _, _, assignment_label = _lesson(assertion, day, class_key, config)
+                scope = assignment_scope(class_key, assignment_label)
             except Exception:
                 scope = None
         if scope:
@@ -284,7 +290,7 @@ def scan_and_persist(assertion, day, class_key, config):
         result["state"]["mappings_fingerprint"] = maps_hash
         result["state"]["deadline"] = deadline
         result["state"]["deadline_fingerprint"] = deadline_hash
-        baseline = {"scope": "submission-monitor:" + class_key + ":" + scan["folder_id"],
+        baseline = {"scope": "submission-monitor:" + class_key + ":" + scope["assignment_key"],
                     "source_revision": fingerprint, "observed_at": scan["observed_at"],
                     "fingerprint": result["fingerprint"]}
         store.finish(claim, records={"state": result["state"], "events": result["events"]},
@@ -312,8 +318,8 @@ def _stable_mappings(mappings):
 
 def read_status(assertion, day, class_key, config):
     """Status read only: never scans, never writes observations."""
-    _, _, folder_id = _lesson(assertion, day, class_key, config)
-    scope = stream_scope(class_key, folder_id)
+    _, _, assignment_label = _lesson(assertion, day, class_key, config)
+    scope = assignment_scope(class_key, assignment_label)
     store = CloudState(configured_store(config))
     task = store.read_task(key("task", scope))
     attempt = _read_attempt(store, scope)
@@ -328,7 +334,7 @@ def read_status(assertion, day, class_key, config):
                     "ic_alignment": "calculated_not_verified_in_ic"}
     if not task or not task.get("last_result"):
         return {"schema_version": STATUS_VERSION, "configured": True,
-                "stream": {"class_key": class_key, "folder_id": folder_id},
+                "stream": {"class_key": class_key, "assignment_label": assignment_label},
                 "status": "no_complete_scan_recorded", "counts": None, "files": [],
                 "needs_review": [], "events_last_scan": [], "unchanged_rerun": False,
                 "deadline": deadline, "topic_declaration": None,

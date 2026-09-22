@@ -11,8 +11,11 @@ could not display correctly fails here first.
 """
 from datetime import datetime, timezone
 import hashlib
+import io
 import re
 import uuid
+import zipfile
+import xml.etree.ElementTree as ET
 
 from .firestore_state import configured_store
 from .google_sheets import SheetsReader, SheetsReadError
@@ -27,8 +30,10 @@ CAPTURE_VERSION = "hub-assessment-capture/v1"
 SAVE_VERSION = "hub-assessment-save/v1"
 DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 WRITE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
-EXPORTABLE = {"application/vnd.google-apps.presentation",
-              "application/vnd.google-apps.document"}
+NATIVE_EXPORTABLE = {"application/vnd.google-apps.presentation",
+                     "application/vnd.google-apps.document"}
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+EXPORTABLE = NATIVE_EXPORTABLE | {PPTX}
 NUMERIC = ("content_score", "revision_score")
 
 
@@ -79,6 +84,63 @@ def _batch(source, token, requests):
         raise ConnectionError("assessment_write_uncertain") from None
 
 
+def _pptx_text(raw):
+    """Bounded text extraction from slide shapes and PowerPoint speaker notes."""
+    if not raw or len(raw) > 20_000_000:
+        raise ConnectionError("assessment_source_too_large")
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            infos = archive.infolist()
+            if len(infos) > 1200 or sum(i.file_size for i in infos) > 20_000_000:
+                raise ConnectionError("assessment_source_too_large")
+            pattern = re.compile(
+                r"^ppt/(slides/slide|notesSlides/notesSlide)(\d+)\.xml$")
+            selected = []
+            for info in infos:
+                match = pattern.fullmatch(info.filename)
+                if match:
+                    selected.append((int(match.group(2)),
+                                     0 if match.group(1).startswith("slides/") else 1,
+                                     info))
+            if not selected:
+                raise ConnectionError("assessment_source_unsupported")
+            lines = []
+            for number, kind, info in sorted(selected):
+                if info.file_size > 2_000_000:
+                    raise ConnectionError("assessment_source_too_large")
+                try:
+                    root = ET.fromstring(archive.read(info))
+                except ET.ParseError:
+                    raise ConnectionError("assessment_source_unsupported") from None
+                namespace = "http://schemas.openxmlformats.org/drawingml/2006/main"
+                paragraphs = []
+                for paragraph in root.iter("{" + namespace + "}p"):
+                    # A visible marker or student answer may be split across
+                    # styled runs. Rejoin runs within the same PowerPoint
+                    # paragraph before the assessment marker parser sees it.
+                    value = "".join(node.text or "" for node in
+                                    paragraph.iter("{" + namespace + "}t"))
+                    if value:
+                        paragraphs.append(value)
+                if not paragraphs:
+                    fallback = "".join(node.text or "" for node in
+                                       root.iter("{" + namespace + "}t"))
+                    if fallback:
+                        paragraphs.append(fallback)
+                if paragraphs:
+                    label = "Slide" if kind == 0 else "Notes"
+                    lines.append(f"[{label} {number}]")
+                    lines.extend(paragraphs)
+            text = "\n".join(lines).replace("\r\n", "\n").lstrip("\ufeff")
+            if not text or len(text.encode("utf-8")) > 2_000_000:
+                raise ConnectionError("assessment_source_too_large")
+            return text
+    except ConnectionError:
+        raise
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+        raise ConnectionError("assessment_source_unsupported") from None
+
+
 def capture(assertion, file_id, config):
     """Authenticated fresh export of one submission: metadata, text, hash."""
     audience, allowed = _identity_configuration(config)
@@ -93,11 +155,16 @@ def capture(assertion, file_id, config):
         raise ConnectionError("assessment_source_unavailable")
     if meta.get("mimeType") not in EXPORTABLE:
         raise ConnectionError("assessment_source_unsupported")
-    raw = _drive(token, "files/" + file_id + "/export", {"mimeType": "text/plain"},
-                 binary=True)
-    if not raw or len(raw) > 2_000_000:
-        raise ConnectionError("assessment_source_too_large")
-    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
+    if meta["mimeType"] == PPTX:
+        raw = _drive(token, "files/" + file_id, {"alt": "media",
+                     "supportsAllDrives": "true"}, binary=True)
+        text = _pptx_text(raw)
+    else:
+        raw = _drive(token, "files/" + file_id + "/export",
+                     {"mimeType": "text/plain"}, binary=True)
+        if not raw or len(raw) > 2_000_000:
+            raise ConnectionError("assessment_source_too_large")
+        text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
     return {"schema_version": CAPTURE_VERSION,
             "file": {"id": meta["id"], "name": str(meta.get("name", ""))[:200],
                      "mime_type": meta["mimeType"],

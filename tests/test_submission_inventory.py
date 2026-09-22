@@ -138,6 +138,22 @@ class LessonInventoryTests(unittest.TestCase):
         self.assertTrue(all(f['status']=='present' for f in out['files']))
         self.assertEqual(out['external_writes'],0)
 
+    def test_root_verifier_finds_exact_file_ids_not_folder_names(self):
+        from school_workflow_hub.adapters.submission_inventory import locate_files_under_root
+        wanted='wantedWANTEDwantedWANT'
+        child='childFOLDERchildFOLDER'
+        class RootReader:
+            def children_of(self,parents,cursor):
+                if parents==[ROOT]:
+                    return {'files':[item(child,FOLDER,ROOT)]}
+                if parents==[child]:
+                    return {'files':[item(wanted,'application/pdf',child),
+                                     item('otherOTHERotherOTHER','application/pdf',child)]}
+                return {'files':[]}
+        found,checked=locate_files_under_root(RootReader(),[wanted],ROOT)
+        self.assertEqual(set(found),{wanted})
+        self.assertGreaterEqual(checked,2)
+
     def test_route_accepts_assignment_and_rejects_unknown_query(self):
         from school_workflow_hub.web import application
         from school_workflow_hub.adapters import submission_inventory as si
