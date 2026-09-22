@@ -222,6 +222,7 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
         # ic_status_recorded repeats the workbook's own posting note; it is a
         # recorded claim, never proof of a verified gradebook readback.
         listed.append({"file_id": file_id, "name": record["name"], "status": record["status"],
+                       "student_hint": record.get("student_hint"),
                        "timing": record["timing"], "modified_at": record["modified_at"],
                        "first_observed_at": record["first_observed_at"],
                        "student_id": match["student_id"] if match else None,
@@ -231,7 +232,11 @@ def _summary(state, events, *, unchanged, attempt, schedule, declaration=None,
                                  state["awaiting_assessment"] else
                                  "awaiting_assessment" if assessed or
                                  file_id in state["awaiting_assessment"] else "detected")})
+    candidate_students = {str(f.get("student_hint") or "").casefold()
+                          for f in files.values()
+                          if f["status"] == "present" and f.get("student_hint")}
     counts = {"present": sum(1 for f in files.values() if f["status"] == "present"),
+              "candidate_students": len(candidate_students),
               "inaccessible": sum(1 for f in files.values() if f["status"] != "present"),
               "unmatched": sum(1 for f in files.values()
                                if not f.get("match") and f["status"] == "present"),
