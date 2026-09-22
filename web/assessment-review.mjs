@@ -117,7 +117,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   autoReference();
   stageRef.addEventListener('input',()=>{referenceEdited=true;});
   stage.addEventListener('change',()=>{autoReference();review.replaceChildren();});
-  fileSelect.addEventListener('change',()=>{displayName.value=suggestName(files.find(f=>f.file_id===fileSelect.value)?.name);studentId.value='';review.replaceChildren();recoverDraft(fileSelect.value);});
+  fileSelect.addEventListener('change',()=>{const selected=files.find(f=>f.file_id===fileSelect.value);displayName.value=suggestName(selected?.name);studentId.value='';if(selected?.assignment_key&&knownForClass.some(([k])=>k===selected.assignment_key))assignment.value=selected.assignment_key;review.replaceChildren();recoverDraft(fileSelect.value);});
   assignment.addEventListener('change',()=>review.replaceChildren());
   const generate=node(form,'button','Generate feedback for this submission');generate.type='button';
   const batch=node(form,'button','Generate pending feedback for this lesson');batch.type='button';
@@ -130,9 +130,9 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    labeled(form,'Student name (confirm the match)',displayName),
    labeled(form,'Student number (optional)',studentId),identityHint,actions);
 
-  function buildRequest(fileId,name){
+  function buildRequest(fileId,name,assignmentKey=assignment.value.trim()){
    return {file_id:fileId,class_key:scope.classKey,stage:stage.value,
-    stage_reference:stageRef.value.trim(),assignment_key:assignment.value.trim(),
+    stage_reference:stageRef.value.trim(),assignment_key:assignmentKey,
     section_id:sectionId.value.trim(),section_name:sectionName.value.trim(),
     identity:{student_id:studentId.value.trim(),student_id_kind:'',learner_key:'',
      display_name:name,identity_basis:''}};
@@ -175,7 +175,8 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   });
   batch.addEventListener('click',async()=>{
    if(!checkReady())return;
-   const eligible=files.filter(f=>f.stage!=='assessed');
+   const selectedAssignment=assignment.value.trim();
+   const eligible=files.filter(f=>f.stage!=='assessed'&&f.assignment_key===selectedAssignment);
    const held=files.length-eligible.length;
    if(!eligible.length){state.textContent='Every monitored submission is already assessed at its current version; nothing to generate.';return;}
    review.replaceChildren();
@@ -196,7 +197,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
       if(mine!==generation)return;
       const line=node(list,'p',file.name+' — drafting…');list.append(line);
       try{
-       const d=await postDraft(buildRequest(file.file_id,suggestName(file.name)));
+       const d=await postDraft(buildRequest(file.file_id,suggestName(file.name),file.assignment_key));
        if(d.status==='already_assessed'){line.textContent=file.name+' — already assessed at this exact version; skipped (no model call).';continue;}
        if(!d.cached)spent+=cost(d.usage);
        line.textContent=file.name+' — draft ready'+(d.cached?' (stored, no new call)':'')+'.';
