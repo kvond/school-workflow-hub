@@ -178,6 +178,43 @@ def response_file_refs(reader, form_id, assignment_label):
                   "matching_responses": matched}
 
 
+
+def historical_assignment_file_ids(records, class_key, assignment_label):
+    """Recorded file IDs that can be conservatively tied to this dated lesson.
+
+    Current submissions are still selected by the exact shared-Form label. This
+    helper only recovers already-recorded historical evidence. Forensics has a
+    stable workbook convention (FNN...) that corresponds to the Agenda Wk NN;
+    other courses are included only when the recorded assignment title itself
+    clearly appears in the Agenda label.
+    """
+    if not isinstance(records, dict) or not isinstance(assignment_label, str):
+        return []
+    keys = set()
+    normalized_label = re.sub(r"[^a-z0-9]+", " ", assignment_label.lower()).strip()
+    week = re.search(r"\bWk\s*0?(\d{1,2})\b", assignment_label)
+    for row in records.get("assignments", []) or []:
+        if row.get("class_key") != class_key:
+            continue
+        assignment_key = str(row.get("assignment_key") or "")
+        title = re.sub(r"[^a-z0-9]+", " ", str(row.get("assignment_title") or "").lower()).strip()
+        title_match = bool(title and len(title) >= 8 and title in normalized_label)
+        forensics_week_match = bool(
+            class_key == "forensics" and week
+            and assignment_key.startswith("forensics:F" + f"{int(week.group(1)):02d}"))
+        if title_match or forensics_week_match:
+            keys.add(assignment_key)
+    ids = []
+    for row in records.get("submissions", []) or []:
+        if row.get("class_key") != class_key or row.get("assignment_key") not in keys:
+            continue
+        file_id = str(row.get("source_file_id") or "")
+        if FILE_ID.fullmatch(file_id) and file_id not in ids:
+            ids.append(file_id)
+        if len(ids) >= MAX_FILES:
+            break
+    return ids
+
 def collect_assignment_submissions(config, assignment_label, *, known_file_ids=()):
     """Read form references and return only files verified below the approved root.
 
@@ -213,7 +250,8 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
 
     if not candidates:
         return [], {**evidence, "root_folders_checked": 0,
-                    "root_verified_files": 0, "known_recorded_files": len(known)}
+                    "root_verified_files": 0, "known_recorded_files": len(known),
+                    "legacy_outside_root_files": 0}
 
     drive_token = service_token(service_email, DRIVE_SCOPE)
     drive = DriveReader(drive_token)
@@ -222,12 +260,13 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
         raise ConnectionError("submission_folder_inactive")
 
     found, folders_checked = locate_files_under_root(drive, candidates, root_id)
-    missing = sorted(set(candidates) - set(found))
-    if missing:
-        # A Form response or recorded assignment says the file exists, but the
-        # approved root cannot prove where it lives. Never turn that into an
-        # empty/complete class result.
+    missing_form = sorted(set(refs) - set(found))
+    if missing_form:
+        # A current Form response says the file exists, but the approved root
+        # cannot prove where it lives. That is incomplete current coverage and
+        # must fail closed.
         raise ConnectionError("submission_root_coverage_incomplete")
+    missing_known = sorted(set(known) - set(found))
 
     files = []
     for file_id in sorted(found):
@@ -245,4 +284,5 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
                       "submitted_at": ref.get("submitted_at") if ref else None,
                       "assignment_evidence": "form_response" if ref else "grading_record"})
     return files, {**evidence, "root_folders_checked": folders_checked,
-                   "root_verified_files": len(files), "known_recorded_files": len(known)}
+                   "root_verified_files": len(files), "known_recorded_files": len(known),
+                   "legacy_outside_root_files": len(missing_known)}

@@ -13,7 +13,8 @@ from .dated_agenda import read_day
 from .firestore_state import configured_store
 from .grading_records import read_records
 from .hosted_agenda import ConnectionError
-from .forms_submissions import collect_assignment_submissions
+from .forms_submissions import (collect_assignment_submissions,
+                                historical_assignment_file_ids)
 from ..core.cloud_state import Busy, CloudState, Conflict, LeaseLost, StoreUnavailable, key
 from ..core.runs import content_hash
 from ..workflows.submission_monitor import (
@@ -25,6 +26,7 @@ OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
 STATUS_VERSION = "hub-submission-monitor-status/v1"
 MAX_LISTED = 120
+DISCOVERY_VERSION = 2
 
 
 def _now():
@@ -45,7 +47,11 @@ def _lesson(assertion, day, class_key, config):
 def _drive_scan(assertion, day, class_key, config):
     """Historical name retained for callers/tests; source is now Form + root."""
     _, lesson, assignment_label = _lesson(assertion, day, class_key, config)
-    files, evidence = collect_assignment_submissions(config, assignment_label)
+    records = read_records(assertion, config)
+    known_file_ids = historical_assignment_file_ids(
+        records, class_key, assignment_label)
+    files, evidence = collect_assignment_submissions(
+        config, assignment_label, known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
         raise ConnectionError("submission_agenda_changed")
@@ -55,9 +61,10 @@ def _drive_scan(assertion, day, class_key, config):
     # first-observed baseline instead of labeling historical submissions as new.
     source_id = content_hash({"class_key": class_key,
                               "assignment_label": assignment_label,
-                              "form_source": str(config.get("HUB_TURNIN_FORM_ID", ""))})[:40]
+                              "form_source": str(config.get("HUB_TURNIN_FORM_ID", "")),
+                              "discovery_version": DISCOVERY_VERSION})[:40]
     return {"class_key": class_key, "source_id": source_id,
-            "source_name": "Shared Form responses · 00 ALL TURN IN",
+            "source_name": "Current Form + recorded assignment evidence · 00 ALL TURN IN",
             "source_kind": "form_responses_root_verified",
             "assignment_label": assignment_label, "date": day,
             "observed_at": _now(),
@@ -67,7 +74,10 @@ def _drive_scan(assertion, day, class_key, config):
                          "forms_found": 1,
                          "responses_checked": evidence["responses_checked"],
                          "matching_responses": evidence["matching_responses"],
-                         "root_verified_files": evidence["root_verified_files"]},
+                         "root_verified_files": evidence["root_verified_files"],
+                         "known_recorded_files": evidence.get("known_recorded_files", 0),
+                         "legacy_outside_root_files": evidence.get(
+                             "legacy_outside_root_files", 0)},
             "files": [{"id": f["id"], "name": f["name"],
                        "modified_at": f.get("modifiedTime"),
                        "version": f.get("version"),
