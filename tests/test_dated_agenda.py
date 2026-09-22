@@ -120,6 +120,19 @@ class TurnInMapTests(unittest.TestCase):
         self.assertIsNone(result['lessons'][1]['turnin_folder'])
         self.assertNotIn('submitted',result)
 
+    def test_assignment_specific_form_needs_no_prefilled_assignment_field(self):
+        meta,mapping,data=fixtures()
+        source=sheet('🗂 TurnIn Map',{1:['assignment key','target folder id','course','week'],
+            2:['Fictional assignment','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example']})
+        meta['sheets'].append({'properties':source['properties']});data['sheets'].append(source)
+        row=data['sheets'][0]['data'][1]['rowData'][0]['values']
+        row[20]['formattedValue']='https://docs.google.com/forms/d/FICTIONALFORM123456789012345/viewform'
+        result=self.run_day(data=(meta,mapping,data))
+        self.assertEqual(result['lessons'][0]['turnin_form_id'],
+                         'FICTIONALFORM123456789012345')
+        self.assertEqual(result['lessons'][0]['assignment_label'],'Fictional assignment')
+        self.assertIsNotNone(result['lessons'][0]['turnin_form'])
+
     def test_duplicate_or_unsafe_folder_is_not_offered(self):
         for rows in ({2:['Lesson','invalid/path','🌿 Biology','Wk example']},{2:['Lesson','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example'],3:['Other lesson','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example']}):
             meta,mapping,data=fixtures()

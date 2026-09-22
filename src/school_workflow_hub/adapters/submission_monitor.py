@@ -26,7 +26,7 @@ OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
 STATUS_VERSION = "hub-submission-monitor-status/v1"
 MAX_LISTED = 120
-DISCOVERY_VERSION = 3
+DISCOVERY_VERSION = 4
 
 
 def _now():
@@ -51,7 +51,8 @@ def _drive_scan(assertion, day, class_key, config):
     known_file_ids = historical_assignment_file_ids(
         records, class_key, assignment_label)
     files, evidence = collect_assignment_submissions(
-        config, assignment_label, known_file_ids=known_file_ids)
+        config, assignment_label, form_id=lesson.get("turnin_form_id"),
+        known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
         raise ConnectionError("submission_agenda_changed")
@@ -61,7 +62,8 @@ def _drive_scan(assertion, day, class_key, config):
     # first-observed baseline instead of labeling historical submissions as new.
     source_id = content_hash({"class_key": class_key,
                               "assignment_label": assignment_label,
-                              "form_source": str(config.get("HUB_TURNIN_FORM_ID", "")),
+                              "form_source": str(lesson.get("turnin_form_id")
+                                                 or config.get("HUB_TURNIN_FORM_ID", "")),
                               "discovery_version": DISCOVERY_VERSION})[:40]
     return {"class_key": class_key, "source_id": source_id,
             "source_name": "Current Form responses · 00 ALL TURN IN",
@@ -75,6 +77,7 @@ def _drive_scan(assertion, day, class_key, config):
                          "responses_checked": evidence["responses_checked"],
                          "matching_responses": evidence["matching_responses"],
                          "root_verified_files": evidence["root_verified_files"],
+                         "form_source": evidence.get("form_source"),
                          "known_recorded_files": evidence.get("known_recorded_files", 0),
                          "legacy_outside_root_files": evidence.get(
                              "legacy_outside_root_files", 0)},

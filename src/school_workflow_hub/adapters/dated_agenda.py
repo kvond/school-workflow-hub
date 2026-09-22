@@ -43,15 +43,21 @@ def link(raw):
 
 
 def turnin_form(raw):
-    """Validated Google Form link plus its prefilled text values."""
+    """Validated Google Form link, prefilled values, and editable/API Form ID.
+
+    Assignment-specific Forms use /forms/d/<form_id>/viewform and need no
+    synthetic assignment question. The older shared router uses /forms/d/e/...
+    plus a prefilled assignment value; that remains supported during migration.
+    """
     target = link(raw)
     if not target:
-        return None, ()
+        return None, (), None
     try:
         url = urlsplit(target)
-        if url.hostname != 'docs.google.com' or not re.fullmatch(
-                r'/forms/d/(?:e/)?[A-Za-z0-9_-]{20,256}/(?:viewform|edit)', url.path):
-            return None, ()
+        match = re.fullmatch(
+            r'/forms/d/(?:(e)/)?([A-Za-z0-9_-]{20,256})/(?:viewform|edit)', url.path)
+        if url.hostname != 'docs.google.com' or not match:
+            return None, (), None
         query = parse_qs(url.query, max_num_fields=20, keep_blank_values=False)
         values = []
         for key, items in query.items():
@@ -60,9 +66,10 @@ def turnin_form(raw):
             for item in items:
                 if isinstance(item, str) and 0 < len(item) <= 200 and item not in values:
                     values.append(item)
-        return target, tuple(values)
+        api_id = None if match.group(1) == 'e' else match.group(2)
+        return target, tuple(values), api_id
     except (ValueError, TypeError):
-        return None, ()
+        return None, (), None
 
 
 def source_date(text):
@@ -162,18 +169,25 @@ def read_day(assertion, selected, config=None):
             if re.fullmatch(r'[A-Za-z0-9_-]{20,128}',folder_id):
                 turnin_folder = 'https://drive.google.com/drive/folders/' + folder_id
             assignment_label = value(turnins,targets[0],1) or None
-        form_url, prefilled = turnin_form(value(cells,row,21))
-        # The Form link is now the durable submission mapping. Bind it to the
-        # exact prefilled assignment value; a stale TurnIn Map label cannot
-        # silently redirect one lesson into another assignment's responses.
-        if assignment_label and assignment_label not in prefilled:
-            form_url = None
-        elif not assignment_label and len(prefilled) == 1:
-            assignment_label = prefilled[0]
-        if not assignment_label or assignment_label not in prefilled:
-            form_url = None
+        form_url, prefilled, form_id = turnin_form(value(cells,row,21))
+        # Preferred model: one assignment row points at its own editable/API
+        # Form ID, so the TurnIn Map supplies the stable assignment label and
+        # every response in that Form belongs to that assignment. The older
+        # shared published router is accepted only when its prefilled assignment
+        # value exactly matches the map.
+        if form_id:
+            if not assignment_label:
+                form_url = None
+        else:
+            if assignment_label and assignment_label not in prefilled:
+                form_url = None
+            elif not assignment_label and len(prefilled) == 1:
+                assignment_label = prefilled[0]
+            if not assignment_label or assignment_label not in prefilled:
+                form_url = None
         lessons.append({'class_key':key,'title':value(cells,row,3),'plan':plan,'notes':notes,
             'teacher_slides':teacher,'turnin_folder':turnin_folder,'turnin_form':form_url,
+            'turnin_form_id':form_id if form_url else None,
             'assignment_label':assignment_label,'links':resources,'origin':origin,'dashboard_text':extra,
             'weekly_plan':value(cells,row,col) if col else '',
             'todo':value(cells,row,10),'prep':value(cells,row,11),

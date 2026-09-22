@@ -12,9 +12,9 @@ export function validateStatus(data){
 const FAILURES={
  submission_folder_access_required:'The legacy folder source cannot be read by the cloud service. Verify Viewer access before retrying.',
  submission_reader_scope_missing:'The dashboard’s Drive read permission is misconfigured.',
- submission_form_not_configured:'The shared turn-in Form API id is not configured in the cloud service.',
- submission_form_access_required:'The cloud service cannot read responses from the shared turn-in Form. Share the editable Form with the runtime reader, then Scan again.',
- submission_form_not_found:'The configured shared turn-in Form could not be found.',
+ submission_form_not_configured:'The turn-in Form API id is not configured in the cloud service.',
+ submission_form_access_required:'The cloud service cannot read responses from the turn-in Form. Share the editable Form with the runtime reader, then Scan again.',
+ submission_form_not_found:'The configured turn-in Form could not be found.',
  submission_form_rate_limited:'Google Forms rate-limited the response read. Try again shortly.',
  submission_form_unavailable:'Google Forms could not be read right now.',
  submission_form_scan_incomplete:'The Form response read was incomplete. No baseline was replaced.',
@@ -70,7 +70,7 @@ export function renderStatus(root,data){
  const coverage=data.coverage||{};
  const legacyGap=coverage.legacy_outside_root_files??0;
  const coverageText=coverage.source==='form_responses_root_verified'
-  ?('Coverage: current exact-assignment Form responses verified inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' matching current Form responses · '+(coverage.root_verified_files??0)+' verified current files · '+(coverage.folders_checked??0)+' folders checked.'+(legacyGap?(' '+legacyGap+' already-recorded historical file'+(legacyGap===1?' is':'s are')+' in the old intake tree; '+(legacyGap===1?'it remains':'they remain')+' a named coverage gap and '+(legacyGap===1?'is':'are')+' not called missing.'):''))
+  ?('Coverage: current assignment Form responses verified inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' matching current Form responses · '+(coverage.root_verified_files??0)+' verified current files · '+(coverage.folders_checked??0)+' folders checked.'+(legacyGap?(' '+legacyGap+' already-recorded historical file'+(legacyGap===1?' is':'s are')+' in the old intake tree; '+(legacyGap===1?'it remains':'they remain')+' a named coverage gap and '+(legacyGap===1?'is':'are')+' not called missing.'):''))
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
  root.append(node(root,'p',coverageText+' Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;
@@ -120,7 +120,7 @@ export function mountSubmissionMonitor(container,{fetcher,onFiles}={}){
   if(!scope){state.textContent='Load a lesson with an assignment-bound turn-in Form first.';return;}
   const mine=++generation,{date,classKey}=scope;
   refresh.disabled=scan.disabled=true;
-  state.textContent=kind==='scan'?'Reading exact-assignment Form responses, verifying files in 00 ALL TURN IN, and saving observations…':'Reading the stored monitoring state…';
+  state.textContent=kind==='scan'?'Reading assignment Form responses, verifying files in 00 ALL TURN IN, and saving observations…':'Reading the stored monitoring state…';
   try{
    const response=kind==='scan'
     ?await request('/api/submission-monitor',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'scan',date,class_key:classKey})})

@@ -121,15 +121,15 @@ def _file_values(answer, submitted_at):
     return result
 
 
-def response_file_refs(reader, form_id, assignment_label):
-    """Return exact-assignment FileUpload references from all complete responses.
+def response_file_refs(reader, form_id, assignment_label=None):
+    """Return FileUpload references from all complete responses.
 
-    The Agenda pre-fills the assignment label. We intentionally do not depend on
-    a Forms question ID: the public entry ID and the API questionId are different
-    namespaces. A response belongs to this assignment only when one of its text
-    answers exactly equals the Agenda assignment label.
+    For an assignment-specific Form, assignment_label is None and every response
+    belongs to that assignment. During migration, the older shared router passes
+    an exact assignment label and only matching responses are accepted.
     """
-    if not isinstance(assignment_label, str) or not 1 <= len(assignment_label) <= 200:
+    if assignment_label is not None and (
+            not isinstance(assignment_label, str) or not 1 <= len(assignment_label) <= 200):
         raise ConnectionError("submission_assignment_required")
     cursor, cursors, pages, checked, matched = None, set(), 0, 0, 0
     refs = {}
@@ -155,7 +155,7 @@ def response_file_refs(reader, form_id, assignment_label):
                 if not isinstance(answer, dict):
                     raise ConnectionError("submission_form_response_invalid")
                 text.extend(_text_values(answer))
-            if assignment_label not in text:
+            if assignment_label is not None and assignment_label not in text:
                 continue
             matched += 1
             for answer in answers.values():
@@ -215,7 +215,8 @@ def historical_assignment_file_ids(records, class_key, assignment_label):
             break
     return ids
 
-def collect_assignment_submissions(config, assignment_label, *, known_file_ids=()):
+def collect_assignment_submissions(config, assignment_label, *, form_id=None,
+                                   known_file_ids=()):
     """Read form references and return only files verified below the approved root.
 
     known_file_ids are assignment-bound file IDs already present in the grading
@@ -223,7 +224,11 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
     current shared Form are counted as legacy coverage and are never silently
     pulled into the current approved-root scan.
     """
-    form_id = str(config.get("HUB_TURNIN_FORM_ID", ""))
+    configured_form_id = str(config.get("HUB_TURNIN_FORM_ID", ""))
+    form_id = str(form_id or "")
+    dedicated = bool(FORM_ID.fullmatch(form_id))
+    if not dedicated:
+        form_id = configured_form_id
     root_id = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", ""))
     service_email = str(config.get("HUB_READER_SERVICE_ACCOUNT", ""))
     if not FORM_ID.fullmatch(form_id):
@@ -232,7 +237,10 @@ def collect_assignment_submissions(config, assignment_label, *, known_file_ids=(
         raise ConnectionError("submission_root_not_configured")
 
     form_token = service_token(service_email, FORMS_SCOPE)
-    refs, evidence = response_file_refs(FormsReader(form_token), form_id, assignment_label)
+    refs, evidence = response_file_refs(
+        FormsReader(form_token), form_id, None if dedicated else assignment_label)
+    evidence = {**evidence,
+                "form_source": "assignment_specific" if dedicated else "shared_router"}
 
     known = []
     for file_id in known_file_ids:
