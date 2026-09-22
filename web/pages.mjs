@@ -96,7 +96,7 @@ function promptAction(target,label,kind){
 }
 function heldAction(target,label,reason){const button=btn(label,null,true);button.title=reason;target.append(button);}
 const feedback=$('page-feedback');compactHeading(feedback,'Submissions & feedback');const advancedIntake=scopeBar(feedback,'Feedback');
-feedback.append(el('p','Choose the class/section, lesson name, and Notes or Drafts to review that lesson’s student work, grade it, and print feedback. Assessing brand-new submissions is inside “Assess new submissions” above.','hint'));
+feedback.append(el('p','The monitor above shows current discovered files, including work not assessed yet. The Student work table below is saved assessment history only. Choose class/section, assignment name, and Notes or Drafts to review saved results, grade them, and print feedback.','hint'));
 const feedbackGrid=el('div',undefined,'section-grid');
 const queue=el('section',undefined,'surface wide');const qhead=el('div',undefined,'section-heading');qhead.append(el('h2','Student work'));promptAction(qhead,'Copy completion instructions','completion');queue.append(qhead);
 const inventory=el('div');inventory.setAttribute('aria-live','polite');
