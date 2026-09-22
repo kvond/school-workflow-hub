@@ -379,7 +379,8 @@ def read_inventory(assertion, day, class_key, config):
     known_file_ids = historical_assignment_file_ids(
         records, class_key, lesson['assignment_label'])
     files, evidence = collect_assignment_submissions(
-        config, lesson['assignment_label'], known_file_ids=known_file_ids)
+        config, lesson['assignment_label'], form_id=lesson.get('turnin_form_id'),
+        known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next(l for l in fresh['lessons'] if l['class_key'] == class_key) != lesson:
         raise ConnectionError('submission_agenda_changed')
