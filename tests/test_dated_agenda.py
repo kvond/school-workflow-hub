@@ -25,9 +25,10 @@ def fixtures():
     courses=[]
     for key,title in day.COURSES:
         first,second=('Tue','Thu') if key=='anatomy' else ('Mon','Wed')
-        headers=['Wk','Dates & closures','Topic',first+' — plan','note',second+' — plan','note','Fri — plan','note','To-do','Prep','Student','Teacher','Folder','Other','_studentURL','_teacherURL','_folderURL']
+        headers=['Wk','Dates & closures','Topic',first+' — plan','note',second+' — plan','note','Fri — plan','note','To-do','Prep','Student','Teacher','Folder','Other','_studentURL','_teacherURL','_folderURL','_extraURL','📤 Turn it in','_turnInURL']
         row=['Wk example','Example closure','Fictional topic','Plan','Note','Second plan','Second note','Does not meet','Friday note','To-do','Prep','','','','',
-            'https://docs.google.com/presentation/d/FICTIONAL/copy','https://docs.google.com/presentation/d/FICTIONAL/edit','https://example.com/folder']
+            'https://docs.google.com/presentation/d/FICTIONAL/copy','https://docs.google.com/presentation/d/FICTIONAL/edit','https://example.com/folder','','',
+            'https://docs.google.com/forms/d/e/FICTIONALPUBLICFORM12345/viewform?usp=pp_url&entry.123=Fictional+assignment']
         courses.append(sheet(title,{3:headers,4:row}))
     mapping={'sheets':[weeks,dashboard]}
     data={'sheets':courses}
@@ -53,6 +54,7 @@ class DatedTests(unittest.TestCase):
         self.assertEqual(forensics['weekly_plan'],'Plan')
         self.assertEqual(anatomy['plan'],'')
         self.assertTrue(bio['teacher_slides'].endswith('/edit'))
+        self.assertTrue(bio['turnin_form'].startswith('https://docs.google.com/forms/'))
         self.assertTrue(bio['links'][0]['url'].endswith('/copy'))
         self.assertFalse(result['save_enabled'])
         self.assertFalse(result['run_enabled'])
