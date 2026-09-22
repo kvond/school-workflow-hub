@@ -13,7 +13,7 @@ import re
 from urllib.parse import parse_qs, urlsplit
 
 from .hosted_agenda import ConnectionError
-from .submission_inventory import DRIVE_SCOPE, DriveReader
+from .submission_inventory import DriveReader
 
 FORMS_SCOPE = "https://www.googleapis.com/auth/forms.responses.readonly"
 MAX_RESPONSES = 10000
