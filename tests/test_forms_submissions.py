@@ -65,7 +65,8 @@ class FormLinkTests(unittest.TestCase):
         parsed = {"public_id": PUBLIC, "form_id": None, "assignment_label": LABEL}
         with self.assertRaisesRegex(ConnectionError, "mapping"):
             form_id(parsed, {})
-        self.assertEqual(form_id(parsed, {"HUB_SUBMISSION_FORM_ID": API}), API)
+        with self.assertRaisesRegex(ConnectionError, "mapping"):
+            form_id(parsed, {"HUB_FORM_ID_MAP": json.dumps({"x" * 24: API})})
         self.assertEqual(form_id(
             parsed, {"HUB_FORM_ID_MAP": json.dumps({PUBLIC: API})}), API)
 
