@@ -378,9 +378,12 @@ def read_inventory(assertion, day, class_key, config):
     records = read_records(assertion, config)
     known_file_ids = historical_assignment_file_ids(
         records, class_key, lesson['assignment_label'])
+    folder_match = re.search(r'/folders/([A-Za-z0-9_-]{20,128})',
+                             str(lesson.get('turnin_folder') or ''))
+    course_root_id = folder_match.group(1) if folder_match else None
     files, evidence = collect_assignment_submissions(
         config, lesson['assignment_label'], form_id=lesson.get('turnin_form_id'),
-        known_file_ids=known_file_ids)
+        course_root_id=course_root_id, known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next(l for l in fresh['lessons'] if l['class_key'] == class_key) != lesson:
         raise ConnectionError('submission_agenda_changed')
@@ -389,7 +392,7 @@ def read_inventory(assertion, day, class_key, config):
                 if re.fullmatch(r'[A-Za-z0-9_-]{20,128}', root_id) else '')
     return {'schema_version': 'hub-submission-inventory/v1', 'date': day,
             'class_key': class_key, 'assignment': lesson['assignment_label'],
-            'folder_name': 'Shared Form responses · 00 ALL TURN IN',
+            'folder_name': 'Assignment Form + exact lesson folder · 00 ALL TURN IN',
             'folder_url': root_url, 'checked_at': datetime.now(timezone.utc).isoformat(),
             'source_revision': content_hash({'lesson': lesson, 'files': files}),
             'folders_checked': evidence['root_folders_checked'], 'forms_found': 1,
@@ -397,6 +400,8 @@ def read_inventory(assertion, day, class_key, config):
             'matching_responses': evidence['matching_responses'],
             'known_recorded_files': evidence.get('known_recorded_files', 0),
             'legacy_outside_root_files': evidence.get('legacy_outside_root_files', 0),
+            'form_refs_outside_root': evidence.get('form_refs_outside_root', 0),
+            'lesson_folder_files': evidence.get('lesson_folder_files', 0),
             'files': [{'file_id': f['id'], 'name': f['name'],
                        'url': 'https://drive.google.com/file/d/' + f['id'] + '/view',
                        'modified_at': f.get('modifiedTime'), 'version': f.get('version'),

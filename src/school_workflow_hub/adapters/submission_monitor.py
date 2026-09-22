@@ -8,6 +8,7 @@ the existing private cloud state. No grades, zeros, schedules, Forms writes, or
 Drive writes happen here.
 """
 from datetime import datetime, timezone
+import re
 
 from .dated_agenda import read_day
 from .firestore_state import configured_store
@@ -26,7 +27,7 @@ OWNER = "hosted-submission-monitor"
 ATTEMPT_VERSION = "hub-monitor-attempt/v1"
 STATUS_VERSION = "hub-submission-monitor-status/v1"
 MAX_LISTED = 120
-DISCOVERY_VERSION = 4
+DISCOVERY_VERSION = 5
 
 
 def _now():
@@ -50,9 +51,12 @@ def _drive_scan(assertion, day, class_key, config):
     records = read_records(assertion, config)
     known_file_ids = historical_assignment_file_ids(
         records, class_key, assignment_label)
+    folder_match = re.search(r"/folders/([A-Za-z0-9_-]{20,128})",
+                             str(lesson.get("turnin_folder") or ""))
+    course_root_id = folder_match.group(1) if folder_match else None
     files, evidence = collect_assignment_submissions(
         config, assignment_label, form_id=lesson.get("turnin_form_id"),
-        known_file_ids=known_file_ids)
+        course_root_id=course_root_id, known_file_ids=known_file_ids)
     fresh = read_day(assertion, day, config)
     if next((l for l in fresh["lessons"] if l["class_key"] == class_key), None) != lesson:
         raise ConnectionError("submission_agenda_changed")
@@ -77,6 +81,8 @@ def _drive_scan(assertion, day, class_key, config):
                          "responses_checked": evidence["responses_checked"],
                          "matching_responses": evidence["matching_responses"],
                          "root_verified_files": evidence["root_verified_files"],
+                         "lesson_folder_files": evidence.get("lesson_folder_files", 0),
+                         "form_refs_outside_root": evidence.get("form_refs_outside_root", 0),
                          "form_source": evidence.get("form_source"),
                          "known_recorded_files": evidence.get("known_recorded_files", 0),
                          "legacy_outside_root_files": evidence.get(

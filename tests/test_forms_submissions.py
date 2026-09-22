@@ -158,7 +158,7 @@ class HistoricalCoverageTests(unittest.TestCase):
         drive_reader.assert_not_called()
         locator.assert_not_called()
 
-    def test_missing_current_form_file_still_fails_closed(self):
+    def test_missing_current_form_file_is_reported_without_hiding_verified_work(self):
         class RootReader:
             def metadata(self, file_id):
                 return {"id": file_id, "name": "00 ALL TURN IN",
@@ -172,12 +172,48 @@ class HistoricalCoverageTests(unittest.TestCase):
              patch.object(forms, "response_file_refs", return_value=({FILE_A: ref}, evidence)), \
              patch.object(forms, "DriveReader", return_value=RootReader()), \
              patch.object(forms, "locate_files_under_root", return_value=({}, 4)):
-            with self.assertRaisesRegex(ConnectionError, "coverage_incomplete"):
-                forms.collect_assignment_submissions(
-                    {"HUB_TURNIN_FORM_ID": FORM,
-                     "HUB_SUBMISSIONS_ROOT_FOLDER": "r" * 24,
-                     "HUB_READER_SERVICE_ACCOUNT": "reader@example.com"},
-                    "Biology assignment")
+            files, result = forms.collect_assignment_submissions(
+                {"HUB_TURNIN_FORM_ID": FORM,
+                 "HUB_SUBMISSIONS_ROOT_FOLDER": "r" * 24,
+                 "HUB_READER_SERVICE_ACCOUNT": "reader@example.com"},
+                "Biology assignment")
+        self.assertEqual(files, [])
+        self.assertEqual(result["form_refs_outside_root"], 1)
+
+    def test_exact_lesson_folder_supplements_form_index(self):
+        class RootReader:
+            def metadata(self, file_id):
+                return {"id": file_id, "name": "00 ALL TURN IN",
+                        "mimeType": forms.FOLDER, "trashed": False}
+        course_root = "c" * 24
+        lesson_folder = "d" * 24
+        folder_file = {"id": FILE_B, "name": "student deck",
+                       "mimeType": "application/vnd.google-apps.presentation",
+                       "trashed": False, "modifiedTime": "2026-09-21T14:00:00Z",
+                       "version": "3"}
+        evidence = {"pages": 1, "responses_checked": 1, "matching_responses": 1}
+        ref = {"id": FILE_A, "form_name": "off-root.pptx",
+               "form_mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+               "submitted_at": "2026-09-20T14:00:00Z"}
+        with patch.object(forms, "service_token", return_value="tok"), \
+             patch.object(forms, "FormsReader"), \
+             patch.object(forms, "response_file_refs", return_value=({FILE_A: ref}, evidence)), \
+             patch.object(forms, "DriveReader", return_value=RootReader()), \
+             patch.object(forms, "locate_files_under_root",
+                          side_effect=[({}, 4), ({course_root: {
+                              "id": course_root, "name": "Forensics",
+                              "mimeType": forms.FOLDER, "trashed": False}}, 2)]), \
+             patch.object(forms, "_folder_files_for_assignment",
+                          return_value=({FILE_B: folder_file}, 3, lesson_folder)):
+            files, result = forms.collect_assignment_submissions(
+                {"HUB_TURNIN_FORM_ID": FORM,
+                 "HUB_SUBMISSIONS_ROOT_FOLDER": "r" * 24,
+                 "HUB_READER_SERVICE_ACCOUNT": "reader@example.com"},
+                "🔬 Forensics · Wk 03 — Observation Skills & Deductive Reasoning",
+                course_root_id=course_root)
+        self.assertEqual([row["id"] for row in files], [FILE_B])
+        self.assertEqual(result["lesson_folder_files"], 1)
+        self.assertEqual(result["form_refs_outside_root"], 1)
 
 
 if __name__ == "__main__":

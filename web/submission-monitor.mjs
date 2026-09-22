@@ -69,8 +69,10 @@ export function renderStatus(root,data){
  root.append(node(root,'p','Assignment '+data.stream.assignment_label+' · scanned '+when(data.observed_at)+' · scan '+data.scan_count+' · baseline since '+when(data.baseline_established_at)+(data.unchanged_rerun?' · unchanged since the last scan':'')));
  const coverage=data.coverage||{};
  const legacyGap=coverage.legacy_outside_root_files??0;
+ const offRoot=coverage.form_refs_outside_root??0;
+ const folderFiles=coverage.lesson_folder_files??0;
  const coverageText=coverage.source==='form_responses_root_verified'
-  ?('Coverage: current assignment Form responses verified inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' matching current Form responses · '+(coverage.root_verified_files??0)+' verified current files · '+(coverage.folders_checked??0)+' folders checked.'+(legacyGap?(' '+legacyGap+' already-recorded historical file'+(legacyGap===1?' is':'s are')+' in the old intake tree; '+(legacyGap===1?'it remains':'they remain')+' a named coverage gap and '+(legacyGap===1?'is':'are')+' not called missing.'):''))
+  ?('Coverage: assignment Form + exact lesson folder inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' Form responses · '+folderFiles+' files in the exact lesson folder · '+(coverage.root_verified_files??0)+' verified files total · '+(coverage.folders_checked??0)+' folders checked.'+(offRoot?(' '+offRoot+' Form-linked file'+(offRoot===1?' is':'s are')+' still outside the approved root; '+(offRoot===1?'it is':'they are')+' held as a coverage gap, not called missing.'):'')+(legacyGap?(' '+legacyGap+' already-recorded historical file'+(legacyGap===1?' is':'s are')+' outside current intake; '+(legacyGap===1?'it remains':'they remain')+' a named coverage gap.'):''))
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
  root.append(node(root,'p',coverageText+' Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;

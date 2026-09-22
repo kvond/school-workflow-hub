@@ -1,9 +1,9 @@
-"""Form-first submission discovery, verified against the approved Drive root.
+"""Assignment submission discovery, verified against the approved Drive root.
 
-The shared Google Form is the durable submission index: an exact assignment
-answer selects responses and each FileUpload answer supplies a Drive file ID.
-Those IDs are never trusted by themselves. Every candidate must also be found
-beneath HUB_SUBMISSIONS_ROOT_FOLDER before it can enter grading/monitoring.
+The lesson's Google Form supplies current FileUpload references. The exact
+approved lesson folder supplements that index because earlier routing moved
+some valid uploads after submission. Off-root Form references stay explicit
+coverage gaps and never suppress verified work or become missing-work claims.
 
 This module is read-only. It creates/moves no files and submits no Forms.
 """
@@ -215,14 +215,98 @@ def historical_assignment_file_ids(records, class_key, assignment_label):
             break
     return ids
 
+
+def _norm(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _assignment_parts(label):
+    match = re.search(r"\bWk\s*0?(\d{1,2})\s*[—–-]\s*(.+)$", str(label or ""))
+    if not match:
+        return None, None
+    return int(match.group(1)), _norm(match.group(2))
+
+
+def _folder_files_for_assignment(drive, course_root_id, assignment_label):
+    """Files from the exact approved week/lesson folder beneath a course root.
+
+    The course root comes from the Agenda TurnIn Map. We accept a child folder
+    only when both its Wk number and normalized topic exactly match the Agenda
+    assignment label; no student filename is used to establish membership.
+    """
+    week, topic = _assignment_parts(assignment_label)
+    if not week or not topic or not FILE_ID.fullmatch(str(course_root_id or "")):
+        return {}, 0, None
+    candidates, cursor, cursors, pages = [], None, set(), 0
+    while True:
+        pages += 1
+        if pages > 8:
+            raise ConnectionError("submission_scan_incomplete")
+        page = drive.children(course_root_id, cursor)
+        if page.get("incompleteSearch") is True or not isinstance(page.get("files"), list):
+            raise ConnectionError("submission_scan_incomplete")
+        for item in page["files"]:
+            if item.get("trashed") is not False or item.get("mimeType") != FOLDER:
+                continue
+            name = str(item.get("name") or "")
+            match = re.fullmatch(
+                r"📥?\s*Wk\s*0?(\d{1,2})\s*[—–-]\s*(.+?)\s*[—–-]\s*\d{4}-\d{2}-\d{2}",
+                name)
+            if match and int(match.group(1)) == week and _norm(match.group(2)) == topic:
+                candidates.append(item["id"])
+        cursor = page.get("nextPageToken")
+        if not cursor:
+            break
+        if cursor in cursors:
+            raise ConnectionError("submission_scan_incomplete")
+        cursors.add(cursor)
+    if len(candidates) > 1:
+        raise ConnectionError("submission_lesson_mapping_required")
+    if not candidates:
+        return {}, pages, None
+
+    folder_id = candidates[0]
+    files, queue, seen, scan_pages = {}, [folder_id], set(), 0
+    while queue:
+        parent = queue.pop(0)
+        if parent in seen or len(seen) >= 20:
+            raise ConnectionError("submission_scan_incomplete")
+        seen.add(parent)
+        cursor, cursors = None, set()
+        while True:
+            scan_pages += 1
+            if scan_pages > 30:
+                raise ConnectionError("submission_scan_incomplete")
+            page = drive.children(parent, cursor)
+            if page.get("incompleteSearch") is True or not isinstance(page.get("files"), list):
+                raise ConnectionError("submission_scan_incomplete")
+            for item in page["files"]:
+                if item.get("trashed") is not False:
+                    raise ConnectionError("submission_scan_incomplete")
+                if item.get("mimeType") == FOLDER:
+                    queue.append(item["id"])
+                elif item.get("mimeType") == SHORTCUT:
+                    raise ConnectionError("submission_shortcut_needs_review")
+                elif item.get("mimeType") != "application/vnd.google-apps.form":
+                    files[item["id"]] = item
+                    if len(files) > MAX_FILES:
+                        raise ConnectionError("submission_scan_incomplete")
+            cursor = page.get("nextPageToken")
+            if not cursor:
+                break
+            if cursor in cursors:
+                raise ConnectionError("submission_scan_incomplete")
+            cursors.add(cursor)
+    return files, pages + scan_pages, folder_id
+
 def collect_assignment_submissions(config, assignment_label, *, form_id=None,
-                                   known_file_ids=()):
+                                   course_root_id=None, known_file_ids=()):
     """Read form references and return only files verified below the approved root.
 
     known_file_ids are assignment-bound file IDs already present in the grading
-    workbook. They are historical evidence only: IDs not also referenced by the
-    current shared Form are counted as legacy coverage and are never silently
-    pulled into the current approved-root scan.
+    workbook. They are historical evidence only. Current intake comes from the
+    lesson Form plus the exact approved lesson folder; recorded files elsewhere
+    remain explicit legacy coverage.
     """
     configured_form_id = str(config.get("HUB_TURNIN_FORM_ID", ""))
     form_id = str(form_id or "")
@@ -250,17 +334,20 @@ def collect_assignment_submissions(config, assignment_label, *, form_id=None,
         if len(known) > MAX_FILES:
             raise ConnectionError("submission_scan_incomplete")
 
-    # Current Form response IDs are the only candidates that must be proved
-    # inside the approved root. Historical workbook IDs may come from the
-    # explicitly deprecated pre-root intake tree; do not crawl the whole root
-    # trying to rediscover them. Report them as named legacy coverage instead.
+    # Current Form response IDs are verified against the approved root. A
+    # Form reference outside the root is a coverage gap, not a reason to hide
+    # every other valid submission. The exact week/lesson folder is also read
+    # because historical Google Form routing moved some valid submissions away
+    # from the Form's own File-responses folder.
     candidates = list(refs)
     legacy_known = [file_id for file_id in known if file_id not in refs]
-
-    if not candidates:
+    course_root_id = str(course_root_id or "")
+    if not candidates and not FILE_ID.fullmatch(course_root_id):
         return [], {**evidence, "root_folders_checked": 0,
                     "root_verified_files": 0, "known_recorded_files": len(known),
-                    "legacy_outside_root_files": len(legacy_known)}
+                    "legacy_outside_root_files": len(legacy_known),
+                    "form_refs_outside_root": 0, "lesson_folder_files": 0,
+                    "lesson_folder_id": None}
 
     drive_token = service_token(service_email, DRIVE_SCOPE)
     drive = DriveReader(drive_token)
@@ -268,19 +355,28 @@ def collect_assignment_submissions(config, assignment_label, *, form_id=None,
     if root.get("trashed") is not False or root.get("mimeType") != FOLDER:
         raise ConnectionError("submission_folder_inactive")
 
-    found, folders_checked = locate_files_under_root(drive, candidates, root_id)
+    found, folders_checked = ({}, 0)
+    if candidates:
+        found, folders_checked = locate_files_under_root(drive, candidates, root_id)
     missing_form = sorted(set(refs) - set(found))
-    if missing_form:
-        # A current Form response says the file exists, but the approved root
-        # cannot prove where it lives. That is incomplete current coverage and
-        # must fail closed.
-        raise ConnectionError("submission_root_coverage_incomplete")
 
+    folder_files, lesson_checked, lesson_folder_id = ({}, 0, None)
+    if FILE_ID.fullmatch(course_root_id):
+        course_found, course_checked = locate_files_under_root(
+            drive, [course_root_id], root_id)
+        folders_checked += course_checked
+        if course_root_id in course_found:
+            folder_files, lesson_checked, lesson_folder_id = _folder_files_for_assignment(
+                drive, course_root_id, assignment_label)
+            folders_checked += lesson_checked
+
+    merged = dict(folder_files)
+    merged.update(found)
     files = []
-    for file_id in sorted(found):
-        item = found[file_id]
+    for file_id in sorted(merged):
+        item = merged[file_id]
         if item.get("trashed") is not False or item.get("mimeType") in {FOLDER, SHORTCUT}:
-            raise ConnectionError("submission_root_coverage_incomplete")
+            raise ConnectionError("submission_scan_incomplete")
         name = item.get("name")
         modified = item.get("modifiedTime")
         if (not isinstance(name, str) or not name or len(name) > 400
@@ -290,7 +386,10 @@ def collect_assignment_submissions(config, assignment_label, *, form_id=None,
         files.append({"id": file_id, "name": name, "mimeType": item.get("mimeType"),
                       "modifiedTime": modified, "version": item.get("version"),
                       "submitted_at": ref.get("submitted_at") if ref else None,
-                      "assignment_evidence": "form_response" if ref else "grading_record"})
+                      "assignment_evidence": "form_response" if ref else "lesson_folder"})
     return files, {**evidence, "root_folders_checked": folders_checked,
                    "root_verified_files": len(files), "known_recorded_files": len(known),
-                   "legacy_outside_root_files": len(legacy_known)}
+                   "legacy_outside_root_files": len(legacy_known),
+                   "form_refs_outside_root": len(missing_form),
+                   "lesson_folder_files": len(folder_files),
+                   "lesson_folder_id": lesson_folder_id}
