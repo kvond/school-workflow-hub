@@ -10,12 +10,19 @@ export function validateStatus(data){
 
 // One specific recovery action per failure; never a generic shrug.
 const FAILURES={
- submission_folder_access_required:'The cloud service cannot read this turn-in folder. Share the submissions folder tree with the hub runtime reader as Viewer, then Scan again.',
- submission_lesson_mapping_required:'This lesson has no specific turn-in folder mapping. Add its TurnIn Map row in the Agenda, then Scan again.',
- submission_scan_incomplete:'The folder read hit a bound before completing. No baseline was replaced; Scan again once the folder is reachable.',
+ submission_form_not_configured:'The shared turn-in Form API id is not configured in the cloud service.',
+ submission_form_access_required:'The cloud service cannot read responses from the shared turn-in Form. Share the editable Form with the runtime reader, then Scan again.',
+ submission_form_not_found:'The configured shared turn-in Form could not be found.',
+ submission_form_rate_limited:'Google Forms rate-limited the response read. Try again shortly.',
+ submission_form_unavailable:'Google Forms could not be read right now.',
+ submission_form_scan_incomplete:'The Form response read was incomplete. No baseline was replaced.',
+ submission_root_not_configured:'The approved 00 ALL TURN IN root is not configured in the cloud service.',
+ submission_root_coverage_incomplete:'A Form-linked file could not be verified inside 00 ALL TURN IN. No baseline was replaced and nothing was called missing.',
+ submission_lesson_mapping_required:'This lesson does not expose an exact assignment-bound turn-in Form in the Agenda.',
+ submission_scan_incomplete:'The approved-root read hit a bound before completing. No baseline was replaced.',
  submission_agenda_changed:'The Agenda changed during the scan. Load the lesson again, then Scan.',
- submission_folder_inactive:'The mapped folder is trashed or not a folder. Repair its Agenda TurnIn link, then Scan again.',
- submission_shortcut_needs_review:'The folder contains a shortcut, which the scan never follows. Replace it with the real file or folder, then Scan again.',
+ submission_folder_inactive:'The approved submission root is inactive or unavailable.',
+ submission_shortcut_needs_review:'A submission reference resolves through a shortcut and is held for review.',
  monitor_scan_in_progress:'Another scan of this assignment is still running. Wait for it, then Refresh status.',
  monitor_scan_conflict:'Another worker updated this stream first. Refresh status, then Scan again.',
  monitor_state_unavailable:'The private state store is unreachable. Try again in a few minutes.',
@@ -58,7 +65,11 @@ export function renderStatus(root,data){
  root.append(node(root,'p',deadlineLine(data.deadline),'hint'));
  if(data.status==='no_complete_scan_recorded'){root.append(node(root,'p','No complete scan is recorded yet. Scan submissions to establish the first-observed baseline; existing files will be labeled first observed, never late.','hint'));return;}
  root.append(node(root,'p','Assignment '+data.stream.assignment_label+' · scanned '+when(data.observed_at)+' · scan '+data.scan_count+' · baseline since '+when(data.baseline_established_at)+(data.unchanged_rerun?' · unchanged since the last scan':'')));
- root.append(node(root,'p','Coverage: complete visible-file scan, '+data.coverage.folders_checked+' folders. Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
+ const coverage=data.coverage||{};
+ const coverageText=coverage.source==='form_responses_root_verified'
+  ?('Coverage: exact-assignment Form responses verified inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' matching responses · '+(coverage.root_verified_files??c.present)+' verified files · '+(coverage.folders_checked??0)+' folders checked.')
+  :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
+ root.append(node(root,'p',coverageText+' Student matches come from the reviewed grading workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so unmatched work stays listed for review rather than being called missing.','hint'));
  const c=data.counts;
  root.append(node(root,'p',`${c.present} present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
  if(data.events_last_scan.length){
@@ -103,10 +114,10 @@ export function mountSubmissionMonitor(container,{fetcher,onFiles}={}){
  container.append(head,row,state,status);
  let scope=null,generation=0;
  async function load(kind){
-  if(!scope){state.textContent='Load a lesson with a mapped turn-in folder first.';return;}
+  if(!scope){state.textContent='Load a lesson with an assignment-bound turn-in Form first.';return;}
   const mine=++generation,{date,classKey}=scope;
   refresh.disabled=scan.disabled=true;
-  state.textContent=kind==='scan'?'Scanning the turn-in folder and saving observations…':'Reading the stored monitoring state…';
+  state.textContent=kind==='scan'?'Reading exact-assignment Form responses, verifying files in 00 ALL TURN IN, and saving observations…':'Reading the stored monitoring state…';
   try{
    const response=kind==='scan'
     ?await request('/api/submission-monitor',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'scan',date,class_key:classKey})})
