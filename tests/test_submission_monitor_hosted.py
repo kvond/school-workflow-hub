@@ -7,7 +7,7 @@ from unittest.mock import patch
 from school_workflow_hub.adapters import submission_monitor as hosted
 from school_workflow_hub.adapters.hosted_agenda import ConnectionError
 from school_workflow_hub.core.cloud_state import Busy, CloudState, key
-from school_workflow_hub.workflows.submission_monitor import stream_scope
+from school_workflow_hub.workflows.submission_monitor import assignment_scope
 from tests.test_cloud_state import MemoryCAS
 from school_workflow_hub.web import application
 
@@ -53,7 +53,7 @@ class Harness:
             patch.object(hosted, "_mappings",
                          lambda assertion, class_key, config: dict(self.maps)),
             patch.object(hosted, "_lesson",
-                         lambda assertion, day, class_key, config: (None, None, FOLDER)),
+                         lambda assertion, day, class_key, config: (None, None, "B01")),
             patch.object(hosted, "_now", lambda: self.port.now.isoformat()),
             patch.object(hosted.topic_starts, "read_week_calendar",
                          lambda assertion, config: dict(self.calendar)),
@@ -126,7 +126,7 @@ class HostedScanTests(unittest.TestCase):
     def test_concurrent_worker_cannot_commit_a_conflicting_result(self):
         with Harness() as h:
             store = CloudState(h.port)
-            scope = stream_scope("biology", FOLDER)
+            scope = assignment_scope("biology", "B01")
             task_id = store.create_task(scope)
             store.claim(task_id, owner="other-worker", request_id="held",
                         input_hash="h" * 16, ttl_seconds=120)
