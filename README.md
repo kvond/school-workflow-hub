@@ -23,6 +23,17 @@ Live teaching-result providers, actual submission/IC readers, Agenda saves,
 grade posting, filing, delivery and printing remain unconnected. Research stays
 deferred. Save and Run remain disabled; publishing this code does not deploy it.
 
+## Teaching Hub v2 (`/v2/`)
+
+`src/hub_v2/` is a small, read-only replacement for Pages 01 and 02, served at
+`/v2/` by the same Cloud Run service, sign-in and settings. **Lesson plans**
+reads each class's weekly Agenda tab by header name and week label.
+**Student work** reads the Form linked in the lesson's "Turn it in" cell,
+matches each response to the roster by school email (then the uploader name
+Forms adds to each file), shows the latest submission with earlier ones as
+history, lists who hasn't turned in, and downloads a grade sheet CSV. A problem
+with one tab, cell or Form is shown on that card; it never blanks the page.
+
 ## Validation
 
 Python 3.9 or later is required; the local checks use the standard library only.

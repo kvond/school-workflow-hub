@@ -42,6 +42,11 @@ def application(environ, start_response, *, teaching_provider=None):
     method = environ.get("REQUEST_METHOD", "GET")
     path = environ.get("PATH_INFO", "/")
 
+    if path == "/v2" or path.startswith("/v2/"):
+        # Teaching Hub v2 runs beside this dashboard behind the same sign-in.
+        from hub_v2.app import application as v2
+        return v2(environ, start_response)
+
     def respond(status, body, content_type="application/json; charset=utf-8", extra=()):
         if not isinstance(body, bytes):
             body = json.dumps(body, sort_keys=True).encode("utf-8")
