@@ -60,6 +60,24 @@ class DatedTests(unittest.TestCase):
         self.assertFalse(result['save_enabled'])
         self.assertFalse(result['run_enabled'])
 
+    def test_missing_dashboard_tab_reads_weekly_tabs(self):
+        meta,mapping,data=fixtures()
+        meta['sheets']=[s for s in meta['sheets'] if s['properties']['title']!='📅 Dashboard']
+        mapping['sheets']=[s for s in mapping['sheets'] if s['properties']['title']!='📅 Dashboard']
+        reader=Mock();reader.read.side_effect=(meta,mapping,data)
+        with patch.object(day,'authenticated_reader',return_value=(reader,'fictional')):
+            result=day.read_day('signed','2032-01-05')
+        self.assertEqual(reader.read.call_args_list[1].args[1],("'🗂 Weeks'!A2:G43",))
+        self.assertEqual([l['plan'] for l in result['lessons']],['Plan','Plan',''])
+        self.assertEqual(result['lessons'][1]['origin'],'Weekly Agenda')
+
+    def test_stale_dashboard_tab_is_ignored(self):
+        meta,mapping,data=fixtures()
+        mapping['sheets'][1]['data'][0]['rowData'][0]['values'][1]={'formattedValue':'Mon 12/29'}
+        result=self.run_day(data=(meta,mapping,data))
+        self.assertEqual(result['lessons'][1]['plan'],'Plan')
+        self.assertEqual(result['lessons'][1]['origin'],'Weekly Agenda')
+
     def test_extra_day_and_closure_preserved(self):
         result=self.run_day('2032-01-06')
         self.assertEqual(result['lessons'][1]['plan'],'Extra meeting')
