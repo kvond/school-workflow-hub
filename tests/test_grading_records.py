@@ -58,6 +58,28 @@ class Reader:
 
 
 class GradingRecordsTests(unittest.TestCase):
+    def test_authoritative_empty_roster_sections_are_exposed_without_saved_students(self):
+        section={'class_key':'anatomy','section_id':'section-empty','section_name':'B3 A&P'}
+        with patch('school_workflow_hub.adapters.grading_records.authorize'), \
+             patch('school_workflow_hub.adapters.grading_records.service_token'), \
+             patch('school_workflow_hub.adapters.grading_records.SheetsReader',return_value=Reader()), \
+             patch('school_workflow_hub.adapters.grading_records.read_roster_snapshot',return_value={
+                 'entries':[],'sections':[section],'section_mapping_complete':True}):
+            result=read_records('signed',CONFIG)
+        self.assertEqual(result['sections'],[section])
+        self.assertEqual(result['sections_status'],'source_read')
+
+    def test_roster_failure_preserves_history_without_stale_section_fallback(self):
+        with patch('school_workflow_hub.adapters.grading_records.authorize'), \
+             patch('school_workflow_hub.adapters.grading_records.service_token'), \
+             patch('school_workflow_hub.adapters.grading_records.SheetsReader',return_value=Reader()), \
+             patch('school_workflow_hub.adapters.grading_records.read_roster_snapshot',
+                   side_effect=ConnectionError('roster_tab_mapping_required')):
+            result=read_records('signed',CONFIG)
+        self.assertTrue(result['submissions'])
+        self.assertEqual(result['sections'],[])
+        self.assertEqual(result['sections_review_reason'],'roster_tab_mapping_required')
+
     def test_three_reads_preserve_the_complete_table_projection(self):
         reader = Reader()
         self.assertEqual(_tables(reader, SOURCE), tables())

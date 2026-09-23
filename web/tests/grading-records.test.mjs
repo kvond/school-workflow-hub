@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateRecords,sectionOptions,filterRecords,lessonOptions,createRecordsLoader,renderRecords,renderSummaries,score,appendSheet,recordsWithDiscovery} from '../grading-records.mjs';
+import {validateRecords,sectionOptions,verifiedSectionOptions,filterRecords,filterReviewRecords,lessonOptions,createRecordsLoader,renderRecords,renderSummaries,score,appendSheet,recordsWithDiscovery} from '../grading-records.mjs';
 
 function fixture(){return {schema_version:'hub-grading-records/v1',provenance:'source_read',external_writes:0,source_revision:'fictional-read',checked_at:'2026-09-01T12:00:00Z',assignments:[
  {assignment_key:'F1',class_key:'forensics',assignment_title:'Fictional One'},
@@ -136,6 +136,7 @@ test('unknown classes and superseded previews stay visibly held without acquirin
  const shown=recordsWithDiscovery(data,state),held=shown.submissions.at(-1);assert.equal(held.class_key,'');assert.equal(held.assignment_key,'');assert.equal(held.content_score,null);assert.equal(filterRecords(shown,'biology','all').some(r=>r.record_id===held.record_id),false);assert.equal(filterRecords(shown,'forensics','','F1').length,0);
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'',discovery:state});
  assert.match(target.allText,/Class needs matching/);assert.match(target.allText,/Previously superseded work/);assert.match(target.allText,/no current version has been selected/);assert.match(target.allText,/does not establish revised student writing/);assert.match(target.allText,/Discovery coverage is incomplete/);assert.match(target.allText,/Form responses could not be read completely/);assert.doesNotMatch(target.allText,/New work · not graded/);
+ assert.match(target.allText,/Identity needs matching/);assert.doesNotMatch(target.allText,/needs matching, Identity/);
 });
 test('per-assignment Form coverage preserves successful reads beside an unavailable Form',()=>{
  const data=fixture(),state=discovery([]);state.data.coverage={complete:false,form_complete:false,form_results:[
@@ -148,4 +149,39 @@ test('per-assignment Form coverage preserves successful reads beside an unavaila
  assert.match(items[1].allText,/Fictional Two/);assert.match(items[1].allText,/Form read incomplete · submission form access required/);assert.doesNotMatch(items[1].allText,/Form read complete|0 responses checked/);
  assert.equal(items[0].children.find(n=>n.tagName==='a').href,'https://docs.google.com/forms/d/fictional-one/viewform');assert.equal(items[1].children.some(n=>n.tagName==='a'),false);
  assert.doesNotMatch(details.allText,/fictional-internal-form|fictional-private-reference/);assert.match(details.allText,/Incomplete coverage does not establish missing work/);assert.match(target.allText,/6.25 \/ 10/);
+});
+
+test('verified section choices use current section metadata, including empty classes',()=>{
+ const data=fixture();assert.deepEqual(verifiedSectionOptions(data,'forensics'),[],'saved grading rows are not current roster configuration');
+ data.sections=[{class_key:'anatomy',section_id:'anatomy-b3',section_name:'B3 Anatomy'},
+  {class_key:'forensics',section_id:'b',section_name:'A3 Forensics'},
+  {class_key:'forensics',section_id:'a',section_name:'A2 Forensics'}];
+ assert.deepEqual(verifiedSectionOptions(data,'forensics'),[['a','A2 Forensics'],['b','A3 Forensics']]);
+ assert.deepEqual(verifiedSectionOptions(data,'anatomy'),[['anatomy-b3','B3 Anatomy']]);
+});
+test('review rows include unresolved candidates without mixing known sections or changing exports',()=>{
+ const data=fixture();const state=discovery([
+  discovered({file_id:'unresolved-identity',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review'}),
+  discovered({file_id:'unresolved-lesson',assignment_key:'',assignment_title:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review'}),
+  discovered({file_id:'known-other-section',section_id:'b',section_name:'A3 Forensics'})]);
+ const shown=recordsWithDiscovery(data,state);
+ const ids=filterReviewRecords(shown,'forensics','a','F1').map(row=>row.record_id);
+ assert.ok(ids.includes('discovery:unresolved-identity'));assert.ok(ids.includes('discovery:unresolved-lesson'));
+ assert.ok(!ids.includes('discovery:known-other-section'));assert.ok(!ids.includes('two'));
+ assert.deepEqual(filterRecords(data,'forensics','a','F1').map(row=>row.record_id),['one']);
+});
+test('Agenda-only lessons appear by name with no saved upload or invented registry binding',()=>{
+ const data=fixture(),original=structuredClone(data),state=discovery([]);
+ state.data.assignments=[{assignment_key:'discovery:forensics:fictional',class_key:'forensics',assignment_title:'New fictional lesson',discovery_only:true,registry_assignment_key:''}];
+ const shown=recordsWithDiscovery(data,state);
+ assert.ok(lessonOptions(shown,'forensics').some(([key,title])=>key==='discovery:forensics:fictional'&&title==='New fictional lesson'));
+ assert.equal(shown.assignments.at(-1).discovery_only,true);assert.equal(shown.assignments.at(-1).registry_assignment_key,'');assert.deepEqual(data,original);
+});
+test('source discovery fixes appear in existing coverage details without a new panel',()=>{
+ const state=discovery([]);state.data.coverage={complete:false,form_results:[{assignment_key:'F1',complete:false,error:'assignment_form_turn_in_links_disagree',next_action:'Verify the visible Turn it in link at Synthetic course!T6 and raw link at U6; both must identify the same assignment Form.'}],source_results:[{assignment_key:'F1',complete:false,error:'source_unavailable',next_action:'Verify the assignment upload folder.',source_url:'https://example.invalid/synthetic-folder'}],catalog_results:[{assignment_key:'F2',complete:false,error:'master_unavailable',next_action:'Restore reader access to the lesson master.'}]};
+ const target=root();renderRecords(target,{status:'loaded',data:fixture()},{classKey:'forensics',sectionId:'a',discovery:state});
+ const details=target.children.filter(node=>node.tagName==='details');assert.equal(details.length,1);
+ assert.match(details[0].allText,/Fictional One: Verify the assignment upload folder/);
+ assert.match(details[0].allText,/Fictional Two: Restore reader access/);
+ assert.match(details[0].allText,/Synthetic course!T6 and raw link at U6/);
 });

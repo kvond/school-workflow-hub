@@ -26,7 +26,7 @@ class drafting:
                          lambda assertion, file_id, config: dict(CAPTURE, text=SOURCE)),
             patch.object(provider, "_teacher_prompts",
                          lambda assertion, config: ("P1", "P2", {"version_label": "v"})),
-            patch.object(provider, "_prior_row", lambda *a: prior),
+            patch.object(provider.assessment_target, "read_target", lambda *a: prior),
             patch.object(firestore_state, "configured_store", lambda config=None: self.port),
             patch.object(provider, "_call", call),
         ]
@@ -61,7 +61,8 @@ class ProviderTests(unittest.TestCase):
         with drafting(model_output) as run:
             result = provider.draft(None, request(), CONFIG)
             again = provider.draft(None, request(), CONFIG)
-            recovered = provider.stored_draft_for(None, request()["file_id"], CONFIG)
+            recovered = provider.stored_draft_for(None, request()["file_id"], CONFIG,
+                                                  target=provider._draft_target(request()))
         self.assertEqual(result["status"], "draft_ready")
         self.assertFalse(result["cached"])
         self.assertEqual(result["scores"]["content_notes"]["exact_value"], "20/3")
@@ -75,6 +76,54 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(again["cached"])
         self.assertEqual(recovered["status"], "draft_ready")
         self.assertEqual(recovered["packet"]["feedback"], result["packet"]["feedback"])
+
+    def test_notes_and_drafts_share_revision_but_keep_independent_drafts_and_claims(self):
+        import json
+        base = packet()
+        output = json.dumps({"responses": base["responses"], "feedback": "Synthetic report."})
+        notes, final = dict(request(), stage="initial"), request()
+        with drafting(output) as run:
+            first = provider.draft(None, notes, CONFIG)
+            second = provider.draft(None, final, CONFIG)
+            for ask, expected in ((notes, first), (final, second)):
+                cached = provider.draft(None, ask, CONFIG)
+                recovered = provider.stored_draft_for(None, ask["file_id"], CONFIG,
+                                                      target=provider._draft_target(ask))
+                self.assertEqual(cached["packet"], expected["packet"])
+                self.assertEqual(recovered["packet"], expected["packet"])
+            self.assertEqual(run.calls, 2)
+        self.assertNotEqual(first["record_id"], second["record_id"])
+
+    def test_legacy_notes_cache_is_preserved_while_final_stage_gets_its_own_cache(self):
+        import json
+        from school_workflow_hub.core.cloud_state import CloudState
+        base = packet()
+        output = json.dumps({"responses": base["responses"], "feedback": "Synthetic report."})
+        notes, final = dict(request(), stage="initial"), request()
+        with drafting(output) as run:
+            store = CloudState(run.port)
+            legacy = {"packet": packet(stage="initial"), "drafted_at": "2026-09-01T00:00:00Z"}
+            provider._store_draft(store, notes["file_id"], CAPTURE["sha256"], legacy)
+            result = provider.draft(None, notes, CONFIG)
+            self.assertTrue(result["cached"])
+            self.assertEqual(run.calls, 0)
+            provider.draft(None, final, CONFIG)
+            self.assertEqual(run.calls, 1)
+            self.assertEqual(provider._stored_draft(store, notes["file_id"], CAPTURE["sha256"]), legacy)
+            self.assertEqual(provider.stored_draft_for(None, notes["file_id"], CONFIG)["packet"], legacy["packet"])
+
+    def test_recovery_route_passes_exact_target_and_rejects_partial_target(self):
+        from school_workflow_hub.web import application
+        query = "draft_for=" + request()["file_id"] + "&class_key=biology&assignment_key=BIO-C02-F01&section_id=26716&stage=initial"
+        statuses = []
+        with patch.object(provider, "stored_draft_for", return_value={}) as read:
+            application({"PATH_INFO": "/api/assessment-run", "REQUEST_METHOD": "GET", "QUERY_STRING": query},
+                        lambda status, headers: statuses.append(status))
+            self.assertEqual(read.call_args.kwargs["target"], provider._draft_target(dict(request(), stage="initial")))
+            application({"PATH_INFO": "/api/assessment-run", "REQUEST_METHOD": "GET", "QUERY_STRING": query.rsplit("&", 1)[0]},
+                        lambda status, headers: statuses.append(status))
+            self.assertEqual(read.call_count, 1)
+        self.assertEqual(statuses, ["200 OK", "400 Bad Request"])
 
     def test_already_assessed_unchanged_content_never_calls_the_model(self):
         prior = {"status": "assessed", "source_sha256": "a" * 64,

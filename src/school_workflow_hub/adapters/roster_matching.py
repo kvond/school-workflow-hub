@@ -8,6 +8,7 @@ No roster or student record is written here.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 
@@ -54,14 +55,53 @@ def _rows(data):
     return result
 
 
-def read_roster(config):
+def _mapping(config, name):
+    raw = config.get(name, {})
+    try:
+        result = json.loads(raw) if isinstance(raw, str) else raw
+    except (ValueError, TypeError):
+        raise ConnectionError("roster_configuration_invalid") from None
+    if not isinstance(result, dict):
+        raise ConnectionError("roster_configuration_invalid")
+    return result
+
+
+def _tab_mapping(metadata, config):
+    canonical = {tab for tabs in CLASS_TABS.values() for tab in tabs}
+    configured = _mapping(config, "HUB_ROSTER_TABS")
+    if set(configured) - canonical:
+        raise ConnectionError("roster_configuration_invalid")
+    properties = [s.get("properties", {}) for s in metadata.get("sheets", [])]
+    result = {}
+    for section in canonical:
+        selector = configured.get(section, section)
+        if not isinstance(selector, str) and type(selector) is not int:
+            raise ConnectionError("roster_configuration_invalid")
+        found = [p for p in properties if (p.get("sheetId") == selector if type(selector) is int
+                                          else p.get("title") == selector)]
+        if len(found) != 1 or not isinstance(found[0].get("title"), str):
+            raise ConnectionError("roster_tab_mapping_required")
+        result[section] = found[0]["title"]
+    if len(set(result.values())) != len(result):
+        raise ConnectionError("roster_tab_mapping_conflict")
+    return result
+
+
+def read_roster_snapshot(config):
     roster_id = str(config.get("HUB_ROSTER_SPREADSHEET_ID") or "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", roster_id):
         raise ConnectionError("roster_source_not_configured")
     try:
         reader = SheetsReader(service_token(
             config.get("HUB_READER_SERVICE_ACCOUNT", "")))
-        data = reader.read(roster_id, ROSTER_RANGES)
+        metadata = reader.read(roster_id)
+        tabs = _tab_mapping(metadata, config)
+        ranges = tuple("'" + tabs[tab].replace("'", "''") + "'!A1:B200"
+                       for names in CLASS_TABS.values() for tab in names)
+        data = reader.read(roster_id, ranges)
+        returned = [s.get("properties", {}).get("title") for s in data.get("sheets", [])]
+        if any(returned.count(title) != 1 for title in tabs.values()):
+            raise ConnectionError("roster_source_unavailable")
     except ConnectionError:
         raise
     except SheetsReadError:
@@ -69,10 +109,32 @@ def read_roster(config):
     except Exception:
         raise ConnectionError("roster_source_unavailable") from None
 
-    return parse_roster(data)
+    layouts = _mapping(config, "HUB_ROSTER_COLUMN_LAYOUTS")
+    entries = parse_roster(data, tab_mapping=tabs, column_layouts=layouts)
+    ids = _mapping(config, "HUB_ROSTER_SECTION_IDS")
+    sections, missing, seen_ids = [], [], set()
+    for class_key, names in CLASS_TABS.items():
+        for name in names:
+            section_id = ids.get(name)
+            if (not isinstance(section_id, str) or section_id in {"all", "-"}
+                    or not re.fullmatch(r"[A-Za-z0-9:_-]{1,40}", section_id)):
+                missing.append(name)
+                continue
+            if section_id in seen_ids:
+                raise ConnectionError("roster_section_mapping_conflict")
+            seen_ids.add(section_id)
+            sections.append({"class_key": class_key, "section_id": section_id,
+                             "section_name": name})
+    return {"entries": entries, "sections": sections,
+            "section_mapping_complete": not missing,
+            "section_mapping_missing": missing}
 
 
-def parse_roster(data):
+def read_roster(config):
+    return read_roster_snapshot(config)["entries"]
+
+
+def parse_roster(data, *, tab_mapping=None, column_layouts=None):
     """Explicitly accept Last/First headers, headerless pairs and Last, First.
 
     Configured section headings can introduce another section of the same
@@ -81,13 +143,20 @@ def parse_roster(data):
     Blank rows do not terminate a roster. Malformed populated rows fail closed.
     """
     tables = _rows(data)
+    tab_mapping, column_layouts = tab_mapping or {}, column_layouts or {}
+    known_sections = {tab for tabs in CLASS_TABS.values() for tab in tabs}
+    if (set(column_layouts) - known_sections or any(layout not in {
+            "first_last_columns", "last_first_columns"} for layout in column_layouts.values())):
+        raise ConnectionError("roster_configuration_invalid")
     configured = {_norm(tab): (class_key, tab)
                   for class_key, tabs in CLASS_TABS.items() for tab in tabs}
     blocks = []
     for class_key, tabs in CLASS_TABS.items():
         for tab in tabs:
+            actual_tab = tab_mapping.get(tab, tab)
             section, block, declared = tab, [], False
-            for position, cells in tables.get(tab, []):
+            column_layout = column_layouts.get(tab, "last_first_columns")
+            for position, cells in tables.get(actual_tab, []):
                 cells = [c.strip() for c in cells]
                 if not any(cells):
                     continue
@@ -97,12 +166,19 @@ def parse_roster(data):
                 if heading:
                     if first or any(cells[2:]) or heading[0] != class_key:
                         raise ConnectionError("roster_layout_needs_review")
+                    if actual_tab != tab and not declared and not block and heading[1] != tab:
+                        raise ConnectionError("roster_tab_mapping_conflict")
                     if block or declared:
-                        blocks.append((class_key, section, tab, block))
+                        blocks.append((class_key, section, actual_tab, block))
                     section, block, declared = heading[1], [], True
+                    column_layout = column_layouts.get(section, "last_first_columns")
                     continue
-                if (last_norm == "last name" and first_norm == "first name"
+                if ({last_norm, first_norm} == {"last name", "first name"}
                         and not any(cells[2:])):
+                    layout = "last_first_columns" if last_norm == "last name" else "first_last_columns"
+                    if block and layout != column_layout:
+                        raise ConnectionError("roster_layout_needs_review")
+                    column_layout = layout
                     declared = True
                     continue
                 if (first_norm in configured
@@ -110,10 +186,12 @@ def parse_roster(data):
                                for value in (last_norm, first_norm))
                         or {last_norm, first_norm} & {"first name", "last name", "full name"}):
                     raise ConnectionError("roster_layout_needs_review")
-                layout = "last_first_columns"
+                layout = column_layout
                 if last and not first and "," in last:
                     last, first = [part.strip() for part in last.split(",", 1)]
                     layout = "last_comma_full_first"
+                elif layout == "first_last_columns":
+                    last, first = first, last
                 if (not last or not first or any(cells[2:])
                         or not _first_base(first) or not _norm(last)):
                     raise ConnectionError("roster_layout_needs_review")
@@ -126,9 +204,9 @@ def parse_roster(data):
                     "name_key": first_key + " " + last_key,
                     "learner_key": "roster:" + digest,
                     "display_id": "roster:" + digest[:24],
-                    "roster_row": position, "roster_tab": tab, "layout": layout})
-            if tab in tables:
-                blocks.append((class_key, section, tab, block))
+                    "roster_row": position, "roster_tab": actual_tab, "layout": layout})
+            if actual_tab in tables:
+                blocks.append((class_key, section, actual_tab, block))
 
     sections = {}
     for class_key, section, tab, block in blocks:
@@ -138,7 +216,8 @@ def parse_roster(data):
         prior = sections.get((class_key, section))
         if prior is not None and prior[0] != signature:
             raise ConnectionError("roster_section_blocks_conflict")
-        if prior is None or (tab == section and prior[1] != section):
+        canonical_tab = tab_mapping.get(section, section)
+        if prior is None or (tab == canonical_tab and prior[1] != canonical_tab):
             sections[(class_key, section)] = (signature, tab, block)
     return [row for _, _, block in sections.values() for row in block]
 

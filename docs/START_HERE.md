@@ -137,9 +137,14 @@ fallback to a global Form. The implementation and acceptance boundaries are in
 current Form-response access, exact private deck bindings, stopgap replacement
 and dashboard acceptance remain unverified. PR #39 also changes Page 02 Refresh
 to read new/changed source files into the existing Student work table without
-school writes or grading. Embedded A3 roster blocks remain A3; multiple lessons
-in one week retain distinct assignment keys. Saved assessment histories remain
-intact. This is not a deployment or recovery-completion claim.
+school writes or grading. Refresh follows each verified Form's actual upload
+folders and exposes source-specific repairs; new Agenda lessons receive stable
+discovery identities without altering saved assignment keys. Embedded A3 roster
+blocks remain A3; multiple lessons in one week stay distinct. Page 02 uses lesson
+names throughout, shows A2/A3 only for Forensics, and uses each other class's one
+verified section automatically. Fresh target checks protect drafts and saves from
+stale lesson/section selections. Saved assessment histories remain intact. This
+is not a deployment or recovery-completion claim.
 
 ## Source collection: one root, not one assumed folder
 

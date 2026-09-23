@@ -11,6 +11,11 @@ export function sectionOptions(data,classKey){
  for(const row of data.submissions)if(inClass(row,classKey)){if(row.section_id)sections.set(row.section_id,row.section_name||row.section_id);else unmatched++;}
  const options=[...sections].sort((a,b)=>a[1].localeCompare(b[1]));if(unmatched)options.push(['',`Unmatched (${unmatched})`]);return options;
 }
+export function verifiedSectionOptions(data,classKey){
+ const named=new Map();
+ for(const section of data.sections||[])if(section.class_key===classKey&&section.section_id&&section.section_name)named.set(section.section_id,section.section_name);
+ return [...named].sort((a,b)=>a[1].localeCompare(b[1]));
+}
 // Lesson names for a class come from the workbook's own assignment registry
 // (the same stable identity the table, posting and saving use — never a date).
 // Any assignment_key seen on a submission but absent from the registry is still
@@ -24,6 +29,13 @@ export function lessonOptions(data,classKey){
 function inClass(row,classKey){return row.class_key===classKey||(row.discovery_only&&!row.class_key&&row.discovery_scope_class===classKey);}
 export function filterRecords(data,classKey,sectionId='matched',assignmentKey='all',stage='all'){
  return data.submissions.filter(row=>inClass(row,classKey)&&(assignmentKey==='all'||row.assignment_key===assignmentKey)&&(stage==='all'||row.assessment_stage===stage||(row.discovery_only&&!row.assessment_stage))&&(sectionId==='all'||(sectionId==='matched'?Boolean(row.section_id):row.section_id===sectionId))).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||'')||(a.assignment_title||'').localeCompare(b.assignment_title||''));
+}
+// Review candidates stay visible without being assigned to the selected period.
+// Posting, printing and exports continue to use the strict filter above.
+export function filterReviewRecords(data,classKey,sectionId,assignmentKey='all',stage='all'){
+ return data.submissions.filter(row=>inClass(row,classKey)&&(!row.section_id||row.section_id===sectionId)&&
+  (assignmentKey==='all'||!row.assignment_key||row.assignment_key===assignmentKey)&&
+  (stage==='all'||row.assessment_stage===stage||!row.assessment_stage)).sort((a,b)=>(a.section_name||'').localeCompare(b.section_name||'')||(a.display_name||'').localeCompare(b.display_name||''));
 }
 function sourceFileId(row){
  if(row.source_file_id)return row.source_file_id;
@@ -40,7 +52,11 @@ export function recordsWithDiscovery(data,discovery){
   attached.add(file.file_id);return {...row,discovery:file};
  });
  for(const file of files)if(!attached.has(file.file_id))submissions.push({record_id:'discovery:'+file.file_id,class_key:file.class_key,discovery_scope_class:discovery.data.class_key,assignment_key:file.assignment_key,assignment_title:file.assignment_title||'Lesson needs matching',section_id:file.section_id,section_name:file.section_name,student_id:file.student_id,display_name:file.display_name||'Identity needs matching',source_file_id:file.file_id,source_url:file.source_url,assessment_stage:file.assessment_stage||'',status:file.discovery_status,content_score:null,revision_score:null,answers:[],included_in_counts:false,discovery_only:true,discovery:file});
- return {...data,submissions};
+ const assignments=[...(data.assignments||[])],keys=new Set(assignments.map(a=>a.assignment_key));
+ for(const assignment of discovery.data.assignments||[])if(assignment.class_key===discovery.data.class_key&&!keys.has(assignment.assignment_key)){
+  assignments.push({...assignment,discovery_only:true});keys.add(assignment.assignment_key);
+ }
+ return {...data,assignments,submissions};
 }
 export function createRecordsLoader({fetcher=fetch,onState}){
  let generation=0,controller;
@@ -82,11 +98,11 @@ export function score(row,key){
 const CHECKPOINT={initial:'Notes checkpoint',final:'Drafts checkpoint'};
 const DISCOVERY_LABEL={new_ungraded:'New work · not graded',changed_since_assessment:'Work changed since assessment · review needed',needs_review:'Discovery needs review',unchanged:'Source unchanged'};
 const DISCOVERY_REVIEW={prior_submission_superseded:'Previously superseded work · history only; do not treat as new work.',competing_submission_versions:'Multiple submission versions need review; no current version has been selected.'};
-export function renderRecords(root,state,{classKey,sectionId='matched',assignmentKey='all',stage='all',discovery={status:'empty'}}){
+export function renderRecords(root,state,{classKey,sectionId='matched',assignmentKey='all',stage='all',discovery={status:'empty'},includeUnresolved=false}){
  root.replaceChildren();
  if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
  const projected=recordsWithDiscovery(state.data,discovery);
- const rows=filterRecords(projected,classKey,sectionId,assignmentKey,stage),included=rows.filter(r=>r.included_in_counts);
+ const rows=(includeUnresolved?filterReviewRecords:filterRecords)(projected,classKey,sectionId,assignmentKey,stage),included=rows.filter(r=>r.included_in_counts&&r.section_id);
  line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with matched submissions · ${included.length} saved records · workbook read ${time(state.data.checked_at)}`,'hint');
  if(discovery.status==='loading')line(root,'Checking current submissions for new or changed work… Saved assessments are unchanged.','hint');
  else if(discovery.status==='error')line(root,'Discovery failed: '+discovery.message+' Saved assessments are unchanged.','error');
@@ -94,9 +110,9 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   const d=discovery.data;
   line(root,`Submissions discovered ${time(d.discovered_at)} · ${d.files.length} files checked for this ${d.assignment_key==='all'?'class':'lesson'}. ${d.coverage.complete?'Discovery source read complete.':'Discovery coverage is incomplete; review the gaps.'} No work was graded.`,'hint');
   const unassigned=d.files.filter(f=>!f.assignment_key).length;
-  if(unassigned)line(root,`${unassigned} ${unassigned===1?'file needs':'files need'} a lesson match. Choose All lessons and Unmatched or All records to review them.`,'hint');
+  if(unassigned)line(root,`${unassigned} ${unassigned===1?'file needs':'files need'} a lesson match. ${includeUnresolved?'Unresolved work is shown for review without assigning it to this lesson.':'Choose All lessons and Unmatched or All records to review them.'}`,'hint');
   const unknownClass=d.files.filter(f=>!f.class_key).length;
-  if(unknownClass)line(root,`${unknownClass} ${unknownClass===1?'file has':'files have'} no verified class match. They appear under Unmatched for review, not as confirmed work for this class.`,'hint');
+  if(unknownClass)line(root,`${unknownClass} ${unknownClass===1?'file has':'files have'} no verified class match. ${includeUnresolved?'They remain visible as unresolved review items.':'They appear under Unmatched for review, not as confirmed work for this class.'}`,'hint');
   const forms=Array.isArray(d.coverage.form_results)?d.coverage.form_results:[];
   if(!d.coverage.complete||forms.length){
    const details=node(root,'details');details.append(node(root,'summary','Discovery coverage details'));
@@ -104,15 +120,21 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
    if(forms.length){
     const list=node(root,'ul');
     for(const form of forms){
-     const assignment=(state.data.assignments||[]).find(a=>a.class_key===d.class_key&&a.assignment_key===form.assignment_key);
+     const assignment=(projected.assignments||[]).find(a=>a.class_key===d.class_key&&a.assignment_key===form.assignment_key);
      const item=node(root,'li');item.append(node(root,'strong',assignment?.assignment_title||'Assignment needs matching'));
      if(form.complete){
       const count=value=>Number.isInteger(value)&&value>=0?String(value):'unavailable';
       line(item,`Form read complete · ${count(form.responses_checked)} responses checked · ${count(form.files_referenced)} files referenced · ${count(form.pages)} response pages.`);
      }else line(item,'Form read incomplete · '+label(form.error||'Form unavailable')+'.');
+     if(form.next_action)line(item,form.next_action);
      link(item,'Open assignment Form ↗',form.form_url);list.append(item);
     }
-    details.append(list);
+   details.append(list);
+   }
+   for(const source of [...(d.coverage.source_results||[]),...(d.coverage.catalog_results||[]),...(d.coverage.catalog_issues||[])].filter(source=>source.complete===false||source.error)){
+    const assignment=(projected.assignments||[]).find(a=>a.assignment_key===source.assignment_key);
+    line(details,(assignment?assignment.assignment_title+': ':'')+(source.next_action||label(source.error)));
+    if(source.source_url)link(details,'Open source needing review ↗',source.source_url);
    }
    for(const reason of d.coverage.errors||[])line(details,label(reason));
    if(!d.coverage.complete)line(details,'Incomplete coverage does not establish missing work.');
@@ -127,7 +149,9 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
  const table=node(root,'table');table.className='work-table';table.setAttribute('aria-label','Submissions by class and section');const head=node(root,'thead'),hr=node(root,'tr');
  for(const text of ['Student / section','Assignment','Content / notes','Revision','Status / work'])hr.append(node(root,'th',text));head.append(hr);table.append(head);const body=node(root,'tbody');
  for(const row of rows){
-  const tr=node(root,'tr'),student=node(root,'td');student.append(node(root,'strong',surnameFirst(row.display_name)||'Identity needs matching'));
+  const tr=node(root,'tr'),student=node(root,'td');
+  const displayName=row.discovery_only&&!row.discovery?.display_name?'Identity needs matching':surnameFirst(row.display_name)||'Identity needs matching';
+  student.append(node(root,'strong',displayName));
   line(student,(row.section_name||'Unmatched')+(row.student_id?(row.discovery_only?' · matched identity ':' · IC ')+row.student_id:(row.discovery_only?' · identity unverified':' · no IC number')),'hint');tr.append(student);
   if(row.discovery_only&&!row.class_key)line(student,'Class needs matching','hint');
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));

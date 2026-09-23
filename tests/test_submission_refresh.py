@@ -84,11 +84,17 @@ class Drive:
     def check(self):
         pass
 
+    def form(self, form_id, *, fresh=False):
+        return {"formId": form_id, "items": [{"questionItem": {"question": {
+            "fileUploadQuestion": {"folderId": ROOT}}}}]}
+
     def read_deck(self, item):
         return intake.read_deck("synthetic-token", item)
 
     def metadata(self, fid):
         self.calls.append(("metadata", fid))
+        if fid not in self.items:
+            raise ConnectionError("submission_folder_access_required")
         return deepcopy(self.items[fid])
 
     def children_of(self, parents, cursor=None):
@@ -162,7 +168,9 @@ class Harness:
             catalog_call = stack.enter_context(patch.object(intake, "agenda_catalog",
                 side_effect=catalog_error, return_value=deepcopy(self.catalog)))
             stack.enter_context(patch.object(intake, "read_catalog_decks",
-                side_effect=master_error, return_value=deepcopy(self.catalog)))
+                side_effect=master_error or (lambda token, drive, entries, **kwargs:
+                    [deepcopy(src) for src in self.catalog
+                     if src["assignment_key"] in {e["assignment_key"] for e in entries}])) )
             stack.enter_context(patch.object(intake, "read_deck",
                 side_effect=source_read or (lambda token, item: self.texts[item["id"]])))
             writes = [stack.enter_context(patch.object(module, name)) for module, name in
@@ -179,6 +187,111 @@ class Harness:
 
 
 class RefreshTests(unittest.TestCase):
+    def test_new_lesson_without_saved_rows_is_visible_but_not_registered(self):
+        h = Harness([])
+        entry = h.catalog[0]
+        key = "discovery:forensics:" + "f" * 32
+        entry.update(assignment_key=key, discovery_only=True, registry_assignment_key="",
+                     registry_mapping_verified=False, review_reasons=["assignment_registry_binding_required"])
+        h.records["assignments"] = []
+        result = h.run(assignment=key)
+        self.assertEqual(result["files"], [])
+        self.assertEqual([r["assignment_key"] for r in result["assignments"]], [key])
+        self.assertTrue(result["assignments"][0]["discovery_only"])
+        self.assertEqual(result["external_writes"], 0)
+        with self.assertRaisesRegex(ValueError, "invalid_submission_scope"):
+            h.run(assignment="discovery:forensics:" + "a" * 32)
+
+    def test_form_declared_upload_folder_is_fully_paginated_outside_root(self):
+        h = Harness([])
+        h.drive.items[FOLDER] = {"id": FOLDER, "mimeType": refresh.FOLDER, "trashed": False}
+        first, second = file_meta(FILE_A, FOLDER), file_meta(FILE_B, FOLDER)
+        h.drive.items.update({FILE_A: first, FILE_B: second})
+        h.drive.pages.update({((FOLDER,), None): {"files": [first], "nextPageToken": "next"},
+                              ((FOLDER,), "next"): {"files": [second]}})
+        h.drive.form = lambda form_id, **kwargs: {"formId": form_id, "items": [
+            {"questionItem": {"question": {"fileUploadQuestion": {"folderId": FOLDER}}}}]}
+        h.route(FILE_A)
+        h.route(FILE_B, person=1)
+        result = h.run()
+        self.assertEqual([r["file_id"] for r in result["files"]], [FILE_A, FILE_B])
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual(result["coverage"]["form_refs_outside_root"], 2)
+        self.assertEqual(sum(call == ("children", (FOLDER,), "next") for call in h.drive.calls), 1)
+        self.assertEqual(result["external_writes"], 0)
+
+    def test_unreadable_upload_reference_remains_visible_with_exact_form_and_fix(self):
+        h = Harness([])
+        h.route(FILE_A)
+        result = h.run()
+        row = result["files"][0]
+        self.assertEqual(row["file_id"], FILE_A)
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["version"], "")
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("submission_folder_access_required", row["review_reasons"])
+        self.assertFalse(result["coverage"]["complete"])
+        self.assertEqual(result["coverage"]["form_refs_unlocated"], 1)
+        self.assertTrue(result["coverage"]["source_results"][-1]["next_action"])
+
+    def test_trashed_form_folder_does_not_hide_another_forms_original_uploads(self):
+        h = Harness([file_meta(FILE_B)])
+        h.route(FILE_B, person=1, assignment=1)
+        h.drive.items[FOLDER] = {"id": FOLDER, "mimeType": refresh.FOLDER, "trashed": True}
+        h.drive.form = lambda form_id, **kwargs: {"formId": form_id, "items": [
+            {"questionItem": {"question": {"fileUploadQuestion": {
+                "folderId": FOLDER if form_id == FORM_A else ROOT}}}}]}
+        result = h.run()
+        self.assertFalse(result["coverage"]["upload_folders_complete"])
+        self.assertEqual(result["coverage"]["source_results"][0]["error"], "submission_folder_inactive")
+        self.assertTrue(result["coverage"]["source_results"][1]["complete"])
+        self.assertEqual(result["files"][0]["file_id"], FILE_B)
+        self.assertEqual(result["files"][0]["discovery_status"], "new_ungraded")
+        self.assertTrue(h.drive.items[FOLDER]["trashed"])
+
+    def test_new_source_file_keeps_discovery_registry_hold_without_saved_target(self):
+        h = Harness()
+        entry = h.catalog[0]
+        key = "discovery:forensics:" + "f" * 32
+        entry.update(assignment_key=key, discovery_only=True, registry_assignment_key="",
+                     registry_mapping_verified=False, review_reasons=["assignment_registry_binding_required"])
+        h.records["assignments"] = []
+        h.config["HUB_ASSIGNMENT_FORM_QUESTION_IDS"] = {}
+        row = h.run(assignment=key)["files"][0]
+        self.assertEqual(row["assignment_key"], key)
+        self.assertTrue(row["discovery_only"])
+        self.assertEqual(row["registry_assignment_key"], "")
+        self.assertIn("assignment_registry_binding_required", row["review_reasons"])
+        self.assertEqual(row["discovery_status"], "needs_review")
+
+    def test_unavailable_master_does_not_cancel_other_forms_content_evidence(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, person=1, assignment=1)
+        def read(token, drive, entries, **kwargs):
+            if entries[0]["assignment_key"] == h.catalog[0]["assignment_key"]:
+                raise ConnectionError("intake_source_deck_unavailable")
+            return [deepcopy(h.catalog[1])]
+        result = h.run(master_error=read)
+        self.assertFalse(result["coverage"]["catalog_complete"])
+        self.assertEqual(result["files"][1]["content_assignment_key"], "forensics:F03B")
+        self.assertEqual(result["files"][1]["discovery_status"], "new_ungraded")
+        self.assertEqual(result["files"][0]["discovery_status"], "needs_review")
+
+    def test_form_structure_change_during_discovery_holds_only_its_uploads(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, person=1, assignment=1)
+        original = h.drive.form
+        def changed(form_id, *, fresh=False):
+            value = original(form_id)
+            value["revisionId"] = "changed" if fresh and form_id == FORM_A else "original"
+            return value
+        h.drive.form = changed
+        result = h.run()
+        self.assertFalse(result["coverage"]["complete"])
+        self.assertIn("submission_form_changed", result["files"][0]["review_reasons"])
+        self.assertEqual(result["files"][1]["discovery_status"], "new_ungraded")
+        self.assertNotIn("form_snapshot", repr(result))
+
     def test_two_assignment_forms_are_fully_read_without_a_shared_form(self):
         h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
         h.route(FILE_B, assignment=1)
@@ -232,6 +345,19 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["form_ids"], [])
         self.assertEqual(row["student_id"], "")
         self.assertEqual(row["discovery_status"], "needs_review")
+
+    def test_weekly_turn_in_link_repair_reaches_form_coverage(self):
+        h = Harness()
+        action = "Verify the visible Turn it in link at Synthetic course!T6 and raw link at U6; both must identify the same assignment Form."
+        h.catalog[0].update(form_mapping_verified=False, form_id="",
+                            form_review_reason="assignment_form_turn_in_links_disagree",
+                            form_review_action=action)
+        result = h.run()
+        self.assertEqual(h.form_calls, [(FORM_B, None)])
+        held = result["coverage"]["form_results"][0]
+        self.assertEqual(held["next_action"], action)
+        self.assertFalse(held["complete"])
+        self.assertEqual(result["external_writes"], 0)
 
     def test_unavailable_master_retains_exact_form_assignment_and_identity_with_hold(self):
         h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
@@ -327,7 +453,7 @@ class RefreshTests(unittest.TestCase):
         self.assertTrue(result["coverage"]["complete"])
         self.assertEqual(result["files"][1]["discovery_status"], "new_ungraded")
         self.assertEqual((result["external_writes"], result["live_model_calls"]), (0, 0))
-        self.assertTrue(all(call.kwargs == {"class_key": "forensics"}
+        self.assertTrue(all(call.kwargs == {"class_key": "forensics", "discovery": True}
                             for call in h.catalog_calls))
 
     def test_same_week_assignments_and_sections_remain_distinct(self):
@@ -532,7 +658,7 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["discovery_status"], "needs_review")
         self.assertIn("typed_crosscheck_configuration_invalid", row["review_reasons"])
 
-    def test_incomplete_scan_does_not_claim_unlocated_form_file_is_outside_root(self):
+    def test_incomplete_root_keeps_exact_readable_form_references(self):
         items = [file_meta(FILE_A), file_meta(FILE_B)]
         pages = {((ROOT,), None): {"files": [items[0]], "nextPageToken": "later"},
                  ((ROOT,), "later"): ConnectionError("drive_read_failed")}
@@ -540,10 +666,10 @@ class RefreshTests(unittest.TestCase):
         coverage = result["coverage"]
         self.assertFalse(coverage["complete"])
         self.assertEqual(coverage["form_refs_outside_root"], 0)
-        self.assertEqual(coverage["form_refs_unlocated"], 1)
-        self.assertIn("form_references_unlocated", coverage["errors"])
+        self.assertEqual(coverage["form_refs_unlocated"], 0)
+        self.assertIn("drive_read_failed", coverage["errors"])
         self.assertNotIn("form_reference_outside_approved_root", coverage["errors"])
-        self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A])
+        self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A, FILE_B])
 
     def test_unreferenced_report_is_ignored_by_mime_type_not_filename(self):
         document = {**file_meta(FILE_B), "mimeType": "application/vnd.google-apps.document"}
@@ -575,6 +701,14 @@ class RefreshTests(unittest.TestCase):
 
 
 class TreeTests(unittest.TestCase):
+    def test_malformed_drive_items_or_cursor_remain_explicit_partial_read(self):
+        for page in ({"files": [None]}, {"files": [{**file_meta(), "parents": [{}]}]},
+                     {"files": [{**file_meta(), "id": []}]}, {"files": [], "nextPageToken": 0}):
+            with self.subTest(page=page):
+                files, coverage = refresh.discover_tree(Drive([], {((ROOT,), None): page}), ROOT)
+                self.assertFalse(coverage["drive_complete"])
+                self.assertIn("submission_scan_incomplete", coverage["errors"])
+
     def test_later_page_failure_returns_partial_evidence_explicitly(self):
         item = file_meta()
         reader = Drive([item], {((ROOT,), None): {"files": [item], "nextPageToken": "later"},

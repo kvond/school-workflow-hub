@@ -6,8 +6,11 @@ in review. Nothing here assesses, moves a file, changes a roster or posts grades
 """
 import json
 import re
+from hashlib import sha256
+from urllib.parse import urlsplit
 
 from .dated_agenda import COURSES, grid, value, link, turnin_form
+from .agenda_rows import cell_links
 from .hosted_agenda import authenticated_reader, service_token, ConnectionError
 from .forms_submissions import FormsReader, FORMS_SCOPE, response_file_refs, FORM_ID
 from .submission_inventory import DriveReader, DRIVE_SCOPE, FOLDER, locate_files_under_root
@@ -93,17 +96,47 @@ def _assignment_form_bindings(config, assignments):
     return bindings, errors, ""
 
 
+def _form_destination(url):
+    """Compare the exact Form resource, preserving published vs editable IDs."""
+    valid, _, _ = turnin_form(url)
+    return urlsplit(valid).path.rsplit("/", 1)[0] if valid else ""
+
+
+def _turnin_cell(cells, row, column):
+    cell = cells.get((row, column), {})
+    try:
+        links = cell_links(cell)
+    except (ValueError, TypeError, AttributeError):
+        return "", "assignment_form_turn_in_link_invalid"
+    if not links:
+        # T may contain a display label; U is a raw URL column.
+        return "", "assignment_form_invalid" if column == 21 and value(cells, row, column) else ""
+    forms = [turnin_form(url)[0] for url in links]
+    if not all(forms):
+        return "", "assignment_form_turn_in_link_invalid"
+    if len({_form_destination(url) for url in forms}) != 1:
+        return "", "assignment_form_turn_in_links_disagree"
+    return forms[0], ""
+
+
 def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
                   bindings, binding_errors, configuration_error, assignments):
-    """One assignment's direct U link is sufficient; multi-deck rows need proof.
+    """Read the weekly tab's visible T link and cross-check its raw U link.
 
-    The observed U link is retained even when a private mapping resolves an
+    The observed link is retained even when a private mapping resolves an
     ambiguous multi-assignment row to a different Form. It is not a fallback
     global Form and its published /d/e/ identifier is never used as an API ID.
     """
     key = entry["assignment_key"]
-    raw = link(cells.get((row, 21), {}).get("hyperlink", "")) or value(cells, row, 21)
+    visible, visible_error = _turnin_cell(cells, row, 20)
+    hidden, hidden_error = _turnin_cell(cells, row, 21)
+    link_error = visible_error or hidden_error
+    if visible and hidden and _form_destination(visible) != _form_destination(hidden):
+        link_error = "assignment_form_turn_in_links_disagree"
+    raw = visible or hidden
     form_url, _, observed_id = turnin_form(raw)
+    column = "T" if visible else "U"
+    references = [f"{title}!{c}{row}" for c, found in (("T", visible), ("U", hidden)) if found]
     targets = [r for r in range(2, 161) if map_valid
                and value(turnins, r, 3) == title and value(turnins, r, 4) == entry["week"]]
     label = value(turnins, targets[0], 1) if len(targets) == 1 else ""
@@ -120,10 +153,16 @@ def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
     result = {"form_url": form_url or "", "form_id": "",
               "form_source": "", "form_mapping_verified": False,
               "form_binding_ambiguous": multiple and len(matches) != 1,
-              "form_source_reference": f"{title}!U{row}",
+              "form_source_reference": f"{title}!{column}{row}",
+              "form_source_references": references or [f"{title}!{column}{row}"],
+              "form_visible_url": visible, "form_raw_url": hidden,
               "form_review_reason": "", "assignment_label": label}
     reason = ""
-    if value(cells, 3, 21) != "_turnInURL":
+    if link_error:
+        reason = link_error
+    elif ((visible and _norm(value(cells, 3, 20)) != "turn it in")
+          or (hidden and value(cells, 3, 21) != "_turnInURL")
+          or (not visible and value(cells, 3, 21) != "_turnInURL")):
         reason = "assignment_form_layout_changed"
     elif not form_url:
         reason = "assignment_form_missing" if not raw else "assignment_form_invalid"
@@ -139,7 +178,9 @@ def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
         reason = "assignment_form_api_id_required"
     explicit = bindings.get(key)
     error = configuration_error or binding_errors.get(key)
-    if error:
+    if link_error:
+        pass  # A private multi-deck mapping cannot override contradictory links.
+    elif error:
         reason = error
     elif explicit:
         if reason == "assignment_form_mapping_conflict" or (not reason and observed_id != explicit):
@@ -149,9 +190,12 @@ def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
                           form_mapping_verified=True)
             reason = ""
     elif not reason:
-        result.update(form_id=observed_id, form_source="agenda_u_turnin_map" if matches == {key} else "agenda_u",
+        origin = "agenda_t" if visible else "agenda_u"
+        result.update(form_id=observed_id, form_source=origin + "_turnin_map" if matches == {key} else origin,
                       form_mapping_verified=True)
     result["form_review_reason"] = reason
+    result["form_review_action"] = (f"Verify the visible Turn it in link at {title}!T{row} and raw link at U{row}; both must identify the same assignment Form."
+                                    if link_error else "")
     return result
 
 
@@ -160,16 +204,48 @@ def _merge_catalog_forms(evidence):
     ids = {item["form_id"] for item in verified}
     result = dict((verified or [item for item in evidence if item["form_url"]] or evidence)[0])
     result["form_source_references"] = list(dict.fromkeys(
-        item["form_source_reference"] for item in evidence))
+        ref for item in evidence for ref in item.get("form_source_references", [item["form_source_reference"]])))
+    link_conflicts = [item for item in evidence if item["form_review_reason"] in {
+        "assignment_form_turn_in_links_disagree", "assignment_form_turn_in_link_invalid"}]
     conflicts = [item for item in evidence
                  if item["form_review_reason"] == "assignment_form_mapping_conflict"]
-    if len(ids) > 1 or conflicts:
+    if link_conflicts:
+        result.update(form_id="", form_source="", form_mapping_verified=False,
+                      form_review_reason=link_conflicts[0]["form_review_reason"],
+                      form_review_action=link_conflicts[0]["form_review_action"])
+    elif len(ids) > 1 or conflicts:
         result.update(form_id="", form_source="", form_mapping_verified=False,
                       form_review_reason="assignment_form_mapping_conflict")
     return result
 
 
-def agenda_catalog(assertion, config, records, *, class_key=None):
+def discovery_assignment(course, topic, source_id, assignments, bindings):
+    """Source identity is stable; an Agenda week/title is not a saved target.
+
+    Only an explicit deck binding or a stored exact source ID reuses a registry
+    key. New Agenda lessons are visible immediately, without registering them
+    or granting approval to assess/write against an invented week key.
+    """
+    keys = {bindings[source_id]} if source_id in bindings else set()
+    for key, row in assignments.items():
+        match = DECK_URL.fullmatch(str(row.get("source_url") or ""))
+        if row.get("source_deck_id") == source_id or (match and match[1] == source_id):
+            keys.add(key)
+    if len(keys) > 1:
+        raise ConnectionError("intake_registry_ambiguous")
+    if keys:
+        known = assignments[next(iter(keys))]
+        if known["class_key"] != course:
+            raise ConnectionError("intake_registry_conflict")
+        return {**known, "discovery_only": False, "registry_mapping_verified": True,
+                "registry_assignment_key": known["assignment_key"], "review_reasons": []}
+    key = "discovery:" + course + ":" + sha256(source_id.encode()).hexdigest()[:32]
+    return {"assignment_key": key, "class_key": course, "assignment_title": topic,
+            "discovery_only": True, "registry_mapping_verified": False,
+            "registry_assignment_key": "", "review_reasons": ["assignment_registry_binding_required"]}
+
+
+def agenda_catalog(assertion, config, records, *, class_key=None, discovery=False):
     courses = tuple((course, title) for course, title in COURSES
                     if class_key is None or course == class_key)
     if not courses:
@@ -193,7 +269,7 @@ def agenda_catalog(assertion, config, records, *, class_key=None):
         assignments[key] = assignment
     bindings = _deck_bindings(config, assignments)
     forms, form_errors, form_config_error = _assignment_form_bindings(config, assignments)
-    registry, by_deck, by_assignment, form_evidence = [], {}, {}, {}
+    registry, by_deck, by_assignment, form_evidence, catalog_issues = [], {}, {}, {}, []
     for course, title in courses:
         cells = grid(data, title)
         if value(cells, 3, 16) != "_studentURL":
@@ -210,8 +286,14 @@ def agenda_catalog(assertion, config, records, *, class_key=None):
                     continue  # A link alone does not make O a student assignment.
                 number = re.fullmatch(r"(?:Wk\s*)?0*(\d{1,2})([a-z]?)", week, re.I)
                 if not match or not number or not topic:
+                    if discovery:
+                        catalog_issues.append({"source_reference": f"{title}!{'P' if column == 16 else 'O'}{row}",
+                            "error": "intake_catalog_needs_review",
+                            "next_action": "Verify this Agenda row's current lesson title, week and student-deck link."})
+                        continue
                     raise ConnectionError("intake_catalog_needs_review")
-                known = _catalog_assignment(course, number, topic, match[1], assignments, bindings)
+                known = (discovery_assignment(course, topic, match[1], assignments, bindings)
+                         if discovery else _catalog_assignment(course, number, topic, match[1], assignments, bindings))
                 key, source_id = known["assignment_key"], match[1]
                 if ((source_id in by_deck and by_deck[source_id] != key)
                         or (key in by_assignment and by_assignment[key] != source_id)):
@@ -219,10 +301,22 @@ def agenda_catalog(assertion, config, records, *, class_key=None):
                 entry = {"assignment_key": key,
                          "class_key": course, "assignment_title": known["assignment_title"],
                          "week": week, "source_deck_id": source_id, "source_url": raw}
+                if discovery:
+                    entry.update({name: known[name] for name in (
+                        "discovery_only", "registry_mapping_verified", "registry_assignment_key", "review_reasons")})
+                    entry.update(source_reference=f"{title}!{'P' if column == 16 else 'O'}{row}",
+                                 source_references=[f"{title}!{'P' if column == 16 else 'O'}{row}"])
+                    if key in by_assignment:
+                        prior = next(item for item in registry if item["assignment_key"] == key)
+                        prior["source_references"].extend(entry["source_references"])
                 row_entries.append(entry)
                 if source_id not in by_deck:
                     by_deck[source_id], by_assignment[key] = key, source_id
                     registry.append(entry)
+            if discovery and not row_entries and (value(cells, row, 21) or _turnin_cell(cells, row, 20)[0]):
+                catalog_issues.append({"source_reference": f"{title}!P{row}",
+                    "error": "intake_source_deck_unavailable",
+                    "next_action": "Restore this assignment's current student-deck link in the Agenda."})
             for entry in {item["assignment_key"]: item for item in row_entries}.values():
                 form_evidence.setdefault(entry["assignment_key"], []).append(_catalog_form(
                     entry, row_entries, cells, row, title, turnins, map_valid,
@@ -232,6 +326,8 @@ def agenda_catalog(assertion, config, records, *, class_key=None):
     by_form = {}
     for entry in registry:
         entry.update(_merge_catalog_forms(form_evidence[entry["assignment_key"]]))
+        if discovery:
+            entry["catalog_issues"] = catalog_issues
         if entry["form_mapping_verified"]:
             by_form.setdefault(entry["form_id"], []).append(entry)
     for entries in by_form.values():

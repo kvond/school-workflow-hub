@@ -31,6 +31,7 @@ class BudgetedDrive(DriveReader):
         self.export_count = 0
         self.bytes_read = 0
         self.exhausted = False
+        self.form_cache = {}
         super().__init__(token)
 
     def _exhaust(self):
@@ -74,7 +75,7 @@ class BudgetedDrive(DriveReader):
         self.check()
         return bytes(body)
 
-    def _read(self, path, params, *, deck=False):
+    def _read(self, path, params, *, deck=False, form=False):
         self.check()
         if self.request_count >= MAX_REQUESTS or (deck and self.export_count >= MAX_EXPORTS):
             self._exhaust()
@@ -84,14 +85,18 @@ class BudgetedDrive(DriveReader):
         self.request_count += 1
         self.export_count += int(deck)
         response = None
-        unavailable = "assessment_source_unavailable" if deck else "submission_source_unavailable"
+        unavailable = ("submission_form_unavailable" if form else
+                       "assessment_source_unavailable" if deck else "submission_source_unavailable")
         try:
             response = self.session.get(
-                "https://www.googleapis.com/drive/v3/" + path, params=params,
+                ("https://forms.googleapis.com/v1/" if form else "https://www.googleapis.com/drive/v3/") + path, params=params,
                 timeout=(min(5.0, remaining / 2), min(30.0, remaining / 2)),
                 allow_redirects=False, stream=True)
             self.check()
             if response.status_code in (401, 403, 404):
+                if form:
+                    raise ConnectionError("submission_form_access_required" if response.status_code != 404
+                                          else "submission_form_not_found")
                 if deck:
                     raise ConnectionError("assessment_source_access_required")
                 if response.status_code == 403:
@@ -130,6 +135,27 @@ class BudgetedDrive(DriveReader):
         if not isinstance(result, dict):
             raise ConnectionError("submission_source_unavailable")
         return result
+
+    def form(self, form_id, *, fresh=False):
+        """Read exact upload-folder IDs using the existing Drive read-only scope.
+
+        forms.get accepts drive.readonly. No new token scope, public URL fetch,
+        title search or upload-parent expansion is needed for this source read.
+        """
+        self.check()
+        if not isinstance(form_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,256}", form_id):
+            raise ConnectionError("assignment_form_mapping_required")
+        if fresh or form_id not in self.form_cache:
+            raw = self._read("forms/" + form_id, {"fields":
+                "formId,responderUri,revisionId,items(questionItem(question(fileUploadQuestion(folderId))))"}, form=True)
+            try:
+                value = json.loads(raw)
+            except (ValueError, UnicodeDecodeError):
+                raise ConnectionError("submission_form_structure_invalid") from None
+            if not isinstance(value, dict) or value.get("formId") != form_id:
+                raise ConnectionError("submission_form_structure_invalid")
+            self.form_cache[form_id] = value
+        return self.form_cache[form_id]
 
     def read_deck(self, item):
         """Export native Slides or download uploaded PPTX from official Drive."""

@@ -6,6 +6,7 @@ File references preserve per-Form evidence; neither typed answers nor filenames
 choose an assignment or student. This module makes no school writes.
 """
 from datetime import datetime
+from urllib.parse import urlsplit
 import json
 import re
 
@@ -16,6 +17,82 @@ from .roster_matching import _aliases, _norm
 
 MAX_FORMS = 342
 ROLES = {"name", "section", "assignment"}
+
+
+def next_action(error):
+    """Safe, actionable diagnostics, never raw provider messages."""
+    if not error:
+        return ""
+    if error in {"submission_form_access_required", "submission_folder_access_required"}:
+        return "Verify the existing reader's access to this exact Form or upload folder."
+    if error in {"submission_form_not_found", "submission_folder_inactive"}:
+        return "Check the current assignment link and recover the original source if needed."
+    if "budget" in error or "incomplete" in error or "rate_limited" in error:
+        return "Retry this exact lesson; incomplete coverage cannot establish missing work."
+    if "mapping" in error or "api_id" in error or "reused" in error:
+        return "Verify this assignment's own Form link and its editable Form binding."
+    if "upload_folder" in error:
+        return "Check the file-upload question and access to its original upload folder."
+    return "Check this source's current link and access, then refresh the exact lesson."
+
+
+def _form_path(raw):
+    if not isinstance(raw, str):
+        return ""
+    url, _, _ = turnin_form(raw)
+    return urlsplit(url).path if url else ""
+
+
+def resolve_published_forms(catalog, candidate_ids, read_form):
+    """Match exact published responder URIs among discovered Form files only."""
+    pending = [e for e in catalog if e.get("form_review_reason") == "assignment_form_api_id_required"
+               and not e.get("form_binding_ambiguous")]
+    if not pending:
+        return [dict(e) for e in catalog]
+    matches = {}
+    for fid in sorted(set(candidate_ids))[:MAX_FORMS]:
+        try:
+            form = read_form(fid)
+            path = _form_path(form.get("responderUri", ""))
+            if path:
+                matches.setdefault(path, set()).add(fid)
+        except ConnectionError:
+            continue  # An unreadable candidate proves no binding.
+    result = []
+    for entry in catalog:
+        entry = dict(entry)
+        if entry in pending:
+            candidates = matches.get(_form_path(entry.get("form_url", "")), set())
+            if len(candidates) == 1:
+                entry.update(form_id=next(iter(candidates)), form_source="agenda_responder_uri",
+                             form_mapping_verified=True, form_review_reason="",
+                             form_responder_uri=entry["form_url"])
+            elif candidates:
+                entry["form_review_reason"] = "assignment_form_mapping_conflict"
+        result.append(entry)
+    return result
+
+
+def upload_folders(form):
+    """Only folderId in a Forms file-upload question authorizes traversal."""
+    items = form.get("items", [])
+    if not isinstance(items, list) or len(items) > 300:
+        raise ConnectionError("submission_form_structure_invalid")
+    folders = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ConnectionError("submission_form_structure_invalid")
+        question_item = item.get("questionItem", {})
+        if not isinstance(question_item, dict) or not isinstance(question_item.get("question", {}), dict):
+            raise ConnectionError("submission_form_structure_invalid")
+        question = question_item.get("question", {})
+        upload = question.get("fileUploadQuestion")
+        if upload is not None:
+            fid = upload.get("folderId") if isinstance(upload, dict) else None
+            if not isinstance(fid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", fid):
+                raise ConnectionError("submission_form_upload_folder_unavailable")
+            folders.add(fid)
+    return sorted(folders)
 
 
 def _code(error, fallback):
@@ -33,7 +110,10 @@ def _binding(entry):
         return None, "assignment_form_mapping_required"
     observed = entry.get("form_url") or ""
     url, _, observed_id = turnin_form(observed)
-    if entry.get("form_source") != "private_assignment_mapping":
+    if entry.get("form_source") == "agenda_responder_uri":
+        if not _form_path(observed) or _form_path(observed) != _form_path(entry.get("form_responder_uri", "")):
+            return None, "assignment_form_mapping_conflict"
+    elif entry.get("form_source") != "private_assignment_mapping":
         if not url or observed_id != form_id or entry.get("form_binding_ambiguous"):
             return None, "assignment_form_mapping_conflict"
     return form_id, None
@@ -103,6 +183,7 @@ def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=Non
                    "form_source": entry.get("form_source", ""),
                    "form_source_reference": entry.get("form_source_reference", ""),
                    "form_source_references": list(entry.get("form_source_references", [])),
+                   "next_action": entry.get("form_review_action", "") if error else "",
                    "complete": False, "error": error, "pages": 0,
                    "responses_checked": 0, "files_referenced": 0}
         previous = by_assignment.get(key)
@@ -111,15 +192,23 @@ def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=Non
                 previous["error"] = "assignment_form_mapping_conflict"
             previous["form_source_references"] = sorted(set(
                 previous["form_source_references"] + binding["form_source_references"]))
+            previous["next_action"] = previous["next_action"] or binding["next_action"]
             continue
         by_assignment[key] = binding
         bindings.append(binding)
-    # The same Form cannot silently stand in for two assignments. Detect this
-    # before reading it, including when two catalog entries were explicitly bound.
+    # The same Form cannot silently stand in for two assignments. Inspect the
+    # whole current catalog even when the requested scope is one assignment.
+    catalog_forms = {}
+    for entry in catalog:
+        fid, error = _binding(entry)
+        if not error:
+            catalog_forms.setdefault(fid, set()).add(entry["assignment_key"])
     by_form = {}
     for binding in bindings:
         if binding["form_id"]:
             by_form.setdefault(binding["form_id"], []).append(binding)
+            if len(catalog_forms.get(binding["form_id"], ())) > 1:
+                binding["error"] = "assignment_form_mapping_conflict"
     for group in by_form.values():
         if len(group) > 1:
             for binding in group:
@@ -145,6 +234,8 @@ def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=Non
         except ConnectionError as error:
             binding["error"] = _code(error, "submission_form_unavailable")
     errors = sorted({b["error"] for b in bindings if b["error"]})
+    for binding in bindings:
+        binding["next_action"] = binding["next_action"] or next_action(binding["error"])
     if not bindings:
         errors.append("assignment_form_mapping_required")
     review = [{"file_id": fid, "reason": reason,

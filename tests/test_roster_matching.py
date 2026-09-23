@@ -1,7 +1,9 @@
 """Synthetic roster parsing and conservative identity matching; no live calls."""
 import unittest
+from unittest.mock import patch
 
-from school_workflow_hub.adapters.roster_matching import match_files, match_respondent, parse_roster
+from school_workflow_hub.adapters.roster_matching import (match_files, match_respondent,
+    parse_roster, read_roster_snapshot, CLASS_TABS)
 from school_workflow_hub.adapters.hosted_agenda import ConnectionError
 
 
@@ -91,6 +93,65 @@ class RosterParsingTests(unittest.TestCase):
                          [r["learner_key"] for r in single])
         self.assertEqual(pair[0]["layout"], "last_first_columns")
         self.assertEqual(single[0]["layout"], "last_comma_full_first")
+
+    def test_first_last_headers_preserve_canonical_section_and_identity(self):
+        expected = parse_roster({"sheets": [sheet("A3 Forensics", [["Example", "Alex"]])]})[0]
+        actual = parse_roster({"sheets": [sheet("Renamed section", [["A3 Forensics"],
+            ["First Name", "Last Name"], ["Alex", "Example"]])]},
+            tab_mapping={"A3 Forensics": "Renamed section"})[0]
+        self.assertEqual(actual["learner_key"], expected["learner_key"])
+        self.assertEqual(actual["section_name"], "A3 Forensics")
+        self.assertEqual(actual["roster_tab"], "Renamed section")
+        self.assertEqual(actual["layout"], "first_last_columns")
+
+    def test_private_renamed_tab_mapping_cannot_conflict_with_first_section_heading(self):
+        with self.assertRaisesRegex(ConnectionError, "roster_tab_mapping_conflict"):
+            parse_roster({"sheets": [sheet("Renamed section", [["A3 Forensics"],
+                ["Example", "Alex"]])]}, tab_mapping={"A2 Forensics": "Renamed section"})
+
+    def test_explicit_headerless_column_layout_is_respected(self):
+        actual = parse_roster({"sheets": [sheet("A4 Biology", [["Alex", "Example"]])]},
+                             column_layouts={"A4 Biology": "first_last_columns"})[0]
+        expected = parse_roster({"sheets": [sheet("A4 Biology", [["Example", "Alex"]])]})[0]
+        self.assertEqual(actual["learner_key"], expected["learner_key"])
+
+
+class RosterReadTests(unittest.TestCase):
+    def test_stable_sheet_ids_follow_renames_and_empty_sections_remain_authoritative(self):
+        names = [name for sections in CLASS_TABS.values() for name in sections]
+        data = {"sheets": [sheet("Renamed " + str(i), []) for i in range(4)]}
+        for i, tab in enumerate(data["sheets"]):
+            tab["properties"]["sheetId"] = i + 80
+        data["sheets"][1] = sheet("Renamed 1", [["A3 Forensics"],
+            ["First Name", "Last Name"], ["Alex", "Example"]])
+        data["sheets"][1]["properties"]["sheetId"] = 81
+        config = {"HUB_ROSTER_SPREADSHEET_ID": "r" * 24,
+                  "HUB_ROSTER_TABS": {name: i + 80 for i, name in enumerate(names)},
+                  "HUB_ROSTER_SECTION_IDS": {name: "section-" + str(i) for i, name in enumerate(names)}}
+        with patch("school_workflow_hub.adapters.roster_matching.service_token"), \
+             patch("school_workflow_hub.adapters.roster_matching.SheetsReader") as reader:
+            reader.return_value.read.return_value = data
+            result = read_roster_snapshot(config)
+        self.assertEqual(len(result["sections"]), 4)
+        self.assertTrue(result["section_mapping_complete"])
+        self.assertEqual(result["entries"][0]["section_name"], "A3 Forensics")
+        self.assertEqual(reader.return_value.read.call_args_list[1].args[1],
+                         tuple("'Renamed %d'!A1:B200" % i for i in range(4)))
+
+    def test_missing_or_reused_private_section_ids_are_not_authoritative(self):
+        names = [name for sections in CLASS_TABS.values() for name in sections]
+        data = {"sheets": [sheet(name, []) for name in names]}
+        config = {"HUB_ROSTER_SPREADSHEET_ID": "r" * 24,
+                  "HUB_ROSTER_SECTION_IDS": {"A2 Forensics": "all"}}
+        with patch("school_workflow_hub.adapters.roster_matching.service_token"), \
+             patch("school_workflow_hub.adapters.roster_matching.SheetsReader") as reader:
+            reader.return_value.read.return_value = data
+            result = read_roster_snapshot(config)
+            self.assertEqual(result["sections"], [])
+            self.assertFalse(result["section_mapping_complete"])
+            config["HUB_ROSTER_SECTION_IDS"] = {name: "reused-id" for name in names}
+            with self.assertRaisesRegex(ConnectionError, "roster_section_mapping_conflict"):
+                read_roster_snapshot(config)
 
 
 class RosterMatchingTests(unittest.TestCase):

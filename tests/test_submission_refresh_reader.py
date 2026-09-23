@@ -74,6 +74,30 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(session.calls[1][1]["params"]["alt"], "media")
         self.assertEqual(reader.stats["exports"], 2)
 
+    def test_form_structure_uses_existing_token_bounded_stream_and_fresh_recheck(self):
+        payload = {"formId": ID, "revisionId": "first", "items": []}
+        changed = {**payload, "revisionId": "second"}
+        reader, session = self.reader(Response([json.dumps(payload).encode()]),
+                                      Response([json.dumps(changed).encode()]))
+        self.assertEqual(reader.form(ID), payload)
+        self.assertEqual(reader.form(ID), payload)
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(reader.form(ID, fresh=True), changed)
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(session.calls[0][0], "https://forms.googleapis.com/v1/forms/" + ID)
+        self.assertIn("folderId", session.calls[0][1]["params"]["fields"])
+        self.assertEqual(session.headers["Authorization"], "Bearer synthetic-token")
+        self.assertFalse(session.calls[0][1]["allow_redirects"])
+        self.assertTrue(session.calls[0][1]["stream"])
+
+    def test_form_wrong_identity_or_access_failure_has_safe_error(self):
+        reader, _ = self.reader(Response([b'{"formId":"wrong"}']))
+        with self.assertRaisesRegex(ConnectionError, "submission_form_structure_invalid"):
+            reader.form(ID)
+        reader, _ = self.reader(Response([b'private provider body'], status=403))
+        with self.assertRaisesRegex(ConnectionError, "^submission_form_access_required$"):
+            reader.form(ID)
+
     def test_unsupported_mime_and_external_path_never_issue_request(self):
         reader, session = self.reader()
         with self.assertRaisesRegex(ConnectionError, "intake_deck_unsupported"):

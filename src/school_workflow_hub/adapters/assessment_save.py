@@ -244,6 +244,8 @@ def _matching_rows(table, packet):
     for position, row in table["rows"]:
         if row.get("assignment_key") != packet["assignment_key"]:
             continue
+        if row.get("section_id") != packet["section_id"]:
+            continue
         if identity["student_id"]:
             same = row.get("student_id") == identity["student_id"]
         else:
@@ -263,6 +265,9 @@ def _verify_readback(records, rows, superseded_ids):
             or saved.get("source_sha256") != expected["source_sha256"]
             or saved.get("content_score_exact") != expected["content_score_exact"]
             or len(saved["answers"]) != len(rows["answers"])):
+        raise ConnectionError("assessment_readback_failed")
+    if any(str(saved.get(field) or "") != str(expected.get(field) or "")
+           for field in ("assignment_key", "section_id", "section_name", "student_id", "learner_key")):
         raise ConnectionError("assessment_readback_failed")
     for score in NUMERIC:
         want = expected[score]
@@ -299,6 +304,8 @@ def save(assertion, payload, config):
         raise ValueError("invalid_assessment_save")
     request_id = _request_id(payload["request_id"])
     packet = payload["packet"]
+    from . import assessment_target
+    assessment_target.read_target(assertion, packet, config)
     source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
     fresh = capture(assertion, source.get("file_id", ""), config)
     if fresh["sha256"] != source.get("sha256"):
@@ -321,8 +328,14 @@ def save(assertion, payload, config):
     if assignments.get(packet["assignment_key"]) != packet["class_key"]:
         raise ValueError("assessment_assignment_unknown")
     submissions = workbook["Submissions"]
+    assessment_target.check_record_targets(packet, [
+        {**row, "class_key": assignments.get(row.get("assignment_key"))}
+        for _, row in submissions["rows"]])
     matches = _matching_rows(submissions, packet)
     rid = assessment_records.record_id(packet)
+    if any(row.get("record_id") == rid and row.get("section_id") != packet["section_id"]
+           for _, row in submissions["rows"]):
+        raise ValueError("assessment_target_conflict")
     existing = next((row for _, row in matches if row.get("record_id") == rid), None)
     supersede = [(position, row) for position, row in matches
                  if row.get("record_id") != rid and row.get("status") != "superseded"]

@@ -277,6 +277,89 @@ class AssignmentFormCatalogTests(unittest.TestCase):
         return agenda(additional=additional, form=form if form is not None else form_url(),
             map_rows=[[label, "z" * 24, "🔬 Forensics", "Wk 03"]])
 
+    def visible_link(self, data, **cell):
+        sheet = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        rows = sheet["data"][0]["rowData"]
+        rows[0]["values"][19] = {"formattedValue": "📤 Turn it in"}
+        rows[1]["values"][19] = {"formattedValue": "📤 Submit ↗", **cell}
+        return data
+
+    def test_visible_t_hyperlink_crosschecks_u_and_keeps_both_sources(self):
+        data = self.visible_link(agenda(form=form_url()), hyperlink=form_url() + "?usp=sharing")
+        entry = catalog(data=data)[0]
+        self.assertTrue(entry["form_mapping_verified"])
+        self.assertEqual(entry["form_id"], FORM_A)
+        self.assertEqual(entry["form_source"], "agenda_t")
+        self.assertEqual(entry["form_source_reference"], "🔬 Forensics!T4")
+        self.assertEqual(entry["form_source_references"], ["🔬 Forensics!T4", "🔬 Forensics!U4"])
+        self.assertEqual(entry["form_review_action"], "")
+
+    def test_t_only_literal_formula_needs_no_hidden_url_or_private_id(self):
+        data = self.visible_link(agenda(form=""), userEnteredValue={"formulaValue":
+            '=HYPERLINK("' + form_url() + '","📤 Submit ↗")'})
+        sheet = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        sheet["data"][0]["rowData"][0]["values"][20] = {"formattedValue": ""}
+        entry = catalog(data=data)[0]
+        self.assertTrue(entry["form_mapping_verified"])
+        self.assertEqual(entry["form_id"], FORM_A)
+        self.assertEqual(entry["form_source_references"], ["🔬 Forensics!T4"])
+
+    def test_t_u_mismatch_is_actionable_and_private_mapping_cannot_override_it(self):
+        data = self.visible_link(agenda(form=form_url(FORM_B)), hyperlink=form_url(FORM_A))
+        for private in (None, {KEY_A: FORM_A}, {KEY_A: FORM_B}):
+            with self.subTest(private=private):
+                entry = catalog(data=data, forms=private)[0]
+                self.assertFalse(entry["form_mapping_verified"])
+                self.assertEqual(entry["form_id"], "")
+                self.assertEqual(entry["form_review_reason"], "assignment_form_turn_in_links_disagree")
+                self.assertIn("T4", entry["form_review_action"])
+                self.assertIn("U4", entry["form_review_action"])
+
+    def test_agreeing_visible_link_preserves_private_multideck_bindings(self):
+        data = self.visible_link(self.mapped_agenda(label="Two synthetic assignments",
+            additional=url(ADDITIONAL)), hyperlink=form_url())
+        entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+        self.assertEqual([e["form_id"] for e in entries], [FORM_A, FORM_B])
+        self.assertTrue(all(e["form_mapping_verified"] for e in entries))
+        self.assertTrue(all(e["form_source"] == "private_assignment_mapping" for e in entries))
+
+    def test_ambiguous_or_computed_visible_links_do_not_fall_back_to_u(self):
+        variants = [{"textFormatRuns": [{"format": {"link": {"uri": form_url()}}},
+                                        {"format": {"link": {"uri": form_url(FORM_B)}}}]},
+                    {"userEnteredValue": {"formulaValue": '=HYPERLINK(U4,"Submit")'}},
+                    {"hyperlink": "https://example.invalid/not-a-form"},
+                    {"hyperlink": form_url(), "userEnteredValue": {"formulaValue":
+                        '=HYPERLINK("' + form_url(FORM_B) + '","Submit")'}}]
+        for cell in variants:
+            with self.subTest(cell=cell):
+                entry = catalog(data=self.visible_link(agenda(form=form_url()), **cell))[0]
+                self.assertFalse(entry["form_mapping_verified"])
+                self.assertIn(entry["form_review_reason"], {
+                    "assignment_form_turn_in_links_disagree", "assignment_form_turn_in_link_invalid"})
+
+    def test_bad_visible_link_on_one_continuation_row_cannot_hide_behind_good_row(self):
+        data = self.visible_link(agenda(form=form_url()), hyperlink=form_url())
+        sheet = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        later = copy.deepcopy(sheet["data"][0]["rowData"][1])
+        later["values"][19]["hyperlink"] = form_url(FORM_B)
+        sheet["data"][0]["rowData"].append(later)
+        entry = catalog(data=data)[0]
+        self.assertFalse(entry["form_mapping_verified"])
+        self.assertEqual(entry["form_review_reason"], "assignment_form_turn_in_links_disagree")
+        self.assertIn("T5", entry["form_review_action"])
+
+    def test_visible_mismatch_does_not_cancel_another_assignment_binding(self):
+        data = self.visible_link(agenda(form=form_url()), hyperlink=form_url(FORM_B))
+        sheet = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        other = copy.deepcopy(sheet["data"][0]["rowData"][1])
+        other["values"][15]["formattedValue"] = url(ADDITIONAL)
+        other["values"][20]["formattedValue"] = form_url(FORM_B)
+        sheet["data"][0]["rowData"].append(other)
+        entries = catalog(data=data)
+        self.assertFalse(entries[0]["form_mapping_verified"])
+        self.assertTrue(entries[1]["form_mapping_verified"])
+        self.assertEqual(entries[1]["form_id"], FORM_B)
+
     def test_exact_map_key_binds_ordinary_form_and_retains_source_reference(self):
         entry = catalog(data=self.mapped_agenda())[0]
         self.assertTrue(entry["form_mapping_verified"])
@@ -408,6 +491,83 @@ class AssignmentFormCatalogTests(unittest.TestCase):
                                   registry(), class_key="forensics")
         self.assertEqual(reader.read.call_args_list, [call("synthetic-agenda"),
             call("synthetic-agenda", ("'🔬 Forensics'!A3:U60", "'🗂 TurnIn Map'!A1:D160"))])
+
+
+class DiscoveryCatalogTests(unittest.TestCase):
+    def read(self, data, records=None, config=None):
+        reader = Mock()
+        reader.read.return_value = data
+        with patch.object(intake, "authenticated_reader", return_value=(reader, "synthetic-agenda")):
+            return intake.agenda_catalog(None, config or {}, records or registry(),
+                                        class_key="forensics", discovery=True)
+
+    def test_two_new_same_week_lessons_are_distinct_without_registry_or_config_edits(self):
+        data = agenda(topic="First current lesson", form=form_url())
+        course = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        second = copy.deepcopy(course["data"][0]["rowData"][1])
+        second["values"][2]["formattedValue"] = "Second current lesson"
+        second["values"][15]["formattedValue"] = url(ADDITIONAL)
+        second["values"][20]["formattedValue"] = form_url(FORM_B)
+        course["data"][0]["rowData"].append(second)
+        result = self.read(data)
+        self.assertEqual(len({e["assignment_key"] for e in result}), 2)
+        self.assertEqual([e["form_id"] for e in result], [FORM_A, FORM_B])
+        self.assertEqual([e["assignment_title"] for e in result], ["First current lesson", "Second current lesson"])
+        for entry in result:
+            self.assertTrue(entry["assignment_key"].startswith("discovery:forensics:"))
+            self.assertTrue(entry["discovery_only"])
+            self.assertFalse(entry["registry_mapping_verified"])
+            self.assertEqual(entry["registry_assignment_key"], "")
+            self.assertIn("assignment_registry_binding_required", entry["review_reasons"])
+        course["data"][0]["rowData"][1]["values"][0]["formattedValue"] = "Wk 04"
+        course["data"][0]["rowData"][1]["values"][2]["formattedValue"] = "Updated exact Agenda title"
+        self.assertEqual(self.read(data)[0]["assignment_key"], result[0]["assignment_key"])
+
+    def test_title_or_week_does_not_bind_new_source_to_existing_approval_key(self):
+        result = self.read(agenda(topic="Synthetic observation", form=form_url()))
+        self.assertNotEqual(result[0]["assignment_key"], KEY_A)
+        self.assertTrue(result[0]["discovery_only"])
+        bound = self.read(agenda(form=form_url()), config={"HUB_INTAKE_DECK_ASSIGNMENTS": {PRIMARY: KEY_A}})
+        self.assertEqual(bound[0]["assignment_key"], KEY_A)
+        self.assertFalse(bound[0]["discovery_only"])
+
+    def test_same_master_and_form_continuing_next_week_is_one_lesson(self):
+        data = agenda(topic="Current lesson", form=form_url())
+        course = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        continued = copy.deepcopy(course["data"][0]["rowData"][1])
+        continued["values"][0]["formattedValue"] = "Wk 04"
+        continued["values"][2]["formattedValue"] = "Current lesson continued"
+        course["data"][0]["rowData"].append(continued)
+        result = self.read(data)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["source_references"], ["🔬 Forensics!P4", "🔬 Forensics!P5"])
+        self.assertEqual(result[0]["form_source_references"], ["🔬 Forensics!U4", "🔬 Forensics!U5"])
+        self.assertTrue(result[0]["form_mapping_verified"])
+        self.assertEqual(result[0]["form_id"], FORM_A)
+
+    def test_malformed_new_row_is_visible_gap_without_canceling_valid_form(self):
+        data = agenda(form=form_url())
+        course = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")
+        invalid = copy.deepcopy(course["data"][0]["rowData"][1])
+        invalid["values"][15]["formattedValue"] = "https://example.invalid/not-a-student-deck"
+        course["data"][0]["rowData"].append(invalid)
+        result = self.read(data)
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0]["form_mapping_verified"])
+        self.assertEqual(result[0]["catalog_issues"][0]["source_reference"], "🔬 Forensics!P5")
+        self.assertTrue(result[0]["catalog_issues"][0]["next_action"])
+
+    def test_exact_saved_source_binding_needs_no_per_lesson_config(self):
+        records = registry()
+        records["assignments"][0]["source_url"] = url(PRIMARY)
+        entry = self.read(agenda(form=form_url()), records)[0]
+        self.assertEqual(entry["registry_assignment_key"], KEY_A)
+        self.assertTrue(entry["registry_mapping_verified"])
+
+    def test_additional_resource_is_not_declared_second_assignment(self):
+        result = self.read(agenda(additional=url(ADDITIONAL), form=form_url()))
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["source_deck_id"], PRIMARY)
 
 
 if __name__ == "__main__":

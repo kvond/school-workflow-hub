@@ -13,7 +13,7 @@ is never logged, and no provider response body ever crosses a diagnostic.
 import json
 import re
 
-from . import assessment_save
+from . import assessment_save, assessment_target
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize)
 from ..workflows import assessment_records
 
@@ -182,17 +182,6 @@ def _extract_json(text):
     return result
 
 
-def _prior_row(assertion, config, file_id, class_key):
-    from .grading_records import read_records
-    records = read_records(assertion, config)
-    rows = [row for row in records.get("submissions", [])
-            if row.get("source_file_id") == file_id
-            and row.get("class_key") == class_key
-            and row.get("status") != "superseded"]
-    rows.sort(key=lambda row: row.get("checked_at", ""))
-    return rows[-1] if rows else None
-
-
 def _filled_identity(request_identity, prior, *, class_key, section_id):
     """Teacher-entered fields win; blanks fill from the file's newest workbook
     row. A teacher-confirmed name with no IC number gets a derived roster
@@ -232,22 +221,40 @@ def _comparison(prior, sha):
             + (prior.get("content_score_exact") or "n/a") + "); " + sameness + ".")[:300]
 
 
-def _draft_doc_id(file_id, sha):
+DRAFT_TARGET_FIELDS = ("class_key", "assignment_key", "section_id", "stage")
+
+
+def _draft_target(request):
+    return {key: request[key] for key in DRAFT_TARGET_FIELDS}
+
+
+def _draft_doc_id(file_id, sha, target=None):
     from ..core.cloud_state import key
-    return key("draftpkt", {"file": file_id, "sha": sha})
+    content = {"file": file_id, "sha": sha}
+    if target is not None:
+        content["target"] = _draft_target(target)
+    return key("draftpkt", content)
 
 
-def _stored_draft(store, file_id, sha):
-    doc_id = _draft_doc_id(file_id, sha)
-    doc = store.port.read([doc_id]).documents[doc_id]
-    return dict(doc.value) if doc else None
+def _stored_draft(store, file_id, sha, target=None):
+    ids = [_draft_doc_id(file_id, sha, target)]
+    if target is not None:
+        # Read old immutable packets without renaming or overwriting history.
+        ids.append(_draft_doc_id(file_id, sha))
+    documents = store.port.read(ids).documents
+    for doc_id in ids:
+        doc = documents[doc_id]
+        if doc and (target is None or all(doc.value.get("packet", {}).get(key) == target[key]
+                                         for key in DRAFT_TARGET_FIELDS)):
+            return dict(doc.value)
+    return None
 
 
-def _store_draft(store, file_id, sha, payload):
+def _store_draft(store, file_id, sha, payload, target=None):
     """Best-effort CAS persist so a paid draft survives page refreshes; a
     concurrent identical draft keeps whichever landed first."""
     from ..core.cloud_state import Conflict
-    doc_id = _draft_doc_id(file_id, sha)
+    doc_id = _draft_doc_id(file_id, sha, target)
     try:
         store.port.commit({doc_id: (payload, None)})
     except Conflict:
@@ -269,28 +276,35 @@ def _draft_reply(stored, *, cached):
             "external_writes": 0}
 
 
-def stored_draft_for(assertion, file_id, config):
+def stored_draft_for(assertion, file_id, config, *, target=None):
     """Recover the persisted draft for the file's CURRENT content, if any."""
     from .firestore_state import configured_store
     from ..core.cloud_state import CloudState
+    if target is not None:
+        if set(target) != set(DRAFT_TARGET_FIELDS) or target.get("stage") not in assessment_records.STAGES:
+            raise ValueError("invalid_provider_request")
+        assessment_target.read_target(assertion, {**target, "file_id": file_id, "identity": {}}, config)
     capture = assessment_save.capture(assertion, file_id, config)
     store = CloudState(configured_store(config))
-    stored = _stored_draft(store, file_id, capture["sha256"])
+    stored = _stored_draft(store, file_id, capture["sha256"], target)
     if stored is None:
         return {"schema_version": "hub-assessment-provider/v1", "status": "no_draft",
                 "source": {"file_id": file_id, "sha256": capture["sha256"],
                            "modified_at": capture["file"]["modified_at"]},
                 "external_writes": 0}
+    # Legacy reads still need the current registry/section and saved identity;
+    # a historical cache entry alone cannot authorize its old target.
+    assessment_target.read_target(assertion, stored["packet"], config)
     return _draft_reply(stored, cached=True)
 
 
 def draft(assertion, request, config):
     """One drafted packet for review; nothing is graded, posted or saved.
 
-    Billing guards: an assessed row for this exact content returns
-    already_assessed with no model call; a persisted draft for this exact
-    content is returned as-is with no model call; a claim stops concurrent
-    duplicate calls for the same content.
+    Billing guards: an assessed row for this exact content and checkpoint returns
+    already_assessed with no model call; a persisted draft for the same content,
+    assignment, section and checkpoint is reused. A scoped claim stops concurrent
+    duplicate calls for that assessment target.
     """
     from .firestore_state import configured_store
     from ..core.cloud_state import Busy, CloudState
@@ -301,16 +315,24 @@ def draft(assertion, request, config):
     if (not isinstance(request, dict) or set(request) != REQUEST_KEYS
             or not isinstance(request.get("identity"), dict)):
         raise ValueError("invalid_provider_request")
+    if request.get("stage") not in assessment_records.STAGES:
+        raise ValueError("invalid_assessment_stage")
+    prior = assessment_target.read_target(assertion, request, config)
+    identity = _filled_identity(request["identity"], prior,
+                                class_key=request["class_key"],
+                                section_id=request["section_id"])
+    if prior:
+        assessment_target.check_identity(identity, prior)
     capture = assessment_save.capture(assertion, request["file_id"], config)
     sha = capture["sha256"]
     # The distributed requirement comes from the deck's own manifest header,
     # never from the browser; a headerless deck stays a manual case.
     manifest = assessment_records.derive_manifest(capture["text"])
     store = CloudState(configured_store(config))
-    stored = _stored_draft(store, request["file_id"], sha)
+    stored = _stored_draft(store, request["file_id"], sha, request)
     if stored is not None:
+        assessment_target.check_cached(stored["packet"], request, identity)
         return _draft_reply(stored, cached=True)
-    prior = _prior_row(assertion, config, request["file_id"], request["class_key"])
     if (prior and prior.get("status") == "assessed"
             and prior.get("source_sha256") == sha
             and prior.get("assessment_stage") == request["stage"]):
@@ -320,22 +342,20 @@ def draft(assertion, request, config):
                 "source": {"file_id": request["file_id"], "sha256": sha,
                            "modified_at": capture["file"]["modified_at"]},
                 "external_writes": 0}
-    identity = _filled_identity(request["identity"], prior,
-                                class_key=request["class_key"],
-                                section_id=request["section_id"])
     completion_prompt, feedback_prompt, prompt_meta = _teacher_prompts(assertion, config)
+    from ..core.runs import content_hash
+    input_hash = content_hash({"file": request["file_id"], "sha": sha,
+                               "target": _draft_target(request)})
     task = store.create_task({"workflow": "assessment-draft",
                               "class_key": request["class_key"],
-                              "assignment_key": sha[:40]})
-    from ..core.runs import content_hash
-    claim = store.claim(task, owner="draft", request_id="draft-" + sha[:32],
-                        input_hash=content_hash({"file": request["file_id"],
-                                                 "sha": sha,
-                                                 "stage": request["stage"]}),
+                              "assignment_key": input_hash[:40]})
+    claim = store.claim(task, owner="draft", request_id="draft-" + input_hash[:32],
+                        input_hash=input_hash,
                         ttl_seconds=240)
     if claim.completed:
-        stored = _stored_draft(store, request["file_id"], sha)
+        stored = _stored_draft(store, request["file_id"], sha, request)
         if stored is not None:
+            assessment_target.check_cached(stored["packet"], request, identity)
             return _draft_reply(stored, cached=True)
     user = ("TEACHER COMPLETION INSTRUCTIONS:\n" + completion_prompt
             + "\n\nTEACHER FEEDBACK INSTRUCTIONS:\n" + feedback_prompt
@@ -368,7 +388,7 @@ def draft(assertion, request, config):
         stored = {"schema_version": "hub-assessment-draft/v1", "packet": packet,
                   "usage": usage, "prompts": prompt_meta,
                   "drafted_at": assessment_save._now()}
-        _store_draft(store, request["file_id"], sha, stored)
+        _store_draft(store, request["file_id"], sha, stored, request)
         store.finish(claim, records={"receipt": {"file": request["file_id"],
                                                  "sha256": sha,
                                                  "drafted_at": stored["drafted_at"]}})

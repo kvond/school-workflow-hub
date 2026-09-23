@@ -2,7 +2,8 @@
 import json
 import unittest
 
-from school_workflow_hub.adapters.assignment_form_intake import collect_assignment_forms, cross_checks
+from school_workflow_hub.adapters.assignment_form_intake import (
+    collect_assignment_forms, cross_checks, resolve_published_forms, upload_folders)
 from school_workflow_hub.adapters.hosted_agenda import ConnectionError
 
 FORM_A, FORM_B = "form_a_" + "x" * 20, "form_b_" + "y" * 20
@@ -81,6 +82,18 @@ class AssignmentFormsTests(unittest.TestCase):
         self.assertEqual(refs, {})
         self.assertEqual(reader.calls, [])
         self.assertEqual(evidence["errors"], ["assignment_form_mapping_required"])
+
+    def test_conflicting_weekly_links_preserve_exact_repair_action_without_reading_form(self):
+        entry = binding(KEY_A, FORM_A)
+        action = "Verify the visible Turn it in link at Synthetic course!T6 and raw link at U6; both must identify the same assignment Form."
+        entry.update(form_mapping_verified=False, form_review_reason="assignment_form_turn_in_links_disagree",
+                     form_review_action=action)
+        reader = Reader({})
+        refs, evidence = collect_assignment_forms(reader, [entry])
+        self.assertEqual(refs, {})
+        self.assertEqual(reader.calls, [])
+        self.assertEqual(evidence["assignments"][0]["next_action"], action)
+        self.assertFalse(evidence["complete"])
 
     def test_published_url_requires_verified_private_editable_mapping(self):
         entry = binding(KEY_A, FORM_A)
@@ -202,6 +215,40 @@ class OptionalTypedCrosschecksTests(unittest.TestCase):
     def test_form_and_deck_disagreement_cannot_use_wrong_question_map(self):
         self.ref["assignment_key"] = KEY_B
         self.assertEqual(cross_checks(self.ref, self.person, self.lesson, {}), ["form_deck_assignment_disagreement"])
+
+
+class FormSourceDiscoveryTests(unittest.TestCase):
+    def test_published_binding_resolves_only_exact_responder_uri_not_title(self):
+        public = "https://docs.google.com/forms/d/e/" + "published_" + "p" * 20 + "/viewform"
+        entry = {**binding(KEY_A, ""), "form_url": public, "form_mapping_verified": False,
+                 "form_review_reason": "assignment_form_api_id_required"}
+        documents = {FORM_A: {"formId": FORM_A, "responderUri": public + "?usp=sharing"},
+                     FORM_B: {"formId": FORM_B, "responderUri": binding(KEY_B, FORM_B)["form_url"]}}
+        resolved = resolve_published_forms([entry], documents, documents.__getitem__)
+        self.assertEqual(resolved[0]["form_id"], FORM_A)
+        self.assertEqual(resolved[0]["form_source"], "agenda_responder_uri")
+        refs, evidence = collect_assignment_forms(Reader({(FORM_A, None): {"responses": []}}), resolved)
+        self.assertTrue(evidence["complete"])
+        self.assertFalse(entry["form_mapping_verified"])
+        documents[FORM_A]["responderUri"] = binding(KEY_B, FORM_B)["form_url"]
+        self.assertFalse(resolve_published_forms([entry], documents, documents.__getitem__)[0]["form_mapping_verified"])
+
+    def test_selected_scope_does_not_bypass_form_reuse_conflict(self):
+        reader = Reader({})
+        refs, evidence = collect_assignment_forms(reader, [binding(KEY_A, FORM_A), binding(KEY_B, FORM_A)],
+                                                  assignment_key=KEY_A)
+        self.assertFalse(evidence["complete"])
+        self.assertEqual(reader.calls, [])
+        self.assertEqual(refs, {})
+        self.assertIn("assignment_form_mapping_conflict", evidence["errors"])
+
+    def test_upload_folder_ids_are_exact_structure_fields_not_text_links(self):
+        item = {"questionItem": {"question": {"fileUploadQuestion": {"folderId": FILE_A}}}}
+        self.assertEqual(upload_folders({"items": [item, item, {"description": FILE_B}]}), [FILE_A])
+        for form in ({"items": [{"questionItem": None}]},
+                     {"items": [{"questionItem": {"question": {"fileUploadQuestion": {}}}}]}):
+            with self.assertRaises(ConnectionError):
+                upload_folders(form)
 
 
 if __name__ == "__main__":

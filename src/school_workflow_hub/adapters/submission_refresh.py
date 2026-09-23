@@ -59,7 +59,7 @@ def discover_tree(reader, root_id):
     root = reader.metadata(root_id)
     if root.get("mimeType") != FOLDER or root.get("trashed") is not False:
         raise ConnectionError("submission_folder_inactive")
-    files, seen, level, pages, errors = {}, {root_id}, [root_id], 0, []
+    files, forms, seen, level, pages, errors = {}, set(), {root_id}, [root_id], 0, []
     try:
         for _ in range(MAX_LOCATE_DEPTH):
             if not level:
@@ -75,9 +75,14 @@ def discover_tree(reader, root_id):
                     if page.get("incompleteSearch") or not isinstance(page.get("files"), list):
                         raise ConnectionError("submission_scan_incomplete")
                     for item in page["files"]:
+                        if not isinstance(item, dict):
+                            raise ConnectionError("submission_scan_incomplete")
                         fid = item.get("id", "")
-                        if (not FILE_ID.fullmatch(fid) or item.get("trashed") is not False
-                                or not set(item.get("parents") or []) & set(batch)):
+                        parents = item.get("parents")
+                        if (not isinstance(fid, str) or not FILE_ID.fullmatch(fid)
+                                or item.get("trashed") is not False
+                                or not isinstance(parents, list) or any(not isinstance(p, str) for p in parents)
+                                or not set(parents) & set(batch)):
                             raise ConnectionError("submission_scan_incomplete")
                         mime = item.get("mimeType")
                         if mime == FOLDER:
@@ -88,16 +93,18 @@ def discover_tree(reader, root_id):
                                 following.append(fid)
                         elif mime == SHORTCUT:
                             errors.append("submission_shortcut_needs_review")
-                        elif mime != FORM:
+                        elif mime == FORM:
+                            forms.add(fid)
+                        else:
                             if fid in files and files[fid] != item:
                                 raise ConnectionError("intake_upload_changed")
                             if fid not in files and len(files) >= MAX_FILES:
                                 raise ConnectionError("submission_scan_incomplete")
                             files[fid] = item
                     cursor = page.get("nextPageToken")
-                    if not cursor:
+                    if cursor is None or cursor == "":
                         break
-                    if cursor in cursors:
+                    if not isinstance(cursor, str) or len(cursor) > 4096 or cursor in cursors:
                         raise ConnectionError("submission_scan_incomplete")
                     cursors.add(cursor)
             level = following
@@ -107,7 +114,93 @@ def discover_tree(reader, root_id):
         errors.append(_code(error, "submission_source_unavailable"))
     return list(files.values()), {"drive_complete": not errors,
         "folders_checked": len(seen), "pages_checked": pages,
-        "errors": sorted(set(errors))}
+        "errors": sorted(set(errors)), "folder_ids": sorted(seen), "form_file_ids": sorted(forms)}
+
+
+def discover_form_sources(drive, catalog, refs, found, root_coverage):
+    """Discover exact Form upload folders and original response file IDs.
+
+    These sources are authorized by the current assignment's verified Form,
+    never by a file title or arbitrary uploaded-file parent. Partial sources
+    retain their readable evidence and an explicit repair action.
+    """
+    merged = {item["id"]: item for item in found}
+    results, errors, folder_cache = [], [], {}
+    root_files = set(merged)
+    complete_folders = set(root_coverage.get("folder_ids", [])) if root_coverage["drive_complete"] else set()
+    for entry in catalog:
+        form_id, binding_error = assignment_forms._binding(entry)
+        if binding_error:
+            continue
+        result = {"assignment_key": entry["assignment_key"], "source_kind": "form_upload_folders",
+                  "form_id": form_id, "complete": False, "error": None,
+                  "folders_checked": 0, "pages_checked": 0, "files_checked": 0}
+        try:
+            form = drive.form(form_id)
+            folders = assignment_forms.upload_folders(form)
+            result["form_snapshot"] = form
+            if not folders:
+                raise ConnectionError("submission_form_upload_folder_unavailable")
+            source_errors = []
+            for folder_id in folders:
+                if folder_id in complete_folders:
+                    result["folders_checked"] += 1
+                    continue
+                if folder_id not in folder_cache:
+                    try:
+                        folder_cache[folder_id] = discover_tree(drive, folder_id)
+                    except ConnectionError as error:
+                        folder_cache[folder_id] = ([], {"folders_checked": 0, "pages_checked": 0,
+                            "errors": [_code(error, "submission_source_unavailable")]})
+                files, coverage = folder_cache[folder_id]
+                result["folders_checked"] += coverage["folders_checked"]
+                result["pages_checked"] += coverage["pages_checked"]
+                result["files_checked"] += len(files)
+                source_errors.extend(coverage["errors"])
+                for item in files:
+                    if item["id"] in merged and merged[item["id"]] != item:
+                        raise ConnectionError("intake_upload_changed")
+                    if item["id"] not in merged and len(merged) >= MAX_FILES:
+                        raise ConnectionError("submission_scan_incomplete")
+                    merged[item["id"]] = item
+            result["complete"] = not source_errors
+            if source_errors:
+                result["error"] = source_errors[0]
+                errors.extend(source_errors)
+        except ConnectionError as error:
+            result["error"] = _code(error, "submission_source_unavailable")
+            errors.append(result["error"])
+        result["next_action"] = assignment_forms.next_action(result["error"])
+        results.append(result)
+    unlocated = set(refs) - set(merged)
+    for fid in sorted(unlocated):
+        ref = refs[fid]
+        try:
+            item = drive.metadata(fid)
+            if item.get("id") != fid or item.get("trashed") is not False:
+                raise ConnectionError("submission_folder_inactive")
+            if item.get("mimeType") in {FOLDER, SHORTCUT, FORM}:
+                raise ConnectionError("intake_deck_unsupported")
+            if len(merged) >= MAX_FILES:
+                raise ConnectionError("submission_scan_incomplete")
+            merged[fid] = item
+        except ConnectionError as error:
+            code = _code(error, "submission_source_unavailable")
+            errors.append(code)
+            # The current Form proves the reference, not current readability.
+            # Keep it visible without reading an unrelated parent or inventing
+            # a source version, score or missing-work conclusion.
+            if len(merged) < MAX_FILES:
+                merged[fid] = {"id": fid, "name": ref.get("form_name", ""),
+                               "mimeType": ref.get("form_mime_type", ""), "source_error": code}
+            results.append({"assignment_key": ref.get("assignment_key", ""),
+                            "source_kind": "form_reference", "complete": False, "error": code,
+                            "source_url": "https://drive.google.com/file/d/" + fid + "/view",
+                            "next_action": assignment_forms.next_action(code)})
+    return list(merged.values()), {"upload_folders_complete": not any(not r["complete"] for r in results),
+        "source_results": results, "errors": sorted(set(errors)),
+        "form_refs_outside_root": len(set(refs) - root_files) if root_coverage["drive_complete"] else 0,
+        "form_refs_unlocated": len(set(refs) - set(merged)) + sum("source_error" in item for item in merged.values())}
 
 
 def _time(value):
@@ -165,7 +258,8 @@ def refresh(assertion, payload, config):
     class_key, selected = payload["class_key"], payload["assignment_key"]
     records = read_records(assertion, config)  # Authorize before any school read.
     assignments = {a["assignment_key"]: a for a in records["assignments"]}
-    if selected != "all" and assignments.get(selected, {}).get("class_key") != class_key:
+    if (selected != "all" and assignments.get(selected, {}).get("class_key") != class_key
+            and not re.fullmatch(r"discovery:" + class_key + r":[a-f0-9]{32}", selected)):
         raise ValueError("invalid_submission_scope")
     root_id = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", ""))
     if not FILE_ID.fullmatch(root_id):
@@ -173,21 +267,33 @@ def refresh(assertion, payload, config):
     service = config.get("HUB_READER_SERVICE_ACCOUNT", "")
     token = service_token(service, DRIVE_SCOPE)
     drive = DriveReader(token)
-    found, coverage = discover_tree(drive, root_id)
+    try:
+        found, coverage = discover_tree(drive, root_id)
+    except ConnectionError as error:
+        found, coverage = [], {"drive_complete": False, "folders_checked": 0, "pages_checked": 0,
+                               "errors": [_code(error, "submission_source_unavailable")]}
     errors = list(coverage["errors"])
     # Resolve assignment-specific Form links before reading source-deck content.
     # An inaccessible master cannot hide the independently readable Form index.
     original_catalog, catalog, catalog_complete = [], [], False
     try:
         drive.check()
-        original_catalog = intake.agenda_catalog(assertion, config, records, class_key=class_key)
+        original_catalog = intake.agenda_catalog(assertion, config, records, class_key=class_key, discovery=True)
     except (ConnectionError, SheetsReadError) as error:
         errors.append(_code(error, "intake_catalog_needs_review"))
+    if selected.startswith("discovery:") and selected not in {e["assignment_key"] for e in original_catalog}:
+        raise ValueError("invalid_submission_scope")
+    resolved_catalog = assignment_forms.resolve_published_forms(
+        original_catalog, coverage.pop("form_file_ids", []), drive.form)
+    scoped_catalog = [e for e in resolved_catalog if selected in ("all", e["assignment_key"])]
+    coverage["catalog_issues"] = [issue for entry in original_catalog[:1]
+                                  for issue in entry.get("catalog_issues", [])]
+    errors.extend(issue["error"] for issue in coverage["catalog_issues"])
     refs, form_complete = {}, False
     try:
         forms = _BudgetedForms(FormsReader(service_token(service, FORMS_SCOPE)), drive.check)
         refs, evidence = assignment_forms.collect_assignment_forms(
-            forms, original_catalog, config, assignment_key=selected)
+            forms, resolved_catalog, config, assignment_key=selected)
         form_complete = evidence["complete"]
         coverage.update(forms_checked=evidence["forms_checked"],
                         forms_complete=evidence["forms_complete"],
@@ -196,12 +302,10 @@ def refresh(assertion, payload, config):
         errors.extend(evidence["errors"])
     except ConnectionError as error:
         errors.append(_code(error, "submission_form_unavailable"))
-    outside = set(refs) - {f["id"] for f in found}
-    if outside:
-        errors.append("form_reference_outside_approved_root" if coverage["drive_complete"]
-                      else "form_references_unlocated")
-    coverage["form_refs_outside_root"] = len(outside) if coverage["drive_complete"] else 0
-    coverage["form_refs_unlocated"] = len(outside) if not coverage["drive_complete"] else 0
+    found, sources = discover_form_sources(drive, scoped_catalog, refs, found, coverage)
+    errors.extend(sources.pop("errors"))
+    coverage.update(sources)
+    coverage.pop("folder_ids", None)
     roster, sections, roster_complete = [], {}, False
     try:
         drive.check()
@@ -210,15 +314,21 @@ def refresh(assertion, payload, config):
         roster_complete = True
     except ConnectionError as error:
         errors.append(_code(error, "roster_source_unavailable"))
-    if original_catalog:
+    catalog_results = []
+    for entry in resolved_catalog:
+        result = {"assignment_key": entry["assignment_key"], "complete": False, "error": None,
+                  "source_url": entry["source_url"]}
         try:
             drive.check()
-            catalog = intake.read_catalog_decks(token, drive, original_catalog,
-                                                 deck_reader=drive.read_deck)
-            catalog_complete = True
+            catalog.extend(intake.read_catalog_decks(token, drive, [entry], deck_reader=drive.read_deck))
+            result["complete"] = True
         except (ConnectionError, SheetsReadError) as error:
-            errors.append(_code(error, "intake_catalog_needs_review"))
-    catalog_by_key = {row["assignment_key"]: row for row in original_catalog}
+            result["error"] = _code(error, "intake_catalog_needs_review")
+            errors.append(result["error"])
+        result["next_action"] = assignment_forms.next_action(result["error"])
+        catalog_results.append(result)
+    catalog_complete = bool(catalog_results) and all(r["complete"] for r in catalog_results)
+    catalog_by_key = {row["assignment_key"]: row for row in resolved_catalog}
     domains = str(config.get("HUB_SCHOOL_EMAIL_DOMAINS", "")).split(",")
     by_file = {}
     for row in records.get("submissions", []):
@@ -281,12 +391,19 @@ def refresh(assertion, payload, config):
             holds.append("roster_form_class_disagreement")
             person, section = None, ""
         lesson = None
-        if catalog_complete:
+        form_lesson = catalog_by_key.get(ref.get("assignment_key")) if ref else None
+        # A complete dedicated Form independently narrows its candidate lesson;
+        # an unrelated inaccessible master cannot cancel that exact binding.
+        candidates = catalog if catalog_complete else [e for e in catalog if form_lesson
+                     and e["assignment_key"] == form_lesson["assignment_key"]]
+        if item.get("source_error"):
+            holds.append(item["source_error"])
+        elif candidates:
             try:
                 before = drive.metadata(fid)
                 if before != item:
                     raise ConnectionError("intake_upload_changed")
-                lesson, reason = intake.match_deck(drive.read_deck(item), catalog)
+                lesson, reason = intake.match_deck(drive.read_deck(item), candidates)
                 if drive.metadata(fid) != before:
                     lesson = None
                     raise ConnectionError("intake_upload_changed")
@@ -302,7 +419,6 @@ def refresh(assertion, payload, config):
         # A verified dedicated Form is independent assignment evidence. Keep
         # that exact binding visible if source content needs review; do not
         # replace it with a title/date/folder guess or hide a readable Form.
-        form_lesson = catalog_by_key.get(ref.get("assignment_key")) if ref else None
         content_assignment = lesson["assignment_key"] if lesson else ""
         if ref and ref.get("assignment_conflict"):
             lesson = None
@@ -321,6 +437,8 @@ def refresh(assertion, payload, config):
         if person and lesson and ref:
             holds.extend(assignment_forms.cross_checks(ref, person, lesson, config))
         key = lesson["assignment_key"] if lesson else ""
+        if lesson:
+            holds.extend(lesson.get("review_reasons", []))
         previous = {r.get("assignment_key") for r in active}
         if key and previous and previous != {key}:
             holds.append("saved_assignment_conflict")
@@ -351,6 +469,8 @@ def refresh(assertion, payload, config):
             "form_ids": ref.get("form_ids", []) if ref else [],
             "form_assignment_keys": ref.get("assignment_keys", []) if ref else [],
             "content_assignment_key": content_assignment,
+            "discovery_only": bool(lesson and lesson.get("discovery_only")),
+            "registry_assignment_key": lesson.get("registry_assignment_key", key) if lesson else "",
             "source_changed_since_assessment": _assessment_state(item, history)[0] == "changed_since_assessment"})
     groups = {}
     for row in output:
@@ -363,10 +483,26 @@ def refresh(assertion, payload, config):
                 row["review_reasons"] = sorted(set(row["review_reasons"] + ["competing_submission_versions"]))
                 row["discovery_status"] = "needs_review"
                 row["related_file_ids"] = [other["file_id"] for other in group if other is not row]
+    for result in coverage["source_results"]:
+        snapshot = result.pop("form_snapshot", None)
+        if snapshot is None:
+            continue
+        try:
+            if drive.form(result["form_id"], fresh=True) != snapshot:
+                raise ConnectionError("submission_form_changed")
+        except ConnectionError as error:
+            code = _code(error, "submission_form_unavailable")
+            result.update(complete=False, error=code, next_action=assignment_forms.next_action(code))
+            errors.append(code)
+            coverage["upload_folders_complete"] = False
+            for row in output:
+                if result["form_id"] in row["form_ids"]:
+                    row["review_reasons"] = sorted(set(row["review_reasons"] + [code]))
+                    row["discovery_status"] = "needs_review"
     if original_catalog:
         try:
             drive.check()
-            if intake.agenda_catalog(assertion, config, records, class_key=class_key) != original_catalog:
+            if intake.agenda_catalog(assertion, config, records, class_key=class_key, discovery=True) != original_catalog:
                 raise ConnectionError("submission_agenda_changed")
         except ConnectionError as error:
             if str(error) != "submission_refresh_budget_exhausted":
@@ -377,9 +513,12 @@ def refresh(assertion, payload, config):
                 row["discovery_status"] = "needs_review"
     coverage.update(form_complete=form_complete, roster_complete=roster_complete,
                     catalog_complete=catalog_complete, files_checked=len(found),
+                    catalog_results=catalog_results,
                     ignored_non_deck_files=ignored_non_decks,
                     errors=sorted(set(errors)), complete=not errors)
     return {"schema_version": SCHEMA, "provenance": "source_read", "external_writes": 0,
             "live_model_calls": 0, "class_key": class_key, "assignment_key": selected,
             "discovered_at": datetime.now(timezone.utc).isoformat(),
-            "records_checked_at": records.get("checked_at"), "coverage": coverage, "files": output}
+            "records_checked_at": records.get("checked_at"), "coverage": coverage, "files": output,
+            "assignments": [{k: v for k, v in entry.items() if k not in {"source_text", "catalog_issues"}}
+                            for entry in scoped_catalog]}

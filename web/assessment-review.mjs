@@ -5,6 +5,7 @@
 // server-side so paid output survives refreshes and identical content never
 // bills twice; only the reviewed Save writes records.
 import {deadlineLine} from './submission-monitor.mjs';
+import {verifiedSectionOptions} from './grading-records.mjs';
 const JUDGMENTS=['meaningful_attempt','blank','printed_copy','review'];
 const CONCEPTUAL=['Developing','Almost there','Proficient','Evidence unavailable'];
 const EXPLANATION=['Names an idea','Connects ideas','Explains how or why','Evidence unavailable'];
@@ -58,13 +59,13 @@ export function suggestName(fileName){
 export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  const request=fetcher||((url,options)=>fetch(url,options));
  container.append(node(container,'h3','Assessment drafting & review'));
- container.append(node(container,'p','Generate reads the student’s current document and drafts judgments with quoted evidence using the live Agenda instructions (about $0.11 per new submission; unchanged documents are never billed twice). You review and can change any judgment, level or feedback; Save re-verifies the document and recomputes every score from your reviewed judgments. Saved feedback reopens from each student’s row above.','hint'));
+ container.append(node(container,'p','Generate reads the student’s current document and drafts judgments with quoted evidence using the live Agenda instructions (about $0.11 per new assessment). A saved draft is reused when the source version, lesson, section and checkpoint match; moving from Notes to Drafts may require a separate assessment. You review and can change any judgment, level or feedback; Save re-verifies the document and recomputes every score from your reviewed judgments. Saved feedback reopens from each student’s row above.','hint'));
  const state=node(container,'p','','hint');state.setAttribute('role','status');
  const form=node(container,'div',undefined,'assessment-form');
  const review=node(container,'div');review.setAttribute('aria-live','polite');
  container.append(state,form,review);
- let scope=null,files=[],deadline=null,generation=0,providerReady=null,busy=false,spent=0;
- const signature=list=>list.map(f=>f.file_id+':'+(f.stage||'')).join('|');
+ let scope=null,files=[],deadline=null,generation=0,providerReady=null,busy=false,spent=0,unresolvedCount=0;
+ const signature=list=>JSON.stringify(list.map(f=>[f.file_id,f.stage,f.section_id,f.class_key,f.assignment_key,f.version||f.source_revision||f.modified_at||'',f.review_reasons||[],f.hold_reason||'']));
  const budgetLine=()=>money(spent)+' estimated this session of the '+money(BUDGET)+' total approved budget.';
 
  async function providerStatus(){
@@ -76,12 +77,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  }
  function knownAssignments(classKey){
   const data=records?.()?.data;
-  return (data?.assignments||[]).filter(a=>a.class_key===classKey).map(a=>[a.assignment_key,a.assignment_key+' · '+a.assignment_title]);
- }
- function knownSections(classKey){
-  const data=records?.()?.data;const seen=new Map();
-  for(const row of data?.submissions||[])if(row.class_key===classKey&&row.section_id)seen.set(row.section_id,row.section_name||row.section_id);
-  return [...seen.entries()];
+  return (data?.assignments||[]).filter(a=>a.class_key===classKey).map(a=>[a.assignment_key,a.assignment_title]);
  }
  function suggestedStage(){
   if(!deadline?.due_date)return {stage:'initial',why:'No verified final deadline yet, so only the NOTES-only initial checkpoint applies; BANK and DRAFT are not due early.'};
@@ -95,19 +91,19 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  function renderForm(){
   if(busy)return;
   form.replaceChildren();
-  if(!scope?.ready){state.textContent='Load a lesson to draft assessments for its submissions.';return;}
-  if(!files.length){state.textContent='No monitored submissions yet. Refresh or scan the submission monitoring panel above.';return;}
+  if(!scope?.ready){state.textContent='Choose a lesson name and check its submissions to draft assessments.';return;}
+  if(!files.length){state.textContent=unresolvedCount?'Submissions with unresolved identities or sections remain in Student work for review. No verified submission is ready for this section.':'No verified submissions are ready for this lesson and section. Refresh submissions to check its current Form and folder.';return;}
   state.textContent=providerReady?.blocked?explain(providerReady.blocked):'Provider ready ('+(providerReady?.model||'model pending')+'). '+budgetLine();
   const fileSelect=select(form,files.map(f=>[f.file_id,f.name+' · '+(f.stage||'')]),files[0].file_id);
   const knownForClass=knownAssignments(scope.classKey);
-  const preselect=scope?.assignmentKey&&knownForClass.some(([k])=>k===scope.assignmentKey)?scope.assignmentKey:'';
-  const assignment=select(form,[['','Select the assignment…',true],...knownForClass],preselect);
+  const chosenLesson=knownForClass.find(([key])=>key===scope.assignmentKey);
+  const chosenSection=verifiedSectionOptions(records?.()?.data||{},scope.classKey).find(([id])=>id===scope.sectionId);
+  if(!chosenLesson||!chosenSection){state.textContent='The selected lesson and section must be verified before assessment.';return;}
+  const target={classKey:scope.classKey,assignmentKey:scope.assignmentKey,sectionId:chosenSection[0],sectionName:chosenSection[1]};
+  const assignment={value:target.assignmentKey};
   const suggestion=suggestedStage();
-  const stage=select(form,[['final','final — NOTES + BANK due, revisions due'],['initial','initial — NOTES only due']],suggestion.stage);
+  const stage=select(form,[['final','Drafts — notes, bank and revisions due'],['initial','Notes — initial checkpoint']],['initial','final'].includes(scope.stage)?scope.stage:suggestion.stage);
   const stageWhy=node(form,'p',suggestion.why+' You can change the checkpoint.','hint');
-  const sections=knownSections(scope.classKey);
-  const sectionId=input(form,sections[0]?.[0]||'','section id');
-  const sectionName=input(form,sections[0]?.[1]||'','section name');
   const displayName=input(form,suggestName(files[0].name),'confirm the student name');
   const studentId=input(form,'','IC student number, if verified');
   const identityHint=node(form,'p','Identity on file for this document is reused automatically. Otherwise the confirmed name above is recorded as a teacher-confirmed roster match — never an invented IC number.','hint');
@@ -116,29 +112,28 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   const autoReference=()=>{if(referenceEdited)return;stageRef.value=(deadlineLine(deadline)+' Checkpoint: '+stage.value+'.').slice(0,380);};
   autoReference();
   stageRef.addEventListener('input',()=>{referenceEdited=true;});
-  stage.addEventListener('change',()=>{autoReference();review.replaceChildren();});
-  fileSelect.addEventListener('change',()=>{displayName.value=suggestName(files.find(f=>f.file_id===fileSelect.value)?.name);studentId.value='';review.replaceChildren();recoverDraft(fileSelect.value);});
-  assignment.addEventListener('change',()=>review.replaceChildren());
+  stage.addEventListener('change',()=>{generation++;busy=false;generate.disabled=batch.disabled=false;autoReference();review.replaceChildren();});
+  fileSelect.addEventListener('change',()=>{generation++;busy=false;generate.disabled=batch.disabled=false;displayName.value=suggestName(files.find(f=>f.file_id===fileSelect.value)?.name);studentId.value='';review.replaceChildren();recoverDraft(fileSelect.value);});
   const generate=node(form,'button','Generate feedback for this submission');generate.type='button';
   const batch=node(form,'button','Generate pending feedback for this lesson');batch.type='button';
   const actions=node(form,'div',undefined,'action-row');actions.append(generate,batch);
   form.append(
-   labeled(form,'Submission',fileSelect),labeled(form,'Assignment',assignment),
+   node(form,'p',chosenLesson[1]+' · '+chosenSection[1]),labeled(form,'Submission',fileSelect),
    labeled(form,'Checkpoint',stage),stageWhy,
    labeled(form,'Checkpoint basis (from your saved deadline; editable)',stageRef),
-   labeled(form,'Section id',sectionId),labeled(form,'Section name',sectionName),
    labeled(form,'Student name (confirm the match)',displayName),
    labeled(form,'Student number (optional)',studentId),identityHint,actions);
 
   function buildRequest(fileId,name){
-   return {file_id:fileId,class_key:scope.classKey,stage:stage.value,
+   return {file_id:fileId,class_key:target.classKey,stage:stage.value,
     stage_reference:stageRef.value.trim(),assignment_key:assignment.value.trim(),
-    section_id:sectionId.value.trim(),section_name:sectionName.value.trim(),
+    section_id:target.sectionId,section_name:target.sectionName,
     identity:{student_id:studentId.value.trim(),student_id_kind:'',learner_key:'',
      display_name:name,identity_basis:''}};
   }
   function checkReady(){
-   if(!assignment.value){state.textContent='Choose the assignment first — nothing is assumed.';return false;}
+   if(!scope?.ready||scope.classKey!==target.classKey||scope.assignmentKey!==target.assignmentKey||scope.sectionId!==target.sectionId){state.textContent='The lesson or section changed. Check submissions again.';return false;}
+   if(records?.()?.status!=='loaded'||!verifiedSectionOptions(records().data,target.classKey).some(([id])=>id===target.sectionId)||!knownAssignments(target.classKey).some(([key])=>key===target.assignmentKey)){state.textContent='Refresh the verified lesson and section before generating feedback.';return false;}
    if(!stageRef.value.trim()){state.textContent='The checkpoint basis is empty; load the lesson’s deadline or describe the checkpoint.';return false;}
    return true;
   }
@@ -146,16 +141,19 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    const r=await request('/api/assessment-run',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
    const d=await r.json();
    if(!r.ok)throw Error(explain(d.error));
+   if(d.status==='draft_ready'&&(d.packet?.class_key!==body.class_key||d.packet?.assignment_key!==body.assignment_key||d.packet?.section_id!==body.section_id||d.packet?.stage!==body.stage||d.packet?.source?.file_id!==body.file_id))throw Error('The draft does not match the requested lesson, section, checkpoint and submission.');
    return d;
   }
   async function recoverDraft(fileId){
+   const requestedGeneration=generation;
    try{
     state.textContent='Checking for a stored draft of this document…';
-    const r=await request('/api/assessment-run?'+new URLSearchParams({draft_for:fileId}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
+    const r=await request('/api/assessment-run?'+new URLSearchParams({draft_for:fileId,class_key:target.classKey,assignment_key:target.assignmentKey,section_id:target.sectionId,stage:stage.value}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
     const d=await r.json();
-    if(r.ok&&d.status==='draft_ready'){state.textContent='A stored draft for this exact document version was recovered — no new model call.';renderDraft(d,files.find(f=>f.file_id===fileId));}
+    if(requestedGeneration!==generation||fileSelect.value!==fileId||scope?.assignmentKey!==target.assignmentKey||scope?.sectionId!==target.sectionId)return;
+    if(r.ok&&d.status==='draft_ready'&&d.packet?.assignment_key===target.assignmentKey&&d.packet?.section_id===target.sectionId&&d.packet?.class_key===target.classKey&&d.packet?.stage===stage.value&&d.packet?.source?.file_id===fileId){state.textContent='A stored draft for this exact document version was recovered — no new model call.';renderDraft(d,files.find(f=>f.file_id===fileId));}
     else state.textContent='No stored draft for the current version. '+(providerReady?.blocked?explain(providerReady.blocked):budgetLine());
-   }catch{state.textContent='Stored-draft check unavailable.';}
+   }catch{if(requestedGeneration===generation)state.textContent='Stored-draft check unavailable.';}
   }
   generate.addEventListener('click',async()=>{
    if(!checkReady())return;
@@ -188,6 +186,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    const row=node(review,'div',undefined,'action-row');row.append(go,cancel);plan.append(row);review.append(plan);
    cancel.addEventListener('click',()=>review.replaceChildren());
    go.addEventListener('click',async()=>{
+    if(!checkReady())return;
     const mine=++generation;busy=true;generate.disabled=batch.disabled=go.disabled=true;
     const list=node(review,'div');review.replaceChildren(list);
     const ready=[];
@@ -197,26 +196,32 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
       const line=node(list,'p',file.name+' — drafting…');list.append(line);
       try{
        const d=await postDraft(buildRequest(file.file_id,suggestName(file.name)));
+       if(mine!==generation)return;
        if(d.status==='already_assessed'){line.textContent=file.name+' — already assessed at this exact version; skipped (no model call).';continue;}
        if(!d.cached)spent+=cost(d.usage);
        line.textContent=file.name+' — draft ready'+(d.cached?' (stored, no new call)':'')+'.';
        const open=node(list,'button','Review this draft');open.type='button';
-       open.addEventListener('click',()=>renderDraft(d,file));
+       open.addEventListener('click',()=>{if(mine===generation)renderDraft(d,file);});
        line.append(' ');line.append(open);
        ready.push(file.name);
       }catch(error){line.textContent=file.name+' — held: '+(error.message||'draft failed');line.className='error';}
      }
      state.textContent='Batch complete: '+ready.length+' drafts ready for review. '+budgetLine();
-    }finally{busy=false;if(mine===generation){generate.disabled=batch.disabled=false;}}
+    }finally{if(mine===generation){busy=false;generate.disabled=batch.disabled=false;}}
    });
   });
   recoverDraft(fileSelect.value);
  }
 
  function renderDraft(draft,file){
-  review.replaceChildren();busy=true;
   const packet=draft.packet;
-  review.append(node(review,'h4','Draft assessment · '+(packet.identity.display_name||'unnamed')+' · '+packet.assignment_key+' · '+packet.stage+' checkpoint'));
+  if(!scope?.ready||packet?.class_key!==scope.classKey||packet?.assignment_key!==scope.assignmentKey||packet?.section_id!==scope.sectionId||packet?.source?.file_id!==file?.file_id||!files.some(current=>current.file_id===file.file_id)){
+   busy=false;state.textContent='This draft does not match the current lesson, section and submission. Check submissions again.';return;
+  }
+  const draftGeneration=generation;
+  review.replaceChildren();busy=true;
+  const lessonTitle=knownAssignments(packet.class_key).find(([key])=>key===packet.assignment_key)?.[1]||'Lesson needs verification';
+  review.append(node(review,'h4','Draft assessment · '+(packet.identity.display_name||'unnamed')+' · '+lessonTitle+' · '+packet.stage+' checkpoint'));
   review.append(node(review,'p','Source: '+(file?.name||packet.source.file_id)+' · version '+packet.source.version+' · last modified '+new Date(packet.source.modified_at).toLocaleString()+' · content hash '+packet.source.sha256.slice(0,12)+'…','hint'));
   if(draft.prompts?.version_label)review.append(node(review,'p','Instructions: live Agenda prompts, '+draft.prompts.version_label,'hint'));
   review.append(node(review,'p','Draft scores — Content/notes: '+score(draft.scores.content_notes)+' · Revision: '+score(draft.scores.revision)+'. Scores are recomputed by the hub from your reviewed judgments when you save.'));
@@ -253,6 +258,9 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   review.append(actionRow,saveState);
   discard.addEventListener('click',()=>{busy=false;review.replaceChildren();state.textContent='Draft view closed; the stored draft remains recoverable. '+budgetLine();});
   save.addEventListener('click',async()=>{
+   if(draftGeneration!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded'){
+    saveState.textContent='The selected lesson, section or submission changed. Reopen its current draft before saving.';return;
+   }
    save.disabled=true;saveState.textContent='Re-verifying the document and saving…';
    try{
     const responses=rows.map(({response,judgment,conceptual,explanation,feedback})=>({...response,
@@ -267,6 +275,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     const d=await r.json();
     if(!r.ok)throw Error(explain(d.error));
     if(d.readback_verified!==true)throw Error('The save did not read back as expected.');
+    if(draftGeneration!==generation){onSaved?.();return;}
     saveState.textContent='';
     const receipt=node(review,'div',undefined,'assessment-receipt');
     receipt.append(node(review,'h4','Saved and read back ✓'),
@@ -274,26 +283,29 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      node(review,'p',(d.superseded?.length?('Superseded earlier record(s): '+d.superseded.join(', ')+'.'):'No earlier record superseded.')+' Readback verified against the live workbook. Reopen this feedback anytime from the student’s row above; nothing was posted to Infinite Campus.','hint'));
     review.append(receipt);save.remove();discard.remove();
     busy=false;onSaved?.();
-   }catch(error){saveState.textContent=error.message||'The save failed; check the workbook state before retrying.';save.disabled=false;}
+   }catch(error){if(draftGeneration===generation){saveState.textContent=error.message||'The save failed; check the workbook state before retrying.';save.disabled=false;}}
   });
  }
 
  providerStatus().then(()=>{if(scope?.ready)renderForm();});
  return {
   update(next){
-   const changed=!scope||scope.date!==next.date||scope.classKey!==next.classKey||scope.ready!==next.ready;
+   const changed=!scope||scope.assignmentKey!==next.assignmentKey||scope.sectionId!==next.sectionId||scope.classKey!==next.classKey||scope.stage!==next.stage||scope.ready!==next.ready;
    scope=next;
-   if(!next.ready){generation++;files=[];deadline=null;}
+   if(changed){files=[];unresolvedCount=0;deadline=null;}
    if(changed){
     // A different lesson or class invalidates any pending draft view.
     generation++;busy=false;review.replaceChildren();renderForm();
    }
   },
   setFiles(list,nextDeadline){
-   const next=(Array.isArray(list)?list:[]).filter(f=>f.status==='present');
+   const present=(Array.isArray(list)?list:[]).filter(f=>f.status==='present'&&(!f.class_key||f.class_key===scope?.classKey)&&(!f.assignment_key||f.assignment_key===scope?.assignmentKey));
+   unresolvedCount=present.filter(f=>!f.section_id||f.section_id===scope?.sectionId&&(f.hold_reason||f.review_reasons?.length||f.discovery_status==='needs_review'||f.stage==='detected')).length;
+   const next=present.filter(f=>f.section_id&&f.section_id===scope?.sectionId&&!f.hold_reason&&!f.review_reasons?.length&&f.discovery_status!=='needs_review'&&f.stage!=='detected');
    const changed=signature(next)!==signature(files);
+   if(changed){generation++;busy=false;review.replaceChildren();}
    files=next;if(nextDeadline!==undefined)deadline=nextDeadline;
-   if(changed)renderForm();
+   if(changed||!files.length)renderForm();
   }
  };
 }

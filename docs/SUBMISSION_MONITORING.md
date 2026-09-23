@@ -33,13 +33,24 @@ Form/API ID.
 
 Each catalog entry carries `form_id`, `form_url`, `form_source`,
 `form_mapping_verified` and `form_review_reason`. Use its verified editable/API
-ID. Published or shortened Form links require an explicit API-ID binding when
-they cannot be resolved safely. If an Agenda row contains multiple assignments,
+ID. Published links can resolve through exact responder-URL equality with a Form
+discovered inside the approved root. Otherwise published or shortened links
+require an explicit API-ID binding; title similarity cannot supply it. If an Agenda row contains multiple assignments,
 its one Form cell does not establish a separate binding for every assignment.
 
-The roster reader accepts Last Name/First Name headers (with an optional exact
-tab title), headerless two-column Last/First rows, and single-cell `Last, First
-Middle (Nickname)` rows. It keeps the first student, skips blank rows, excludes
+The current weekly row supplies the visible **Turn it in** link in column T and
+the raw `_turnInURL` in column U. The reader checks both when populated. Either
+column can provide the link alone, but conflicting or invalid populated links
+hold the binding rather than silently choosing one. An explicit private mapping
+cannot override contradictory T/U links. Refresh's existing coverage details
+preserve the exact row-specific repair action so the teacher can verify both
+cells before retrying that lesson.
+
+The roster reader accepts explicit Last Name/First Name or First Name/Last Name
+headers, headerless two-column rows with a verified column layout, and single-cell
+`Last, First Middle (Nickname)` rows. Private configuration can map canonical
+sections to the current exact tab title or stable sheet ID. Headerless rows default
+to Last/First; an explicit First/Last override requires verified source evidence. It keeps the first student, skips blank rows, excludes
 study hall and rejects malformed populated rows. It reads up to 200 rows per
 configured class tab; expanding that boundary requires review. Explicit
 configured section headings inside a tab switch the section; an A3 block inside
@@ -48,8 +59,12 @@ the canonical tab; conflicting memberships or unknown headings require review.
 No roster tab is rewritten. Roster IDs and section IDs are private
 configuration; the previous hardcoded roster file ID was removed.
 
-Every Form-upload reference is checked under the approved root before reading
-its content. Off-root originals remain coverage/recovery items. **A router copy
+The reader scans the approved root and the exact upload folders returned by a
+verified assignment Form, including nested folders and complete bounded pages.
+A verified response can authorize reading its exact original outside those
+trees; the reader checks that file without scanning arbitrary parent folders.
+Unreadable originals and missing or trashed upload folders remain visible with
+a next action. Location alone does not establish identity or lesson matching. **A router copy
 with a different file ID is not silently equated to the Form upload**; verified
 copy provenance is still required before those copies can be substituted. A
 read-only browser check of the four Anatomy originals established upload-folder
@@ -60,8 +75,11 @@ The bounded Agenda student-deck catalog is read for lesson candidates. A Refresh
 reads the selected class catalog. A week can contain multiple assignments. Private
 `HUB_INTAKE_DECK_ASSIGNMENTS` bindings map exact deck IDs to existing registry
 keys. They explicitly identify an additional O-column Slides link as an
-assignment; an unbound O link remains a resource. Multiple existing same-week
-keys require bindings rather than inventing a third week key. Lesson matching
+assignment; an unbound O link remains a resource. New P-column lessons receive
+a stable source-derived `discovery:<class>:<hash>` display identity. Repeated
+rows with the same deck and Form remain one lesson; distinct decks in one week
+remain separate. Existing registry keys require exact deck bindings and are never
+reassigned by week or title. Discovery identities are not grading approvals. Lesson matching
 requires a unique exact response-marker signature and every unchanged source
 question paragraph, with at least three markers and three question paragraphs.
 Native Slides are exported read-only as PPTX; uploaded PPTX files use the same
@@ -86,7 +104,11 @@ through the deployment owner's existing approved private configuration only:
 - `HUB_ROSTER_SPREADSHEET_ID`: the intended current roster
 - `HUB_SCHOOL_EMAIL_DOMAINS`: comma-separated school domains
 - `HUB_EMAIL_USERNAME_PREFIX`: exact prefix, default `s.`
-- `HUB_ROSTER_SECTION_IDS`: JSON mapping roster tab names to verified IC IDs
+- `HUB_ROSTER_SECTION_IDS`: JSON mapping canonical section names to verified IC IDs
+- `HUB_ROSTER_TABS`: optional JSON mapping canonical section names to current
+  exact tab titles or numeric sheet IDs
+- `HUB_ROSTER_COLUMN_LAYOUTS`: optional JSON mapping canonical section names to
+  `first_last_columns` or `last_first_columns` for verified headerless layouts
 - `HUB_INTAKE_DECK_ASSIGNMENTS`: JSON mapping reviewed Agenda P/O deck IDs to existing assignment keys
 - `HUB_ASSIGNMENT_FORM_IDS`: optional JSON mapping an exact assignment key to
   its editable Form/API ID, for unresolved published links or assignments in a
@@ -124,7 +146,7 @@ through the dashboard's grading-record reader after writing. It never assesses,
 posts IC grades, writes zeros or calls a model. Process work continues through
 the existing assessment flow; this change is not an assessment acceptance.
 
-Global unmatched-deck and off-root items remain visible for review, never
+Global unmatched-deck and inaccessible-original items remain visible for review, never
 arbitrarily assigned to the class that initiated the scan. Known typed conflicts
 are retained in workbook holds. Existing monitor claims, baseline CAS,
 first-observed semantics and deadline calculation remain in place. Intake
@@ -136,20 +158,24 @@ a claim that an activated intake registration made no Sheets write.
 
 The existing Page 02 **Refresh submissions** action calls authenticated,
 same-origin `POST /api/submission-monitor/refresh` with `class_key` and
-`assignment_key` (`all` or an existing class assignment). It does not use the
+`assignment_key` (`all`, an existing class assignment, or a discovered lesson). It does not use the
 navigation date as an assignment identity. It then rereads the saved grading
 workbook. These have separate discovery and workbook-read timestamps.
 
 The reader walks every bounded page and nested folder under the privately
 configured approved root, including files absent from saved records. It reads
 current references from each assignment's Form when available, verifies current roster identity, and
-matches each deck's content separately. Folder membership alone never assigns
+matches each deck's content separately. A verified Form also supplies its actual
+file-upload folder IDs; stale TurnIn Map destinations do not replace them.
+Folder membership alone never assigns
 all files to one lesson. A2 and A3 retain their verified separate section IDs.
 An unavailable assignment Form or catalog is a visible coverage gap; root-visible files
 remain review observations, not fabricated Form matches or missing work.
 Coverage includes `forms_checked`, `responses_checked`, `form_complete` and a
 `form_results` entry for each assignment with its status and reason. One
 assignment's readable Form does not establish another assignment's coverage.
+Each failed source includes an allowlisted next repair; source structure is
+reread before returning the result.
 
 The same Student work table shows new ungraded files, changed sources and
 review holds alongside saved assessments. Numeric Drive versions are compared
@@ -171,6 +197,27 @@ Each request has a 180-second read deadline, at most 256 Drive reads and 80 deck
 exports, and a 64 MB streamed-byte budget (20 MB per file). Budget exhaustion
 returns partial coverage and explicit remaining holds; it never advances a
 successful baseline.
+
+## Lesson and section controls
+
+Page 02 uses the selected lesson name and stable assignment key throughout its
+assessment controls. The navigation date and due date do not select the target.
+The roster reader supplies verified section choices: Forensics shows A2/A3;
+Biology and Anatomy automatically use their one verified section. Missing or
+conflicting mapping keeps assessment unavailable without hiding saved records.
+Known other-section work is excluded, while unresolved new work remains visible
+for review and cannot enter assessment or exports.
+
+Refresh preserves a still-valid class/lesson/section selection. Switching scope
+or receiving changed-source holds invalidates stale draft/save controls; late
+responses cannot populate a different scope. The assessment backend independently
+checks the exact saved assignment, section and file identity before capture,
+model access or save. Draft caches and assessment claims are partitioned by the
+exact source version, class, stable assignment key, section and Notes/Drafts
+checkpoint. Draft recovery sends that complete target and revalidates it before
+returning a saved draft. Reopening the matching saved draft reuses it; moving from
+Notes to Drafts can require a separate assessment even when the source is unchanged.
+These controls preserve separate A2/A3 histories; they do not rewrite old rows.
 
 ## Open live acceptance and source discovery
 

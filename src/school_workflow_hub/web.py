@@ -213,11 +213,13 @@ def application(environ, start_response, *, teaching_provider=None):
             if method == "GET":
                 if environ.get("QUERY_STRING", ""):
                     from urllib.parse import parse_qs
-                    query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
-                    if set(query) != {"draft_for"} or len(query["draft_for"]) != 1:
+                    query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=5)
+                    scoped = {"draft_for", "class_key", "assignment_key", "section_id", "stage"}
+                    if set(query) not in ({"draft_for"}, scoped) or any(len(value) != 1 for value in query.values()):
                         raise ValueError("invalid_provider_request")
+                    target = {key: query[key][0] for key in scoped - {"draft_for"}} if set(query) == scoped else None
                     return respond("200 OK", assessment_provider.stored_draft_for(
-                        assertion, query["draft_for"][0], os.environ))
+                        assertion, query["draft_for"][0], os.environ, target=target))
                 return respond("200 OK", assessment_provider.status(assertion, os.environ))
             if method != "POST":
                 return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
@@ -335,7 +337,7 @@ def application(environ, start_response, *, teaching_provider=None):
         from .adapters.submission_inventory import read_inventory, read_lesson_inventory
         from .adapters.hosted_agenda import ConnectionError
         try:
-            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
+            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=3)
             if any(len(v) != 1 for v in query.values()):
                 raise ValueError()
             if set(query) == {"date", "class_key"}:
@@ -344,6 +346,11 @@ def application(environ, start_response, *, teaching_provider=None):
             if set(query) == {"class_key", "assignment"}:
                 return respond("200 OK", read_lesson_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
                     query["class_key"][0], query["assignment"][0], os.environ))
+            if set(query) in ({"class_key", "assignment", "section_id"},
+                              {"class_key", "assignment_key", "section_id"}):
+                assignment = query.get("assignment_key", query.get("assignment"))[0]
+                return respond("200 OK", read_lesson_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                    query["class_key"][0], assignment, os.environ, section_id=query["section_id"][0]))
             raise ValueError()
         except ConnectionError as error:
             return respond("403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable",
