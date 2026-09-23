@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine} from '../submission-monitor.mjs';
+import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine,validateDiscovery,createDiscoveryLoader} from '../submission-monitor.mjs';
 
 class Element{
  constructor(doc,tag){this.ownerDocument=doc;this.tagName=tag;this.children=[];this.textContent='';this.attributes={};this.listeners={};this.disabled=false;}
@@ -114,4 +114,24 @@ test('shared intake shows typed conflicts and dry-run registration honestly',()=
  assert.match(target.allText,/Typed class period disagrees/);
  assert.match(target.allText,/no intake rows were saved/);
  assert.doesNotMatch(target.allText,/registration verified/);
+});
+
+const discoveryScope={classKey:'forensics',assignmentKey:'all'};
+function freshDiscovery(extra={}){return {schema_version:'hub-submission-refresh/v1',provenance:'source_read',external_writes:0,live_model_calls:0,class_key:'forensics',assignment_key:'all',discovered_at:'2026-09-22T12:00:00Z',coverage:{complete:true},files:[{file_id:'fictional-source',source_url:'https://docs.google.com/presentation/d/fictional-source/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'fictional-lesson',assignment_title:'Fictional lesson',section_id:'a',section_name:'Period A',student_id:'fictional-student',display_name:'Alex F.',discovery_status:'new_ungraded',review_reasons:[]}],...extra};}
+test('read-only discovery rejects wrong scopes, effects, duplicate files and unknown status',()=>{
+ assert.equal(validateDiscovery(freshDiscovery(),discoveryScope).files.length,1);
+ for(const patch of [{class_key:'biology'},{assignment_key:'other'},{external_writes:1},{live_model_calls:1},{coverage:{}},{discovered_at:'invalid'}])assert.throws(()=>validateDiscovery(freshDiscovery(patch),discoveryScope));
+ const repeated=freshDiscovery();repeated.files.push({...repeated.files[0]});assert.throws(()=>validateDiscovery(repeated,discoveryScope));
+ const unknown=freshDiscovery();unknown.files[0].discovery_status='assessed';assert.throws(()=>validateDiscovery(unknown,discoveryScope));
+ const scoped=freshDiscovery({assignment_key:'selected'});assert.throws(()=>validateDiscovery(scoped,{classKey:'forensics',assignmentKey:'selected'}));
+});
+test('Refresh uses only the read-only discovery endpoint with exact assignment scope',async()=>{
+ const calls=[],states=[];const loader=createDiscoveryLoader({fetcher:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>freshDiscovery()};},onState:s=>states.push(s)});
+ await loader.load(discoveryScope);assert.deepEqual(states.map(s=>s.status),['loading','loaded']);
+ assert.equal(calls.length,1);assert.equal(calls[0].url,'/api/submission-monitor/refresh');assert.equal(calls[0].options.method,'POST');assert.deepEqual(JSON.parse(calls[0].options.body),{class_key:'forensics',assignment_key:'all'});assert.equal(calls[0].options.credentials,'same-origin');assert.equal(calls[0].options.cache,'no-store');
+});
+test('scope changes cancel stale discovery and failures discard the previous preview',async()=>{
+ const waiting=[],states=[];const loader=createDiscoveryLoader({fetcher:(_url,options)=>new Promise(resolve=>waiting.push({resolve,options})),onState:s=>states.push(s)});
+ const old=loader.load(discoveryScope);loader.clear();assert.equal(waiting[0].options.signal.aborted,true);waiting[0].resolve({ok:true,json:async()=>freshDiscovery()});assert.equal(await old,null);assert.equal(states.at(-1).status,'empty');
+ const next=loader.load(discoveryScope);waiting[1].resolve({ok:false,json:async()=>({error:'submission_form_access_required'})});await next;assert.equal(states.at(-1).status,'error');assert.equal(states.at(-1).data,undefined);
 });

@@ -8,6 +8,38 @@ export function validateStatus(data){
  return data;
 }
 
+// Fresh discovery is a preview. It never registers work, changes the saved
+// assessment, or advances the durable monitoring baseline.
+const DISCOVERY_STATES=new Set(['new_ungraded','changed_since_assessment','needs_review','unchanged']);
+export function validateDiscovery(data,scope){
+ if(data?.schema_version!=='hub-submission-refresh/v1'||data.provenance!=='source_read'||data.external_writes!==0||data.live_model_calls!==0||data.class_key!==scope.classKey||data.assignment_key!==scope.assignmentKey||!Number.isFinite(Date.parse(data.discovered_at))||typeof data.coverage?.complete!=='boolean'||!Array.isArray(data.files))throw Error('The submission discovery scope could not be verified.');
+ const seen=new Set();
+ for(const file of data.files){
+  if(!file||typeof file.file_id!=='string'||!file.file_id||seen.has(file.file_id)||![scope.classKey,''].includes(file.class_key)||typeof file.assignment_key!=='string'||!DISCOVERY_STATES.has(file.discovery_status)||!Array.isArray(file.review_reasons)||file.review_reasons.some(reason=>typeof reason!=='string')||!['','initial','final',undefined,null].includes(file.assessment_stage))throw Error('The discovered submissions need review.');
+  if(!file.class_key&&file.discovery_status!=='needs_review')throw Error('The discovered class needs review.');
+  if(file.source_changed_since_assessment!==undefined&&typeof file.source_changed_since_assessment!=='boolean')throw Error('The discovered source version needs review.');
+  if(scope.assignmentKey!=='all'&&file.assignment_key&&file.assignment_key!==scope.assignmentKey)throw Error('The submission discovery scope could not be verified.');
+  for(const field of ['source_url','name','assignment_title','section_id','section_name','student_id','display_name'])if(typeof file[field]!=='string')throw Error('The discovered submissions need review.');
+  seen.add(file.file_id);
+ }
+ return data;
+}
+export function createDiscoveryLoader({fetcher=fetch,onState}){
+ let generation=0,controller;
+ return {
+  clear(){generation++;controller?.abort();onState({status:'empty'});},
+  async load(scope){
+   const mine=++generation;controller?.abort();controller=new AbortController();onState({status:'loading',scope});
+   try{
+    const response=await fetcher('/api/submission-monitor/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({class_key:scope.classKey,assignment_key:scope.assignmentKey})});
+    const data=await response.json();if(mine!==generation)return null;
+    if(!response.ok)throw Error(describeFailure(data.error));
+    const verified=validateDiscovery(data,scope);onState({status:'loaded',data:verified});return verified;
+   }catch(error){if(mine===generation&&error.name!=='AbortError')onState({status:'error',scope,message:error.message||'Submission discovery failed. Saved assessments are unchanged.'});return null;}
+  }
+ };
+}
+
 // One specific recovery action per failure; never a generic shrug.
 const FAILURES={
  submission_folder_access_required:'The legacy folder source cannot be read by the cloud service. Verify Viewer access before retrying.',

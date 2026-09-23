@@ -28,14 +28,18 @@ const fixture={schema_version:'hub-grading-records/v1',provenance:'source_read',
  {record_id:'b',class_key:'forensics',section_id:'a',section_name:'Period A',student_id:'f-b',display_name:'Blair F.',assignment_key:'FOR-REASON',assignment_title:'Fictional reasoning',assessment_stage:'final',status:'assessed',content_score:3.75,revision_score:null,answers:[],included_in_counts:true},
  {record_id:'d',class_key:'forensics',section_id:'b',section_name:'Period B',student_id:'f-d',display_name:'Devon F.',assignment_key:'FOR-SCENE',assignment_title:'Fictional scene',assessment_stage:'final',status:'assessed',content_score:10,revision_score:null,answers:[],included_in_counts:true}
  ],summaries:['biology:c','forensics:a','forensics:b','anatomy:d'].map(scope=>({class_key:scope.split(':')[0],section_id:scope.split(':')[1],section_name:'Fictional '+scope,summary:'One concise fictional teaching next step.',coverage:'Fictional partial sample.',submitted_students:1,checked_at:'2026-09-16T12:00:00Z'}))};
-let readCount=0,failNext=false;
+let readCount=0,failNext=false;const discoveryCalls=[];
 for(let i=1;i<=5;i++)fixture.submissions.push({record_id:'unmatched-'+i,class_key:'biology',section_id:'',section_name:'',student_id:'',display_name:'Fictional unmatched '+i,assignment_title:'Fictional held work',status:'identity_unverified',content_score:null,revision_score:null,answers:[],included_in_counts:false});
-globalThis.fetch=async url=>{
+globalThis.fetch=async(url,options)=>{
  if(url==='/api/grading-records'){readCount++;if(failNext)return{ok:false,status:503};return{ok:true,status:200,json:async()=>structuredClone(fixture)};}
+ if(url==='/api/submission-monitor/refresh'){
+  discoveryCalls.push({url,options});const requested=JSON.parse(options.body);
+  return {ok:true,status:200,json:async()=>({schema_version:'hub-submission-refresh/v1',provenance:'source_read',external_writes:0,live_model_calls:0,...requested,discovered_at:'2026-09-22T12:00:00Z',coverage:{complete:true},files:[{file_id:'fictional-new-file',source_url:'https://docs.google.com/presentation/d/fictional-new-file/edit',name:'New fictional work',class_key:'forensics',assignment_key:'FOR-REASON',assignment_title:'Fictional reasoning',section_id:'a',section_name:'Period A',student_id:'f-new',display_name:'New F.',discovery_status:'new_ungraded',review_reasons:[]}]})};
+ }
  return{ok:false,status:503,json:async()=>({error:'fictional-unavailable'})};
 };
 await import('../pages.mjs');
-const settle=async()=>{for(let i=0;i<5;i++)await Promise.resolve();};await settle();
+const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};await settle();
 const feedback=document.getElementById('page-feedback'),summary=document.getElementById('page-summary');
 const select=label=>feedback.all.find(e=>e.tagName==='select'&&e.attributes['aria-label']===label);
 const classSelect=select('Feedback class'),sectionSelect=select('Feedback section');
@@ -50,6 +54,7 @@ assert.deepEqual(sectionSelect.children.map(e=>e.value),['matched','all','a','b'
 sectionSelect.value='a';sectionSelect.dispatchEvent(new Event('change'));
 assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/F\., Devon/);
 feedback.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh submissions').dispatchEvent(new Event('click'));await settle();assert.equal(sectionSelect.value,'a');assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/F\., Devon/);
+assert.equal(discoveryCalls.length,1);assert.equal(discoveryCalls[0].options.method,'POST');assert.deepEqual(JSON.parse(discoveryCalls[0].options.body),{class_key:'forensics',assignment_key:'all'});assert.match(table().allText,/F\., New/);assert.match(table().allText,/New work · not graded/);assert.equal(fixture.submissions.length,8,'discovery never mutates saved assessment rows');assert.match(feedback.allText,/workbook read/);assert.match(feedback.allText,/Submissions discovered/);
 // U01: Class/section, Lesson name and Notes/Drafts are the primary selectors; no date picker in the primary row.
 const lessonSelect=select('Feedback lesson'),workSelect=select('Feedback checkpoint');
 assert.ok(lessonSelect&&workSelect,'lesson name and Notes/Drafts selectors exist');
@@ -65,7 +70,7 @@ assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/
 // Notes/Drafts partitions by checkpoint (both fictional forensics rows are final=Drafts).
 lessonSelect.value='all';lessonSelect.dispatchEvent(new Event('change'));
 workSelect.value='initial';workSelect.dispatchEvent(new Event('change'));
-assert.doesNotMatch(feedback.allText,/F\., Blair/);assert.doesNotMatch(feedback.allText,/F\., Devon/);
+assert.doesNotMatch(feedback.allText,/F\., Blair/);assert.doesNotMatch(feedback.allText,/F\., Devon/);assert.match(table().allText,/F\., New/);assert.match(table().allText,/checkpoint needs review/);
 workSelect.value='final';workSelect.dispatchEvent(new Event('change'));
 assert.match(table().allText,/F\., Blair/);assert.match(table().allText,/F\., Devon/);
 workSelect.value='all';workSelect.dispatchEvent(new Event('change'));
@@ -73,6 +78,7 @@ workSelect.value='all';workSelect.dispatchEvent(new Event('change'));
 lessonSelect.value='FOR-REASON';lessonSelect.dispatchEvent(new Event('change'));
 classSelect.value='biology';classSelect.dispatchEvent(new Event('change'));
 assert.equal(lessonSelect.value,'all');assert.match(table().allText,/F\., Alex/);assert.doesNotMatch(table().allText,/F\., Blair/);
+assert.doesNotMatch(feedback.allText,/F\., New|Submissions discovered/,'class changes clear the previous discovery preview');
 classSelect.value='forensics';classSelect.dispatchEvent(new Event('change'));
 const cards=summary.all.filter(e=>e.tagName==='section'&&e.className==='surface');assert.equal(cards.length,4);assert.ok(cards.every(e=>e.children.filter(c=>c.tagName==='h2').length===1));
 location.hash='#summary';window.dispatchEvent(new Event('hashchange'));assert.equal(summary.hidden,false);assert.equal(feedback.hidden,true);

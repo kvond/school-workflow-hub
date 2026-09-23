@@ -17,6 +17,7 @@ from ..core.runs import content_hash
 
 NATIVE = "application/vnd.google-apps.presentation"
 MARKER = re.compile(r"\[\[(NOTES|DRAFT|OPTIONAL|BANK):([^:\]\s]+):([^\]\r\n]+)\]\]")
+DECK_URL = re.compile(r"https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?")
 
 
 def private_mapping(config, name):
@@ -30,34 +31,90 @@ def private_mapping(config, name):
     return value
 
 
-def agenda_catalog(assertion, config, records):
+def _deck_bindings(config, assignments):
+    """Explicitly reviewed deck-to-registry bindings, never resource titles.
+
+    Additional material in Agenda O may be a resource or a second assignment.
+    Only a private binding to an existing assignment verifies the latter.
+    """
+    bindings = private_mapping(config, "HUB_INTAKE_DECK_ASSIGNMENTS")
+    for source_id, key in bindings.items():
+        if (not isinstance(source_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", source_id)
+                or not isinstance(key, str) or key not in assignments):
+            raise ConnectionError("intake_registry_mapping_required")
+    return bindings
+
+
+def _catalog_assignment(course, week, topic, source_id, assignments, bindings):
+    explicit = bindings.get(source_id)
+    if explicit:
+        known = assignments[explicit]
+        if known["class_key"] != course:
+            raise ConnectionError("intake_registry_conflict")
+        return known
+    proposed = f"{course}:W{int(week[1]):02d}{week[2]}"
+    # Existing week/cycle keys are a reason to request a binding, never evidence
+    # that two assignments in one week are interchangeable. Preserve F03-A/F03B
+    # (and W/C conventions) rather than silently creating a third W03 registry.
+    same_week = [a for key, a in assignments.items()
+                 if a["class_key"] == course and
+                 re.match(re.escape(course) + r":[WFCBA]0*" + str(int(week[1]))
+                          + r"(?:[^0-9]|$)", key)]
+    known = [a for key, a in assignments.items()
+             if a["class_key"] == course and
+             (key == proposed or _norm(a.get("assignment_title")) == _norm(topic))]
+    if len(known) > 1:
+        raise ConnectionError("intake_registry_ambiguous")
+    if len(same_week) > 1 or (same_week and not known):
+        raise ConnectionError("intake_registry_mapping_required")
+    return known[0] if known else {"assignment_key": proposed, "class_key": course,
+                                  "assignment_title": topic}
+
+
+def agenda_catalog(assertion, config, records, *, class_key=None):
+    courses = tuple((course, title) for course, title in COURSES
+                    if class_key is None or course == class_key)
+    if not courses:
+        raise ConnectionError("invalid_submission_scope")
     reader, source = authenticated_reader(assertion, config)
-    data = reader.read(source, tuple("'%s'!A3:U60" % t for _, t in COURSES))
-    registry = []
-    for course, title in COURSES:
+    data = reader.read(source, tuple("'%s'!A3:U60" % t for _, t in courses))
+    assignments = {}
+    for assignment in records.get("assignments", []):
+        key = assignment.get("assignment_key")
+        if not key or key in assignments:
+            raise ConnectionError("intake_registry_ambiguous")
+        assignments[key] = assignment
+    bindings = _deck_bindings(config, assignments)
+    registry, by_deck, by_assignment = [], {}, {}
+    for course, title in courses:
         cells = grid(data, title)
         if value(cells, 3, 16) != "_studentURL":
             raise ConnectionError("agenda_layout_changed")
         for row in range(4, 61):
             week, topic = value(cells, row, 1), value(cells, row, 3)
-            raw = link(cells.get((row, 16), {}).get("hyperlink", "")) or link(value(cells, row, 16))
-            if not raw:
-                continue
-            match = re.fullmatch(r"https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?", raw)
-            number = re.fullmatch(r"(?:Wk\s*)?0*(\d{1,2})([a-z]?)", week, re.I)
-            if not match or not number or not topic:
-                raise ConnectionError("intake_catalog_needs_review")
-            proposed = f"{course}:W{int(number[1]):02d}{number[2]}"
-            known = [a for a in records.get("assignments", [])
-                     if a.get("class_key") == course and
-                     (a.get("assignment_key") == proposed or
-                      _norm(a.get("assignment_title")) == _norm(topic))]
-            if len(known) > 1:
-                raise ConnectionError("intake_registry_ambiguous")
-            registry.append({"assignment_key": known[0]["assignment_key"] if known else proposed,
-                             "class_key": course, "assignment_title": topic,
-                             "week": week, "source_deck_id": match[1], "source_url": raw})
-    if not registry or len(registry) > 171:
+            for column in (16, 15):
+                raw = link(cells.get((row, column), {}).get("hyperlink", "")) or link(value(cells, row, column))
+                if not raw:
+                    continue
+                match = DECK_URL.fullmatch(raw)
+                if column == 15 and (not match or match[1] not in bindings):
+                    continue  # A link alone does not make O a student assignment.
+                number = re.fullmatch(r"(?:Wk\s*)?0*(\d{1,2})([a-z]?)", week, re.I)
+                if not match or not number or not topic:
+                    raise ConnectionError("intake_catalog_needs_review")
+                known = _catalog_assignment(course, number, topic, match[1], assignments, bindings)
+                key, source_id = known["assignment_key"], match[1]
+                if ((source_id in by_deck and by_deck[source_id] != key)
+                        or (key in by_assignment and by_assignment[key] != source_id)):
+                    raise ConnectionError("intake_registry_ambiguous")
+                if source_id in by_deck:
+                    continue  # Same exact lesson link repeated in the Agenda.
+                by_deck[source_id], by_assignment[key] = key, source_id
+                registry.append({"assignment_key": key,
+                                 "class_key": course, "assignment_title": known["assignment_title"],
+                                 "week": week, "source_deck_id": source_id, "source_url": raw})
+    if not registry or len(registry) > 342:
         raise ConnectionError("intake_catalog_needs_review")
     return registry
 
@@ -98,6 +155,27 @@ def read_deck(token, item):
     return _pptx_text(raw)
 
 
+def read_catalog_decks(token, drive, catalog, *, deck_reader=None):
+    """Read every candidate before claiming uniqueness; never drop a failure.
+
+    This helper is also used by read-only discovery when Form access is absent.
+    Content evidence then identifies a lesson only, not the submitting learner.
+    The supplied catalog is not mutated and no grade or intake row is written.
+    """
+    sources, result = {}, []
+    for lesson in catalog:
+        source_id = lesson["source_deck_id"]
+        if source_id not in sources:
+            before = drive.metadata(source_id)
+            if before.get("trashed") is not False:
+                raise ConnectionError("intake_source_deck_unavailable")
+            sources[source_id] = deck_reader(before) if deck_reader else read_deck(token, before)
+            if drive.metadata(source_id) != before:
+                raise ConnectionError("intake_source_deck_changed")
+        result.append({**lesson, "source_text": sources[source_id]})
+    return result
+
+
 def cross_checks(ref, person, lesson, question_ids):
     holds = []
     expected = {
@@ -134,17 +212,7 @@ def collect_shared(assertion, config, records):
     catalog = agenda_catalog(assertion, config, records)
     # Complete candidate catalog is required to make a uniqueness claim. Never
     # silently discard inaccessible source decks, which could also match.
-    sources = {}
-    for lesson in catalog:
-        sid = lesson["source_deck_id"]
-        if sid not in sources:
-            meta = drive.metadata(sid)
-            if meta.get("trashed") is not False:
-                raise ConnectionError("intake_source_deck_unavailable")
-            sources[sid] = read_deck(token, meta)
-            if drive.metadata(sid) != meta:
-                raise ConnectionError("intake_source_deck_changed")
-        lesson["source_text"] = sources[sid]
+    catalog = read_catalog_decks(token, drive, catalog)
     roster = read_roster(config)
     domains = str(config.get("HUB_SCHOOL_EMAIL_DOMAINS", "")).split(',')
     sections = private_mapping(config, "HUB_ROSTER_SECTION_IDS")

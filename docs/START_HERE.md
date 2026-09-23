@@ -129,8 +129,12 @@ The teacher chose option A on September 22: keep the shared Form and identify
 submissions by collected email, uploaded-deck evidence and the roster. Typed
 answers are cross-checks only. The implementation and synthetic tests are in
 [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md); private runtime activation,
-router copy-provenance, stopgap replacement and dashboard acceptance remain
-unverified. This is not a deployment or recovery-completion claim.
+current Form-response access, exact private deck bindings, stopgap replacement
+and dashboard acceptance remain unverified. PR #39 also changes Page 02 Refresh
+to read new/changed source files into the existing Student work table without
+school writes or grading. Embedded A3 roster blocks remain A3; multiple lessons
+in one week retain distinct assignment keys. Saved assessment histories remain
+intact. This is not a deployment or recovery-completion claim.
 
 ## Source collection: one root, not one assumed folder
 

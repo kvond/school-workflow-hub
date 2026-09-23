@@ -75,22 +75,41 @@ def read_roster(config):
 def parse_roster(data):
     """Explicitly accept Last/First headers, headerless pairs and Last, First.
 
-    A title row is recognized by its exact configured tab name. Blank rows do
-    not terminate a roster. Malformed populated rows fail closed, not disappear.
+    Configured section headings can introduce another section of the same
+    class inside a tab. Repeated section blocks must agree before deduplication;
+    a tab name alone must never reassign an embedded section's learners.
+    Blank rows do not terminate a roster. Malformed populated rows fail closed.
     """
     tables = _rows(data)
-    entries = []
+    configured = {_norm(tab): (class_key, tab)
+                  for class_key, tabs in CLASS_TABS.items() for tab in tabs}
+    blocks = []
     for class_key, tabs in CLASS_TABS.items():
         for tab in tabs:
+            section, block, declared = tab, [], False
             for position, cells in tables.get(tab, []):
                 cells = [c.strip() for c in cells]
                 if not any(cells):
                     continue
                 last, first = (cells + ["", ""])[:2]
-                if _norm(last) == _norm(tab) and not first:
+                last_norm, first_norm = _norm(last), _norm(first)
+                heading = configured.get(last_norm)
+                if heading:
+                    if first or any(cells[2:]) or heading[0] != class_key:
+                        raise ConnectionError("roster_layout_needs_review")
+                    if block or declared:
+                        blocks.append((class_key, section, tab, block))
+                    section, block, declared = heading[1], [], True
                     continue
-                if _norm(last) == "last name" and _norm(first) == "first name":
+                if (last_norm == "last name" and first_norm == "first name"
+                        and not any(cells[2:])):
+                    declared = True
                     continue
+                if (first_norm in configured
+                        or any(re.match(r"^[a-z]\d+\b", value)
+                               for value in (last_norm, first_norm))
+                        or {last_norm, first_norm} & {"first name", "last name", "full name"}):
+                    raise ConnectionError("roster_layout_needs_review")
                 layout = "last_first_columns"
                 if last and not first and "," in last:
                     last, first = [part.strip() for part in last.split(",", 1)]
@@ -100,15 +119,28 @@ def parse_roster(data):
                     raise ConnectionError("roster_layout_needs_review")
                 first_key, last_key = _first_base(first), _norm(last)
                 digest = hashlib.sha256(
-                    ("roster|" + class_key + "|" + tab + "|" + first_key + "|" +
+                    ("roster|" + class_key + "|" + section + "|" + first_key + "|" +
                      last_key).encode("utf-8")).hexdigest()
-                entries.append({"class_key": class_key, "section_name": tab,
+                block.append({"class_key": class_key, "section_name": section,
                     "first": first, "last": last,
                     "name_key": first_key + " " + last_key,
                     "learner_key": "roster:" + digest,
                     "display_id": "roster:" + digest[:24],
-                    "roster_row": position, "layout": layout})
-    return entries
+                    "roster_row": position, "roster_tab": tab, "layout": layout})
+            if tab in tables:
+                blocks.append((class_key, section, tab, block))
+
+    sections = {}
+    for class_key, section, tab, block in blocks:
+        # A multiset preserves genuinely repeated names within one block so
+        # matching still holds them as ambiguous. Nickname conflicts also hold.
+        signature = sorted((_norm(row["first"]), _norm(row["last"])) for row in block)
+        prior = sections.get((class_key, section))
+        if prior is not None and prior[0] != signature:
+            raise ConnectionError("roster_section_blocks_conflict")
+        if prior is None or (tab == section and prior[1] != section):
+            sections[(class_key, section)] = (signature, tab, block)
+    return [row for _, _, block in sections.values() for row in block]
 
 
 def _aliases(row):

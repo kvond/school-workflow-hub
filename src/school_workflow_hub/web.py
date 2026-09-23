@@ -243,6 +243,33 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond("503 Service Unavailable", {"error": "provider_unavailable"})
 
+    if path == "/api/submission-monitor/refresh":
+        from .adapters.submission_refresh import refresh, _code
+        from .adapters.hosted_agenda import ConnectionError
+        if method != "POST":
+            return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+        try:
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "monitor_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 512:
+                raise ValueError()
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", refresh(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                                              payload, os.environ))
+        except ConnectionError as error:
+            code = _code(error, "submission_refresh_unavailable")
+            return respond("403 Forbidden" if code == "sign_in_required"
+                           else "503 Service Unavailable", {"error": code, "external_writes": 0})
+        except (ValueError, KeyError, TypeError, OverflowError):
+            return respond("400 Bad Request", {"error": "invalid_submission_scope"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "submission_refresh_unavailable"})
+
     if path == "/api/submission-monitor":
         from .adapters.submission_monitor import read_status, scan_and_persist
         from .adapters.hosted_agenda import ConnectionError

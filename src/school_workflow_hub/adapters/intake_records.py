@@ -23,10 +23,20 @@ def plan(workbook, catalog, files, now):
     assignments, submissions = workbook["Assignments"], workbook["Submissions"]
     if "learner_key" not in submissions["headers"]:
         raise ConnectionError("intake_workbook_learner_header_required")
-    existing = {r["assignment_key"]: r for _, r in assignments["rows"]}
+    existing = {}
+    for _, row in assignments["rows"]:
+        key = row["assignment_key"]
+        if not key or key in existing:
+            raise ConnectionError("intake_registry_conflict")
+        existing[key] = row
     requests, proposed, superseded = [], [], []
+    catalog_sources = {}
     for item in catalog:
         key = item["assignment_key"]
+        source_id = item.get("source_deck_id")
+        if key in catalog_sources and catalog_sources[key] != source_id:
+            raise ConnectionError("intake_registry_conflict")
+        catalog_sources[key] = source_id
         if key in existing:
             if existing[key]["class_key"] != item["class_key"]:
                 raise ConnectionError("intake_registry_conflict")
@@ -39,13 +49,16 @@ def plan(workbook, catalog, files, now):
         if not person or not item.get("section_id") or not item.get("assignment_key"):
             continue
         key = item["assignment_key"]
+        if key not in existing or existing[key]["class_key"] != person["class_key"]:
+            raise ConnectionError("intake_registry_conflict")
         rid = "shared-intake-" + content_hash({"file": item["id"], "assignment": key,
                                                "learner": person["learner_key"]})[:32]
         matches = [(pos,r) for pos,r in submissions["rows"] if file_id(r) == item["id"]]
         # Reviewed records always retain history; a disagreement is never resolved
         # by overwriting them with a new unscored intake row.
         if any(r.get("status") not in {"identity_unverified", "superseded"}
-               and r.get("record_id") != rid for _,r in matches):
+               and (r.get("record_id") != rid or r.get("status") != "roster_matched")
+               for _,r in matches):
             continue
         row = {"record_id": rid, "assignment_key": key, "section_id": item["section_id"],
                "section_name": person["section_name"], "student_id": "",

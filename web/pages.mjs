@@ -1,10 +1,10 @@
-import {createRecordsLoader,renderRecords,renderSummaries,sectionOptions,lessonOptions,filterRecords,printFeedbackPacket} from './grading-records.mjs';
+import {createRecordsLoader,renderRecords,renderSummaries,sectionOptions,lessonOptions,filterRecords,printFeedbackPacket,recordsWithDiscovery} from './grading-records.mjs';
 import {safeLink} from './contract.mjs';
 import {showRunInstructions} from './browser-runs.mjs';
 import {buildPostingReview,renderPostingReview} from './grade-posting.mjs';
 import {createCompanionClient,companionMessage} from './browser-companion.mjs';
 import {mountControlPanel} from './control-panel.mjs';
-import {mountSubmissionMonitor} from './submission-monitor.mjs';
+import {mountSubmissionMonitor,createDiscoveryLoader} from './submission-monitor.mjs';
 import {mountAssessmentReview} from './assessment-review.mjs';
 import {mountIcGradeSheet} from './ic-grade-sheet.mjs';
 const $=id=>document.getElementById(id);
@@ -35,6 +35,11 @@ async function copyPrompt(kind){const titles={completion:'Completion check',feed
 const classes={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy'};
 let scope={date:$('date').value,classKey:'biology',assignmentKey:'all',stage:'all',data:null,loading:false,error:''};
 let recordState={status:'empty'},sectionId='matched',sectionSelect,lessonSelect,workSelect;
+let discoveryState={status:'empty'},discoveryLoader;
+function resetDiscoveryForSelection(){
+ const current=discoveryState.data?{classKey:discoveryState.data.class_key,assignmentKey:discoveryState.data.assignment_key}:discoveryState.scope;
+ if(current&&(current.classKey!==scope.classKey||(current.assignmentKey!=='all'&&current.assignmentKey!==scope.assignmentKey)))discoveryLoader?.clear();
+}
 const views=[];
 // Page 02 primary selectors: Class / section → Lesson name → Notes or Drafts.
 // No lesson-date picker in this row — a date is only used, internally, by the
@@ -43,11 +48,11 @@ function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';scope.assignmentKey='all';resetProcess();renderScope();renderPrivateRecords();});classLabel.append(select);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';scope.assignmentKey='all';resetDiscoveryForSelection();resetProcess();renderScope();renderPrivateRecords();});classLabel.append(select);
  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','Matched sections'));sectionSelect.firstChild.value='matched';
  sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);
  const lessonLabel=el('label','Lesson name');lessonSelect=el('select');lessonSelect.setAttribute('aria-label','Feedback lesson');lessonSelect.append(el('option','All lessons'));lessonSelect.firstChild.value='all';
- lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;resetProcess();renderPrivateRecords()});lessonLabel.append(lessonSelect);
+ lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;resetDiscoveryForSelection();resetProcess();renderPrivateRecords()});lessonLabel.append(lessonSelect);
  const workLabel=el('label','Work');workSelect=el('select');workSelect.setAttribute('aria-label','Feedback checkpoint');for(const [v,name]of [['all','Notes & drafts'],['initial','Notes'],['final','Drafts']]){const o=el('option',name);o.value=v;workSelect.append(o);}workSelect.value=scope.stage;
  workSelect.addEventListener('change',()=>{scope.stage=workSelect.value;renderPrivateRecords()});workLabel.append(workSelect);
  bar.append(classLabel,sectionLabel,lessonLabel,workLabel);
@@ -214,13 +219,15 @@ const summary=$('page-summary');compactHeading(summary,'Teacher summary');summar
 const summaryActions=el('div',undefined,'action-row summary-actions');promptAction(summaryActions,'Copy class-summary instructions','summary');summary.append(summaryActions);
 const summaryResults=el('div',undefined,'section-grid');summaryResults.setAttribute('aria-live','polite');summary.append(summaryResults);
 function renderPrivateRecords(){
- if(sectionSelect){const options=recordState.status==='loaded'?sectionOptions(recordState.data,scope.classKey):[];sectionSelect.replaceChildren();for(const [id,name]of [['matched','Matched sections'],['all','All records'],...options]){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId))sectionId='matched';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
- if(lessonSelect){const lessons=recordState.status==='loaded'?lessonOptions(recordState.data,scope.classKey):[];lessonSelect.replaceChildren();for(const [id,name]of [['all','All lessons'],...lessons]){const option=el('option',name);option.value=id;lessonSelect.append(option);}if(scope.assignmentKey!=='all'&&!lessons.some(([id])=>id===scope.assignmentKey))scope.assignmentKey='all';lessonSelect.value=scope.assignmentKey;lessonSelect.disabled=recordState.status!=='loaded';}
+ const displayed=recordState.status==='loaded'?recordsWithDiscovery(recordState.data,discoveryState):null;
+ if(sectionSelect){const options=displayed?sectionOptions(displayed,scope.classKey):[];sectionSelect.replaceChildren();for(const [id,name]of [['matched','Matched sections'],['all','All records'],...options]){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId))sectionId='matched';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
+ if(lessonSelect){const lessons=displayed?lessonOptions(displayed,scope.classKey):[];lessonSelect.replaceChildren();for(const [id,name]of [['all','All lessons'],...lessons]){const option=el('option',name);option.value=id;lessonSelect.append(option);}if(recordState.status==='loaded'&&scope.assignmentKey!=='all'&&!lessons.some(([id])=>id===scope.assignmentKey))scope.assignmentKey='all';lessonSelect.value=scope.assignmentKey;lessonSelect.disabled=recordState.status!=='loaded';}
  if(workSelect)workSelect.value=scope.stage;
- renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId,assignmentKey:scope.assignmentKey,stage:scope.stage});renderSummaries(summaryResults,recordState);
+ renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId,assignmentKey:scope.assignmentKey,stage:scope.stage,discovery:discoveryState});renderSummaries(summaryResults,recordState);
 }
 const retrieveRecords=createRecordsLoader({onState:state=>{recordState=state;renderPrivateRecords()}});
-qhead.append(btn('Refresh submissions',()=>retrieveRecords()));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));
+discoveryLoader=createDiscoveryLoader({onState:state=>{discoveryState=state;renderPrivateRecords()}});
+qhead.append(btn('Refresh submissions',async()=>{const requested={classKey:scope.classKey,assignmentKey:scope.assignmentKey};await discoveryLoader.load(requested);if(scope.classKey===requested.classKey&&(requested.assignmentKey==='all'||scope.assignmentKey===requested.assignmentKey))await retrieveRecords();}));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));
 function loadResults(){clearInventory();renderPrivateRecords();}
 renderScope();loadResults();retrieveRecords();
 const research=$('page-research');heading(research,'Research workspace','Keep research evidence separate from student-facing feedback. Reuse versioned instructions and the same private workflow records.');const rg=el('div',undefined,'section-grid');const instructions=panel('Shared research instructions','A relevant skill was located in your answerable-skills repository. Its referenced codebook and current applicability still need review before research execution is enabled.');instructions.append(link('Open versioned research workflow ↗',researchURL),el('p','Pinned repository version · access requires your repository permissions. This is an instruction source, not the student-data store.','hint'));actions(instructions,btn('Run research workflow',null,true));const evidence=panel('Evidence & coding record','Research observations must link back to approved private evidence and the applied instruction version. Unknown response timing remains unknown.');metrics(evidence,['Accepted observations','Needs review','Verified evidence links']);empty(evidence,'Research data not connected','There is no student research data in this preview or its source files.');const history=panel('Provenance & review history','The shared backend holds the persistent record. This page will display its accepted results and unresolved reviews, without creating a second store.',true);history.append(el('p','Instruction/codebook acceptance: Pending · Authenticated data access: Not verified · Last run: Not checked','readiness'));rg.append(instructions,evidence,history);research.append(rg);
