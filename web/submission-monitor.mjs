@@ -8,6 +8,38 @@ export function validateStatus(data){
  return data;
 }
 
+// Fresh discovery is a preview. It never registers work, changes the saved
+// assessment, or advances the durable monitoring baseline.
+const DISCOVERY_STATES=new Set(['new_ungraded','changed_since_assessment','needs_review','unchanged']);
+export function validateDiscovery(data,scope){
+ if(data?.schema_version!=='hub-submission-refresh/v1'||data.provenance!=='source_read'||data.external_writes!==0||data.live_model_calls!==0||data.class_key!==scope.classKey||data.assignment_key!==scope.assignmentKey||!Number.isFinite(Date.parse(data.discovered_at))||typeof data.coverage?.complete!=='boolean'||!Array.isArray(data.files))throw Error('The submission discovery scope could not be verified.');
+ const seen=new Set();
+ for(const file of data.files){
+  if(!file||typeof file.file_id!=='string'||!file.file_id||seen.has(file.file_id)||![scope.classKey,''].includes(file.class_key)||typeof file.assignment_key!=='string'||!DISCOVERY_STATES.has(file.discovery_status)||!Array.isArray(file.review_reasons)||file.review_reasons.some(reason=>typeof reason!=='string')||!['','initial','final',undefined,null].includes(file.assessment_stage))throw Error('The discovered submissions need review.');
+  if(!file.class_key&&file.discovery_status!=='needs_review')throw Error('The discovered class needs review.');
+  if(file.source_changed_since_assessment!==undefined&&typeof file.source_changed_since_assessment!=='boolean')throw Error('The discovered source version needs review.');
+  if(scope.assignmentKey!=='all'&&file.assignment_key&&file.assignment_key!==scope.assignmentKey)throw Error('The submission discovery scope could not be verified.');
+  for(const field of ['source_url','name','assignment_title','section_id','section_name','student_id','display_name'])if(typeof file[field]!=='string')throw Error('The discovered submissions need review.');
+  seen.add(file.file_id);
+ }
+ return data;
+}
+export function createDiscoveryLoader({fetcher=fetch,onState}){
+ let generation=0,controller;
+ return {
+  clear(){generation++;controller?.abort();onState({status:'empty'});},
+  async load(scope){
+   const mine=++generation;controller?.abort();controller=new AbortController();onState({status:'loading',scope});
+   try{
+    const response=await fetcher('/api/submission-monitor/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({class_key:scope.classKey,assignment_key:scope.assignmentKey})});
+    const data=await response.json();if(mine!==generation)return null;
+    if(!response.ok)throw Error(describeFailure(data.error));
+    const verified=validateDiscovery(data,scope);onState({status:'loaded',data:verified});return verified;
+   }catch(error){if(mine===generation&&error.name!=='AbortError')onState({status:'error',scope,message:error.message||'Submission discovery failed. Saved assessments are unchanged.'});return null;}
+  }
+ };
+}
+
 // One specific recovery action per failure; never a generic shrug.
 const FAILURES={
  submission_folder_access_required:'The legacy folder source cannot be read by the cloud service. Verify Viewer access before retrying.',
@@ -71,10 +103,14 @@ export function renderStatus(root,data){
  const legacyGap=coverage.legacy_outside_root_files??0;
  const offRoot=coverage.form_refs_outside_root??0;
  const folderFiles=coverage.lesson_folder_files??0;
- const coverageText=coverage.source==='form_responses_root_verified'
+ const legacyShared=coverage.form_source==='shared_collected_identity';
+ const coverageText=legacyShared
+  ?('Legacy shared-Form observation · '+(coverage.responses_checked??0)+' responses checked · '+(coverage.root_verified_files??0)+' files matched to this lesson inside the approved root. '+offRoot+' off-root references require review. Current intake requires each assignment’s own Form.')
+  :coverage.source==='form_responses_root_verified'
   ?('Coverage: assignment Form + exact lesson folder inside 00 ALL TURN IN · '+(coverage.matching_responses??0)+' Form responses · '+folderFiles+' files in the exact lesson folder · '+(coverage.root_verified_files??0)+' verified files total · '+(coverage.folders_checked??0)+' folders checked.'+(offRoot?(' '+offRoot+' Form-linked file'+(offRoot===1?' is':'s are')+' still outside the approved root; '+(offRoot===1?'it is':'they are')+' held as a coverage gap, not called missing.'):'')+(legacyGap?(' '+legacyGap+' already-recorded historical file'+(legacyGap===1?' is':'s are')+' outside current intake; '+(legacyGap===1?'it remains':'they remain')+' a named coverage gap.'):''))
   :('Coverage: complete visible-file scan, '+(coverage.folders_checked??0)+' folders.');
- root.append(node(root,'p',coverageText+' Student matches use prior reviewed grading identities plus unique matches from the current roster workbook ('+when(data.roster.checked_at)+'); the live IC roster reader is not integrated, so ambiguous work stays listed for review rather than being called missing.','hint'));
+ root.append(node(root,'p',coverageText+(legacyShared?' This stored observation used collected school email, uploaded-deck evidence and the roster. Typed disagreements remain held for review.':' Student matches use prior reviewed grading identities plus the current roster workbook; the live IC roster reader is not integrated, so ambiguous work stays listed for review.'),'hint'));
+ if(data.intake_receipt)root.append(node(root,'p',data.intake_receipt.status==='verified'?'Intake workbook registration verified.':'Intake workbook registration is in dry-run mode; no intake rows were saved.','hint'));
  const c=data.counts;
  root.append(node(root,'p',`${c.matched_students??0} matched students · ${c.matched??0} matched files · ${c.present} files present · ${c.awaiting_assessment} awaiting assessment · ${c.unmatched} unmatched files · ${c.needs_review} need review · ${c.inaccessible} inaccessible`));
  if(data.events_last_scan.length){
@@ -98,7 +134,13 @@ export function renderStatus(root,data){
  }
  if(data.needs_review.length){
   root.append(node(root,'h4','Needs your review'));
-  const reasons={unmatched_identity_needs_review:'No verified student match yet; review and record it in the grading workbook.',
+  const reasons={typed_section_disagreement:'Typed class period disagrees with the roster; review it.',
+   typed_assignment_disagreement:'Typed assignment differs from the matched deck; review it.',
+   typed_name_disagreement:'Typed name differs from the email/roster identity; review it.',
+   deck_unmatched_or_revision_changed:'Uploaded deck could not be matched to one current lesson version.',
+   deck_ambiguous:'Uploaded deck matches more than one lesson; choose after review.',
+   form_reference_outside_approved_root:'Form upload is outside the approved root; verify recovery or router copy provenance.',
+   unmatched_identity_needs_review:'No verified student match yet; review and record it in the grading workbook.',
    after_due_evidence_needs_review:'The document changed after the due date; inspect before assessing.',
    inaccessible_needs_review:'Previously observed work is no longer readable; check folder access before any conclusion.'};
   const list=node(root,'ul');

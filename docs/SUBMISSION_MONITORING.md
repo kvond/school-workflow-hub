@@ -1,138 +1,246 @@
-# Hosted submission monitoring
+# Submission monitoring and assignment-specific Forms
 
-Page 2's **Submission monitoring** panel watches one exact assignment throughout
-the post-due window and records what actually changed, durably, in the existing
-private cloud state. Discovery is form-first: the shared Google Form supplies
-assignment-bound upload file IDs, then every candidate is verified beneath the
-approved `00 ALL TURN IN` root. The TurnIn Map remains a locator, not a
-completeness boundary. The monitor is deterministic hosted Python behind
-`GET/POST /api/submission-monitor`; it never assigns a grade or a zero.
+## Teacher decision and implementation status
 
-## What one scan does
+The teacher clarified on September 23 that **each assignment has its own Form**.
+The earlier statement that the teacher chose one shared Form was incorrect and
+must not be used to configure intake. Two assignments in the same week need two
+verified assignment-to-Form bindings, even when their uploaded files share a
+folder. Neither the navigation date nor a folder name identifies an assignment.
 
-1. Resolves the dated lesson from the live Agenda and requires its exact
-   assignment label plus the shared prefilled `_turnInURL`.
-2. Calls the Google Forms responses API with the runtime reader's
-   `forms.responses.readonly` token. A response belongs to the lesson only
-   when one of its text answers exactly equals the Agenda assignment label.
-   File-upload answers supply Drive file IDs directly; zero responses is a
-   clean empty state.
-3. Verifies every Form-referenced file beneath the configured
-   `HUB_SUBMISSIONS_ROOT_FOLDER` using the existing `drive.readonly` reader.
-   A referenced file that cannot be verified under that root makes coverage
-   incomplete; it never becomes evidence that a student is missing.
-4. Reads the reviewed grading workbook only for already-verified
-   student↔file mappings. It is not a prerequisite for discovering new work.
-5. Advances and persists the existing monitor state, idempotency claims,
-   revision evidence, deadlines and event history. The durable stream identity
-   is class + exact assignment label, not a reused course folder.
+PR #39's read-only Refresh and assignment matching use that contract. This
+change does **not deploy or activate** a route, schedule,
+registration writer, grading operation or model call. No real stopgap rows are
+removed and no test Form is submitted. Preserve the Drive recovery priority in
+START_HERE before any separately authorized activation.
 
-Runtime configuration additionally requires `HUB_TURNIN_FORM_ID`, the editable
-/API Form ID for the shared turn-in Form. The runtime service account must be
-able to read that Form's responses. No Form, Drive, or student-file writes are
-performed by this read path.
+## Sources and matching
 
-## The rules the implementation encodes
+Read complete, bounded response pages from the verified Form for each selected
+assignment. Preserve both its Form ID and each original upload file ID.
+`respondentEmail` is separate from typed answers. Match students against the
+current roster using the collected school email, configured domain/prefix and
+explicit legal-name/nickname variants. A typed name, filename suffix, class
+period or assignment answer does not establish identity. Ambiguous matches
+remain review items.
 
-- **Assignment identity is the exact assignment label within the class, never a
-  reused course folder and never the due date.** A deadline change emits
-  `due_date_changed` and keeps the same stream and history.
-- **The deadline is the third actual class meeting, never the navigation
-  date.** The teacher declares an actual start by writing it in the day's Plan
-  or Notes ("Started Energy today" — past tense; "Plan to start" is only an
-  intention) either through the dashboard's Save to Agenda flow or directly in
-  Sheets, where a later scan of that day picks it up; the selected dashboard
-  date is meeting 1 even for a backdated note. Meetings 2 and 3 come from the
-  Agenda's own Weeks calendar (`workflows/topic_deadline.py`): fixed weekday
-  patterns per class, ⚠ closure lines, and the per-week A/B Friday
-  designation. The final revised submission is due at the end of the third
-  meeting's local day whether or not the topic is finished; only an explicit
-  teacher deadline exception ("deadline/due <date>" in the day's text)
-  overrides it. Repeated saves never duplicate a start, a contradictory start
-  is flagged for review instead of resolved, an unfilled calendar makes the
-  deadline provisional instead of guessed, and every derived deadline is
-  labeled calculated — never verified in Infinite Campus. Date-only deadlines
-  still include the whole local day and the grace window still includes the
-  full fourteenth day via the existing `due_completion.boundaries` rules;
-  verified individual extensions move a matched student's window, and no
-  extension source is integrated yet, so none are applied silently.
-- **Assessment currency is revision-bound, not date-bound.** A file edited at
-  3 p.m. after a 9 a.m. assessment returns to awaiting reassessment the same
-  day: a full workbook check timestamp is compared as an instant, a date-only
-  marker can never prove currency for a file modified on or after that day,
-  and unknown evidence proves nothing. Earlier assessments and grades are
-  never altered by this.
-- **Derived state is versioned.** `DERIVATION_VERSION` travels with each
-  stored state; an unchanged rerun only replays a stored result when the
-  derivation logic that produced it is current, otherwise the state is
-  recomputed from the retained evidence with history, events and receipts
-  preserved.
-- **First scan = baseline.** Existing files are `first_observed`, never "just
-  submitted" and never late.
-- **Metadata is evidence, not judgment.** `modifiedTime`/`version` changes mean
-  inspect or reassess. Timing labels are conservative:
-  `content_predates_due_turnin_unverified` (a folder move does not update
-  modifiedTime, so turn-in moments stay unverified) or
-  `modified_after_due_needs_review`. Nothing here proves who submitted,
-  proves improvement, or supports a zero.
-- **Disappearance is an access event.** A file missing from a complete scan
-  becomes `inaccessible` and keeps its history; it is never treated as a
-  withdrawal, and a failed or partial scan never replaces the last complete
-  baseline (it only records a failed attempt).
-- **Unmatched files stay visible for review**; the roster basis is the
-  workbook's verified mappings with its checked time recorded. The live IC
-  roster reader is not integrated, and the panel says so instead of calling a
-  cached view current.
-- **Reruns do not duplicate.** An unchanged folder + mappings + due date
-  returns the stored result with no new run, records or events; concurrent
-  workers serialize on the task lease and baseline CAS. A dashboard refresh
-  only reads; scans start from the explicit button (or an approved scheduler
-  calling the same endpoint).
+The assignment-to-Form binding and uploaded-deck lesson evidence must agree.
+Do not read one global Form as a substitute for an unresolved assignment Form,
+or silently attach a single Agenda Form link to both assignments in a multi-
+assignment row. Missing, ambiguous or inaccessible bindings remain explicit
+coverage gaps. A student-facing response URL is not proof of a readable editable
+Form/API ID.
 
-## Dashboard
+Each catalog entry carries `form_id`, `form_url`, `form_source`,
+`form_mapping_verified` and `form_review_reason`. Use its verified editable/API
+ID. Published links can resolve through exact responder-URL equality with a Form
+discovered inside the approved root. Otherwise published or shortened links
+require an explicit API-ID binding; title similarity cannot supply it. If an Agenda row contains multiple assignments,
+its one Form cell does not establish a separate binding for every assignment.
 
-`web/submission-monitor.mjs` renders: whether automatic monitoring is active
-(honest `manual_scans_only` until a schedule is approved), last attempted and
-last successful scan, scope/coverage/roster basis, per-file stages kept
-distinct — `Detected · identity unmatched`, `Awaiting assessment`, `Assessed`
-(the workbook's recorded IC posting note is shown as a recorded claim, never as
-gradebook verification) — the changes the last scan proved, and a needs-review
-list where every failure carries one specific recovery action.
+The current weekly row supplies the visible **Turn it in** link in column T and
+the raw `_turnInURL` in column U. The reader checks both when populated. Either
+column can provide the link alone, but conflicting or invalid populated links
+hold the binding rather than silently choosing one. An explicit private mapping
+cannot override contradictory T/U links. Refresh's existing coverage details
+preserve the exact row-specific repair action so the teacher can verify both
+cells before retrying that lesson.
 
-## Verification state
+The roster reader accepts explicit Last Name/First Name or First Name/Last Name
+headers, headerless two-column rows with a verified column layout, and single-cell
+`Last, First Middle (Nickname)` rows. Private configuration can map canonical
+sections to the current exact tab title or stable sheet ID. Headerless rows default
+to Last/First; an explicit First/Last override requires verified source evidence. It keeps the first student, skips blank rows, excludes
+study hall and rejects malformed populated rows. It reads up to 200 rows per
+configured class tab; expanding that boundary requires review. Explicit
+configured section headings inside a tab switch the section; an A3 block inside
+an A2 tab remains A3. Identical repeated section blocks are deduplicated against
+the canonical tab; conflicting memberships or unknown headings require review.
+No roster tab is rewritten. Roster IDs and section IDs are private
+configuration; the previous hardcoded roster file ID was removed.
 
-648 backend tests (including the monitoring state machine: new, late-evidence,
-modified, replacement, ambiguous identity, extension, deadline change, partial
-page, permission failure, interrupted/concurrent worker) and 36 frontend tests
-pass with identical synthetic replay.
+The reader scans the approved root and the exact upload folders returned by a
+verified assignment Form, including nested folders and complete bounded pages.
+A verified response can authorize reading its exact original outside those
+trees; the reader checks that file without scanning arbitrary parent folders.
+Unreadable originals and missing or trashed upload folders remain visible with
+a next action. Location alone does not establish identity or lesson matching. **A router copy
+with a different file ID is not silently equated to the Form upload**; verified
+copy provenance is still required before those copies can be substituted. A
+read-only browser check of the four Anatomy originals established upload-folder
+activity followed by moves/renames preserving their file IDs. This does not
+establish which Form response created those uploads.
 
-Historical folder-reader acceptance, September 18, 2026: with the teacher-approved Viewer grant for
-the runtime reader on the turn-in root and the project's Drive API enabled
-(both were required; an unconfigured API and a missing grant produce the same
-Drive 403, which is why the earlier inventory check never succeeded live), the
-hosted scan completed for all three classes' current lessons. One class's tree
-held five real student files: all were labeled first-observed at baseline, one
-carried a verified workbook match and assessed stage, and four stayed visible
-as unmatched/awaiting review. The other two trees scanned complete with a Form
-and no loose files, recorded as exactly that. A rerun with unchanged inputs
-returned the stored result (`unchanged_rerun`) with no new documents, a failed
-pre-grant scan left a durable failed attempt without touching any baseline, and
-a baseline written by one service revision read back intact from the next
-revision. The dashboard panel rendered the same stored state after reload.
+The bounded Agenda student-deck catalog is read for lesson candidates. A Refresh
+reads the selected class catalog. A week can contain multiple assignments. Private
+`HUB_INTAKE_DECK_ASSIGNMENTS` bindings map exact deck IDs to existing registry
+keys. They explicitly identify an additional O-column Slides link as an
+assignment; an unbound O link remains a resource. New P-column lessons receive
+a stable source-derived `discovery:<class>:<hash>` display identity. Repeated
+rows with the same deck and Form remain one lesson; distinct decks in one week
+remain separate. Existing registry keys require exact deck bindings and are never
+reassigned by week or title. Discovery identities are not grading approvals. Lesson matching
+requires a unique exact response-marker signature and every unchanged source
+question paragraph, with at least three markers and three question paragraphs.
+Native Slides are exported read-only as PPTX; uploaded PPTX files use the same
+bounded extractor. Markers alone, titles and typed links are insufficient. This
+is conservative content evidence, not Drive copy-lineage proof: older, unmarked,
+image-only or changed-question decks remain held. Multiple catalog lessons using
+the same template remain ambiguous. An unreadable catalog source blocks
+uniqueness rather than being silently discarded.
 
-Live change detection (a student actually modifying or adding a document
-between scans) has not been demonstrated against real work — no student file
-was edited to manufacture an event — and remains covered by the synthetic
-cases only. Scheduled execution is not enabled; enabling it is a separate
-explicit approval (cadence + scope), and the scan endpoint's same-origin gate
-means a scheduler integration will also need its own authorized entry path.
+Typed name, period and assignment answers, where configured, are cross-checks only. A mismatched
+value (including a free-text assignment or unrelated pasted link) remains a
+Needs review item even when email/deck/roster establish routing. Question IDs
+belong to their actual Form; do not assume different assignment Forms share
+question IDs or require an assignment question solely to recover a binding that
+the verified Form already supplies.
 
+## Private runtime configuration
 
-## Form-first rollout note — September 22, 2026
+Retain existing root, reader, grading-workbook and Agenda settings. Supply these
+through the deployment owner's existing approved private configuration only:
 
-The form-first refactor is intentionally separate from the September 18
-folder-reader acceptance. It must pass synthetic tests and one supervised live
-lesson after deployment before being described as live-verified. The rollout
-must enable the Google Forms API, configure the editable/API Form ID, and give
-the existing runtime reader access to that Form. Existing Drive-root read
-authority remains unchanged.
+- `HUB_ROSTER_SPREADSHEET_ID`: the intended current roster
+- `HUB_SCHOOL_EMAIL_DOMAINS`: comma-separated school domains
+- `HUB_EMAIL_USERNAME_PREFIX`: exact prefix, default `s.`
+- `HUB_ROSTER_SECTION_IDS`: JSON mapping canonical section names to verified IC IDs
+- `HUB_ROSTER_TABS`: optional JSON mapping canonical section names to current
+  exact tab titles or numeric sheet IDs
+- `HUB_ROSTER_COLUMN_LAYOUTS`: optional JSON mapping canonical section names to
+  `first_last_columns` or `last_first_columns` for verified headerless layouts
+- `HUB_INTAKE_DECK_ASSIGNMENTS`: JSON mapping reviewed Agenda P/O deck IDs to existing assignment keys
+- `HUB_ASSIGNMENT_FORM_IDS`: optional JSON mapping an exact assignment key to
+  its editable Form/API ID, for unresolved published links or assignments in a
+  multi-assignment Agenda row
+- `HUB_ASSIGNMENT_FORM_QUESTION_IDS`: optional JSON mapping each assignment key
+  to its own configured `name`, `section` and/or `assignment` question IDs;
+  only configured roles are cross-checked, and an assignment question is not
+  mandatory
+- `HUB_INTAKE_WORKBOOK_WRITES=true`: explicit registration activation;
+  absent/other values or `HUB_DRY_RUN=true` leave workbook writes disabled
+
+Verify each assignment's editable Form/API ID and any Form-specific question
+mapping in private configuration. New Refresh discovery has no fallback to
+`HUB_TURNIN_FORM_ID` or global question IDs. Do not select the legacy shared-Form
+route to enable assignment-specific discovery.
+
+Do not commit real values. Reader permissions must cover each selected assignment
+Form, approved root, roster, Agenda and candidate teacher/student template decks.
+Workbook registration additionally needs the existing authorized Sheets writer.
+No new credential, sharing or schedule is supplied by this implementation.
+
+## Dashboard registration and holds
+
+`adapters/intake_records.py` prepares unscored intake rows and missing Assignments
+entries. Existing keys are reused through verified bindings; a new class + week key is allowed only when no existing same-week registry conflicts. A
+conflicting mapping blocks rather than renaming referenced keys. Required
+`learner_key` headers must already exist; the adapter does not alter schemas.
+
+One atomic Sheets batch registers new rows and supersedes only same-file,
+same-assignment `intake-` stopgaps that remain identity_unverified, unscored and
+not_posted. Reviewed rows and distinct versions retain history. Deterministic
+record IDs prevent duplicates. Changed existing evidence raises review.
+The writer fresh-reads the workbook, holds a shared intake lease, and rereads
+through the dashboard's grading-record reader after writing. It never assesses,
+posts IC grades, writes zeros or calls a model. Process work continues through
+the existing assessment flow; this change is not an assessment acceptance.
+
+Global unmatched-deck and inaccessible-original items remain visible for review, never
+arbitrarily assigned to the class that initiated the scan. Known typed conflicts
+are retained in workbook holds. Existing monitor claims, baseline CAS,
+first-observed semantics and deadline calculation remain in place. Intake
+receipts distinguish dry-run from verified workbook registration; the monitor's
+legacy `external_writes=0` field is observation-protocol compatibility and is not
+a claim that an activated intake registration made no Sheets write.
+
+## Read-only Refresh submissions
+
+The existing Page 02 **Refresh submissions** action calls authenticated,
+same-origin `POST /api/submission-monitor/refresh` with `class_key` and
+`assignment_key` (`all`, an existing class assignment, or a discovered lesson). It does not use the
+navigation date as an assignment identity. It then rereads the saved grading
+workbook. These have separate discovery and workbook-read timestamps.
+
+The reader walks every bounded page and nested folder under the privately
+configured approved root, including files absent from saved records. It reads
+current references from each assignment's Form when available, verifies current roster identity, and
+matches each deck's content separately. A verified Form also supplies its actual
+file-upload folder IDs; stale TurnIn Map destinations do not replace them.
+Folder membership alone never assigns
+all files to one lesson. A2 and A3 retain their verified separate section IDs.
+An unavailable assignment Form or catalog is a visible coverage gap; root-visible files
+remain review observations, not fabricated Form matches or missing work.
+Coverage includes `forms_checked`, `responses_checked`, `form_complete` and a
+`form_results` entry for each assignment with its status and reason. One
+assignment's readable Form does not establish another assignment's coverage.
+Each failed source includes an allowlisted next repair; source structure is
+reread before returning the result.
+
+The same Student work table shows new ungraded files, changed sources and
+review holds alongside saved assessments. Numeric Drive versions are compared
+with stored capture versions. Legacy incomparable revisions remain held unless
+a later source timestamp proves a change requiring reinspection; neither a
+Drive version nor a timestamp claims the student's writing improved. Distinct
+files remain distinct; competing learner/assignment versions require review,
+and explicit superseded records are not silently reactivated.
+
+Discovery is a display-only projection. Saved scores, feedback, histories,
+export, printing and posting inputs remain the saved workbook records. This
+endpoint cannot register rows, grade, call a model, post to IC or advance a
+baseline, even when the separate intake writer is enabled. Partial pagination,
+inaccessible candidates and unmatched identities never support an all-caught-up
+or missing-work claim. Unknown class/lesson rows remain explicitly unmatched.
+Unreferenced nondeck Docs/Sheets/PDF files are excluded from the student preview;
+unsupported sources named by the Form or saved records remain review items.
+Each request has a 180-second read deadline, at most 256 Drive reads and 80 deck
+exports, and a 64 MB streamed-byte budget (20 MB per file). Budget exhaustion
+returns partial coverage and explicit remaining holds; it never advances a
+successful baseline.
+
+## Lesson and section controls
+
+Page 02 uses the selected lesson name and stable assignment key throughout its
+assessment controls. The navigation date and due date do not select the target.
+The roster reader supplies verified section choices: Forensics shows A2/A3;
+Biology and Anatomy automatically use their one verified section. Missing or
+conflicting mapping keeps assessment unavailable without hiding saved records.
+Known other-section work is excluded, while unresolved new work remains visible
+for review and cannot enter assessment or exports.
+
+Refresh preserves a still-valid class/lesson/section selection. Switching scope
+or receiving changed-source holds invalidates stale draft/save controls; late
+responses cannot populate a different scope. The assessment backend independently
+checks the exact saved assignment, section and file identity before capture,
+model access or save. Draft caches and assessment claims are partitioned by the
+exact source version, class, stable assignment key, section and Notes/Drafts
+checkpoint. Draft recovery sends that complete target and revalidates it before
+returning a saved draft. Reopening the matching saved draft reuses it; moving from
+Notes to Drafts can require a separate assessment even when the source is unchanged.
+These controls preserve separate A2/A3 histories; they do not rewrite old rows.
+
+## Open live acceptance and source discovery
+
+PR #39 contains code and synthetic regression tests, not a deployment. The
+read-only evidence audit found two different Forensics Week 03 assignments in
+one folder and newer files absent from saved dashboard records. Private IDs,
+student data, content and detailed reports remain outside the repository.
+
+The previously inspected router trigger target did not establish the editable
+Forms for the assignments. Do not treat it as a shared source for those uploads.
+Current per-assignment Form-response access, exact private deck bindings,
+runtime source permissions and teacher-path acceptance still require verification.
+On September 23, the current Agenda-linked Anatomy Form opened under the school
+account, but its response view showed zero responses and its editor reported a
+missing file-upload folder. The four previously verified uploaded decks remain
+evidence; their response linkage is unresolved. The repair prompt was dismissed
+without restoring or changing anything. No setup/reset function, Form submission,
+folder move, school-record edit or grade post was performed.
+
+Keep issue #37 open until the deployed revision's Refresh discovers the four
+Anatomy originals with verified Form/roster matching, shows both Forensics
+assignments under separate A2/A3 sections, preserves prior assessments and
+versions, and exposes concrete coverage gaps. Report source-access and mapping
+results before deployment; verify the new dashboard path after a separately
+authorized deployment. Grading remains off. Code tests and a stored preview are
+not evidence of completed live school operations.

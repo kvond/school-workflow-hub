@@ -8,6 +8,7 @@ import math
 import re
 
 from .google_sheets import SheetsReader, SheetsReadError
+from .roster_matching import read_roster_snapshot
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize,
                             service_token)
 from ..core.cloud_state import content_hash
@@ -215,7 +216,18 @@ def read_records(assertion, config):
         raise ConnectionError("grading_records_not_connected")
     try:
         reader = SheetsReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", "")))
-        return project(_tables(reader, config["HUB_GRADING_SPREADSHEET_ID"]))
+        result = project(_tables(reader, config["HUB_GRADING_SPREADSHEET_ID"]))
+        result.update(sections=[], sections_status="needs_review")
+        try:
+            roster = read_roster_snapshot(config)
+            result["sections"] = roster["sections"]
+            result["sections_status"] = "source_read" if roster["section_mapping_complete"] else "needs_review"
+            if not roster["section_mapping_complete"]:
+                result["sections_review_reason"] = "roster_section_mapping_required"
+        except ConnectionError as error:
+            code = str(error)
+            result["sections_review_reason"] = code if re.fullmatch(r"[a-z_]{1,64}", code) else "roster_source_unavailable"
+        return result
     except ConnectionError:
         raise
     except SheetsReadError as error:

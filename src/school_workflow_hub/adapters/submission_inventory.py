@@ -316,7 +316,7 @@ def resolve_lesson_folders(reader, records, class_key, assignment_key, root_id='
     return folders, unreadable
 
 
-def read_lesson_inventory(assertion, class_key, assignment_key, config):
+def read_lesson_inventory(assertion, class_key, assignment_key, config, *, section_id=None):
     """Inventory a selected saved assignment from its verified source files.
 
     Lesson-name processing deliberately does not guess a Form label from the
@@ -329,6 +329,8 @@ def read_lesson_inventory(assertion, class_key, assignment_key, config):
     if not re.fullmatch(r'[A-Za-z0-9:_-]{1,128}', assignment_key or ''):
         raise ConnectionError('invalid_submission_scope')
     records = read_records(assertion, config)
+    from .assessment_target import section_scope, compatible_identity, file_id as recorded_file_id
+    section = section_scope(records, class_key, assignment_key, section_id) if section_id is not None else None
     reader = DriveReader(service_token(config.get('HUB_READER_SERVICE_ACCOUNT', ''), DRIVE_SCOPE))
     course = CLASS_COURSE[class_key]
     folders, unreadable = resolve_lesson_folders(
@@ -349,18 +351,51 @@ def read_lesson_inventory(assertion, class_key, assignment_key, config):
             seen_ids.add(item['id'])
             files.append(item)
     files.sort(key=lambda item: item['id'])
+    projected = []
+    for item in files:
+        known = [row for row in records.get('submissions', [])
+                 if recorded_file_id(row) == item['id'] and row.get('status') in {'assessed', 'roster_matched'}
+                 and not row.get('hold_reason')]
+        scopes = {(row.get('class_key'), row.get('assignment_key'), row.get('section_id')) for row in known}
+        matched = known[0] if len(scopes) == 1 else None
+        if section and matched and (matched.get('class_key') != class_key
+                or matched.get('assignment_key') != assignment_key
+                or (matched.get('section_id') and matched['section_id'] != section_id)):
+            continue
+        verified_section = next((s for s in records.get('sections', []) if matched
+            and s['class_key'] == matched.get('class_key') and s['section_id'] == matched.get('section_id')), None)
+        review_reason = 'submission_section_conflict' if len(scopes) > 1 else 'submission_target_unverified'
+        identity_verified = False
+        if known:
+            try:
+                compatible_identity(known)
+                identity_verified = True
+            except ValueError as error:
+                review_reason = str(error)
+        names_match = bool(verified_section and all(not row.get('section_name')
+            or row['section_name'] == verified_section['section_name'] for row in known))
+        if verified_section and not names_match:
+            review_reason = 'submission_section_conflict'
+        ready = bool(section and matched and verified_section and names_match and identity_verified)
+        projected.append({'file_id': item['id'], 'name': item['name'],
+            'url': 'https://drive.google.com/file/d/' + item['id'] + '/view',
+            'modified_at': item.get('modifiedTime'), 'version': item.get('version'),
+            'class_key': matched.get('class_key', '') if matched else '',
+            'assignment_key': matched.get('assignment_key', '') if matched else '',
+            'section_id': verified_section['section_id'] if verified_section else '',
+            'section_name': verified_section['section_name'] if verified_section else '',
+            'status': 'present' if ready or section is None else 'needs_review',
+            'assessment_ready': ready,
+            'review_reason': '' if ready else review_reason,
+            'stage': 'assessed' if item['id'] in assessed else 'awaiting_assessment'})
     return {'schema_version': 'hub-submission-inventory/v1', 'class_key': class_key,
-            'assignment_key': assignment_key, 'folder_name': ' + '.join(names),
+            'assignment_key': assignment_key, 'section_id': section_id or '',
+            'section_name': section['section_name'] if section else '', 'folder_name': ' + '.join(names),
             'checked_at': datetime.now(timezone.utc).isoformat(),
             'source_revision': content_hash({'assignment': assignment_key, 'files': files}),
             'folders_checked': total_folders, 'forms_found': total_forms,
             'sources_unreadable': unreadable,
-            'files': [{'file_id': item['id'], 'name': item['name'],
-                       'url': 'https://drive.google.com/file/d/' + item['id'] + '/view',
-                       'modified_at': item.get('modifiedTime'), 'version': item.get('version'),
-                       'status': 'present',
-                       'stage': 'assessed' if item['id'] in assessed else 'awaiting_assessment'}
-                      for item in files],
+            'files': projected,
             'coverage': 'verified_recorded_source_folders',
             'assessment_status': 'not_assessed',
             'roster_verified': False, 'external_writes': 0}
@@ -409,4 +444,3 @@ def read_inventory(assertion, day, class_key, config):
             'coverage': 'form_responses_root_verified',
             'assessment_status': 'not_assessed', 'roster_verified': False,
             'external_writes': 0}
-

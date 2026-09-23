@@ -20,6 +20,13 @@ instructions, logs, artifacts or implementation decisions between agents.
 
 ## Immediate priority: preserve student work
 
+The teacher clarified on September 23 that the Week 04 Forensics PPTX files
+were converted to native Slides and duplicate PPTX files were intentionally
+deleted. Preserve the current native Slides and do not restore those duplicates
+as incident recovery. Exact saved source IDs remain historical evidence;
+Refresh must show an unavailable original as held without restoring it or
+silently transferring its assessment to a replacement file.
+
 The active worker reports finding student submissions in Drive trash after an
 older intake tree was trashed. Treat this as a recovery incident before further
 folder cleanup, model calls or interface polishing. It is a report requiring
@@ -122,6 +129,29 @@ associated with the student work, after checking inherited access. Page 03 is
 **Class/lesson -> Open summary document** (and a direct authenticated download
 where needed), not an inline paragraph. Preserve document identity and history;
 exclude generated reports/summaries from student-submission discovery.
+
+## Assignment-specific Form intake — issue #37
+
+The teacher clarified on September 23: **each assignment has its own Form**.
+The earlier claim that the teacher chose one shared Form was incorrect. Resolve
+each Form to its exact assignment, then verify collected email, uploaded-deck
+evidence and the roster. Two assignments in the same week retain separate Form
+bindings and assignment keys even when their files share a folder. Typed
+answers are optional configured cross-checks; a typed assignment question is
+not required. Missing or ambiguous Form bindings remain coverage gaps, with no
+fallback to a global Form. The implementation and acceptance boundaries are in
+[SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md); private runtime activation,
+current Form-response access, exact private deck bindings, stopgap replacement
+and dashboard acceptance remain unverified. PR #39 also changes Page 02 Refresh
+to read new/changed source files into the existing Student work table without
+school writes or grading. Refresh follows each verified Form's actual upload
+folders and exposes source-specific repairs; new Agenda lessons receive stable
+discovery identities without altering saved assignment keys. Embedded A3 roster
+blocks remain A3; multiple lessons in one week stay distinct. Page 02 uses lesson
+names throughout, shows A2/A3 only for Forensics, and uses each other class's one
+verified section automatically. Fresh target checks protect drafts and saves from
+stale lesson/section selections. Saved assessment histories remain intact. This
+is not a deployment or recovery-completion claim.
 
 ## Source collection: one root, not one assumed folder
 

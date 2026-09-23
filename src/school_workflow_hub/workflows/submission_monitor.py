@@ -196,6 +196,7 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
         modified = timestamp(item["modified_at"])
         record = {"name": item["name"], "modified_at": item["modified_at"],
                   "version": item.get("version"), "status": "present", "match": match,
+                  "intake_holds": list(item.get("intake_holds", [])),
                   "grace_ends_at": grace_end.isoformat() if grace_end else None}
         if prior is None:
             kind = "first_observed" if previous is None else "appeared"
@@ -275,7 +276,7 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
             return bool(day) and len(day) == 8 and modified_day < day
         return False
 
-    awaiting, review = [], []
+    awaiting, review = [], list(scan.get("intake_review", []))
     for file_id, record in sorted(files.items()):
         if record["status"] != "present":
             review.append({"file_id": file_id, "reason": "inaccessible_needs_review"})
@@ -296,6 +297,7 @@ def advance_state(previous, scan, *, mappings, due_date, due_basis="unverified",
              "timezone": TIMEZONE_NAME,
              "coverage": {"complete": True,
                           "source": scan["coverage"].get("source", source["source_kind"]),
+                          "form_source": scan["coverage"].get("form_source"),
                           "folders_checked": scan["coverage"].get("folders_checked", 0),
                           "forms_found": scan["coverage"].get("forms_found", 0),
                           "responses_checked": scan["coverage"].get("responses_checked"),

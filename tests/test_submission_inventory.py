@@ -164,3 +164,64 @@ class LessonInventoryTests(unittest.TestCase):
         bad=[]
         application({'PATH_INFO':'/api/submission-inventory','REQUEST_METHOD':'GET','QUERY_STRING':'foo=bar'},lambda s,h:bad.append(s))
         self.assertEqual(bad,['400 Bad Request'])
+
+    def test_selected_section_excludes_opposite_section_and_holds_unknown_files(self):
+        from school_workflow_hub.adapters import submission_inventory as si
+        saved = [dict(sub(FA, key='forensics:F03A', cls='forensics'), section_id='section-alpha', section_name='A2 Forensics', student_id='synthetic-a'),
+                 dict(sub(FB, key='forensics:F03A', cls='forensics'), section_id='section-beta', section_name='A3 Forensics', student_id='synthetic-b'),
+                 dict(sub(FC, key='forensics:F03A', cls='forensics'), section_id='', section_name='', student_id='synthetic-c')]
+        data = records(saved)
+        data.update(assignments=[{'class_key':'forensics','assignment_key':'forensics:F03A'}],
+            sections=[{'class_key':'forensics','section_id':'section-alpha','section_name':'A2 Forensics'},
+                      {'class_key':'forensics','section_id':'section-beta','section_name':'A3 Forensics'}])
+        with patch.object(si,'read_records',return_value=data), \
+             patch.object(si,'service_token',return_value='tok'), \
+             patch.object(si,'DriveReader',return_value=LessonReader()):
+            out=si.read_lesson_inventory('signed','forensics','forensics:F03A',{},section_id='section-alpha')
+        by_id={f['file_id']:f for f in out['files']}
+        self.assertEqual(out['section_id'],'section-alpha')
+        self.assertNotIn(FB,by_id)
+        self.assertTrue(by_id[FA]['assessment_ready'])
+        self.assertEqual(by_id[FA]['section_id'],'section-alpha')
+        self.assertEqual(by_id[FX]['status'],'needs_review')
+        self.assertFalse(by_id[FX]['assessment_ready'])
+        self.assertEqual(by_id[FC]['status'],'needs_review')
+        self.assertFalse(by_id[FC]['assessment_ready'])
+
+    def test_same_file_with_conflicting_saved_students_stays_review_only(self):
+        from school_workflow_hub.adapters import submission_inventory as si
+        for key in ('student_id', 'learner_key'):
+            same = dict(sub(FA), section_id='section-alpha', section_name='Synthetic group', **{key:'synthetic-one'})
+            data = records([same, {**same, key:'synthetic-two'}])
+            data.update(assignments=[{'class_key':'biology','assignment_key':'biology:C02'}],
+                        sections=[{'class_key':'biology','section_id':'section-alpha','section_name':'Synthetic group'}])
+            with self.subTest(key=key), patch.object(si,'read_records',return_value=data), \
+                 patch.object(si,'service_token',return_value='tok'), \
+                 patch.object(si,'DriveReader',return_value=LessonReader()):
+                out=si.read_lesson_inventory('signed','biology','biology:C02',{},section_id='section-alpha')
+            row=next(row for row in out['files'] if row['file_id']==FA)
+            self.assertEqual(row['status'],'needs_review')
+            self.assertFalse(row['assessment_ready'])
+            self.assertEqual(row['review_reason'],'assessment_identity_conflict')
+
+    def test_inventory_rejects_unknown_assignment_and_all_section_before_drive(self):
+        from school_workflow_hub.adapters import submission_inventory as si
+        data={'assignments':[{'class_key':'biology','assignment_key':'biology:C02'}],
+              'sections':[{'class_key':'biology','section_id':'section-alpha','section_name':'Synthetic group'}]}
+        with patch.object(si,'read_records',return_value=data), patch.object(si,'DriveReader') as drive:
+            for key,section in [('biology:discovery-only','section-alpha'),('biology:C02','all')]:
+                with self.subTest(key=key,section=section),self.assertRaises(ValueError):
+                    si.read_lesson_inventory('signed','biology',key,{},section_id=section)
+            drive.assert_not_called()
+
+    def test_named_lesson_section_route_passes_exact_section(self):
+        from school_workflow_hub.web import application
+        from school_workflow_hub.adapters import submission_inventory as si
+        statuses=[]
+        with patch.object(si,'read_lesson_inventory',return_value={'files':[]}) as read:
+            application({'PATH_INFO':'/api/submission-inventory','REQUEST_METHOD':'GET',
+                'QUERY_STRING':'class_key=forensics&assignment=forensics:F03A&section_id=section-alpha'},
+                lambda status,headers:statuses.append(status))
+        self.assertEqual(statuses,['200 OK'])
+        self.assertEqual(read.call_args.args[1:3],('forensics','forensics:F03A'))
+        self.assertEqual(read.call_args.kwargs,{'section_id':'section-alpha'})
