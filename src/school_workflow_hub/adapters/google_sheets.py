@@ -20,7 +20,7 @@ from .read_only_http import read_json, SourceReadError, validate_token, _NoRedir
 MAX_BYTES = 2 * 1024 * 1024
 MAX_CELLS = 5000
 GRADING_TABLE_TITLES = frozenset({"Assignments", "Submissions", "Answers", "Class summaries"})
-FIELDS = "spreadsheetId,properties(title,timeZone),sheets(properties(sheetId,title,index,hidden),data(startRow,startColumn,rowData(values(formattedValue,effectiveValue(numberValue),hyperlink,textFormatRuns(format(link(uri))),userEnteredValue(formulaValue)))))"
+FIELDS = "spreadsheetId,properties(title,timeZone),sheets(properties(sheetId,title,index,hidden),data(startRow,startColumn,rowData(values(formattedValue,effectiveValue(numberValue),hyperlink,textFormatRuns(startIndex,format(link(uri))),userEnteredValue(formulaValue)))))"
 METADATA_FIELDS = "spreadsheetId,properties(title,timeZone),sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)))"
 
 

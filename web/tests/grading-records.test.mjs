@@ -185,3 +185,15 @@ test('source discovery fixes appear in existing coverage details without a new p
  assert.match(details[0].allText,/Fictional Two: Restore reader access/);
  assert.match(details[0].allText,/Synthetic course!T6 and raw link at U6/);
 });
+test('Form response completeness is distinct from published and accepting status',()=>{
+ const state=discovery([]);state.data.coverage={complete:true,form_results:[
+  {assignment_key:'F1',complete:true,responses_checked:1,files_referenced:1,pages:1,is_published:true,is_accepting_responses:false},
+  {assignment_key:'F2',complete:true,responses_checked:0,files_referenced:0,pages:1,is_published:null,is_accepting_responses:null}]};
+ const target=root();renderRecords(target,{status:'loaded',data:fixture()},{classKey:'forensics',sectionId:'a',discovery:state});
+ const text=target.children.find(node=>node.tagName==='details').allText;
+ assert.match(text,/Form read complete · 1 responses checked/);
+ assert.match(text,/Published · responses closed/);
+ assert.match(text,/Publication unknown · response acceptance unknown/);
+ assert.match(text,/Historical responses remain separate/);
+ assert.doesNotMatch(text,/accepting responses\./);
+});

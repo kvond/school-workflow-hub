@@ -9,7 +9,7 @@ import re
 from hashlib import sha256
 from urllib.parse import urlsplit
 
-from .dated_agenda import COURSES, grid, value, link, turnin_form
+from .dated_agenda import COURSES, grid, value, link, turnin_form, explicit_assignment_forms
 from .agenda_rows import cell_links
 from .hosted_agenda import authenticated_reader, service_token, ConnectionError
 from .forms_submissions import FormsReader, FORMS_SCOPE, response_file_refs, FORM_ID
@@ -120,7 +120,7 @@ def _turnin_cell(cells, row, column):
 
 
 def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
-                  bindings, binding_errors, configuration_error, assignments):
+                  bindings, binding_errors, configuration_error, assignments, deck_bindings):
     """Read the weekly tab's visible T link and cross-check its raw U link.
 
     The observed link is retained even when a private mapping resolves an
@@ -128,6 +128,21 @@ def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
     global Form and its published /d/e/ identifier is never used as an API ID.
     """
     key = entry["assignment_key"]
+    explicit_row = explicit_assignment_forms(cells, row, title, row_entries, deck_bindings, bindings)
+    if explicit_row is not None:
+        reason = configuration_error or binding_errors.get(key) or explicit_row["error"]
+        selected = next((form for form in explicit_row["forms"] if form["assignment_key"] == key), {})
+        return {"form_url": selected.get("url", ""), "form_id": selected.get("form_id", "") if not reason else "",
+                "form_source": "private_assignment_mapping" if not reason else "",
+                "form_mapping_verified": not reason, "form_binding_ambiguous": bool(reason),
+                "form_multi_assignment_row": True,
+                "form_source_reference": f"{title}!T{row}",
+                "form_source_references": selected.get("source_references", [f"{title}!T{row}", f"{title}!U{row}"]),
+                "form_visible_url": selected.get("url", ""),
+                "form_visible_urls": explicit_row["visible_urls"], "form_raw_url": explicit_row["raw_url"],
+                "form_review_reason": reason, "assignment_label": "",
+                "form_review_action": (f"Verify one distinct Form link for each explicitly mapped assignment at {title}!T{row}; U{row} must match the primary P{row} assignment."
+                                       if reason else "")}
     visible, visible_error = _turnin_cell(cells, row, 20)
     hidden, hidden_error = _turnin_cell(cells, row, 21)
     link_error = visible_error or hidden_error
@@ -206,7 +221,8 @@ def _merge_catalog_forms(evidence):
     result["form_source_references"] = list(dict.fromkeys(
         ref for item in evidence for ref in item.get("form_source_references", [item["form_source_reference"]])))
     link_conflicts = [item for item in evidence if item["form_review_reason"] in {
-        "assignment_form_turn_in_links_disagree", "assignment_form_turn_in_link_invalid"}]
+        "assignment_form_turn_in_links_disagree", "assignment_form_turn_in_link_invalid"}
+        or (item.get("form_multi_assignment_row") and item["form_review_reason"])]
     conflicts = [item for item in evidence
                  if item["form_review_reason"] == "assignment_form_mapping_conflict"]
     if link_conflicts:
@@ -320,7 +336,7 @@ def agenda_catalog(assertion, config, records, *, class_key=None, discovery=Fals
             for entry in {item["assignment_key"]: item for item in row_entries}.values():
                 form_evidence.setdefault(entry["assignment_key"], []).append(_catalog_form(
                     entry, row_entries, cells, row, title, turnins, map_valid,
-                    forms, form_errors, form_config_error, assignments))
+                    forms, form_errors, form_config_error, assignments, bindings))
     if not registry or len(registry) > 342:
         raise ConnectionError("intake_catalog_needs_review")
     by_form = {}

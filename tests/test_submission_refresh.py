@@ -846,6 +846,40 @@ class RefreshTests(unittest.TestCase):
         self.assertIn("submission_refresh_budget_exhausted", result["files"][1]["review_reasons"])
         self.assertEqual(result["external_writes"], 0)
 
+    def test_selected_form_upload_and_active_history_read_before_unknown_root_files(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B), file_meta(FILE_C)])
+        h.refs.pop(FILE_A)
+        h.refs.pop(FILE_B)
+        h.records["submissions"] = [h.saved(FILE_B, person=1)]
+        calls, exhausted = [], False
+
+        def limited_read(token, item):
+            nonlocal exhausted
+            calls.append(item["id"])
+            if len(calls) > 2:
+                exhausted = True
+                raise ConnectionError("submission_refresh_budget_exhausted")
+            return h.texts[item["id"]]
+
+        def check():
+            if exhausted:
+                raise ConnectionError("submission_refresh_budget_exhausted")
+
+        h.drive.check = check
+        result = h.run(assignment="forensics:F03A", source_read=limited_read)
+        self.assertEqual(calls, [FILE_C, FILE_B, FILE_A])
+        rows = {row["file_id"]: row for row in result["files"]}
+        for fid in (FILE_C, FILE_B):
+            self.assertEqual(rows[fid]["content_assignment_key"], "forensics:F03A")
+            self.assertNotIn("submission_refresh_budget_exhausted", rows[fid]["review_reasons"])
+            self.assertIn("catalog_recheck_incomplete", rows[fid]["review_reasons"])
+        self.assertEqual(rows[FILE_A]["content_assignment_key"], "")
+        self.assertIn("submission_refresh_budget_exhausted", rows[FILE_A]["review_reasons"])
+        self.assertFalse(result["coverage"]["complete"])
+        self.assertTrue(all(row["discovery_status"] == "needs_review" for row in result["files"]))
+        self.assertEqual(result["external_writes"], 0)
+        self.assertEqual(result["live_model_calls"], 0)
+
     def test_final_catalog_recheck_budget_exhaustion_holds_all_preview_rows(self):
         h = Harness()
         expired = False
