@@ -23,6 +23,7 @@ const FAILURES={
  provider_request_refused:'The provider refused the request. Check the workspace spend limit and credit balance.',
  provider_unavailable:'The assessment provider could not be reached. Nothing was drafted or saved.',
  provider_draft_invalid:'The drafted output failed validation and was discarded. Generate again.',
+ assessment_column_missing:'The grading workbook needs its report columns updated before this assessment can be saved. Keep this draft; it remains stored for review.',
  provider_prompts_unavailable:'The live Agenda instructions could not be read; drafting refuses to run on stale prompts.',
  agenda_prompts_layout_changed:'The Agenda’s Workflow Prompts tab changed layout; the live instructions could not be verified.',
  assessment_manifest_missing:'This deck has no marker-inventory manifest header, so its requirements cannot be verified. It is held for manual reconciliation.',
@@ -271,7 +272,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      judgment:judgment.value,
      response_excerpt:judgment.value==='blank'?'':response.response_excerpt,
      conceptual_level:judgment.value==='blank'?'Evidence unavailable':conceptual.value,
-     explanation_level:judgment.value==='blank'?'Evidence unavailable':explanation.value,
+     explanation_level:response.rubric_version==='critical-aspect-4/v1'?'':judgment.value==='blank'?'Evidence unavailable':explanation.value,
      conceptual_feedback:feedback.value}));
     const reviewed={...packet,responses,feedback:feedbackBox.value};
     const requestId=crypto.randomUUID().replace(/-/g,'').slice(0,32);

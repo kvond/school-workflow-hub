@@ -44,6 +44,7 @@ actual writing. Vocabulary is closed:
   limits), or "Evidence unavailable". A clear explanation of an inaccurate
   relationship is "Beginning". Never label a blank answer "Beginning".
 - explanation_level: "" (do not rate explanation separately).
+- rubric_version: "critical-aspect-4/v1" for every response, including blanks.
 - critical_aspect: the name of the critical aspect this item answers, copied
   exactly from the deck's own label (a response slide titled "Your answer -
   Critical Aspect N · <name>", or "Critical aspect: <name>" on the aspect's
@@ -89,6 +90,7 @@ Return ONLY one JSON object, no prose, of this shape:
   "judgment": str, "response_excerpt": str, "evidence_note": str (<=400 chars,
   single line), "conceptual_level": str, "explanation_level": str,
   "critical_aspect": str (<=200 chars, single line),
+  "rubric_version": "critical-aspect-4/v1",
   "conceptual_feedback": str (<=1200 chars), "prompt": "", "prompt_basis": "",
   "slide_number": "", "optional": bool}],
  "feedback": str (the student report, following the teacher's feedback prompt:

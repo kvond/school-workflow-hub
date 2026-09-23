@@ -20,7 +20,7 @@ PACKET_VERSION = "hub-assessment-packet/v1"
 ASSESSMENT_VERSION = "hub-assessment-save/v1+" + POLICY_VERSION
 CLASSES = {"biology", "forensics", "anatomy"}
 JUDGMENTS = {"meaningful_attempt", "blank", "printed_copy", "review"}
-from .understanding_scale import ALL_LEVELS, UNAVAILABLE
+from .understanding_scale import ALL_LEVELS, LEVELS, SCALE_VERSION, UNAVAILABLE
 
 # New assessments use the four-level critical-aspect scale; saved records and
 # cached drafts on the earlier three-level scale stay readable.
@@ -44,7 +44,7 @@ RESPONSE_KEYS = {"question_id", "category", "judgment", "response_excerpt",
                  "conceptual_feedback", "prompt", "prompt_basis", "slide_number",
                  "optional"}
 # The critical aspect an item addresses, copied from the deck's own label.
-OPTIONAL_RESPONSE_KEYS = {"critical_aspect"}
+OPTIONAL_RESPONSE_KEYS = {"critical_aspect", "rubric_version"}
 
 
 def _text(value, limit, *, required=False, multiline=False):
@@ -179,6 +179,14 @@ def validate_packet(packet, source_text):
         _text(response["prompt"], 1200, multiline=True)
         _text(response["prompt_basis"], 200)
         _text(response.get("critical_aspect", ""), 200)
+        if "rubric_version" in response:
+            if (response["rubric_version"] != SCALE_VERSION
+                    or "critical_aspect" not in response
+                    or response["conceptual_level"] not in (*LEVELS, UNAVAILABLE)
+                    or response["explanation_level"] != ""
+                    or (response["judgment"] in {"blank", "printed_copy"}
+                        and response["conceptual_level"] != UNAVAILABLE)):
+                raise ValueError("invalid_assessment_response")
         if response["slide_number"] and not re.fullmatch(r"[0-9]{1,3}",
                                                          response["slide_number"]):
             raise ValueError("invalid_assessment_response")
@@ -402,7 +410,9 @@ def build_rows(packet, result, capture, *, now, prior_score_exact="", prior_hold
             "response_shape_id": "", "slide_number": response["slide_number"],
             "source_url": packet["source"]["url"], "source_sha256": capture["sha256"],
             "conceptual_feedback": response["conceptual_feedback"],
-            "critical_aspect": response.get("critical_aspect", ""),
+            # Old cached packets remain saveable against the old workbook.
+            # New fields require real columns; aligned_cells refuses to lose them.
+            **{key: response[key] for key in OPTIONAL_RESPONSE_KEYS if key in response},
             "assessment_date": now[:10],
             "comparison_status": packet["comparison_status"],
             "counts_toward_current_score": _flag(due),

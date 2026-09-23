@@ -12,6 +12,8 @@ from .agenda_rows import cell_links
 from .hosted_agenda import authenticated_reader, ConnectionError
 
 COURSES = (("biology", "🌿 Biology"), ("forensics", "🔬 Forensics"), ("anatomy", "🫀 A&P"))
+DECK_URL = re.compile(r"https://docs\.google\.com/presentation/d/([A-Za-z0-9_-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?")
+MAX_ASSIGNMENT_SOURCE_LINKS = 32
 
 
 def grid(data, title):
@@ -87,6 +89,52 @@ def form_cell_links(cell):
         return [], 'assignment_form_turn_in_link_invalid'
 
 
+def assignment_source_links(cells, row, deck_bindings):
+    """P is one primary deck; O may name several explicitly bound decks.
+
+    Repeated URLs for the same source are one lesson. An ordinary unbound O
+    resource remains a resource. A multi-link O cell with unknown or invalid
+    destinations is incomplete evidence, never permission to infer assignments.
+    """
+    sources, issues, seen = [], [], set()
+    for column in (16, 15):
+        try:
+            cell = cells.get((row, column), {})
+            try:
+                urls = cell_links(cell)
+            except ValueError as error:
+                if str(error) != 'computed_agenda_link_requires_review':
+                    raise
+                # The live P/O formulas derive their displayed URLs from Q/S.
+                # Read every observed effective destination, never evaluate the
+                # formula or treat its unevaluated branches as source evidence.
+                effective = dict(cell)
+                effective['userEnteredValue'] = {key: val for key, val in cell.get('userEnteredValue', {}).items()
+                                                  if key != 'formulaValue'}
+                urls = cell_links(effective)
+        except (ValueError, TypeError, AttributeError):
+            issues.append(column)
+            continue
+        if len(urls) > MAX_ASSIGNMENT_SOURCE_LINKS:
+            issues.append(column)
+            continue
+        matches = [(raw, DECK_URL.fullmatch(raw)) for raw in urls]
+        ids = {match[1] for _, match in matches if match}
+        if column == 16 and urls and (len(ids) != 1 or any(not match for _, match in matches)):
+            issues.append(column)
+            continue
+        if column == 15 and len(urls) > 1 and any(
+                not match or match[1] not in deck_bindings for _, match in matches):
+            issues.append(column)
+        for raw, match in matches:
+            if not match or (column == 15 and match[1] not in deck_bindings):
+                continue
+            if match[1] not in seen:
+                sources.append({'column': column, 'source_url': raw, 'source_deck_id': match[1]})
+                seen.add(match[1])
+    return sources, issues
+
+
 def _form_link_label(cell, target):
     """Rich-text labels are display only; Sheets offsets use UTF-16 units."""
     text = cell.get('formattedValue', '')
@@ -115,17 +163,19 @@ def explicit_assignment_forms(cells, row, title, entries, deck_bindings, form_bi
     remains the primary P Form. Published IDs cannot stand in for API IDs.
     """
     visible, visible_error = form_cell_links(cells.get((row, 20), {}))
+    sources, source_issues = assignment_source_links(cells, row, deck_bindings)
     keys = [entry['assignment_key'] for entry in entries]
-    if len(visible) <= 1 and not (len(set(keys)) > 1 and all(key in form_bindings for key in keys)):
+    if (not source_issues and len(visible) <= 1
+            and not (len(set(keys)) > 1 and all(key in form_bindings for key in keys))):
         return None
     hidden, hidden_error = form_cell_links(cells.get((row, 21), {}))
     result = {'forms': [], 'visible_urls': visible, 'raw_url': hidden[0] if len(hidden) == 1 else '',
               'error': ''}
     expected = [form_bindings.get(key) for key in keys]
-    primary_cell = cells.get((row, 16), {})
-    primary_url = link(primary_cell.get('hyperlink', '')) or link(value(cells, row, 16)) or ''
-    primary_match = re.fullmatch(r'https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?', primary_url)
-    if visible_error or hidden_error:
+    primary = next((source['source_deck_id'] for source in sources if source['column'] == 16), None)
+    if source_issues:
+        result['error'] = 'assignment_form_source_links_need_review'
+    elif visible_error or hidden_error:
         result['error'] = visible_error or hidden_error
     elif cells.get((row, 20), {}).get('userEnteredValue', {}).get('formulaValue'):
         result['error'] = 'assignment_form_turn_in_link_invalid'
@@ -134,8 +184,9 @@ def explicit_assignment_forms(cells, row, title, entries, deck_bindings, form_bi
     elif (re.sub(r'[^a-z ]', '', value(cells, 3, 20).lower()).strip() != 'turn it in'
           or value(cells, 3, 21) != '_turnInURL'):
         result['error'] = 'assignment_form_layout_changed'
-    elif (len(keys) != len(set(keys)) or not primary_match
-          or entries[0]['source_deck_id'] != primary_match[1] or any(
+    elif (len(keys) != len(set(keys)) or not primary
+          or [entry['source_deck_id'] for entry in entries] != [source['source_deck_id'] for source in sources]
+          or entries[0]['source_deck_id'] != primary or any(
             deck_bindings.get(entry['source_deck_id']) != entry['assignment_key'] for entry in entries)
           or any(not isinstance(fid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{20,128}', fid)
                  for fid in expected)):
@@ -174,13 +225,11 @@ def _day_assignment_forms(cells, row, title, course, config):
         if not all(isinstance(mapping, dict) for mapping in mappings):
             raise ValueError()
         entries = []
-        for column in (16, 15):
-            cell = cells.get((row, column), {})
-            raw = link(cell.get('hyperlink', '')) or link(value(cells, row, column)) or ''
-            match = re.fullmatch(r'https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?', raw)
-            key = decks.get(match[1]) if match else None
+        sources, _ = assignment_source_links(cells, row, decks)
+        for source in sources:
+            key = decks.get(source['source_deck_id'])
             if isinstance(key, str) and re.fullmatch(re.escape(course) + r':[A-Za-z0-9:_-]{1,128}', key):
-                entries.append({'assignment_key': key, 'source_deck_id': match[1]})
+                entries.append({'assignment_key': key, 'source_deck_id': source['source_deck_id']})
         return explicit_assignment_forms(cells, row, title, entries, decks, forms)
     except (ValueError, TypeError, AttributeError):
         return {'forms': [], 'error': 'assignment_form_mapping_invalid'}

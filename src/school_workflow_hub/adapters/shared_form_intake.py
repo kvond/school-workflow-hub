@@ -9,7 +9,8 @@ import re
 from hashlib import sha256
 from urllib.parse import urlsplit
 
-from .dated_agenda import COURSES, grid, value, link, turnin_form, explicit_assignment_forms
+from .dated_agenda import (COURSES, DECK_URL, grid, value, link, turnin_form,
+                           explicit_assignment_forms, assignment_source_links)
 from .agenda_rows import cell_links
 from .hosted_agenda import authenticated_reader, service_token, ConnectionError
 from .forms_submissions import FormsReader, FORMS_SCOPE, response_file_refs, FORM_ID
@@ -20,7 +21,6 @@ from ..core.runs import content_hash
 
 NATIVE = "application/vnd.google-apps.presentation"
 MARKER = re.compile(r"\[\[(NOTES|DRAFT|OPTIONAL|BANK):([^:\]\s]+):([^\]\r\n]+)\]\]")
-DECK_URL = re.compile(r"https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?")
 
 
 def private_mapping(config, name):
@@ -293,24 +293,26 @@ def agenda_catalog(assertion, config, records, *, class_key=None, discovery=Fals
         for row in range(4, 61):
             week, topic = value(cells, row, 1), value(cells, row, 3)
             row_entries = []
-            for column in (16, 15):
-                raw = link(cells.get((row, column), {}).get("hyperlink", "")) or link(value(cells, row, column))
-                if not raw:
-                    continue
-                match = DECK_URL.fullmatch(raw)
-                if column == 15 and (not match or match[1] not in bindings):
-                    continue  # A link alone does not make O a student assignment.
+            sources, source_issues = assignment_source_links(cells, row, bindings)
+            if source_issues and not discovery:
+                raise ConnectionError("intake_catalog_needs_review")
+            for column in source_issues:
+                catalog_issues.append({"source_reference": f"{title}!{'P' if column == 16 else 'O'}{row}",
+                    "error": "intake_catalog_needs_review",
+                    "next_action": "Verify the exact primary deck and every additional assignment deck link and binding."})
+            for source_entry in sources:
+                column, raw, source_id = (source_entry[name] for name in ("column", "source_url", "source_deck_id"))
                 number = re.fullmatch(r"(?:Wk\s*)?0*(\d{1,2})([a-z]?)", week, re.I)
-                if not match or not number or not topic:
+                if not number or not topic:
                     if discovery:
                         catalog_issues.append({"source_reference": f"{title}!{'P' if column == 16 else 'O'}{row}",
                             "error": "intake_catalog_needs_review",
                             "next_action": "Verify this Agenda row's current lesson title, week and student-deck link."})
                         continue
                     raise ConnectionError("intake_catalog_needs_review")
-                known = (discovery_assignment(course, topic, match[1], assignments, bindings)
-                         if discovery else _catalog_assignment(course, number, topic, match[1], assignments, bindings))
-                key, source_id = known["assignment_key"], match[1]
+                known = (discovery_assignment(course, topic, source_id, assignments, bindings)
+                         if discovery else _catalog_assignment(course, number, topic, source_id, assignments, bindings))
+                key = known["assignment_key"]
                 if ((source_id in by_deck and by_deck[source_id] != key)
                         or (key in by_assignment and by_assignment[key] != source_id)):
                     raise ConnectionError("intake_registry_ambiguous")

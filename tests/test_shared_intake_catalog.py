@@ -13,6 +13,7 @@ from school_workflow_hub.adapters.hosted_agenda import ConnectionError
 PRIMARY, ADDITIONAL = "p" * 24, "a" * 24
 FORM_A, FORM_B = "f" * 24, "g" * 24
 KEY_A, KEY_B = "forensics:F03-SyntheticA", "forensics:F03SyntheticB"
+THIRD, FORM_C, KEY_C = "z" * 24, "h" * 24, "forensics:F03SyntheticC"
 
 
 def url(source_id):
@@ -41,6 +42,17 @@ def named_forms(form_ids=(FORM_A, FORM_B)):
                      "format": {"link": {"uri": form_url(fid)}}})
         text += labels.get(fid, "Other assignment — submit")
     return {"formattedValue": text, "userEnteredValue": {"stringValue": text}, "textFormatRuns": runs}
+
+
+def named_decks(source_ids):
+    text, runs = "", []
+    for index, source_id in enumerate(source_ids):
+        if text:
+            runs.append({"startIndex": len(text), "format": {}})
+            text += "\n"
+        runs.append({"startIndex": len(text), "format": {"link": {"uri": url(source_id)}}})
+        text += "Synthetic additional lesson " + str(index + 1)
+    return {"formattedValue": text, "textFormatRuns": runs}
 
 
 def agenda(primary=None, additional=None, topic="Two synthetic assignments", form="", map_rows=None):
@@ -286,6 +298,113 @@ class RegistryHistoryTests(unittest.TestCase):
 
 
 class AssignmentFormCatalogTests(unittest.TestCase):
+    def triple_inputs(self):
+        data = self.visible_link(agenda(form=form_url()), **named_forms((FORM_C, FORM_A, FORM_B)))
+        rows = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")["data"][0]["rowData"]
+        rows[1]["values"][14] = named_decks((THIRD, ADDITIONAL))
+        records = registry()
+        records["assignments"].append({"assignment_key": KEY_C, "class_key": "forensics",
+                                       "assignment_title": "Synthetic third lesson"})
+        return data, records, {PRIMARY: KEY_A, ADDITIONAL: KEY_B, THIRD: KEY_C}, {
+            KEY_A: FORM_A, KEY_B: FORM_B, KEY_C: FORM_C}, rows
+
+    def test_primary_and_two_additional_decks_keep_three_named_assignment_forms(self):
+        from school_workflow_hub.adapters.assignment_form_intake import collect_assignment_forms
+        from tests.test_assignment_form_intake import Reader
+        data, records, decks, forms, _ = self.triple_inputs()
+        entries = catalog(data, records, decks, forms)
+        self.assertEqual([e["assignment_key"] for e in entries], [KEY_A, KEY_B, KEY_C])
+        self.assertEqual([e["assignment_title"] for e in entries],
+                         [e["assignment_title"] for e in records["assignments"]])
+        self.assertEqual([e["form_id"] for e in entries], [FORM_A, FORM_B, FORM_C])
+        self.assertTrue(all(e["form_mapping_verified"] for e in entries))
+        for entry in entries:
+            entry["source_text"] = source_text(entry["assignment_key"])
+        for entry in entries:
+            self.assertEqual(intake.match_deck(entry["source_text"], entries)[0]["assignment_key"], entry["assignment_key"])
+        reader = Reader({(fid, None): {"responses": []} for fid in forms.values()})
+        _, coverage = collect_assignment_forms(reader, entries)
+        self.assertEqual(set(reader.calls), {(fid, None) for fid in forms.values()})
+        self.assertEqual(coverage["forms_complete"], 3)
+
+    def test_repeated_source_urls_and_weeks_do_not_create_extra_assignments(self):
+        data, records, decks, forms, rows = self.triple_inputs()
+        rows[1]["values"][14] = named_decks((THIRD, PRIMARY, ADDITIONAL, THIRD))
+        repeated = copy.deepcopy(rows[1])
+        repeated["values"][0]["formattedValue"] = "Wk 04"
+        repeated["values"][2]["formattedValue"] = "Changed weekly display"
+        rows.append(repeated)
+        entries = catalog(data, records, decks, forms)
+        self.assertEqual([e["assignment_key"] for e in entries], [KEY_A, KEY_B, KEY_C])
+        self.assertTrue(all(e["form_mapping_verified"] for e in entries))
+        self.assertTrue(all("🔬 Forensics!T5" in e["form_source_references"] for e in entries))
+
+    def test_missing_third_form_or_reused_form_holds_all_three_bindings(self):
+        for problem in ("missing_visible", "missing_mapping", "reused"):
+            with self.subTest(problem=problem):
+                data, records, decks, forms, rows = self.triple_inputs()
+                if problem == "missing_visible":
+                    rows[1]["values"][19] = named_forms()
+                elif problem == "missing_mapping":
+                    forms.pop(KEY_C)
+                else:
+                    forms[KEY_C] = FORM_B
+                entries = catalog(data, records, decks, forms)
+                self.assertEqual(len(entries), 3)
+                self.assertTrue(all(not e["form_mapping_verified"] and not e["form_id"] for e in entries))
+
+    def test_unknown_link_in_multi_source_cell_is_visible_review_not_partial_approval(self):
+        for invalid in (url("q" * 24), "https://example.invalid/resource", "javascript:alert(1)"):
+            with self.subTest(invalid=invalid):
+                data, records, decks, forms, rows = self.triple_inputs()
+                rows[1]["values"][14]["textFormatRuns"][0]["format"]["link"]["uri"] = invalid
+                with self.assertRaisesRegex(ConnectionError, "intake_catalog_needs_review"):
+                    catalog(data, records, decks, forms)
+                reader = Mock(); reader.read.return_value = data
+                config = {"HUB_INTAKE_DECK_ASSIGNMENTS": decks, "HUB_ASSIGNMENT_FORM_IDS": forms}
+                with patch.object(intake, "authenticated_reader", return_value=(reader, "synthetic-agenda")):
+                    entries = intake.agenda_catalog(None, config, records, class_key="forensics", discovery=True)
+                self.assertTrue(all(not e["form_mapping_verified"] for e in entries))
+                self.assertTrue(any(issue["source_reference"] == "🔬 Forensics!O4" for issue in entries[0]["catalog_issues"]))
+
+    def test_primary_cannot_silently_choose_one_of_two_conflicting_sources(self):
+        for computed in (False, True):
+            with self.subTest(computed=computed):
+                data, records, decks, forms, rows = self.triple_inputs()
+                rows[1]["values"][15]["hyperlink"] = url(THIRD)
+                if computed:
+                    rows[1]["values"][15]["userEnteredValue"] = {"formulaValue": '=IF($Q4="","",REGEXEXTRACT($Q4,".+")&"/copy")'}
+                with self.assertRaisesRegex(ConnectionError, "intake_catalog_needs_review"):
+                    catalog(data, records, decks, forms)
+
+    def test_computed_p_and_o_use_observed_sources_without_mutating_or_evaluating_cells(self):
+        data = self.visible_link(agenda(form=form_url()), **named_forms())
+        row = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")["data"][0]["rowData"][1]["values"]
+        row[15] = {"formattedValue": url(PRIMARY), "hyperlink": url(PRIMARY), "userEnteredValue": {
+            "formulaValue": '=IF($Q4="","",IFERROR(REGEXEXTRACT($Q4,"https://docs.google.com/presentation/d/[^/]+")&"/copy",""))'}}
+        row[14] = {"formattedValue": "Activity ↗", "hyperlink": url(ADDITIONAL), "userEnteredValue": {
+            "formulaValue": '=IF($S4="","—",HYPERLINK($S4,"Activity ↗"))'}}
+        before = copy.deepcopy(data)
+        entries = catalog(data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+        self.assertEqual([entry["source_deck_id"] for entry in entries], [PRIMARY, ADDITIONAL])
+        self.assertEqual([entry["form_id"] for entry in entries], [FORM_A, FORM_B])
+        self.assertTrue(all(entry["form_mapping_verified"] for entry in entries))
+        self.assertEqual(data, before)
+
+    def test_computed_unbound_o_resource_and_empty_placeholders_remain_nonassignments(self):
+        from school_workflow_hub.adapters.dated_agenda import assignment_source_links
+        for observed in (url(ADDITIONAL), "https://example.invalid/article"):
+            with self.subTest(observed=observed):
+                cells = {(4, 16): {"formattedValue": url(PRIMARY)}, (4, 15): {
+                    "formattedValue": "Activity ↗", "hyperlink": observed,
+                    "userEnteredValue": {"formulaValue": '=IF($S4="","—",HYPERLINK($S4,"Activity ↗"))'}}}
+                sources, issues = assignment_source_links(cells, 4, {PRIMARY: KEY_A})
+                self.assertEqual([source["source_deck_id"] for source in sources], [PRIMARY])
+                self.assertEqual(issues, [])
+        cells = {(4, 16): {"formattedValue": "", "userEnteredValue": {"formulaValue": '=IF($Q4="","",$Q4)'}},
+                 (4, 15): {"formattedValue": "—", "userEnteredValue": {"formulaValue": '=IF($S4="","—",HYPERLINK($S4,"Activity ↗"))'}}}
+        self.assertEqual(assignment_source_links(cells, 4, {}), ([], []))
+
     def mapped_agenda(self, *, label=KEY_A, additional=None, form=None):
         return agenda(additional=additional, form=form if form is not None else form_url(),
             map_rows=[[label, "z" * 24, "🔬 Forensics", "Wk 03"]])

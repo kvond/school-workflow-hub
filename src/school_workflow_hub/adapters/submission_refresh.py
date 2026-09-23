@@ -50,6 +50,31 @@ def source_id(row):
     return candidate if FILE_ID.fullmatch(candidate) else ""
 
 
+def _same_file_observation(first, second):
+    """Compare file revisions without mistaking hidden parents for a move.
+
+    Drive's list response proves the traversed parent, but files.get can omit
+    parents for a runtime viewer. An omitted field is not a different parent.
+    When both observations expose parents they must still agree, and every
+    other field (including ID, type, trash state and revision) remains exact.
+    This does not authorize traversing an unobserved parent or grading a file.
+    """
+    left, right = dict(first), dict(second)
+    if "parents" not in left or "parents" not in right:
+        left.pop("parents", None)
+        right.pop("parents", None)
+    return left == right
+
+
+def _source_availability(item, expected_id):
+    """Current metadata evidence only; absence of access never means deleted."""
+    if not isinstance(item, dict) or item.get("id") != expected_id:
+        return "unverified"
+    if item.get("trashed") is True:
+        return "trashed"
+    return "active" if item.get("trashed") is False else "unverified"
+
+
 def discover_tree(reader, root_id):
     """Walk every page and child folder, regardless of saved submission IDs.
 
@@ -60,6 +85,7 @@ def discover_tree(reader, root_id):
     if root.get("mimeType") != FOLDER or root.get("trashed") is not False:
         raise ConnectionError("submission_folder_inactive")
     files, forms, seen, level, pages, errors = {}, set(), {root_id}, [root_id], 0, []
+    folder_parents = {root_id: []}
     try:
         for _ in range(MAX_LOCATE_DEPTH):
             if not level:
@@ -86,6 +112,9 @@ def discover_tree(reader, root_id):
                             raise ConnectionError("submission_scan_incomplete")
                         mime = item.get("mimeType")
                         if mime == FOLDER:
+                            if fid in folder_parents and folder_parents[fid] != parents:
+                                raise ConnectionError("intake_upload_changed")
+                            folder_parents[fid] = list(parents)
                             if fid not in seen:
                                 if len(seen) >= MAX_LOCATE_FOLDERS:
                                     raise ConnectionError("submission_scan_incomplete")
@@ -114,7 +143,20 @@ def discover_tree(reader, root_id):
         errors.append(_code(error, "submission_source_unavailable"))
     return list(files.values()), {"drive_complete": not errors,
         "folders_checked": len(seen), "pages_checked": pages,
-        "errors": sorted(set(errors)), "folder_ids": sorted(seen), "form_file_ids": sorted(forms)}
+        "errors": sorted(set(errors)), "folder_ids": sorted(seen),
+        "folder_parents": folder_parents, "form_file_ids": sorted(forms)}
+
+
+def _files_below_folder(files, folder_id, folder_parents):
+    """Reuse observed traversal edges; never guess a lesson from a name."""
+    descendants = {folder_id}
+    while True:
+        children = {fid for fid, parents in folder_parents.items()
+                    if set(parents) & descendants} - descendants
+        if not children:
+            break
+        descendants.update(children)
+    return [item for item in files if set(item.get("parents", [])) & descendants]
 
 
 def discover_form_sources(drive, catalog, refs, found, root_coverage):
@@ -125,7 +167,7 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
     retain their readable evidence and an explicit repair action.
     """
     merged = {item["id"]: item for item in found}
-    results, errors, folder_cache = [], [], {}
+    results, errors, folder_cache, assignment_files = [], [], {}, {}
     root_files = set(merged)
     complete_folders = set(root_coverage.get("folder_ids", [])) if root_coverage["drive_complete"] else set()
     for entry in catalog:
@@ -135,6 +177,7 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
         result = {"assignment_key": entry["assignment_key"], "source_kind": "form_upload_folders",
                   "form_id": form_id, "complete": False, "error": None,
                   "folders_checked": 0, "pages_checked": 0, "files_checked": 0}
+        scoped_files = assignment_files.setdefault(entry["assignment_key"], set())
         try:
             form = drive.form(form_id)
             folders = assignment_forms.upload_folders(form)
@@ -145,6 +188,8 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
             for folder_id in folders:
                 if folder_id in complete_folders:
                     result["folders_checked"] += 1
+                    scoped_files.update(item["id"] for item in _files_below_folder(
+                        found, folder_id, root_coverage.get("folder_parents", {})))
                     continue
                 if folder_id not in folder_cache:
                     try:
@@ -155,7 +200,6 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
                 files, coverage = folder_cache[folder_id]
                 result["folders_checked"] += coverage["folders_checked"]
                 result["pages_checked"] += coverage["pages_checked"]
-                result["files_checked"] += len(files)
                 source_errors.extend(coverage["errors"])
                 for item in files:
                     if item["id"] in merged and merged[item["id"]] != item:
@@ -163,6 +207,7 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
                     if item["id"] not in merged and len(merged) >= MAX_FILES:
                         raise ConnectionError("submission_scan_incomplete")
                     merged[item["id"]] = item
+                    scoped_files.add(item["id"])
             result["complete"] = not source_errors
             if source_errors:
                 result["error"] = source_errors[0]
@@ -171,12 +216,15 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
             result["error"] = _code(error, "submission_source_unavailable")
             errors.append(result["error"])
         result["next_action"] = assignment_forms.next_action(result["error"])
+        result["files_checked"] = len(scoped_files)
         results.append(result)
     unlocated = set(refs) - set(merged)
     for fid in sorted(unlocated):
         ref = refs[fid]
+        availability = "unavailable"
         try:
             item = drive.metadata(fid)
+            availability = _source_availability(item, fid)
             if item.get("id") != fid or item.get("trashed") is not False:
                 raise ConnectionError("submission_folder_inactive")
             if item.get("mimeType") in {FOLDER, SHORTCUT, FORM}:
@@ -192,13 +240,15 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
             # a source version, score or missing-work conclusion.
             if len(merged) < MAX_FILES:
                 merged[fid] = {"id": fid, "name": ref.get("form_name", ""),
-                               "mimeType": ref.get("form_mime_type", ""), "source_error": code}
+                               "mimeType": ref.get("form_mime_type", ""), "source_error": code,
+                               "source_availability": availability}
             results.append({"assignment_key": ref.get("assignment_key", ""),
                             "source_kind": "form_reference", "complete": False, "error": code,
                             "source_url": "https://drive.google.com/file/d/" + fid + "/view",
                             "next_action": assignment_forms.next_action(code)})
     return list(merged.values()), {"upload_folders_complete": not any(not r["complete"] for r in results),
         "source_results": results, "errors": sorted(set(errors)),
+        "form_upload_file_ids": {key: sorted(ids) for key, ids in assignment_files.items()},
         "form_refs_outside_root": len(set(refs) - root_files) if root_coverage["drive_complete"] else 0,
         "form_refs_unlocated": len(set(refs) - set(merged)) + sum("source_error" in item for item in merged.values())}
 
@@ -220,6 +270,7 @@ def discover_saved_sources(drive, records, class_key, selected, found):
     results, errors, checked = [], [], 0
     for fid in sorted(set(by_file) - set(merged)):
         code = None
+        availability = "unavailable"
         if len(merged) >= MAX_FILES:
             errors.append("submission_scan_incomplete")
             break
@@ -227,6 +278,7 @@ def discover_saved_sources(drive, records, class_key, selected, found):
             drive.check()
             checked += 1
             item = drive.metadata(fid)
+            availability = _source_availability(item, fid)
             if item.get("id") != fid or item.get("trashed") is not False:
                 raise ConnectionError("submission_folder_inactive")
             if item.get("mimeType") in {FOLDER, SHORTCUT, FORM}:
@@ -235,7 +287,8 @@ def discover_saved_sources(drive, records, class_key, selected, found):
         except ConnectionError as error:
             code = _code(error, "submission_source_unavailable")
             errors.append(code)
-            merged[fid] = {"id": fid, "name": "", "mimeType": "", "source_error": code}
+            merged[fid] = {"id": fid, "name": "", "mimeType": "", "source_error": code,
+                           "source_availability": availability}
         for key in sorted(by_file[fid]):
             results.append({"assignment_key": key, "source_kind": "saved_source",
                             "source_url": "https://drive.google.com/file/d/" + fid + "/view",
@@ -358,6 +411,8 @@ def refresh(assertion, payload, config):
     except ConnectionError as error:
         errors.append(_code(error, "submission_form_unavailable"))
     found, sources = discover_form_sources(drive, scoped_catalog, refs, found, coverage)
+    form_upload_file_ids = sources.pop("form_upload_file_ids")
+    form_upload_files = {fid for ids in form_upload_file_ids.values() for fid in ids}
     errors.extend(sources.pop("errors"))
     coverage.update(sources)
     found, saved_sources = discover_saved_sources(drive, records, class_key, selected, found)
@@ -365,6 +420,7 @@ def refresh(assertion, payload, config):
     coverage["source_results"].extend(saved_sources.pop("source_results"))
     coverage.update(saved_sources)
     coverage.pop("folder_ids", None)
+    coverage.pop("folder_parents", None)
     roster, sections, roster_complete = [], {}, False
     try:
         drive.check()
@@ -397,22 +453,33 @@ def refresh(assertion, payload, config):
         fid = source_id(row)
         if fid:
             by_file.setdefault(fid, []).append(row)
+    selected_source_files = set(refs) | form_upload_files | {
+        fid for fid, history in by_file.items() if any(
+            row.get("class_key") == class_key and selected in ("all", row.get("assignment_key"))
+            for row in history)}
     output = []
-    ignored_non_decks = 0
+    ignored_non_decks = unscoped_decks = deck_contents_checked = 0
     def read_priority(item):
         fid = item["id"]
         if fid in refs:
             return (0, fid)  # Current selected Form uploads must not wait behind loose files.
+        if fid in form_upload_files:
+            # Imported/moved files in an exact current Form upload tree are
+            # worth reading first even without a response. This is scheduling
+            # evidence only; identity and content matching remain mandatory.
+            return (1, fid)
         active_scope = any(row.get("class_key") == class_key
                            and selected in ("all", row.get("assignment_key"))
                            and row.get("status") != "superseded"
                            for row in by_file.get(fid, []))
-        return (1 if active_scope and not item.get("source_error") else 2, fid)
+        return (2 if active_scope and not item.get("source_error") else 3, fid)
 
     for item in sorted(found, key=read_priority):
         fid = item["id"]
+        availability = item.get("source_availability", _source_availability(item, fid))
+        content_read = False
         history = by_file.get(fid, [])
-        if selected != "all" and history and fid not in refs:
+        if selected != "all" and history and fid not in refs and fid not in form_upload_files:
             saved_scopes = {(row.get("class_key"), row.get("assignment_key")) for row in history}
             if ((class_key, selected) not in saved_scopes
                     and all(row.get("status") in {"assessed", "roster_matched", "superseded"} for row in history)):
@@ -461,10 +528,10 @@ def refresh(assertion, payload, config):
         section = str(sections.get(person["section_name"], "")) if person else ""
         if person and not section:
             holds.append("section_mapping_unverified")
-        # This reference came from a Form bound to the selected class. A
-        # respondent from another class is a visible mismatch, not a reason
-        # to hide the upload or assign that learner to this class.
-        if person and ref and person["class_key"] != class_key:
+        # An exact Form reference/upload tree belongs to the selected class.
+        # A conflicting saved/respondent identity remains visible for review;
+        # it must not assign another class's learner to the selected class.
+        if person and (ref or fid in form_upload_files) and person["class_key"] != class_key:
             holds.append("roster_form_class_disagreement")
             person, section = None, ""
         lesson = None
@@ -475,15 +542,30 @@ def refresh(assertion, payload, config):
                      and e["assignment_key"] == form_lesson["assignment_key"]]
         if item.get("source_error"):
             holds.append(item["source_error"])
+        elif selected != "all" and fid not in selected_source_files:
+            # Preserve root-visible metadata for review without spending the
+            # selected lesson's content budget on unrelated/unbound decks.
+            # Folder membership affects the read scope, never identity or an
+            # assessment target. All-lessons discovery still reads broadly.
+            holds.append("submission_assignment_source_unverified")
+            unscoped_decks += 1
         elif candidates:
             try:
+                availability = "unavailable"
                 before = drive.metadata(fid)
-                if before != item:
+                availability = _source_availability(before, fid)
+                if availability != "active" or not _same_file_observation(before, item):
                     raise ConnectionError("intake_upload_changed")
-                lesson, reason = intake.match_deck(drive.read_deck(item), candidates)
-                if drive.metadata(fid) != before:
+                source_text = drive.read_deck(item)
+                deck_contents_checked += 1
+                lesson, reason = intake.match_deck(source_text, candidates)
+                availability = "unavailable"
+                after = drive.metadata(fid)
+                availability = _source_availability(after, fid)
+                if availability != "active" or not _same_file_observation(after, before):
                     lesson = None
                     raise ConnectionError("intake_upload_changed")
+                content_read = True
                 if reason:
                     holds.append(reason)
             except ConnectionError as error:
@@ -546,6 +628,7 @@ def refresh(assertion, payload, config):
             "learner_key": person["learner_key"] if person else "",
             "display_name": (person["first"] + " " + person["last"]) if person else "",
             "discovery_status": state, "review_reasons": sorted(set(holds)),
+            "source_availability": availability, "content_read": content_read,
             "modified_at": item.get("modifiedTime", ""), "version": str(item.get("version") or ""),
             "saved_record_ids": [r["record_id"] for r in history],
             "saved_assignment_keys": sorted(k for k in previous if k),
@@ -579,7 +662,8 @@ def refresh(assertion, payload, config):
             errors.append(code)
             coverage["upload_folders_complete"] = False
             for row in output:
-                if result["form_id"] in row["form_ids"]:
+                if (result["form_id"] in row["form_ids"]
+                        or row["file_id"] in form_upload_file_ids.get(result["assignment_key"], [])):
                     row["review_reasons"] = sorted(set(row["review_reasons"] + [code]))
                     row["discovery_status"] = "needs_review"
     if original_catalog:
@@ -596,6 +680,9 @@ def refresh(assertion, payload, config):
                 row["discovery_status"] = "needs_review"
     coverage.update(form_complete=form_complete, roster_complete=roster_complete,
                     catalog_complete=catalog_complete, files_checked=len(found),
+                    deck_contents_checked=deck_contents_checked,
+                    unscoped_deck_content_skipped=unscoped_decks,
+                    content_scope="all_discovered_sources" if selected == "all" else "selected_submission_sources",
                     catalog_results=catalog_results,
                     ignored_non_deck_files=ignored_non_decks,
                     errors=sorted(set(errors)), complete=not errors)

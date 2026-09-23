@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine,validateDiscovery,createDiscoveryLoader} from '../submission-monitor.mjs';
+import {validateStatus,describeFailure,renderStatus,mountSubmissionMonitor,deadlineLine,validateDiscovery,createDiscoveryLoader,validateCatalog,createCatalogLoader} from '../submission-monitor.mjs';
 
 class Element{
  constructor(doc,tag){this.ownerDocument=doc;this.tagName=tag;this.children=[];this.textContent='';this.attributes={};this.listeners={};this.disabled=false;}
@@ -126,14 +126,60 @@ test('read-only discovery rejects wrong scopes, effects, duplicate files and unk
  const repeated=freshDiscovery();repeated.files.push({...repeated.files[0]});assert.throws(()=>validateDiscovery(repeated,discoveryScope));
  const unknown=freshDiscovery();unknown.files[0].discovery_status='assessed';assert.throws(()=>validateDiscovery(unknown,discoveryScope));
  const scoped=freshDiscovery({assignment_key:'selected'});assert.throws(()=>validateDiscovery(scoped,{classKey:'forensics',assignmentKey:'selected'}));
+ for(const patch of [{source_availability:'missing'},{content_read:'true'},{content_read:true,source_availability:'trashed'},{content_read:true}]){
+  const malformed=freshDiscovery();Object.assign(malformed.files[0],patch);assert.throws(()=>validateDiscovery(malformed,discoveryScope));
+ }
+ const readable=freshDiscovery();Object.assign(readable.files[0],{source_availability:'active',content_read:true});assert.equal(validateDiscovery(readable,discoveryScope),readable);
 });
 test('Refresh uses only the read-only discovery endpoint with exact assignment scope',async()=>{
  const calls=[],states=[];const loader=createDiscoveryLoader({fetcher:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>freshDiscovery()};},onState:s=>states.push(s)});
  await loader.load(discoveryScope);assert.deepEqual(states.map(s=>s.status),['loading','loaded']);
  assert.equal(calls.length,1);assert.equal(calls[0].url,'/api/submission-monitor/refresh');assert.equal(calls[0].options.method,'POST');assert.deepEqual(JSON.parse(calls[0].options.body),{class_key:'forensics',assignment_key:'all'});assert.equal(calls[0].options.credentials,'same-origin');assert.equal(calls[0].options.cache,'no-store');
 });
-test('scope changes cancel stale discovery and failures discard the previous preview',async()=>{
+test('scope changes cancel stale discovery and an uncached failure has no preview',async()=>{
  const waiting=[],states=[];const loader=createDiscoveryLoader({fetcher:(_url,options)=>new Promise(resolve=>waiting.push({resolve,options})),onState:s=>states.push(s)});
  const old=loader.load(discoveryScope);loader.clear();assert.equal(waiting[0].options.signal.aborted,true);waiting[0].resolve({ok:true,json:async()=>freshDiscovery()});assert.equal(await old,null);assert.equal(states.at(-1).status,'empty');
  const next=loader.load(discoveryScope);waiting[1].resolve({ok:false,json:async()=>({error:'submission_form_access_required'})});await next;assert.equal(states.at(-1).status,'error');assert.equal(states.at(-1).data,undefined);
+});
+test('pending reads deduplicate and cached previews remain scoped through errors and stale completions',async()=>{
+ const waiting=[],states=[];
+ const loader=createDiscoveryLoader({fetcher:(_url,options)=>new Promise(resolve=>waiting.push({resolve,options})),onState:s=>states.push(s)});
+ const a={classKey:'forensics',assignmentKey:'fictional-lesson'},b={classKey:'forensics',assignmentKey:'other-lesson'};
+ const result=(scope,name)=>freshDiscovery({assignment_key:scope.assignmentKey,files:[{...freshDiscovery().files[0],assignment_key:scope.assignmentKey,name}]});
+ const old=loader.load(a);assert.equal(loader.load(a),old);assert.equal(waiting.length,1);
+ waiting[0].resolve({ok:true,json:async()=>result(a,'Earlier A')});await old;
+ const changed=loader.load(b);assert.equal(states.at(-1).data,undefined,'A cannot appear in B');
+ const back=loader.load(a);assert.equal(states.at(-1).status,'loading');assert.equal(states.at(-1).data.files[0].name,'Earlier A');
+ waiting[1].resolve({ok:true,json:async()=>result(b,'Stale B')});await changed;
+ assert.equal(states.at(-1).data.files[0].name,'Earlier A','late B cannot replace the selected A preview');
+ waiting[2].resolve({ok:false,json:async()=>({error:'submission_form_unavailable'})});await back;
+ assert.equal(states.at(-1).status,'error');assert.equal(states.at(-1).data.files[0].name,'Earlier A');
+ loader.clear();assert.equal(states.at(-1).status,'empty');
+ const retry=loader.load(a);assert.equal(states.at(-1).data.files[0].name,'Earlier A','clearing the visible scope preserves its memory cache');
+ waiting[3].resolve({ok:true,json:async()=>result(a,'Current A')});await retry;
+ assert.equal(states.at(-1).data.files[0].name,'Current A');
+});
+test('authentication failures purge cached private previews, including a non-JSON sign-in response',async()=>{
+ const states=[];let mode='success';
+ const loader=createDiscoveryLoader({fetcher:async()=>mode==='success'?{ok:true,json:async()=>freshDiscovery()}:{ok:false,status:403,json:async()=>{throw Error('html sign in');}},onState:s=>states.push(s)});
+ await loader.load(discoveryScope);mode='expired';await loader.load(discoveryScope);
+ assert.equal(states.at(-1).authExpired,true);assert.equal(states.at(-1).data,undefined);assert.match(states.at(-1).message,/sign-in expired/);
+ mode='success';const retry=loader.load(discoveryScope);assert.equal(states.at(-1).data,undefined,'private cache is gone');await retry;
+ loader.clear({purge:true});const afterPurge=loader.load(discoveryScope);assert.equal(states.at(-1).data,undefined);await afterPurge;
+});
+function catalog(classKey='forensics'){return {schema_version:'hub-submission-catalog/v1',provenance:'source_read',external_writes:0,live_model_calls:0,class_key:classKey,checked_at:'2026-09-23T12:00:00Z',coverage:{complete:true,issues:[]},assignments:[{class_key:classKey,assignment_key:'discovery:'+classKey+':'+'b'.repeat(32),assignment_title:'New synthetic lesson',discovery_only:true}]};}
+test('lesson catalog accepts only authenticated scope-shaped metadata and unique assignment identities',()=>{
+ assert.equal(validateCatalog(catalog(),'forensics').assignments.length,1);
+ for(const patch of [{class_key:'biology'},{external_writes:1},{live_model_calls:1},{checked_at:'invalid'},{coverage:{}}])assert.throws(()=>validateCatalog({...catalog(),...patch},'forensics'));
+ const repeated=catalog();repeated.assignments.push({...repeated.assignments[0]});assert.throws(()=>validateCatalog(repeated,'forensics'));
+ const wrongClass=catalog();wrongClass.assignments[0].class_key='biology';assert.throws(()=>validateCatalog(wrongClass,'forensics'));
+});
+test('lesson catalog uses GET only and stale class responses never replace the current selector',async()=>{
+ const waiting=[],states=[];const loader=createCatalogLoader({fetcher:(url,options)=>new Promise(resolve=>waiting.push({url,options,resolve})),onState:s=>states.push(s)});
+ const first=loader.load('forensics');assert.equal(loader.load('forensics'),first);
+ const second=loader.load('biology');assert.equal(waiting[0].options.signal.aborted,true);
+ assert.equal(waiting[1].url,'/api/submission-catalog?class_key=biology');assert.equal(waiting[1].options.method,undefined);assert.equal(waiting[1].options.body,undefined);
+ waiting[1].resolve({ok:true,json:async()=>catalog('biology')});await second;
+ waiting[0].resolve({ok:true,json:async()=>catalog()});await first;
+ assert.equal(states.at(-1).data.class_key,'biology');
 });

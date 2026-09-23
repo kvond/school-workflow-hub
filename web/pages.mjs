@@ -4,7 +4,7 @@ import {showRunInstructions} from './browser-runs.mjs';
 import {buildPostingReview,renderPostingReview} from './grade-posting.mjs';
 import {createCompanionClient,companionMessage} from './browser-companion.mjs';
 import {mountControlPanel} from './control-panel.mjs';
-import {createDiscoveryLoader} from './submission-monitor.mjs';
+import {createDiscoveryLoader,createCatalogLoader} from './submission-monitor.mjs';
 import {mountAssessmentReview} from './assessment-review.mjs';
 import {mountIcGradeSheet} from './ic-grade-sheet.mjs';
 const $=id=>document.getElementById(id);
@@ -33,12 +33,49 @@ function agendaPrompts(refresh=false){
 async function copyPrompt(kind){const titles={completion:'Completion check',feedback:'Student feedback',summary:'Teacher class summary'};$('detail-title').textContent=titles[kind];const body=$('detail-body');body.replaceChildren(el('p','Loading your supplied instructions…'));$('detail').showModal();try{const r=await fetch('./teacher-prompts.json',{cache:'no-store'});if(!r.ok)throw Error();const p=await r.json();const live=await agendaPrompts(true);const original=live.prompts[kind];const lesson=selectedLesson();const context=lesson?'Selected lesson context:\nClass: '+classes[scope.classKey]+'\nLesson: '+lesson.assignment_title+'\nLesson deck: '+(lesson.source_url||'Not supplied')+'\nTurn-in folder: '+(lesson.destination_folder_url||'Not supplied')+'\nStudent evidence: supply privately; the dashboard has not collected it.\n\n':'';const workflow=kind==='completion'?p.workflows?.due_completion?.instructions:'';if(kind==='completion'&&typeof workflow!=='string')throw Error();const text=typeof original==='string'?context+(workflow||'')+original:original;if(typeof text!=='string')throw Error();const area=el('textarea');area.readOnly=true;area.value=text;area.setAttribute('aria-label',titles[kind]+' instructions');const status=el('p','','hint'),copy=btn('Copy instructions',async()=>{try{await navigator.clipboard.writeText(text);status.textContent='Copied instructions.';}catch{area.focus();area.select();status.textContent='Use your browser’s copy command on the selected text.';}});body.replaceChildren(el('p',`${live.source}. ${live.change_rule} ${live.alignment_review_needed?"Agenda prompts differ from the packaged version: review the matching skills and Agenda pages before execution.":""} This is not a running job.`),area,copy,status,el('p','Agenda prompt fingerprint: '+live.sha256[kind],'hint'));}catch{body.replaceChildren(el('p','Agenda instructions could not be loaded. Retry or open the Agenda prompt link. Nothing was executed.','error'));}}
 
 const classes={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy'};
-let scope={date:$('date').value,classKey:'biology',assignmentKey:'all',stage:'all',data:null,loading:false,error:''};
-let recordState={status:'empty'},sectionId='',sectionSelectionExplicit=false,sectionSelect,sectionLabel,lessonSelect,workSelect;
-let discoveryState={status:'empty'},discoveryLoader;
+const selectionStorageKey='hub-page2-selection/v1';
+function restoredSelection(){
+ try{
+  const value=JSON.parse(sessionStorage.getItem(selectionStorageKey));
+  if(!classes[value?.classKey]||typeof value.assignmentKey!=='string'||!value.assignmentKey||value.assignmentKey.length>128||typeof value.sectionId!=='string'||value.sectionId.length>128||!['all','initial','final'].includes(value.stage))return null;
+  return value;
+ }catch{return null;}
+}
+const restored=restoredSelection();
+let scope={date:$('date').value,classKey:restored?.classKey||'biology',assignmentKey:restored?.assignmentKey||'all',stage:restored?.stage||'all',data:null,loading:false,error:''};
+let recordState={status:'empty'},sectionId=restored?.sectionId||'',sectionSelectionExplicit=Boolean(restored?.sectionId),sectionSelect,sectionLabel,lessonSelect,workSelect;
+let discoveryState={status:'empty'},discoveryLoader,lastAutomaticScope='';
+let catalogState={status:'empty'},catalogLoader,lastCatalogClass='';
+const discoveredAssignments=new Map();
+function rememberAssignments(data,replace=false){
+ if(replace)for(const [key,value]of discoveredAssignments)if(value.class_key===data.class_key)discoveredAssignments.delete(key);
+ for(const assignment of data.assignments||[])if(assignment.class_key===data.class_key&&assignment.assignment_key)discoveredAssignments.set(assignment.class_key+'\0'+assignment.assignment_key,{...assignment,discovery_only:true});
+}
+function expirePrivateView(){
+ recordState={status:'error',message:'Sign in again to read your private grading records.'};discoveredAssignments.clear();
+ discoveryLoader.clear({purge:true});resetProcess();
+}
+function rememberSelection(){
+ // Only the teacher's filters survive a reload. No submissions are stored here.
+ try{sessionStorage.setItem(selectionStorageKey,JSON.stringify({classKey:scope.classKey,assignmentKey:scope.assignmentKey,sectionId,stage:scope.stage}));}catch{}
+}
 function resetDiscoveryForSelection(){
+ lastAutomaticScope='';
  const current=discoveryState.data?{classKey:discoveryState.data.class_key,assignmentKey:discoveryState.data.assignment_key}:discoveryState.scope;
- if(current&&(current.classKey!==scope.classKey||(current.assignmentKey!=='all'&&current.assignmentKey!==scope.assignmentKey)))discoveryLoader?.clear();
+ if(current&&(current.classKey!==scope.classKey||(scope.assignmentKey!=='all'&&current.assignmentKey!==scope.assignmentKey)))discoveryLoader?.clear();
+}
+function ensureDiscoveryForSelection(){
+ // Discovery-only identities are source-derived, exact keys. On reload the
+ // server must reproduce this key from the current Agenda before returning it.
+ const discoveryTarget=new RegExp('^discovery:'+scope.classKey+':[a-f0-9]{32}$').test(scope.assignmentKey);
+ if(location.hash!=='#feedback'||recordState.status!=='loaded'||scope.assignmentKey==='all'||(!selectedLesson()&&!discoveryTarget))return;
+ const key=JSON.stringify([scope.classKey,scope.assignmentKey]);
+ if(lastAutomaticScope===key)return;
+ lastAutomaticScope=key;discoveryLoader.load({classKey:scope.classKey,assignmentKey:scope.assignmentKey});
+}
+function ensureCatalogForSelection(){
+ if(location.hash!=='#feedback'||recordState.status!=='loaded'||lastCatalogClass===scope.classKey)return;
+ lastCatalogClass=scope.classKey;catalogLoader.load(scope.classKey);
 }
 const views=[];
 // Page 02 uses one stable lesson selection for viewing and assessing work.
@@ -46,11 +83,11 @@ function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='';sectionSelectionExplicit=false;scope.assignmentKey='all';resetDiscoveryForSelection();resetProcess();renderScope();renderPrivateRecords();});classLabel.append(select);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='';sectionSelectionExplicit=false;scope.assignmentKey='all';resetDiscoveryForSelection();resetProcess();renderScope();renderPrivateRecords();ensureCatalogForSelection();ensureDiscoveryForSelection();});classLabel.append(select);
  sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');
  sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;sectionSelectionExplicit=true;resetProcess();renderPrivateRecords()});sectionLabel.append(sectionSelect);
  const lessonLabel=el('label','Lesson name');lessonSelect=el('select');lessonSelect.setAttribute('aria-label','Feedback lesson');lessonSelect.append(el('option','All lessons'));lessonSelect.firstChild.value='all';
- lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;resetDiscoveryForSelection();resetProcess();renderPrivateRecords()});lessonLabel.append(lessonSelect);
+ lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;resetDiscoveryForSelection();resetProcess();renderPrivateRecords();ensureDiscoveryForSelection()});lessonLabel.append(lessonSelect);
  const workLabel=el('label','Work');workSelect=el('select');workSelect.setAttribute('aria-label','Feedback checkpoint');for(const [v,name]of [['all','Notes & drafts'],['initial','Notes'],['final','Drafts']]){const o=el('option',name);o.value=v;workSelect.append(o);}workSelect.value=scope.stage;
  workSelect.addEventListener('change',()=>{scope.stage=workSelect.value;resetProcess();renderPrivateRecords()});workLabel.append(workSelect);
  bar.append(classLabel,sectionLabel,lessonLabel,workLabel);
@@ -61,7 +98,12 @@ function scopeBar(target,page){
  target.append(bar,advanced);views.push({select,context,notice});
  return advanced;
 }
-function displayedRecords(){return recordState.status==='loaded'?recordsWithDiscovery(recordState.data,discoveryState):null;}
+function displayedRecords(){
+ if(recordState.status!=='loaded')return null;
+ const data=recordsWithDiscovery(recordState.data,discoveryState),assignments=[...(data.assignments||[])],known=new Set(assignments.map(a=>a.class_key+'\0'+a.assignment_key));
+ for(const [key,assignment]of discoveredAssignments)if(!known.has(key))assignments.push(assignment);
+ return {...data,assignments};
+}
 function selectedLesson(){return displayedRecords()?.assignments?.find(a=>a.class_key===scope.classKey&&a.assignment_key===scope.assignmentKey);}
 function selectedSection(){return recordState.status==='loaded'?verifiedSectionOptions(recordState.data,scope.classKey).find(([id])=>id===sectionId):null;}
 function renderScope(){
@@ -92,6 +134,7 @@ const feedback=$('page-feedback');compactHeading(feedback,'Submissions & feedbac
 feedback.append(el('p','Choose the class/section, lesson name, and Notes or Drafts to review that lesson’s student work, grade it, and print feedback. Assessing brand-new submissions is inside “Assess new submissions” above.','hint'));
 const feedbackGrid=el('div',undefined,'section-grid');
 const queue=el('section',undefined,'surface wide');const qhead=el('div',undefined,'section-heading');qhead.append(el('h2','Student work'));promptAction(qhead,'Copy completion instructions','completion');queue.append(qhead);
+const catalogNotice=el('p','','hint');catalogNotice.setAttribute('role','status');queue.append(catalogNotice);
 const feedbackResults=el('div');feedbackResults.setAttribute('aria-live','polite');queue.append(feedbackResults);
 // Directly below the Student work table: the same saved records as a spreadsheet
 // to type into Infinite Campus by hand. Reads what is already loaded — it never
@@ -185,7 +228,7 @@ const summary=$('page-summary');compactHeading(summary,'Teacher summary');summar
 const summaryActions=el('div',undefined,'action-row summary-actions');promptAction(summaryActions,'Copy class-summary instructions','summary');summary.append(summaryActions);
 const summaryResults=el('div',undefined,'section-grid');summaryResults.setAttribute('aria-live','polite');summary.append(summaryResults);
 function renderPrivateRecords(){
- const displayed=recordState.status==='loaded'?recordsWithDiscovery(recordState.data,discoveryState):null;
+ const displayed=displayedRecords();
  if(sectionSelect){
   const options=recordState.status==='loaded'?verifiedSectionOptions(recordState.data,scope.classKey):[];
   const priorLabel=[...sectionSelect.children].find(option=>option.value===sectionId)?.textContent;
@@ -209,15 +252,18 @@ function renderPrivateRecords(){
   lessonSelect.value=scope.assignmentKey;lessonSelect.disabled=recordState.status!=='loaded';
  }
  if(workSelect)workSelect.value=scope.stage;
+ catalogNotice.textContent=catalogState.classKey!==scope.classKey?'':catalogState.status==='loading'?'Checking the current Agenda lesson list…':catalogState.status==='error'?catalogState.message:catalogState.status==='loaded'&&!catalogState.data.coverage.complete?'Some Agenda lesson links need review; verified lesson choices remain available.':'';
+ rememberSelection();
  renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId,assignmentKey:scope.assignmentKey,stage:scope.stage,discovery:discoveryState,includeUnresolved:true});renderSummaries(summaryResults,recordState);renderScope();
 }
-const retrieveRecords=createRecordsLoader({onState:state=>{if(state.status==='loading')resetProcess();recordState=state;renderPrivateRecords()}});
-discoveryLoader=createDiscoveryLoader({onState:state=>{if(state.status==='loading')resetProcess();discoveryState=state;renderPrivateRecords()}});
-qhead.append(btn('Refresh submissions',async()=>{const requested={classKey:scope.classKey,assignmentKey:scope.assignmentKey};await discoveryLoader.load(requested);if(scope.classKey===requested.classKey&&(requested.assignmentKey==='all'||scope.assignmentKey===requested.assignmentKey))await retrieveRecords();}));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));
+const retrieveRecords=createRecordsLoader({onState:state=>{if(state.authExpired)expirePrivateView();if(state.status==='loading')resetProcess();recordState=state;renderPrivateRecords();if(state.status==='loaded'){ensureCatalogForSelection();ensureDiscoveryForSelection()}}});
+discoveryLoader=createDiscoveryLoader({onState:state=>{if(state.authExpired)expirePrivateView();if(state.status==='loading')resetProcess();if(state.status==='loaded')rememberAssignments(state.data);discoveryState=state;renderPrivateRecords()}});
+catalogLoader=createCatalogLoader({onState:state=>{if(state.authExpired)expirePrivateView();if(state.status==='loaded')rememberAssignments(state.data,true);catalogState=state;renderPrivateRecords();if(state.status==='loaded')ensureDiscoveryForSelection()}});
+qhead.append(btn('Refresh submissions',()=>{catalogLoader.load(scope.classKey);if(scope.assignmentKey==='all'){for(const view of views)view.notice.textContent='Choose a lesson name to check its current submissions. All lessons shows saved work and previews already read.';return;}return discoveryLoader.load({classKey:scope.classKey,assignmentKey:scope.assignmentKey});}));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));
 function loadResults(){renderPrivateRecords();}
 renderScope();loadResults();retrieveRecords();
 const research=$('page-research');heading(research,'Research workspace','Keep research evidence separate from student-facing feedback. Reuse versioned instructions and the same private workflow records.');const rg=el('div',undefined,'section-grid');const instructions=panel('Shared research instructions','A relevant skill was located in your answerable-skills repository. Its referenced codebook and current applicability still need review before research execution is enabled.');instructions.append(link('Open versioned research workflow ↗',researchURL),el('p','Pinned repository version · access requires your repository permissions. This is an instruction source, not the student-data store.','hint'));actions(instructions,btn('Run research workflow',null,true));const evidence=panel('Evidence & coding record','Research observations must link back to approved private evidence and the applied instruction version. Unknown response timing remains unknown.');metrics(evidence,['Accepted observations','Needs review','Verified evidence links']);empty(evidence,'Research data not connected','There is no student research data in this preview or its source files.');const history=panel('Provenance & review history','The shared backend holds the persistent record. This page will display its accepted results and unresolved reviews, without creating a second store.',true);history.append(el('p','Instruction/codebook acceptance: Pending · Authenticated data access: Not verified · Last run: Not checked','readiness'));rg.append(instructions,evidence,history);research.append(rg);
 mountControlPanel($('page-control'));
 
-function navigate(){const requested=location.hash.slice(1);const page=allowed.includes(requested)?requested:'control';for(const id of allowed)$('page-'+id).hidden=id!==page;for(const a of document.querySelectorAll('[data-page]')){if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');}document.title=`${{control:'Control panel',agenda:'Teaching Agenda',feedback:'Submissions & feedback',summary:'Teacher summary',research:'Research'}[page]} · Agenda`;}
+function navigate(){const requested=location.hash.slice(1);const page=allowed.includes(requested)?requested:'control';for(const id of allowed)$('page-'+id).hidden=id!==page;for(const a of document.querySelectorAll('[data-page]')){if(a.dataset.page===page)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');}document.title=`${{control:'Control panel',agenda:'Teaching Agenda',feedback:'Submissions & feedback',summary:'Teacher summary',research:'Research'}[page]} · Agenda`;if(page==='feedback'){ensureCatalogForSelection();ensureDiscoveryForSelection();}}
 window.addEventListener('hashchange',navigate);navigate();

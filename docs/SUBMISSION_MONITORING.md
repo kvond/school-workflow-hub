@@ -219,6 +219,38 @@ returning a saved draft. Reopening the matching saved draft reuses it; moving fr
 Notes to Drafts can require a separate assessment even when the source is unchanged.
 These controls preserve separate A2/A3 histories; they do not rewrite old rows.
 
+Opening Page 02 with a known exact lesson, or selecting one, starts the read-only
+submission check automatically. `GET /api/submission-catalog?class_key=…` reads
+only assignment-registry and Agenda metadata to list current lessons, including
+source-derived discovery keys before any upload exists. It does not read student
+answers, roster rows, Form responses or submitted decks. A restored exact discovery
+key is revalidated against the current Agenda by the submission reader.
+Only the class, stable lesson key, section and
+checkpoint filters survive a tab reload; student data is never stored in browser
+storage. Recent previews stay in a bounded memory cache. During a recheck or
+failure the same lesson's earlier preview stays visible and is explicitly held
+as unverified. Pending requests are deduplicated and late responses cannot
+replace the selected scope. All lessons shows saved records plus the previously
+read preview; Refresh in that view updates lesson names without starting a broad
+student-source scan. Choose a lesson to refresh its submissions. Sign-in failure
+removes the private preview cache and saved records from the visible view.
+
+The table counts matched students, current source files and saved records
+separately. A readable-file count requires active metadata and a successful
+content read with unchanged metadata afterward (`source_availability=active`,
+`content_read=true`). Exact trashed or inaccessible saved sources remain listed
+as unavailable historical references, separate from readable files. Other
+unverified or unread content stays in its own count. A cached preview labels
+these observations as previous checks; none imply a current assessment.
+Files with no established source link to the selected lesson remain
+in an expandable, counted review list. Unverified identity within an established
+lesson source remains in the main table; known other-section records stay out.
+The saved-record projection accepts canonical `initial` / `final` checkpoints
+and the documented legacy `initial_NOTES_checkpoint` as Notes. It preserves the
+original value in `assessment_stage_source`. Unknown historical checkpoints stay
+visible for review, held and uncounted; free text never becomes Drafts by guess.
+Unscored `roster_matched` intake can remain unclassified before its first assessment.
+
 ## Open live acceptance and source discovery
 
 PR #39 contains code and synthetic regression tests, not a deployment. The

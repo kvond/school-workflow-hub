@@ -112,6 +112,22 @@ explanation descriptors are retired for new assessments. Records saved under
 them stay readable and are never converted; they do not share a graph line
 with the four-level scale (rubric version `critical-aspect-4/v1`).
 
+Every new response stores `rubric_version: critical-aspect-4/v1` alongside
+`critical_aspect`. Printed graphs require that explicit version; shared level
+names or aspect labels do not prove which scale was used. Unversioned records
+remain printable but do not enter the new graph. History joins require a
+verified learner identity, exclude held/unverified work, and use the report's
+school year through its assessment date. Unavailable evidence breaks a line.
+
+Before deploying this change, add `critical_aspect` and `rubric_version` headers
+to the existing private workbook's Answers tab, preserving all existing data.
+The reader accepts the extra columns. A new assessment cannot save without
+them: the writer refuses to discard evidence fields. Older cached packets do
+not acquire either field automatically and still save against older headers.
+After deployment and a verified save/readback, update the live Agenda feedback
+prompt with the teacher-approved v3 wording. No live workbook or Agenda edit is
+performed by this code change.
+
 **Voice (teacher decision September 23, 2026):** the report speaks to the
 student as "you" and quotes the student's exact words in quotation marks. It
 never writes sentences as if the student were saying them. The only

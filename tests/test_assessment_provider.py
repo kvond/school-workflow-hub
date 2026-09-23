@@ -46,6 +46,24 @@ def request():
 
 
 class ProviderTests(unittest.TestCase):
+    def test_four_level_draft_keeps_explicit_rubric_on_recovery_and_workbook_rows(self):
+        import json
+        base = packet()
+        for response in base["responses"]:
+            response.update(rubric_version="critical-aspect-4/v1",
+                            critical_aspect="Fictional aspect", explanation_level="")
+            if response["judgment"] in {"blank", "printed_copy"}:
+                response["conceptual_level"] = "Evidence unavailable"
+        with drafting(json.dumps({"responses": base["responses"], "feedback": "Your answer explains the idea."})):
+            result = provider.draft(None, request(), CONFIG)
+            cached = provider.draft(None, request(), CONFIG)
+        self.assertTrue(cached["cached"])
+        from school_workflow_hub.workflows import assessment_records as ar
+        saved = result["packet"]
+        rows = ar.build_rows(saved, ar.completion(saved), CAPTURE, now="2026-09-18T15:05:00+00:00")
+        self.assertTrue(all(a["rubric_version"] == "critical-aspect-4/v1" for a in rows["answers"]))
+        self.assertEqual(cached["packet"], saved)
+
     def test_configuration_requires_a_key_shape_and_never_echoes_it(self):
         self.assertFalse(provider.configured({}))
         self.assertFalse(provider.configured({"HUB_ANTHROPIC_API_KEY": "wrong"}))

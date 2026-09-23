@@ -224,7 +224,12 @@ class RefreshTests(unittest.TestCase):
         for fid in (FILE_A, FILE_B):
             self.assertEqual(rows[fid]["discovery_status"], "needs_review")
             self.assertEqual(rows[fid]["version"], "")
+            self.assertFalse(rows[fid]["content_read"])
+        self.assertEqual(rows[FILE_A]["source_availability"], "trashed")
+        self.assertEqual(rows[FILE_B]["source_availability"], "unavailable")
         self.assertEqual(rows[FILE_C]["discovery_status"], "new_ungraded")
+        self.assertEqual(rows[FILE_C]["source_availability"], "active")
+        self.assertTrue(rows[FILE_C]["content_read"])
         self.assertFalse(result["coverage"]["saved_sources_complete"])
         self.assertFalse(result["coverage"]["complete"])
         self.assertTrue(h.drive.items[FILE_A]["trashed"])
@@ -381,6 +386,8 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["file_id"], FILE_A)
         self.assertEqual(row["assignment_key"], "forensics:F03A")
         self.assertEqual(row["version"], "")
+        self.assertEqual(row["source_availability"], "unavailable")
+        self.assertFalse(row["content_read"])
         self.assertEqual(row["discovery_status"], "needs_review")
         self.assertIn("submission_folder_access_required", row["review_reasons"])
         self.assertFalse(result["coverage"]["complete"])
@@ -431,13 +438,18 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(result["files"][0]["discovery_status"], "needs_review")
 
     def test_form_structure_change_during_discovery_holds_only_its_uploads(self):
-        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        other_folder = "y" * 24
+        items = [file_meta(FILE_A, FOLDER), file_meta(FILE_B, other_folder)]
+        folders = [{"id": fid, "mimeType": refresh.FOLDER, "parents": [ROOT], "trashed": False}
+                   for fid in (FOLDER, other_folder)]
+        h = Harness(items, {((ROOT,), None): {"files": folders},
+                            ((FOLDER, other_folder), None): {"files": items}})
         h.route(FILE_B, person=1, assignment=1)
-        original = h.drive.form
         def changed(form_id, *, fresh=False):
-            value = original(form_id)
-            value["revisionId"] = "changed" if fresh and form_id == FORM_A else "original"
-            return value
+            return {"formId": form_id,
+                    "revisionId": "changed" if fresh and form_id == FORM_A else "original",
+                    "items": [{"questionItem": {"question": {"fileUploadQuestion": {
+                        "folderId": FOLDER if form_id == FORM_A else other_folder}}}}]}
         h.drive.form = changed
         result = h.run()
         self.assertFalse(result["coverage"]["complete"])
@@ -569,6 +581,10 @@ class RefreshTests(unittest.TestCase):
         h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
         h.route(FILE_B, assignment=1)
         h.records["submissions"] = [h.saved(FILE_B, assignment=1)]
+        h.drive.items[FOLDER] = {"id": FOLDER, "mimeType": refresh.FOLDER, "trashed": False}
+        h.drive.pages[((FOLDER,), None)] = {"files": []}
+        h.drive.form = lambda form_id, **kwargs: {"formId": form_id, "items": [
+            {"questionItem": {"question": {"fileUploadQuestion": {"folderId": FOLDER}}}}]}
         calls = []
         def source(token, item):
             calls.append(item["id"])
@@ -576,6 +592,52 @@ class RefreshTests(unittest.TestCase):
         result = h.run(assignment=h.catalog[0]["assignment_key"], source_read=source)
         self.assertEqual(calls, [FILE_A])
         self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A])
+
+    def test_moved_import_in_selected_form_folder_retains_other_saved_lesson_conflict(self):
+        h = Harness()
+        h.refs.clear()
+        h.records["submissions"] = [h.saved(assignment=1)]
+        row = h.run(assignment="forensics:F03A")["files"][0]
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["saved_assignment_keys"], ["forensics:F03B"])
+        self.assertIn("saved_assignment_conflict", row["review_reasons"])
+        self.assertEqual(row["discovery_status"], "needs_review")
+
+    def test_moved_import_in_selected_form_folder_retains_cross_class_identity_hold(self):
+        h = Harness()
+        h.refs.clear()
+        h.roster[0]["class_key"] = "biology"
+        saved = h.saved()
+        saved.update(class_key="biology", assignment_key="biology:synthetic")
+        h.records["submissions"] = [saved]
+        row = h.run(assignment="forensics:F03A")["files"][0]
+        self.assertEqual(row["class_key"], "forensics")
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["student_id"], "")
+        self.assertEqual(row["section_id"], "")
+        self.assertIn("roster_form_class_disagreement", row["review_reasons"])
+        self.assertIn("saved_assignment_conflict", row["review_reasons"])
+
+    def test_imported_saved_identity_is_held_if_final_form_folder_readback_changes_or_fails(self):
+        for error in (None, "submission_form_access_required"):
+            with self.subTest(error=error):
+                h = Harness()
+                h.refs.clear()
+                h.records["submissions"] = [h.saved()]
+                def form(form_id, *, fresh=False):
+                    if fresh and error:
+                        raise ConnectionError(error)
+                    return {"formId": form_id, "items": [{"questionItem": {"question": {
+                        "fileUploadQuestion": {"folderId": FOLDER if fresh else ROOT}}}}]}
+                h.drive.form = form
+                result = h.run(assignment="forensics:F03A")
+                row = result["files"][0]
+                self.assertEqual(row["content_assignment_key"], "forensics:F03A")
+                self.assertEqual(row["form_ids"], [])
+                self.assertEqual(row["discovery_status"], "needs_review")
+                self.assertIn(error or "submission_form_changed", row["review_reasons"])
+                self.assertFalse(result["coverage"]["complete"])
+                self.assertFalse(result["coverage"]["upload_folders_complete"])
 
     def test_missing_assignment_binding_does_not_fall_back_to_global_form(self):
         h = Harness()
@@ -829,6 +891,97 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["content_assignment_key"], "")
         self.assertEqual(row["discovery_status"], "needs_review")
         self.assertIn("intake_upload_changed", row["review_reasons"])
+        self.assertEqual(row["source_availability"], "active")
+        self.assertFalse(row["content_read"])
+
+    def test_export_failure_does_not_claim_readable_content_from_active_metadata(self):
+        h = Harness()
+        row = h.run(source_read=ConnectionError("uploaded_deck_unreadable"))["files"][0]
+        self.assertEqual(row["source_availability"], "active")
+        self.assertFalse(row["content_read"])
+        self.assertIn("uploaded_deck_unreadable", row["review_reasons"])
+
+    def test_latest_source_metadata_controls_availability_after_content_read(self):
+        for trashed in (True, None):
+            with self.subTest(trashed=trashed):
+                h = Harness()
+                def changed(token, item):
+                    if trashed:
+                        h.drive.items[item["id"]]["trashed"] = True
+                    else:
+                        del h.drive.items[item["id"]]
+                    return h.texts[item["id"]]
+                row = h.run(source_read=changed)["files"][0]
+                self.assertEqual(row["source_availability"], "trashed" if trashed else "unavailable")
+                self.assertFalse(row["content_read"])
+                self.assertEqual(row["discovery_status"], "needs_review")
+
+    def test_trashed_current_form_reference_is_not_a_readable_or_historical_submission(self):
+        h = Harness([])
+        h.route(FILE_A)
+        h.drive.items[FILE_A] = {**file_meta(), "trashed": True}
+        row = h.run()["files"][0]
+        self.assertEqual(row["source_availability"], "trashed")
+        self.assertFalse(row["content_read"])
+        self.assertEqual(row["saved_record_ids"], [])
+        self.assertTrue(h.drive.items[FILE_A]["trashed"])
+
+    def test_imported_deck_is_read_when_get_omits_listed_parent(self):
+        h = Harness()
+        h.refs.clear()  # An imported deck has no current Form response.
+        metadata = h.drive.metadata
+        def viewer_metadata(fid):
+            result = metadata(fid)
+            if fid == FILE_A:
+                result.pop("parents", None)
+            return result
+        h.drive.metadata = viewer_metadata
+        read = Mock(side_effect=lambda token, item: h.texts[item["id"]])
+        result = h.run(assignment="forensics:F03A", source_read=read)
+        row = result["files"][0]
+        self.assertEqual(read.call_count, 1)
+        self.assertEqual(row["content_assignment_key"], "forensics:F03A")
+        self.assertEqual(row["review_reasons"], ["form_identity_unavailable"])
+        self.assertEqual(row["section_id"], "")
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertEqual(row["source_availability"], "active")
+        self.assertTrue(row["content_read"])
+        self.assertTrue(result["coverage"]["drive_complete"])
+        self.assertEqual(h.files[0]["parents"], [ROOT])
+
+    def test_missing_get_parent_does_not_hide_changed_file_evidence(self):
+        for field, value in (("id", FILE_B), ("version", "2"),
+                             ("modifiedTime", CHECKED), ("trashed", True),
+                             ("mimeType", intake.PPTX), ("name", "Changed name")):
+            with self.subTest(field=field):
+                h = Harness()
+                h.refs.clear()
+                h.drive.items[FILE_A].pop("parents")
+                h.drive.items[FILE_A][field] = value
+                read = Mock()
+                row = h.run(assignment="forensics:F03A", source_read=read)["files"][0]
+                read.assert_not_called()
+                self.assertEqual(row["content_assignment_key"], "")
+                self.assertIn("intake_upload_changed", row["review_reasons"])
+
+    def test_observed_parent_change_during_deck_read_is_held(self):
+        h = Harness()
+        def moved(token, item):
+            h.drive.items[item["id"]]["parents"] = [FOLDER]
+            return h.texts[item["id"]]
+        row = h.run(source_read=moved)["files"][0]
+        self.assertEqual(row["content_assignment_key"], "")
+        self.assertIn("intake_upload_changed", row["review_reasons"])
+
+    def test_parent_visibility_change_during_read_is_not_a_revision_change(self):
+        h = Harness()
+        h.refs.clear()
+        def hidden_parent(token, item):
+            h.drive.items[item["id"]].pop("parents")
+            return h.texts[item["id"]]
+        row = h.run(assignment="forensics:F03A", source_read=hidden_parent)["files"][0]
+        self.assertEqual(row["content_assignment_key"], "forensics:F03A")
+        self.assertEqual(row["review_reasons"], ["form_identity_unavailable"])
 
     def test_upload_budget_exhaustion_preserves_partial_review_preview(self):
         h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
@@ -847,7 +1000,12 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(result["external_writes"], 0)
 
     def test_selected_form_upload_and_active_history_read_before_unknown_root_files(self):
-        h = Harness([file_meta(FILE_A), file_meta(FILE_B), file_meta(FILE_C)])
+        folder = {"id": FOLDER, "mimeType": refresh.FOLDER, "parents": [ROOT], "trashed": False}
+        items = [file_meta(FILE_A), file_meta(FILE_B), file_meta(FILE_C, FOLDER)]
+        h = Harness(items, {((ROOT,), None): {"files": items[:2] + [folder]},
+                            ((FOLDER,), None): {"files": [items[2]]}})
+        h.drive.form = lambda form_id, **kwargs: {"formId": form_id, "items": [
+            {"questionItem": {"question": {"fileUploadQuestion": {"folderId": FOLDER}}}}]}
         h.refs.pop(FILE_A)
         h.refs.pop(FILE_B)
         h.records["submissions"] = [h.saved(FILE_B, person=1)]
@@ -867,18 +1025,119 @@ class RefreshTests(unittest.TestCase):
 
         h.drive.check = check
         result = h.run(assignment="forensics:F03A", source_read=limited_read)
-        self.assertEqual(calls, [FILE_C, FILE_B, FILE_A])
+        self.assertEqual(calls, [FILE_C, FILE_B])
         rows = {row["file_id"]: row for row in result["files"]}
         for fid in (FILE_C, FILE_B):
             self.assertEqual(rows[fid]["content_assignment_key"], "forensics:F03A")
             self.assertNotIn("submission_refresh_budget_exhausted", rows[fid]["review_reasons"])
-            self.assertIn("catalog_recheck_incomplete", rows[fid]["review_reasons"])
         self.assertEqual(rows[FILE_A]["content_assignment_key"], "")
-        self.assertIn("submission_refresh_budget_exhausted", rows[FILE_A]["review_reasons"])
-        self.assertFalse(result["coverage"]["complete"])
-        self.assertTrue(all(row["discovery_status"] == "needs_review" for row in result["files"]))
+        self.assertIn("submission_assignment_source_unverified", rows[FILE_A]["review_reasons"])
+        self.assertEqual(rows[FILE_A]["source_availability"], "active")
+        self.assertFalse(rows[FILE_A]["content_read"])
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual(result["coverage"]["deck_contents_checked"], 2)
+        self.assertEqual(result["coverage"]["unscoped_deck_content_skipped"], 1)
         self.assertEqual(result["external_writes"], 0)
         self.assertEqual(result["live_model_calls"], 0)
+
+    def test_nested_form_folder_import_is_read_before_unrelated_root_budget_is_spent(self):
+        child = "y" * 24
+        folder = {"id": FOLDER, "mimeType": refresh.FOLDER, "parents": [ROOT], "trashed": False}
+        nested = {"id": child, "mimeType": refresh.FOLDER, "parents": [FOLDER], "trashed": False}
+        unrelated, imported = file_meta(FILE_A), file_meta(FILE_B, child)
+        h = Harness([unrelated, imported], {
+            ((ROOT,), None): {"files": [unrelated, folder]},
+            ((FOLDER,), None): {"files": [nested]},
+            ((child,), None): {"files": [imported]}})
+        h.refs.clear()
+        h.drive.form = lambda form_id, **kwargs: {"formId": form_id, "items": [
+            {"questionItem": {"question": {"fileUploadQuestion": {"folderId": FOLDER}}}}]}
+        calls = []
+        def limited_read(token, item):
+            calls.append(item["id"])
+            if len(calls) > 1:
+                raise ConnectionError("submission_refresh_budget_exhausted")
+            return h.texts[item["id"]]
+        result = h.run(assignment="forensics:F03A", source_read=limited_read)
+        self.assertEqual(calls, [FILE_B])
+        rows = {row["file_id"]: row for row in result["files"]}
+        self.assertEqual(rows[FILE_B]["content_assignment_key"], "forensics:F03A")
+        self.assertEqual(rows[FILE_B]["review_reasons"], ["form_identity_unavailable"])
+        self.assertEqual(rows[FILE_B]["section_id"], "")
+        self.assertEqual(rows[FILE_B]["form_ids"], [])
+        self.assertIn("submission_assignment_source_unverified", rows[FILE_A]["review_reasons"])
+        source = result["coverage"]["source_results"][0]
+        self.assertTrue(source["complete"])
+        self.assertEqual(source["files_checked"], 1)
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertNotIn("folder_parents", result["coverage"])
+        self.assertNotIn("form_upload_file_ids", result["coverage"])
+        self.assertEqual(sum(call == ("children", (FOLDER,), None) for call in h.drive.calls), 1)
+        self.assertEqual((result["external_writes"], result["live_model_calls"]), (0, 0))
+
+    def test_unreferenced_import_from_form_folder_outside_root_is_prioritized(self):
+        h = Harness([file_meta(FILE_A)])
+        h.refs.clear()
+        h.drive.items[FOLDER] = {"id": FOLDER, "mimeType": refresh.FOLDER, "trashed": False}
+        imported = file_meta(FILE_B, FOLDER)
+        h.drive.items[FILE_B] = imported
+        h.texts[FILE_B] = h.catalog[0]["source_text"]
+        h.drive.pages[((FOLDER,), None)] = {"files": [imported]}
+        h.drive.form = lambda form_id, **kwargs: {"formId": form_id, "items": [
+            {"questionItem": {"question": {"fileUploadQuestion": {"folderId": FOLDER}}}}]}
+        calls = []
+        def read(token, item):
+            calls.append(item["id"])
+            return h.texts[item["id"]]
+        result = h.run(assignment="forensics:F03A", source_read=read)
+        self.assertEqual(calls, [FILE_B])
+        row = next(row for row in result["files"] if row["file_id"] == FILE_B)
+        self.assertEqual(row["review_reasons"], ["form_identity_unavailable"])
+        self.assertEqual(result["coverage"]["source_results"][0]["files_checked"], 1)
+
+    def test_ten_moved_imports_are_read_and_rechecked_without_exporting_unrelated_root_decks(self):
+        imported = [file_meta("imported" + str(n).zfill(17), FOLDER) for n in range(10)]
+        unrelated = [file_meta("other" + str(n).zfill(19)) for n in range(20)]
+        folder = {"id": FOLDER, "mimeType": refresh.FOLDER, "parents": [ROOT], "trashed": False}
+        h = Harness(imported + unrelated, {
+            ((ROOT,), None): {"files": unrelated + [folder]},
+            ((FOLDER,), None): {"files": imported}})
+        h.refs.clear()
+        form_reads = []
+        def form(form_id, *, fresh=False):
+            form_reads.append((form_id, fresh))
+            return {"formId": form_id, "items": [{"questionItem": {"question": {
+                "fileUploadQuestion": {"folderId": FOLDER}}}}]}
+        h.drive.form = form
+        calls = []
+        def read(token, item):
+            calls.append(item["id"])
+            if len(calls) > 10:
+                raise ConnectionError("submission_refresh_budget_exhausted")
+            return h.texts[item["id"]]
+        result = h.run(assignment="forensics:F03A", source_read=read)
+        self.assertEqual(set(calls), {item["id"] for item in imported})
+        self.assertEqual(len(calls), 10)
+        self.assertEqual(len(result["files"]), 30)
+        for row in result["files"]:
+            if row["file_id"] in calls:
+                self.assertEqual(row["content_assignment_key"], "forensics:F03A")
+                self.assertEqual(row["review_reasons"], ["form_identity_unavailable"])
+            else:
+                self.assertEqual(row["content_assignment_key"], "")
+                self.assertIn("submission_assignment_source_unverified", row["review_reasons"])
+            self.assertEqual(row["student_id"], "")
+            self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn((FORM_A, True), form_reads)
+        self.assertEqual(len(h.catalog_calls), 2)
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual(result["coverage"]["content_scope"], "selected_submission_sources")
+        self.assertEqual(result["coverage"]["deck_contents_checked"], 10)
+        self.assertEqual(result["coverage"]["unscoped_deck_content_skipped"], 20)
+        self.assertEqual(result["coverage"]["source_results"][0]["files_checked"], 10)
+        all_calls = []
+        h.run(source_read=lambda token, item: (all_calls.append(item["id"]), h.texts[item["id"]])[1])
+        self.assertEqual(len(all_calls), 30)  # All-lessons still performs broad discovery.
 
     def test_final_catalog_recheck_budget_exhaustion_holds_all_preview_rows(self):
         h = Harness()

@@ -82,7 +82,7 @@ test('held or superseded scores never display zero; actual zero remains valid',(
 test('private answer text renders literally and identity-held records are visible outside counts',()=>{
  const data=fixture();data.submissions[1].answers=[{question_id:'q1',stage:'NOTES',response:'<script>fictional</script>',conceptual_level:'Developing',explanation_level:'Names idea'}];
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics'});
- assert.match(target.allText,/1 students with matched submissions/);
+ assert.match(target.allText,/1 matched students in this selection/);
  assert.match(target.allText,/F\., Blair/);assert.match(target.allText,/<script>fictional<\/script>/);
  assert.match(target.allText,/Excluded from class counts/);assert.doesNotMatch(target.allText,/8 \/ 10/);
 });
@@ -100,8 +100,102 @@ test('late request cannot overwrite more recent refresh',async()=>{
  assert.equal(waiting[1].options.cache,'no-store');assert.equal(waiting[1].options.credentials,'same-origin');
 });
 
-function discovered(overrides={}){return {file_id:'fictional-file-a',source_url:'https://docs.google.com/presentation/d/fictional-file-a/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'F1',assignment_title:'Fictional One',section_id:'a',section_name:'Period A',student_id:'one',display_name:'Alex F.',discovery_status:'changed_since_assessment',review_reasons:[],modified_at:'2026-09-03T12:00:00Z',version:'2',...overrides};}
+function discovered(overrides={}){return {file_id:'fictional-file-a',source_url:'https://docs.google.com/presentation/d/fictional-file-a/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'F1',assignment_title:'Fictional One',section_id:'a',section_name:'Period A',student_id:'one',display_name:'Alex F.',discovery_status:'changed_since_assessment',review_reasons:[],modified_at:'2026-09-03T12:00:00Z',version:'2',source_availability:'active',content_read:true,...overrides};}
 function discovery(files){return {status:'loaded',data:{class_key:'forensics',assignment_key:'all',discovered_at:'2026-09-04T12:00:00Z',coverage:{complete:true},files}};}
+test('current-source counts include new matched students and separate unrelated metadata without mixing sections',()=>{
+ const state=discovery([
+  discovered({file_id:'new-target',student_id:'new-student',discovery_status:'new_ungraded'}),
+  discovered({file_id:'held-target',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']}),
+  discovered({file_id:'other-section',section_id:'b',name:'Other period work'}),
+  discovered({file_id:'loose-file',name:'Loose metadata only',class_key:'',assignment_key:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['submission_assignment_source_unverified']})
+ ]);state.data.assignment_key='F1';
+ const data=fixture();data.submissions=[];
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+ const walk=n=>[n,...n.children.flatMap(walk)],main=walk(target).find(n=>n.tagName==='table'&&n.attributes['aria-label']==='Submissions by class and section');
+ assert.match(target.allText,/1 matched students in this selection · 2 readable source files · 0 saved records/);
+ assert.doesNotMatch(main.allText,/Loose metadata only|Other period work/);
+ assert.match(main.allText,/Identity needs matching/,'in-scope unverified work remains visible');
+ const bucket=target.children.find(n=>n.tagName==='details'&&n.children[0]?.textContent==='Other files needing a lesson match (1)');
+ assert.ok(bucket);assert.match(bucket.allText,/Loose metadata only/);assert.match(bucket.allText,/content was not read/);
+ assert.doesNotMatch(target.allText,/Other period work/);
+});
+test('matched counts preserve roster identity before an IC student number is available',()=>{
+ const data=fixture();data.submissions=[{...data.submissions[0],student_id:'',learner_key:'fictional-roster',count_key:'roster:fictional-roster',status:'roster_matched'}];
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true});
+ assert.match(target.allText,/1 matched students in this selection/);
+});
+test('ten readable files and four unavailable historical references stay distinct and all remain reviewable',()=>{
+ const active=Array.from({length:10},(_,i)=>discovered({file_id:'active-'+i,name:'Current synthetic deck '+i,student_id:'',display_name:'',section_id:'',section_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']}));
+ const old=Array.from({length:4},(_,i)=>discovered({file_id:'old-'+i,name:'Historical reference '+i,student_id:'',display_name:'',section_id:'',section_name:'',assignment_key:'',assignment_title:'',source_availability:i===3?'unavailable':'trashed',content_read:false,saved_record_ids:['saved-'+i],discovery_status:'needs_review',review_reasons:['submission_folder_inactive','assessment_revision_unverified']}));
+ const state=discovery([...active,...old]);state.data.assignment_key='F1';
+ const data=fixture();data.submissions=[];const before=structuredClone(state),target=root();
+ renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+ assert.match(target.allText,/10 readable source files · 4 unavailable historical references · 0 saved records/);
+ assert.doesNotMatch(target.allText,/14 (current|readable) source files/);
+ for(const file of [...active,...old])assert.ok(target.allText.includes(file.name),'all references stay visible');
+ assert.match(target.allText,/Source was in Trash at its last check; retained here for history and review/);
+ assert.match(target.allText,/Source could not be read at its last check/);
+ assert.deepEqual(state,before);assert.equal(data.submissions.length,0);
+});
+test('metadata-only and failed content reads never enter readable file counts',()=>{
+ const files=[discovered({file_id:'failed-read',content_read:false}),discovered({file_id:'legacy-response',source_availability:undefined,content_read:undefined}),discovered({file_id:'unavailable-new',source_availability:'unavailable',content_read:false,saved_record_ids:[]})];
+ const data=fixture();data.submissions=[];const target=root();
+ renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:discovery(files)});
+ assert.match(target.allText,/0 readable source files · 3 other source references needing verification/);
+ assert.doesNotMatch(target.allText,/unavailable historical references/);
+});
+test('cached preview stays visible but explicitly unverified while loading or after failure',()=>{
+ const original=discovery([discovered({discovery_status:'new_ungraded'})]),snapshot=structuredClone(original),data=fixture();data.submissions=[];
+ for(const status of ['loading','error']){
+  const state={...original,status,message:'Source unavailable.'},shown=recordsWithDiscovery(data,state),target=root();
+  assert.equal(shown.submissions[0].discovery.discovery_status,'needs_review');assert.equal(shown.submissions[0].content_score,null);
+  renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+  assert.match(target.allText,/Fictional deck/);assert.match(target.allText,/Earlier preview/);assert.match(target.allText,/1 previously readable source files/);
+  assert.doesNotMatch(target.allText,/Discovery source read complete|Submissions discovered/);
+ }
+ assert.deepEqual(original,snapshot,'pending/error projection never mutates the verified cache');
+});
+test('canonical legacy Notes are visible in A2 while unknown checkpoints stay reviewable and A3 stays separate',()=>{
+ const data=fixture();data.submissions=[
+  {...data.submissions[0],assessment_stage:'initial',assessment_stage_source:'initial_NOTES_checkpoint'},
+  {...data.submissions[1],assignment_key:'F1',assessment_stage:'initial',assessment_stage_source:'initial_NOTES_checkpoint'},
+  {...data.submissions[0],record_id:'unknown',assessment_stage:'',assessment_stage_source:'unspecified completion review',assessment_stage_review_reason:'assessment_stage_unverified',hold_reason:'assessment_stage_unverified',included_in_counts:false}
+ ];
+ assert.deepEqual(filterReviewRecords(data,'forensics','a','F1','initial').map(r=>r.record_id),['one','unknown']);
+ assert.deepEqual(filterReviewRecords(data,'forensics','a','F1','final').map(r=>r.record_id),['unknown']);
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',stage:'initial',includeUnresolved:true});
+ assert.match(target.allText,/Assessment checkpoint needs review/);assert.doesNotMatch(target.allText,/F\., Blair/);
+});
+test('an unverified discovery filename is visible outside details as literal source text, never learner identity',()=>{
+ const filename='<img src=x onerror="fictional()"> Morgan example.pptx';
+ const state=discovery([discovered({name:filename,class_key:'',assignment_key:'',assignment_title:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']})]);
+ const data=fixture(),before=structuredClone(data),target=root();
+ renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+ const walk=n=>[n,...n.children.flatMap(walk)];
+ const table=walk(target).find(n=>n.tagName==='table');
+ const student=walk(table).find(n=>n.tagName==='td'&&n.children.some(c=>c.textContent==='File: '+filename));
+ assert.ok(student,'filename is in the main student/source cell');
+ assert.equal(student.children.find(n=>n.tagName==='strong').textContent,'Identity needs matching');
+ const source=student.children.find(n=>n.textContent==='File: '+filename);
+ assert.equal(source.tagName,'p');assert.equal(source.children.length,0);
+ assert.equal(walk(target).some(n=>n.tagName==='img'),false);
+ assert.ok(!walk(target).filter(n=>n.tagName==='details').some(n=>n.allText.includes(filename)));
+ const shown=recordsWithDiscovery(data,state).submissions.at(-1);
+ assert.equal(shown.student_id,'');assert.equal(shown.section_id,'');assert.equal(shown.included_in_counts,false);assert.equal(shown.content_score,null);
+ assert.deepEqual(data,before);
+});
+test('coverage distinguishes listed metadata from read content and unscoped decks',()=>{
+ const state=discovery([]);state.data.assignment_key='F1';
+ state.data.coverage={complete:false,files_checked:47,deck_contents_checked:10,unscoped_deck_content_skipped:34,content_scope:'selected_submission_sources'};
+ const target=root();renderRecords(target,{status:'loaded',data:fixture()},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',discovery:state});
+ const details=target.children.find(n=>n.tagName==='details');
+ assert.match(details.allText,/Drive metadata: 47 files listed/);
+ assert.match(details.allText,/Deck content: 10 files read/);
+ assert.match(details.allText,/34 decks.*listed only; their content was not read/);
+ assert.match(details.allText,/limited to this lesson’s Form responses, upload folders and saved sources/);
+ assert.doesNotMatch(target.allText,/47 files checked for this lesson/);
+ assert.match(target.allText,/No work was graded/);
+});
 test('discovery overlays exact source identity while preserving saved grades and feedback',()=>{
  const data=fixture();data.submissions[0].source_url='https://docs.google.com/presentation/d/fictional-file-a/edit';data.submissions[0].feedback='Saved report';
  const original=structuredClone(data),state=discovery([discovered()]);
@@ -202,10 +296,10 @@ test('Form response completeness is distinct from published and accepting status
 // Fictional four-level report fixtures (September 23, 2026 layout).
 function aspectRow(extra={}){return {record_id:'r2',class_key:'biology',section_id:'c',student_id:'s1',display_name:'Casey F.',assignment_title:'Fictional ecosystems',section_name:'Period C',checked_at:'2026-10-02T12:00:00Z',status:'proposed',content_score:9,
  feedback:'**Current understanding:**\nMy answers explain how energy enters the web.\n## How my thinking changed\nI replaced "used up" with heat.\nOne question to think about\nHow does a vent bacterium act like a door?\nThink this through for yourself; this is not for submission or another grade.\nEvidence for my conceptual understanding\n"It leaves as heat." — revised response, slide 13\nWhat I understand now that I didn\'t before\n____',
- answers:[{question_id:'Q1',stage:'NOTES',response:'Plants make food.',conceptual_level:'Beginning',critical_aspect:'Producers as the entry point',slide_number:'7',evidence_note:'TEACHER ONLY'},
-  {question_id:'Q1',stage:'DRAFT',response:'Plants and vent bacteria bring outside energy in.',conceptual_level:'Proficient',critical_aspect:'Producers as the entry point',slide_number:'7'},
-  {question_id:'Q2',stage:'DRAFT',response:'It leaves as heat.',conceptual_level:'Extending',critical_aspect:'Critical Aspect 2 · Where transferred energy goes',slide_number:'13'},
-  {question_id:'B1',stage:'BANK',response:'producer',conceptual_level:'Proficient',critical_aspect:''}],...extra};}
+ answers:[{question_id:'Q1',stage:'NOTES',response:'Plants make food.',conceptual_level:'Beginning',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point',slide_number:'7',evidence_note:'TEACHER ONLY'},
+  {question_id:'Q1',stage:'DRAFT',response:'Plants and vent bacteria bring outside energy in.',conceptual_level:'Proficient',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point',slide_number:'7'},
+  {question_id:'Q2',stage:'DRAFT',response:'It leaves as heat.',conceptual_level:'Extending',rubric_version:'critical-aspect-4/v1',critical_aspect:'Critical Aspect 2 · Where transferred energy goes',slide_number:'13'},
+  {question_id:'B1',stage:'BANK',response:'producer',conceptual_level:'Proficient',rubric_version:'critical-aspect-4/v1',critical_aspect:''}],...extra};}
 test('report text splits at the teacher headings, tolerating markdown and colons',()=>{
  const parsed=reportSections(aspectRow().feedback);
  assert.equal(parsed.found,true);
@@ -225,10 +319,10 @@ test('current understanding keeps one revised item per aspect and skips Concept 
 });
 test('year graphs use this learner only, four-level ratings only, and never superseded work',()=>{
  const earlier={record_id:'r1',class_key:'biology',section_id:'c',student_id:'s1',display_name:'Casey F.',checked_at:'2026-09-10T12:00:00Z',status:'proposed',answers:[
-  {question_id:'Q9',stage:'DRAFT',conceptual_level:'Developing',critical_aspect:'producers as the entry point'},
-  {question_id:'Q8',stage:'DRAFT',conceptual_level:'Almost there',critical_aspect:'Producers as the entry point'}]};
+  {question_id:'Q9',stage:'DRAFT',conceptual_level:'Developing',rubric_version:'critical-aspect-4/v1',critical_aspect:'producers as the entry point'},
+  {question_id:'Q8',stage:'DRAFT',conceptual_level:'Almost there',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point'}]};
  const other={...earlier,record_id:'x',student_id:'s2'};
- const replaced={...earlier,record_id:'old',status:'superseded',answers:[{question_id:'Q9',stage:'DRAFT',conceptual_level:'Beginning',critical_aspect:'Producers as the entry point'}]};
+ const replaced={...earlier,record_id:'old',status:'superseded',answers:[{question_id:'Q9',stage:'DRAFT',conceptual_level:'Beginning',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point'}]};
  const lines=aspectHistory(aspectRow(),[earlier,other,replaced]);
  const producers=lines.find(l=>l.key==='producers as the entry point');
  assert.deepEqual(producers.points.map(p=>[p.date,p.level,p.revised]),[['2026-09-10','Developing',true],['2026-10-02','Beginning',false],['2026-10-02','Proficient',true]]);
@@ -260,4 +354,40 @@ test('printed headings and fixed lines never speak as the student except the stu
  // The hand-back line is the teacher speaking ("the part I read"), which is intended.
  const text=appendSheet(printDoc,row).allText.replace("What I understand now that I didn't before",'').replace('Write this yourself, then hand this page back to me. This is the part I read.','');
  assert.doesNotMatch(text,/\bMy\b|\bI\b/);
+});
+
+test('shared rating names and aspect labels never substitute for a rubric version',()=>{
+ const row=aspectRow();
+ const earlier={...row,record_id:'unversioned',checked_at:'2026-09-10',answers:row.answers.map(({rubric_version,...answer})=>answer)};
+ const otherVersion={...earlier,record_id:'other-rubric',answers:row.answers.map(a=>({...a,rubric_version:'legacy/v1'}))};
+ assert.deepEqual(aspectHistory(row,[earlier,otherVersion]),aspectHistory(row,[]));
+ const printDoc={createElement(tag){return new Element(printDoc,tag);}};printDoc.body=new Element(printDoc,'body');
+ assert.doesNotMatch(appendSheet(printDoc,earlier).allText,/Rubric key/);
+});
+test('history requires verified learner identity and ignores held, future and previous-year records',()=>{
+ const row=aspectRow();
+ const earlier={...row,record_id:'earlier',checked_at:'2026-09-10'};
+ const excluded=[{...earlier,student_id:'',count_key:'',learner_key:''},
+  {...earlier,record_id:'held',hold_reason:'Source needs review'},
+  {...earlier,record_id:'unmatched',status:'identity_unverified'},
+  {...earlier,record_id:'old-year',checked_at:'2025-09-10'},
+  {...earlier,record_id:'future',checked_at:'2026-11-10'},
+  {...earlier,record_id:'bad-date',checked_at:'2026-02-31'}];
+ assert.deepEqual(aspectHistory(row,excluded),aspectHistory(row,[]));
+ const roster={...row,student_id:'',count_key:'roster:verified-learner'};
+ assert.ok(aspectHistory(roster,[{...earlier,student_id:'',count_key:roster.count_key}])[0].points.some(p=>p.date==='2026-09-10'));
+});
+test('What-if tasks in different lessons do not become one concept history',()=>{
+ const row=aspectRow({assignment_key:'new-lesson',answers:[{stage:'DRAFT',critical_aspect:'What if',rubric_version:'critical-aspect-4/v1',conceptual_level:'Proficient'}]});
+ const other={...row,record_id:'old-lesson',assignment_key:'other-lesson',checked_at:'2026-09-10'};
+ assert.equal(aspectHistory(row,[other])[0].points.length,1);
+});
+test('unavailable evidence creates a gap instead of a connecting graph line',()=>{
+ const row=aspectRow({answers:[{stage:'DRAFT',critical_aspect:'Energy',rubric_version:'critical-aspect-4/v1',conceptual_level:'Proficient'}]});
+ const first={...row,record_id:'first',checked_at:'2026-09-01'};
+ const gap={...row,record_id:'gap',checked_at:'2026-09-15',answers:row.answers.map(a=>({...a,conceptual_level:'Evidence unavailable'}))};
+ const doc={createElement(tag){return new Element(doc,tag);},createElementNS(ns,tag){return new Element(doc,tag);}};doc.body=new Element(doc,'body');
+ const sheet=appendSheet(doc,row,[first,gap]),all=n=>[n,...n.children.flatMap(all)];
+ assert.equal(all(sheet).filter(n=>n.tagName==='circle').length,2);
+ assert.equal(all(sheet).filter(n=>n.tagName==='line'&&n.attributes['stroke-width']==='1.5').length,0);
 });
