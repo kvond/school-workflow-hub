@@ -123,6 +123,29 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ar.validate_packet(bad, SOURCE)
 
+    def test_four_level_scale_with_named_critical_aspect_is_accepted(self):
+        item = packet()
+        for level in ("Beginning", "Extending"):
+            item["responses"][0].update(conceptual_level=level, explanation_level="",
+                                        critical_aspect="Producers as the entry point")
+            self.assertIs(ar.validate_packet(item, SOURCE), item)
+
+    def test_older_three_level_packets_stay_valid(self):
+        item = packet()
+        item["responses"][0]["conceptual_level"] = "Almost there"
+        self.assertIs(ar.validate_packet(item, SOURCE), item)
+
+    def test_critical_aspect_is_one_bounded_line_and_no_other_key_is_added(self):
+        for bad_value in ("two\nlines", "x" * 201):
+            bad = packet()
+            bad["responses"][0]["critical_aspect"] = bad_value
+            with self.assertRaises(ValueError):
+                ar.validate_packet(bad, SOURCE)
+        bad = packet()
+        bad["responses"][0]["unexpected"] = "value"
+        with self.assertRaises(ValueError):
+            ar.validate_packet(bad, SOURCE)
+
 
 class CompletionTests(unittest.TestCase):
     def test_final_stage_arithmetic_matches_the_policy(self):
@@ -199,6 +222,13 @@ class RowTests(unittest.TestCase):
         self.assertEqual(draft["meaningful_complete"], "FALSE")
         optional = next(a for a in rows["answers"] if a["question_id"] == "OPT1")
         self.assertEqual(optional["counts_toward_current_score"], "FALSE")
+        self.assertEqual(first["critical_aspect"], "")
+
+    def test_rows_carry_the_named_critical_aspect(self):
+        item = packet()
+        item["responses"][0]["critical_aspect"] = "Where transferred energy goes"
+        rows = ar.build_rows(item, ar.completion(item), CAPTURE, now="2026-09-18T15:05:00+00:00")
+        self.assertEqual(rows["answers"][0]["critical_aspect"], "Where transferred energy goes")
 
     def test_rows_refuse_a_capture_with_a_different_hash(self):
         item = packet()

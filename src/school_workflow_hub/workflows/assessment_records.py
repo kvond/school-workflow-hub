@@ -20,9 +20,15 @@ PACKET_VERSION = "hub-assessment-packet/v1"
 ASSESSMENT_VERSION = "hub-assessment-save/v1+" + POLICY_VERSION
 CLASSES = {"biology", "forensics", "anatomy"}
 JUDGMENTS = {"meaningful_attempt", "blank", "printed_copy", "review"}
-CONCEPTUAL_LEVELS = {"Developing", "Almost there", "Proficient", "Evidence unavailable"}
+from .understanding_scale import ALL_LEVELS, UNAVAILABLE
+
+# New assessments use the four-level critical-aspect scale; saved records and
+# cached drafts on the earlier three-level scale stay readable.
+CONCEPTUAL_LEVELS = set(ALL_LEVELS) | {UNAVAILABLE}
+# "" means not rated separately: the four-level scale already covers how the
+# mechanism is explained. Earlier descriptors remain valid for older records.
 EXPLANATION_LEVELS = {"Names an idea", "Connects ideas", "Explains how or why",
-                      "Evidence unavailable"}
+                      UNAVAILABLE, ""}
 STAGES = {"initial", "final"}
 PACKET_KEYS = {"schema_version", "class_key", "section_id", "section_name",
                "assignment_key", "identity", "stage", "stage_reference", "source",
@@ -37,6 +43,8 @@ RESPONSE_KEYS = {"question_id", "category", "judgment", "response_excerpt",
                  "evidence_note", "conceptual_level", "explanation_level",
                  "conceptual_feedback", "prompt", "prompt_basis", "slide_number",
                  "optional"}
+# The critical aspect an item addresses, copied from the deck's own label.
+OPTIONAL_RESPONSE_KEYS = {"critical_aspect"}
 
 
 def _text(value, limit, *, required=False, multiline=False):
@@ -147,7 +155,8 @@ def validate_packet(packet, source_text):
         raise ValueError("invalid_assessment_responses")
     seen = set()
     for response in responses:
-        if not isinstance(response, dict) or set(response) != RESPONSE_KEYS:
+        if (not isinstance(response, dict) or not RESPONSE_KEYS <= set(response)
+                or set(response) - RESPONSE_KEYS - OPTIONAL_RESPONSE_KEYS):
             raise ValueError("invalid_assessment_response")
         if (response["category"] not in CATEGORIES
                 or response["judgment"] not in JUDGMENTS
@@ -169,6 +178,7 @@ def validate_packet(packet, source_text):
         _text(response["conceptual_feedback"], 1200, multiline=True)
         _text(response["prompt"], 1200, multiline=True)
         _text(response["prompt_basis"], 200)
+        _text(response.get("critical_aspect", ""), 200)
         if response["slide_number"] and not re.fullmatch(r"[0-9]{1,3}",
                                                          response["slide_number"]):
             raise ValueError("invalid_assessment_response")
@@ -392,6 +402,7 @@ def build_rows(packet, result, capture, *, now, prior_score_exact="", prior_hold
             "response_shape_id": "", "slide_number": response["slide_number"],
             "source_url": packet["source"]["url"], "source_sha256": capture["sha256"],
             "conceptual_feedback": response["conceptual_feedback"],
+            "critical_aspect": response.get("critical_aspect", ""),
             "assessment_date": now[:10],
             "comparison_status": packet["comparison_status"],
             "counts_toward_current_score": _flag(due),

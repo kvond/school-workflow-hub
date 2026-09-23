@@ -34,11 +34,24 @@ actual writing. Vocabulary is closed:
 - judgment: "meaningful_attempt" (a nonblank attempt in the student's own
   words), "blank" (no response), or "printed_copy" (copied printed material,
   pasted AI output, or otherwise not the student's own words).
-- conceptual_level: "Developing", "Almost there", "Proficient",
-  "Evidence unavailable".
-- explanation_level: "Names an idea", "Connects ideas", "Explains how or why",
-  "Evidence unavailable".
-Blank or printed_copy items use "Evidence unavailable" for both levels.
+- conceptual_level: how well this answer explains or uses the lesson's
+  critical aspect, on one scale that already includes how the mechanism is
+  explained:
+  "Beginning" (names an idea; the relationship is missing or inaccurate),
+  "Developing" (connects some ideas; the mechanism is partly explained),
+  "Proficient" (explains the relationship using a scientifically sound
+  mechanism), "Extending" (uses the mechanism to explain a new case and its
+  limits), or "Evidence unavailable". A clear explanation of an inaccurate
+  relationship is "Beginning". Never label a blank answer "Beginning".
+- explanation_level: "" (do not rate explanation separately).
+- critical_aspect: the name of the critical aspect this item answers, copied
+  exactly from the deck's own label (a response slide titled "Your answer -
+  Critical Aspect N · <name>", or "Critical aspect: <name>" on the aspect's
+  slides). Use "What if" for the What-if response. Use "" when the item is not
+  tied to a named aspect, such as a Concept Bank term. Never invent or rename
+  an aspect.
+Blank or printed_copy items use "Evidence unavailable" for conceptual_level
+and "" for explanation_level.
 
 Rules that are not negotiable:
 - response_excerpt MUST be copied character-for-character from the submission
@@ -75,9 +88,12 @@ Return ONLY one JSON object, no prose, of this shape:
 {"responses": [{"question_id": str, "category": "NOTES"|"BANK"|"DRAFT",
   "judgment": str, "response_excerpt": str, "evidence_note": str (<=400 chars,
   single line), "conceptual_level": str, "explanation_level": str,
+  "critical_aspect": str (<=200 chars, single line),
   "conceptual_feedback": str (<=1200 chars), "prompt": "", "prompt_basis": "",
   "slide_number": "", "optional": bool}],
- "feedback": str (the student report, following the teacher's feedback prompt)}
+ "feedback": str (the student report, following the teacher's feedback prompt:
+  written to the student as "you", quoting the student's exact words, never
+  written as if the student were speaking)}
 """
 
 

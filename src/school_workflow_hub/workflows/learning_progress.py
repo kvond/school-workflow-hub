@@ -9,7 +9,11 @@ import json
 from ..core.database import transaction
 from .completion_policy import _key
 
-UNDERSTANDING = ("Developing", "Almost there", "Proficient")
+from .understanding_scale import ALL_LEVELS
+
+# Series are already separated by rubric_version, so older three-level points
+# never share a line with the four-level critical-aspect scale.
+UNDERSTANDING = ALL_LEVELS
 EXPLANATION = ("Names an idea", "Connects ideas", "Explains how or why")
 SCOPE = ("class_key", "learner_key", "concept_scope", "stage", "rubric_version")
 

@@ -1,7 +1,8 @@
-# Feedback and yearly progress — teacher revision, September 18, 2026
+# Feedback and yearly progress — teacher revision, September 18, 2026 (student report and graphs revised September 23, 2026)
 
-The assessment policy remains feedback-v2.1: completion arithmetic, readiness,
-student feedback order and rubrics are unchanged. The September 18
+The assessment policy remains feedback-v2.1 for completion arithmetic and
+readiness. The student report order, understanding scale and year graphs were
+revised on September 23, 2026; see Student report order (v3) below. The September 18
 root-first-routing-v1 correction supersedes exclusive single-folder routing,
 teacher-carried chat batches, and paragraphs on Page 3. Existing assessment
 records retain the prompt version under which they were assessed.
@@ -82,24 +83,84 @@ Do not invalidate saved grades merely because routing prose changed. Any
 reassessment must use the relevant source and assessment-policy change, not an
 unrelated documentation difference.
 
-## Student report order
+## Student report order (v3, teacher decision September 23, 2026)
 
-1. **Progress graphs:** conceptual understanding and explaining concepts, shown separately across the year.
-2. **Current understanding:** violet Developing; amber Almost there; green Proficient. Always show the label, not color alone. Gray means evidence unavailable, not low understanding.
-3. **How my thinking changed:** show specific improvement in conceptual explanation when paired, timed evidence supports it. Include the earlier evidence here rather than in a separate starting section.
-4. **One question to think about:** one question about a specific idea in this student's writing. It can prompt a private reworking of concept notes for understanding, explicitly not for resubmission or another grade.
-5. **Evidence for my conceptual understanding:** exact current/revised student words with slide/response attribution.
-6. **What I understand now that I didn't before:** three blank lines for the student's own reflection.
+This replaces the September 18 student report order and graph rules. Completion
+arithmetic, readiness and the teacher summary are unchanged.
 
-Remove **My next step**. Do not invent a next lesson or activity. Move **An idea worth chasing** to teacher notes as a source-linked discussion idea, outside the student report.
+**Concepts are the lesson's critical aspects.** The names come from the deck:
+each response slide is titled "Your answer — Critical Aspect N · <aspect
+name>" and the aspect's slides carry "Critical aspect: <aspect name>". The
+assessment records the name on each rated item (`critical_aspect`); the model
+never invents or renames an aspect. The What-if response is the evidence for
+applying the aspects to a new case.
 
-## What the graphs mean
+**One four-level scale per critical aspect,** covering both the concept and how
+its mechanism is explained:
 
-Conceptual understanding and clarity of explanation are distinct from each other and from completion. Use the three understanding levels above. For explanation, use a shared, versioned descriptive rubric: **Names an idea -> Connects ideas -> Explains how or why**. Assess connections and reasoning in the actual writing, not length, grammar, or fancy terms; a clear explanation can still contain a misconception.
+| Level | Descriptor |
+|---|---|
+| Beginning | Names an idea; the relationship is missing or inaccurate. |
+| Developing | Connects some ideas; the mechanism is partly explained. |
+| Proficient | Explains the relationship using a scientifically sound mechanism. |
+| Extending | Uses the mechanism to explain a new case and its limits. |
 
-Every observation retains the learner, class, assignment, concept/task comparison scope, initial/final stage, date, exact source revision and quotation, assessor evidence, and rubric/prompt version. Record both understanding and explanation where assessed; missing observations remain unavailable. Only compare matching concept/task scopes, stage and rubric. Changed wording is not automatically improvement. A blank becoming filled is later completion, not evidence of conceptual growth.
+A clear explanation of an inaccurate relationship is Beginning. Blank or
+unreadable work is Evidence unavailable, never Beginning. The earlier
+three-level scale (Developing, Almost there, Proficient) and the separate
+explanation descriptors are retired for new assessments. Records saved under
+them stay readable and are never converted; they do not share a graph line
+with the four-level scale (rubric version `critical-aspect-4/v1`).
 
-Class graphs show distributions and coverage at each date and distinguish membership/assignment changes from matched-student change. Individual graphs retain evidence behind points. One point shows a starting point, not a trend. No composite score, ordinal average, invented history, or line connecting unrelated topics. Preserve old observations and make reruns idempotent.
+**Voice (teacher decision September 23, 2026):** the report speaks to the
+student as "you" and quotes the student's exact words in quotation marks. It
+never writes sentences as if the student were saying them. The only
+first-person heading is the reflection, which the student writes.
+
+**Printed report (Page 2 → Print feedback), two pages, no scores:**
+
+Page one
+1. **Your understanding through the year:** one graph per critical aspect in this
+   lesson, including any earlier aspect the student answered again under the
+   same name. Filled dots are revised answers, open dots first answers; only
+   revised answers are connected. No dated evidence shows an empty graph.
+2. Lesson title, student, section and date.
+3. **Current understanding:** one card per critical aspect with its level
+   (words and color), then the report's summary sentence to the student.
+4. **Your earlier and current explanations:** first answer and revised answer
+   side by side for each question that has both, with the slide number.
+   Columns are labeled Your first answer / Your revised answer because a first-answer
+   box does not prove when it was written.
+
+Page two
+5. **How your thinking changed,** quoting both answers.
+6. **One question to think about,** with the fixed note that reworking concept
+   notes is for understanding, not for submission or another grade.
+7. **Evidence of your understanding:** exact quotations with slide
+   attribution.
+8. **What I understand now that I didn't before:** "Write this yourself, then
+   hand this page back to me. This is the part I read." and four ruled lines.
+9. **Rubric key** (four-level reports only).
+
+The report text saved by the assessment supplies sections 3 (summary), 5, 6 and
+7 under exactly the headings Current understanding, How your thinking changed,
+One question to think about and Evidence of your understanding; the dashboard builds the graphs, cards,
+comparison, reflection and key from the saved answers. An older report without
+those headings prints its full text under Current understanding; earlier
+first-person headings (How my thinking changed, Evidence for my conceptual
+understanding) are still recognized.
+
+## Year graphs
+
+Each critical aspect is its own line for a learner, across the school year.
+Points join a line only when the aspect name matches exactly after ignoring
+case, spacing, edge punctuation and the deck's "Critical Aspect N ·" prefix.
+A later answer that seems to use an earlier aspect under a different name is
+a proposed link for the teacher to confirm; it is not joined automatically. A
+dashboard control for confirming links is not built yet. The printed report
+shows this lesson's aspects; all other aspects stay in stored history. One
+point is a starting point, not a trend. No composite score, ordinal average,
+invented history or line across different aspects, stages or rubric versions.
 
 ## Teacher summary
 
