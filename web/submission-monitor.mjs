@@ -11,6 +11,33 @@ export function validateStatus(data){
 // Fresh discovery is a preview. It never registers work, changes the saved
 // assessment, or advances the durable monitoring baseline.
 const DISCOVERY_STATES=new Set(['new_ungraded','changed_since_assessment','needs_review','unchanged']);
+export function validateCatalog(data,classKey){
+ if(data?.schema_version!=='hub-submission-catalog/v1'||data.provenance!=='source_read'||data.external_writes!==0||data.live_model_calls!==0||data.class_key!==classKey||!Number.isFinite(Date.parse(data.checked_at))||typeof data.coverage?.complete!=='boolean'||!Array.isArray(data.assignments))throw Error('The current lesson list could not be verified.');
+ const seen=new Set();
+ for(const assignment of data.assignments){
+  if(!assignment||assignment.class_key!==classKey||typeof assignment.assignment_key!=='string'||!/^[A-Za-z0-9:_-]{1,128}$/.test(assignment.assignment_key)||assignment.assignment_key==='all'||seen.has(assignment.assignment_key)||typeof assignment.assignment_title!=='string'||!assignment.assignment_title)throw Error('The current lesson list could not be verified.');
+  seen.add(assignment.assignment_key);
+ }
+ return data;
+}
+export function createCatalogLoader({fetcher=fetch,onState}){
+ let generation=0,pending,controller;
+ return {load(classKey){
+  if(pending?.classKey===classKey)return pending.promise;
+  const mine=++generation;controller?.abort();controller=new AbortController();
+  onState({status:'loading',classKey});
+  let authExpired=false;
+  const promise=(async()=>{try{
+   const response=await fetcher('/api/submission-catalog?'+new URLSearchParams({class_key:classKey}),{cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal});
+   authExpired=[401,403].includes(response.status);
+   const data=await response.json();if(mine!==generation)return null;
+   if(!response.ok){authExpired=[401,403].includes(response.status);throw Error(authExpired?'Sign in again to read current lessons.':'The current lesson list is unavailable. Saved lessons remain selectable.');}
+   const verified=validateCatalog(data,classKey);onState({status:'loaded',classKey,data:verified});return verified;
+  }catch(error){if(mine===generation&&error.name!=='AbortError')onState({status:'error',classKey,message:authExpired?'Sign in again to read current lessons.':error.message,authExpired});return null;}
+  finally{if(mine===generation)pending=null;}
+  })();pending={classKey,promise};return promise;
+ }};
+}
 export function validateDiscovery(data,scope){
  if(data?.schema_version!=='hub-submission-refresh/v1'||data.provenance!=='source_read'||data.external_writes!==0||data.live_model_calls!==0||data.class_key!==scope.classKey||data.assignment_key!==scope.assignmentKey||!Number.isFinite(Date.parse(data.discovered_at))||typeof data.coverage?.complete!=='boolean'||!Array.isArray(data.files))throw Error('The submission discovery scope could not be verified.');
  const seen=new Set();
@@ -25,17 +52,29 @@ export function validateDiscovery(data,scope){
  return data;
 }
 export function createDiscoveryLoader({fetcher=fetch,onState}){
- let generation=0,controller;
+ let generation=0,controller,pending;
+ // Preview data stays in memory only, bounded to a few recently viewed lessons.
+ const cache=new Map(),keyFor=scope=>JSON.stringify([scope.classKey,scope.assignmentKey]);
  return {
-  clear(){generation++;controller?.abort();onState({status:'empty'});},
-  async load(scope){
-   const mine=++generation;controller?.abort();controller=new AbortController();onState({status:'loading',scope});
+  clear({purge=false}={}){generation++;controller?.abort();pending=null;if(purge)cache.clear();onState({status:'empty'});},
+  load(requested){
+   const scope={classKey:requested.classKey,assignmentKey:requested.assignmentKey},key=keyFor(scope);
+   if(pending?.key===key)return pending.promise;
+   const mine=++generation;controller?.abort();controller=new AbortController();
+   const data=cache.get(key),signal=controller.signal;let authExpired=false;
+   onState({status:'loading',scope,...(data?{data}:{})});
+   const promise=(async()=>{
    try{
-    const response=await fetcher('/api/submission-monitor/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({class_key:scope.classKey,assignment_key:scope.assignmentKey})});
+    const response=await fetcher('/api/submission-monitor/refresh',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({class_key:scope.classKey,assignment_key:scope.assignmentKey})});
+    authExpired=[401,403].includes(response.status);if(authExpired)cache.clear();
     const data=await response.json();if(mine!==generation)return null;
-    if(!response.ok)throw Error(describeFailure(data.error));
-    const verified=validateDiscovery(data,scope);onState({status:'loaded',data:verified});return verified;
-   }catch(error){if(mine===generation&&error.name!=='AbortError')onState({status:'error',scope,message:error.message||'Submission discovery failed. Saved assessments are unchanged.'});return null;}
+    if(!response.ok){authExpired=[401,403].includes(response.status);if(authExpired)cache.clear();throw Error(authExpired?describeFailure('sign_in_required'):describeFailure(data.error));}
+    const verified=validateDiscovery(data,scope);cache.delete(key);cache.set(key,verified);
+    if(cache.size>8)cache.delete(cache.keys().next().value);
+    onState({status:'loaded',data:verified});return verified;
+   }catch(error){if(mine===generation&&error.name!=='AbortError')onState({status:'error',scope,...(data&&!authExpired?{data}:{}),authExpired,message:authExpired?describeFailure('sign_in_required'):error.message||'Submission discovery failed. Saved assessments are unchanged.'});return null;}
+   finally{if(mine===generation)pending=null;}
+   })();pending={key,promise};return promise;
   }
  };
 }

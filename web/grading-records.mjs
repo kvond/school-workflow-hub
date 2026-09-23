@@ -44,8 +44,9 @@ function sourceFileId(row){
 // This projection is for the table and its selectors only. Posting, downloads
 // and printing keep consuming the untouched saved recordState.
 export function recordsWithDiscovery(data,discovery){
- if(discovery?.status!=='loaded')return data;
- const files=discovery.data.files,attached=new Set();
+ if(!['loaded','loading','error'].includes(discovery?.status)||!discovery.data)return data;
+ const stale=discovery.status!=='loaded';
+ const files=discovery.data.files.map(file=>stale?{...file,discovery_status:'needs_review',review_reasons:[...file.review_reasons,discovery.status==='loading'?'discovery_refresh_pending':'discovery_refresh_failed']}:file),attached=new Set();
  const submissions=data.submissions.map(row=>{
   const file=files.find(f=>f.file_id===sourceFileId(row)&&f.class_key===row.class_key&&f.assignment_key===row.assignment_key&&f.section_id===(row.section_id||'')&&(!f.student_id||!row.student_id||f.student_id===row.student_id));
   if(!file)return row;
@@ -97,20 +98,26 @@ export function score(row,key){
 }
 const CHECKPOINT={initial:'Notes checkpoint',final:'Drafts checkpoint'};
 const DISCOVERY_LABEL={new_ungraded:'New work · not graded',changed_since_assessment:'Work changed since assessment · review needed',needs_review:'Discovery needs review',unchanged:'Source unchanged'};
-const DISCOVERY_REVIEW={prior_submission_superseded:'Previously superseded work · history only; do not treat as new work.',competing_submission_versions:'Multiple submission versions need review; no current version has been selected.',submission_assignment_source_unverified:'Listed only · no verified source link to the selected lesson; content was not read.'};
+const DISCOVERY_REVIEW={prior_submission_superseded:'Previously superseded work · history only; do not treat as new work.',competing_submission_versions:'Multiple submission versions need review; no current version has been selected.',submission_assignment_source_unverified:'Listed only · no verified source link to the selected lesson; content was not read.',discovery_refresh_pending:'Earlier preview · checking the current source.',discovery_refresh_failed:'Earlier preview · the current source check failed.'};
 export function renderRecords(root,state,{classKey,sectionId='matched',assignmentKey='all',stage='all',discovery={status:'empty'},includeUnresolved=false}){
  root.replaceChildren();
  if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
  const projected=recordsWithDiscovery(state.data,discovery);
- const rows=(includeUnresolved?filterReviewRecords:filterRecords)(projected,classKey,sectionId,assignmentKey,stage),included=rows.filter(r=>r.included_in_counts&&r.section_id);
- line(root,`${new Set(included.map(r=>r.section_id+'\0'+(r.count_key||r.student_id))).size} students with matched submissions · ${included.length} saved records · workbook read ${time(state.data.checked_at)}`,'hint');
- if(discovery.status==='loading')line(root,'Checking current submissions for new or changed work… Saved assessments are unchanged.','hint');
- else if(discovery.status==='error')line(root,'Discovery failed: '+discovery.message+' Saved assessments are unchanged.','error');
+ const rows=(includeUnresolved?filterReviewRecords:filterRecords)(projected,classKey,sectionId,assignmentKey,stage);
+ const unscoped=row=>assignmentKey!=='all'&&row.discovery_only&&row.discovery?.review_reasons.includes('submission_assignment_source_unverified');
+ const primaryRows=rows.filter(row=>!unscoped(row)),unscopedRows=rows.filter(unscoped);
+ const identity=row=>row.discovery?.learner_key||row.learner_key||row.student_id||row.count_key;
+ const matched=primaryRows.filter(r=>r.section_id&&identity(r)&&(r.discovery_only||r.included_in_counts));
+ const sourceFiles=new Set(primaryRows.filter(r=>r.discovery).map(r=>r.discovery.file_id)).size,saved=primaryRows.filter(r=>!r.discovery_only).length;
+ line(root,discovery.status==='loading'&&!discovery.data?`${saved} saved records · current submissions are being checked · workbook read ${time(state.data.checked_at)}`:`${new Set(matched.map(r=>r.section_id+'\0'+identity(r))).size} matched students in this selection · ${sourceFiles} ${discovery.status==='loaded'?'current':'earlier'} source files · ${saved} saved records · workbook read ${time(state.data.checked_at)}`,'hint');
+ if(discovery.status==='loading')line(root,'Checking current submissions for new or changed work… '+(discovery.data?'The earlier preview stays visible until this check finishes. ':'')+'Saved assessments are unchanged.','hint');
+ else if(discovery.status==='error')line(root,'Discovery failed: '+discovery.message+(discovery.data?' The earlier preview stays visible; it has not been reverified.':'')+' Saved assessments are unchanged.','error');
  else if(discovery.status==='loaded'){
   const d=discovery.data;
   line(root,`Submissions discovered ${time(d.discovered_at)} · ${d.files.length} files listed for review. ${d.coverage.complete?'Discovery source read complete.':'Discovery coverage is incomplete; review the gaps.'} No work was graded.`,'hint');
   const unassigned=d.files.filter(f=>!f.assignment_key).length;
-  if(unassigned)line(root,`${unassigned} ${unassigned===1?'file needs':'files need'} a lesson match. ${includeUnresolved?'Unresolved work is shown for review without assigning it to this lesson.':'Choose All lessons and Unmatched or All records to review them.'}`,'hint');
+  if(unassigned)line(root,`${unassigned} ${unassigned===1?'file needs':'files need'} a lesson match. ${includeUnresolved?'Unresolved work remains available for review without assigning it to this lesson.':'Choose All lessons and Unmatched or All records to review them.'}`,'hint');
+  if(assignmentKey==='all'&&d.assignment_key!=='all')line(root,'Current-file preview covers one previously selected lesson; other lessons show saved records only. Choose a lesson name to check its current files.','hint');
   const unknownClass=d.files.filter(f=>!f.class_key).length;
   if(unknownClass)line(root,`${unknownClass} ${unknownClass===1?'file has':'files have'} no verified class match. ${includeUnresolved?'They remain visible as unresolved review items.':'They appear under Unmatched for review, not as confirmed work for this class.'}`,'hint');
   const forms=Array.isArray(d.coverage.form_results)?d.coverage.form_results:[];
@@ -149,15 +156,19 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
    if(!d.coverage.complete)line(details,'Incomplete coverage does not establish missing work.');
    root.append(details);
   }
- }else line(root,'Submission discovery has not run in this view. Refresh submissions checks for new and changed work.','hint');
+ }else line(root,assignmentKey==='all'?'Choose a lesson name to check its current submissions. All lessons shows saved work and previews already read.':'Submission discovery has not run in this view. Refresh submissions checks for new and changed work.','hint');
  if(sectionId==='matched'){
   const unmatched=projected.submissions.filter(r=>inClass(r,classKey)&&!r.section_id).length;
   if(unmatched)line(root,`${unmatched} ${unmatched===1?'record needs':'records need'} a section match. Choose Unmatched in Section to review them.`,'hint');
  }
- if(!rows.length){line(root,'No submission records for this selection. This does not establish missing work.');return;}
- const table=node(root,'table');table.className='work-table';table.setAttribute('aria-label','Submissions by class and section');const head=node(root,'thead'),hr=node(root,'tr');
+ if(!rows.length){line(root,discovery.status==='loading'?'Waiting for the current submission check. This does not establish missing work.':'No submission records for this selection. This does not establish missing work.');return;}
+ for(const [group,isUnscoped]of [[primaryRows,false],[unscopedRows,true]]){
+ if(!group.length)continue;
+ const destination=isUnscoped?node(root,'details'):root;
+ if(isUnscoped){destination.append(node(root,'summary',`Other files needing a lesson match (${group.length})`));line(destination,'These files have no verified source link to this lesson. Their content was not read; they are not counted as this lesson’s submissions.');root.append(destination);}
+ const table=node(root,'table');table.className='work-table';table.setAttribute('aria-label',isUnscoped?'Files without a verified lesson source':'Submissions by class and section');const head=node(root,'thead'),hr=node(root,'tr');
  for(const text of ['Student / section','Assignment','Content / notes','Revision','Status / work'])hr.append(node(root,'th',text));head.append(hr);table.append(head);const body=node(root,'tbody');
- for(const row of rows){
+ for(const row of group){
   const tr=node(root,'tr'),student=node(root,'td');
   const displayName=row.discovery_only&&!row.discovery?.display_name?'Identity needs matching':surnameFirst(row.display_name)||'Identity needs matching';
   student.append(node(root,'strong',displayName));
@@ -169,7 +180,8 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   if(row.discovery){line(cell,DISCOVERY_LABEL[row.discovery.discovery_status]);if(row.discovery.source_changed_since_assessment)line(cell,'Source version changed since assessment; this does not establish revised student writing.','hint');for(const reason of row.discovery.review_reasons)if(DISCOVERY_REVIEW[reason])line(cell,DISCOVERY_REVIEW[reason]);if(row.discovery_only&&!row.discovery.assessment_stage)line(cell,'Discovered work checkpoint needs review.','hint');if(!row.discovery_only&&row.discovery.discovery_status!=='unchanged')line(cell,'Scores shown are the saved assessment; they have not been updated for this discovery.','hint');}
   const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
   if(row.discovery){const f=row.discovery;for(const reason of f.review_reasons)line(details,label(reason));if(f.modified_at)line(details,'Source modified: '+time(f.modified_at),'hint');}
-  if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,'Excluded from class counts until identity and current submission are resolved.','hint');
+  if(row.assessment_stage_review_reason)line(cell,'Assessment checkpoint needs review.','hint');
+  if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,row.discovery_only?'Not included in saved assessment counts.':'Excluded from class counts until identity and current submission are resolved.','hint');
   if(row.feedback){line(details,row.feedback,'student-feedback-text');
    const print=node(details,'button','Print feedback');print.type='button';print.className='print-feedback-button';
    print.addEventListener('click',()=>printFeedback(row));details.append(print);}
@@ -183,7 +195,8 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   for(const answer of row.answers){const item=node(root,'div');item.className='answer-evidence';item.append(node(root,'h4',`${answer.question_id} · ${answer.stage}`));if(answer.prompt)line(item,answer.prompt);const quote=node(root,'blockquote',answer.response||'No written response recorded.');item.append(quote);if(answer.conceptual_level)line(item,'Conceptual understanding: '+answer.conceptual_level);if(answer.explanation_level)line(item,'Explaining concepts: '+answer.explanation_level);if(answer.meaningful_complete)line(item,'Completion: '+answer.meaningful_complete);if(answer.evidence_note)line(item,answer.evidence_note,'hint');link(item,'Answer source ↗',answer.source_url||answer['Source URL']);details.append(item);}
   if(!row.discovery_only){line(details,'Infinite Campus: '+label(row.ic_posting_status||'posting not verified'));line(details,'Assessment checked: '+time(row.checked_at),'hint');}else line(details,'Discovery preview only. No assessment or intake record was saved.','hint');cell.append(details);tr.append(cell);body.append(tr);
  }
- table.append(body);const wrap=node(root,'div');wrap.className='work-table-wrap';wrap.append(table);root.append(wrap);
+ table.append(body);const wrap=node(root,'div');wrap.className='work-table-wrap';wrap.append(table);destination.append(wrap);
+ }
 }
 // One print-only sheet of a student-facing report: scores, the report text and
 // a written-reflection space. Teacher-only evidence notes never print. Each
