@@ -183,6 +183,16 @@ def drive_file(token, file_id):
                     {"fields": FILE_FIELDS, "supportsAllDrives": "true"}, timeout=10)
 
 
+def folders_named(token, name):
+    """Folders with exactly this name that the dashboard can see, with their parents."""
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    page = get_json("https://www.googleapis.com/drive/v3/files", token, {
+        "q": "name = '%s' and mimeType = '%s' and trashed = false" % (escaped, FOLDER),
+        "fields": "files(id,name,parents)", "pageSize": 20,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
+    return page.get("files", []) or []
+
+
 def folder_children(token, folder_id):
     """Every item directly inside a Drive folder, trashed items excluded."""
     items, cursor = [], None

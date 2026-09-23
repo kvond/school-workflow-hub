@@ -183,6 +183,11 @@ class WorkTests(unittest.TestCase):
 SLIDES = "application/vnd.google-apps.presentation"
 
 
+def named(tree, name):
+    """Fake Drive name search over a fake folder tree."""
+    return [{**item, "parents": [parent]} for parent, items in tree.items() for item in items if item["name"] == name]
+
+
 def drive_tree():
     """00 ALL TURN IN / 🔬 Forensics / 📥 Wk 04 / Form (File responses) / question folder."""
     def item(ident, name, mime=SLIDES, created="2026-09-20T12:00:00Z"):
@@ -220,6 +225,7 @@ class FolderTests(unittest.TestCase):
         with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
                 patch.object(google, "form_responses", side_effect=lambda t, form_id: responses.get(form_id, [])), \
                 patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)), \
                 patch.object(google, "drive_file", side_effect=drive_file):
             return work.lesson_work("token", self.config, agenda_fixture or fixture(), "forensics", "Wk 04")
 
@@ -257,7 +263,8 @@ class FolderTests(unittest.TestCase):
     def test_missing_week_folder_is_a_note(self):
         tree = drive_tree()
         tree["CLASSF"] = tree["CLASSF"][:1]
-        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])):
+        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)):
             roots, note = work.lesson_folders("token", self.config, "Forensics", "Wk 04", [], set())
         self.assertEqual(roots, {})
         self.assertIn("Wk 04", note)
@@ -270,11 +277,55 @@ class FolderTests(unittest.TestCase):
                          "mimeType": folder},
                         {"id": "CYC02", "name": "Biology — Cycle 02 — Ecosystems — Turn In (File responses)",
                          "mimeType": folder}]}
-        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])):
+        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)):
             roots, note = work.lesson_folders("token", self.config, "Biology", "Wk 03",
                                               ["Biology — Cycle 03 — Energy Flow — Turn In"], set())
         self.assertEqual(list(roots), ["CYC03"])
         self.assertIsNone(note)
+
+    def test_form_folder_moved_into_another_weeks_folder_is_still_found(self):
+        folder = "application/vnd.google-apps.folder"
+        tree = {"ROOT": [{"id": "BIO", "name": "🌿 Biology", "mimeType": folder}],
+                "BIO": [{"id": "WK03", "name": "📥 Wk 03 — Energy Flow", "mimeType": folder}],
+                "WK03": [{"id": "FORM", "name": "Energy Flow — Turn In (File responses)", "mimeType": folder}],
+                "ELSEWHERE": [{"id": "OTHER", "name": "Energy Flow — Turn In (File responses)", "mimeType": folder}]}
+        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)):
+            roots, note = work.lesson_folders("token", self.config, "Biology", "Wk 04",
+                                              ["Energy Flow — Turn In"], set())
+        # Found inside Wk 03's folder; a same-named folder outside the class folder is ignored.
+        self.assertEqual(list(roots), ["FORM"])
+        self.assertIsNone(note)
+
+    def test_uploads_moved_into_the_form_folder_never_pull_in_the_whole_class_folder(self):
+        folder = "application/vnd.google-apps.folder"
+
+        def item(ident, name, mime=SLIDES):
+            return {"id": ident, "name": name, "mimeType": mime, "createdTime": "2026-09-20T12:00:00Z"}
+        tree = {"ROOT": [item("BIO", "🌿 Biology", folder)],
+                "BIO": [item("CYC", "Biology — Cycle 04 — Old title — Turn In (File responses)", folder),
+                        item("WK01", "📥 Wk 01 — Intro", folder), item("WK05", "📥 Wk 05 — Later", folder)],
+                "CYC": [item("R1", "Copy of Cycle 04 deck - Ana Rivera"), item("L1", "Copy of Cycle 04 deck - Sam Lee")],
+                "WK01": [item("K1", "s.chidi.okafor — 09-17 07.31 — Copy of Week 1 deck - Chidi Okafor")],
+                "WK05": [item("T1", "teacher — 09-22 08.02 — Test upload - Teacher")]}
+        meta = {"R1": {"name": "Copy of Cycle 04 deck - Ana Rivera", "mimeType": SLIDES, "parents": ["CYC"]},
+                "CYC": {"name": "Biology — Cycle 04 — Old title — Turn In (File responses)", "parents": ["BIO"]},
+                # The Form was renamed, so its folder can only be found through its uploads.
+                "FICTIONALFORMID1234567890abc": {"name": "Biology — Wk 04 — New title — Turn In"}}
+        responses = {"FICTIONALFORMID1234567890abc": [
+            response("s.ana.rivera@school.example", "2026-09-20T14:00:00Z", ("R1", "deck"))]}
+        with patch.object(work.roster, "load", return_value=({"biology": self.students}, [])), \
+                patch.object(google, "form_responses", side_effect=lambda t, form_id: responses.get(form_id, [])), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)), \
+                patch.object(google, "drive_file", side_effect=lambda t, fid: meta.get(fid, {"name": fid})):
+            result = work.lesson_work("token", self.config, fixture(), "biology", "Wk 04")
+        form = result["lessons"][0]["forms"][0]
+        self.assertEqual(sorted(f["id"] for r in form["students"] for f in r["files"]), ["L1", "R1"])
+        self.assertEqual(result["other_files"], [])
+        self.assertEqual([f["name"] for f in result["folders"]],
+                         ["Biology — Cycle 04 — Old title — Turn In (File responses)"])
 
     def test_shared_folder_files_are_sorted_by_the_deck_they_were_copied_from(self):
         folder = "application/vnd.google-apps.folder"
@@ -296,6 +347,7 @@ class FolderTests(unittest.TestCase):
         with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
                 patch.object(google, "form_responses", side_effect=lambda t, form_id: responses.get(form_id, [])), \
                 patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)), \
                 patch.object(google, "drive_file", side_effect=lambda t, fid: {"name": names.get(fid, fid), "mimeType": SLIDES}):
             result = work.lesson_work("token", self.config, fixture(), "forensics", "Wk 04")
         reasoning, observation = result["lessons"][0]["forms"]
