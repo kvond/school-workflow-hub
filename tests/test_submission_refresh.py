@@ -14,6 +14,7 @@ from school_workflow_hub.adapters.roster_matching import parse_roster
 ROOT = "r" * 24
 FOLDER = "z" * 24
 FILE_A, FILE_B, FILE_C = (c * 24 for c in "abc")
+FORM_A, FORM_B = (c * 24 for c in "gh")
 CHECKED = "2026-09-20T10:00:00Z"
 CHANGED = "2026-09-21T10:00:00Z"
 
@@ -27,11 +28,44 @@ def lesson(key, family):
     text = "\n".join(
         f"Which synthetic {family} evidence distinguishes example {n} from another?\n"
         f"[[NOTES:{family}:Q{n}]]" for n in range(3))
+    form_id = FORM_A if family == "observation" else FORM_B
     return {"assignment_key": key, "class_key": "forensics",
             "assignment_title": "Synthetic " + family,
             "source_deck_id": ("t" if family == "observation" else "u") * 24,
             "source_url": "https://example.invalid/" + family,
-            "source_text": text}
+            "source_text": text, "form_id": form_id,
+            "form_url": "https://docs.google.com/forms/d/" + form_id + "/viewform",
+            "form_source": "agenda_u", "form_mapping_verified": True,
+            "form_source_reference": "Synthetic Forensics!U6"}
+
+
+class Forms:
+    """Synthetic transport exercising both real Form collection layers."""
+    def __init__(self, harness, error=None, errors=None):
+        self.harness, self.error, self.errors = harness, error, errors or {}
+        self.calls = []
+
+    def responses(self, form_id, cursor=None):
+        self.calls.append((form_id, cursor))
+        error = self.errors.get(form_id) or self.error
+        if error:
+            raise error
+        if (form_id, cursor) in self.harness.form_pages:
+            return deepcopy(self.harness.form_pages[(form_id, cursor)])
+        assert cursor is None
+        responses = []
+        for ref in list(self.harness.refs.values()) + self.harness.extra_refs:
+            if ref["form_id"] != form_id:
+                continue
+            answers = {qid: {"textAnswers": {"answers": [{"value": v} for v in values]}}
+                       for qid, values in ref["typed_answers"].items()}
+            answers["upload"] = {"fileUploadAnswers": {"answers": [{
+                "fileId": ref["id"], "fileName": ref["form_name"],
+                "mimeType": ref["form_mime_type"]}]}}
+            responses.append({"responseId": ref["response_id"],
+                              "respondentEmail": ref["respondent_email"],
+                              "createTime": ref["submitted_at"], "answers": answers})
+        return {"responses": responses}
 
 
 def file_meta(fid=FILE_A, parent=ROOT, version="1"):
@@ -77,8 +111,9 @@ class Harness:
                        "HUB_SCHOOL_EMAIL_DOMAINS": "school.example",
                        "HUB_ROSTER_SECTION_IDS": {"A2 Forensics": "section-alpha",
                                                   "A3 Forensics": "section-beta"},
-                       "HUB_TURNIN_QUESTION_IDS": {"name": "n", "section": "s",
-                                                  "assignment": "a"},
+                       "HUB_ASSIGNMENT_FORM_QUESTION_IDS": {
+                           src["assignment_key"]: {"name": "n", "section": "s", "assignment": "a"}
+                           for src in self.catalog},
                        # Discovery must stay read-only even with the intake writer enabled.
                        "HUB_INTAKE_WORKBOOK_WRITES": "true"}
         self.records = {"assignments": deepcopy(self.catalog), "submissions": [],
@@ -86,12 +121,16 @@ class Harness:
         self.files = files if files is not None else [file_meta()]
         self.drive = Drive(self.files, pages)
         self.refs, self.texts = {}, {}
+        self.extra_refs, self.form_pages = [], {}
         for item in self.files:
             self.route(item["id"])
 
     def route(self, fid, person=0, assignment=0):
         row, src = self.roster[person], self.catalog[assignment]
-        self.refs[fid] = {"respondent_email":
+        self.refs[fid] = {"id": fid, "form_id": src["form_id"],
+            "form_name": "Synthetic upload.pptx", "form_mime_type": intake.PPTX,
+            "submitted_at": CHANGED, "response_id": "response-" + fid,
+            "respondent_email":
             "s." + row["first"].lower() + "." + row["last"].lower() + "@school.example",
             "typed_answers": {"n": [row["first"] + " " + row["last"]],
                               "s": [row["section_name"]], "a": [src["assignment_key"]]}}
@@ -108,24 +147,22 @@ class Harness:
                 "hold_reason": "", "checked_at": CHECKED, "content_score": "3",
                 "revision_score": "2", "feedback": "Preserved synthetic feedback"}
 
-    def run(self, *, assignment="all", form_error=None, catalog_error=None,
-            source_read=None):
+    def run(self, *, assignment="all", form_error=None, form_errors=None,
+            catalog_error=None, master_error=None, source_read=None):
         before = deepcopy((self.records, self.refs, self.roster, self.files, self.config))
+        forms = Forms(self, form_error, form_errors)
         with ExitStack() as stack:
             replacements = {"read_records": lambda *args: deepcopy(self.records),
                             "service_token": lambda *args: "synthetic-token",
                             "DriveReader": lambda *args: self.drive,
-                            "FormsReader": lambda *args: object(),
+                            "FormsReader": lambda *args: forms,
                             "read_roster": lambda *args: deepcopy(self.roster)}
             for name, value in replacements.items():
                 stack.enter_context(patch.object(refresh, name, value))
-            stack.enter_context(patch.object(refresh, "response_file_refs",
-                side_effect=form_error,
-                return_value=(deepcopy(self.refs), {"responses_checked": len(self.refs)})))
             catalog_call = stack.enter_context(patch.object(intake, "agenda_catalog",
                 side_effect=catalog_error, return_value=deepcopy(self.catalog)))
             stack.enter_context(patch.object(intake, "read_catalog_decks",
-                return_value=deepcopy(self.catalog)))
+                side_effect=master_error, return_value=deepcopy(self.catalog)))
             stack.enter_context(patch.object(intake, "read_deck",
                 side_effect=source_read or (lambda token, item: self.texts[item["id"]])))
             writes = [stack.enter_context(patch.object(module, name)) for module, name in
@@ -136,11 +173,145 @@ class Harness:
             for write in writes:
                 write.assert_not_called()
             self.catalog_calls = catalog_call.call_args_list
+            self.form_calls = forms.calls
         assert (self.records, self.refs, self.roster, self.files, self.config) == before
         return result
 
 
 class RefreshTests(unittest.TestCase):
+    def test_two_assignment_forms_are_fully_read_without_a_shared_form(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, assignment=1)
+        last_page = Forms(h).responses(FORM_A)
+        h.form_pages = {(FORM_A, None): {"responses": [], "nextPageToken": "next"},
+                        (FORM_A, "next"): last_page}
+        h.config.pop("HUB_TURNIN_FORM_ID")
+        result = h.run()
+        self.assertEqual(h.form_calls, [(FORM_A, None), (FORM_A, "next"), (FORM_B, None)])
+        self.assertEqual(result["coverage"]["forms_complete"], 2)
+        self.assertEqual(result["coverage"]["responses_checked"], 2)
+        self.assertEqual([row["form_ids"] for row in result["files"]], [[FORM_A], [FORM_B]])
+        self.assertEqual([row["assignment_key"] for row in result["files"]],
+                         ["forensics:F03A", "forensics:F03B"])
+        self.assertTrue(result["coverage"]["complete"])
+
+    def test_one_unavailable_form_keeps_other_assignments_verified_evidence(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, assignment=1)
+        result = h.run(form_errors={FORM_A: ConnectionError("submission_form_access_required")})
+        self.assertEqual(h.form_calls, [(FORM_A, None), (FORM_B, None)])
+        self.assertFalse(result["coverage"]["form_complete"])
+        self.assertEqual(result["coverage"]["forms_complete"], 1)
+        rows = {row["file_id"]: row for row in result["files"]}
+        self.assertEqual(rows[FILE_A]["student_id"], "")
+        self.assertIn("form_identity_unavailable", rows[FILE_A]["review_reasons"])
+        self.assertEqual(rows[FILE_B]["assignment_key"], "forensics:F03B")
+        self.assertEqual(rows[FILE_B]["form_ids"], [FORM_B])
+        self.assertEqual(rows[FILE_B]["discovery_status"], "new_ungraded")
+
+    def test_selected_assignment_does_not_depend_on_unrelated_form_access(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, assignment=1)
+        result = h.run(assignment="forensics:F03A",
+                       form_errors={FORM_B: ConnectionError("submission_form_access_required")})
+        self.assertEqual(h.form_calls, [(FORM_A, None)])
+        self.assertTrue(result["coverage"]["form_complete"])
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A])
+
+    def test_missing_assignment_binding_does_not_fall_back_to_global_form(self):
+        h = Harness()
+        h.catalog[0].update(form_mapping_verified=False, form_id="",
+                            form_review_reason="assignment_form_mapping_required")
+        result = h.run()
+        self.assertEqual(h.form_calls, [(FORM_B, None)])
+        self.assertNotEqual(FORM_B, h.config["HUB_TURNIN_FORM_ID"])
+        self.assertFalse(result["coverage"]["form_complete"])
+        self.assertIn("assignment_form_mapping_required", result["coverage"]["errors"])
+        row = result["files"][0]
+        self.assertEqual(row["form_ids"], [])
+        self.assertEqual(row["student_id"], "")
+        self.assertEqual(row["discovery_status"], "needs_review")
+
+    def test_unavailable_master_retains_exact_form_assignment_and_identity_with_hold(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, assignment=1)
+        result = h.run(master_error=ConnectionError("intake_source_deck_unavailable"))
+        self.assertTrue(result["coverage"]["form_complete"])
+        self.assertFalse(result["coverage"]["catalog_complete"])
+        self.assertEqual([row["assignment_key"] for row in result["files"]],
+                         ["forensics:F03A", "forensics:F03B"])
+        for row in result["files"]:
+            self.assertEqual(row["section_id"], "section-alpha")
+            self.assertEqual(row["content_assignment_key"], "")
+            self.assertEqual(row["discovery_status"], "needs_review")
+            self.assertIn("intake_catalog_needs_review", row["review_reasons"])
+
+    def test_form_assignment_disagreement_with_content_is_never_relabelled(self):
+        h = Harness()
+        h.texts[FILE_A] = h.catalog[1]["source_text"]
+        row = h.run()["files"][0]
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["form_assignment_keys"], ["forensics:F03A"])
+        self.assertEqual(row["content_assignment_key"], "forensics:F03B")
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("form_deck_assignment_disagreement", row["review_reasons"])
+
+    def test_selected_form_file_from_other_class_remains_visible_but_identity_is_held(self):
+        h = Harness()
+        h.roster.extend(parse_roster({"sheets": [sheet("A4 Biology", "Taylor", "Other")]}))
+        h.config["HUB_ROSTER_SECTION_IDS"]["A4 Biology"] = "section-biology"
+        h.route(FILE_A, person=2)
+        result = h.run(assignment="forensics:F03A")
+        self.assertEqual(len(result["files"]), 1)
+        row = result["files"][0]
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["student_id"], "")
+        self.assertEqual(row["section_id"], "")
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("roster_form_class_disagreement", row["review_reasons"])
+
+    def test_exact_form_class_scopes_same_student_in_two_different_courses(self):
+        h = Harness()
+        h.roster.extend(parse_roster({"sheets": [sheet("A4 Biology", "Alex", "Example")]}))
+        h.config["HUB_ROSTER_SECTION_IDS"]["A4 Biology"] = "section-biology"
+        row = h.run()["files"][0]
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["section_id"], "section-alpha")
+        self.assertEqual(row["discovery_status"], "new_ungraded")
+
+    def test_same_student_in_two_sections_of_form_class_stays_ambiguous(self):
+        h = Harness()
+        h.roster.extend(parse_roster({"sheets": [sheet("A3 Forensics", "Alex", "Example")]}))
+        row = h.run()["files"][0]
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["student_id"], "")
+        self.assertEqual(row["section_id"], "")
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("roster_identity_ambiguous", row["review_reasons"])
+
+    def test_file_claimed_by_two_assignment_forms_preserves_conflicting_evidence(self):
+        h = Harness()
+        ref = deepcopy(h.refs[FILE_A])
+        ref.update(form_id=FORM_B, response_id="response-second-form")
+        h.extra_refs.append(ref)
+        row = h.run()["files"][0]
+        self.assertEqual(row["assignment_key"], "")
+        self.assertEqual(row["form_assignment_keys"], ["forensics:F03A", "forensics:F03B"])
+        self.assertEqual(row["form_ids"], [FORM_A, FORM_B])
+        self.assertEqual(row["content_assignment_key"], "forensics:F03A")
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("form_assignment_conflict", row["review_reasons"])
+
+    def test_form_without_typed_assignment_question_still_matches_exact_binding(self):
+        h = Harness()
+        h.config["HUB_ASSIGNMENT_FORM_QUESTION_IDS"]["forensics:F03A"] = {"name": "n", "section": "s"}
+        del h.refs[FILE_A]["typed_answers"]["a"]
+        row = h.run()["files"][0]
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["discovery_status"], "new_ungraded")
+        self.assertEqual(row["review_reasons"], [])
+
     def test_new_file_is_discovered_on_later_page_and_nested_folder(self):
         known, new = file_meta(), file_meta(FILE_B, parent=FOLDER)
         folder = {"id": FOLDER, "mimeType": refresh.FOLDER, "parents": [ROOT], "trashed": False}
@@ -205,14 +376,17 @@ class RefreshTests(unittest.TestCase):
         self.assertIn("form_identity_unavailable", row["review_reasons"])
         self.assertEqual(row["discovery_status"], "needs_review")
 
-    def test_catalog_unavailable_keeps_file_and_form_identity_in_preview(self):
-        result = Harness().run(catalog_error=ConnectionError("intake_catalog_needs_review"))
+    def test_catalog_unavailable_cannot_invent_form_binding_or_identity(self):
+        h = Harness()
+        result = h.run(catalog_error=ConnectionError("intake_catalog_needs_review"))
         self.assertFalse(result["coverage"]["catalog_complete"])
         row = result["files"][0]
         self.assertEqual(row["file_id"], FILE_A)
         self.assertEqual(row["assignment_key"], "")
-        self.assertEqual(row["section_id"], "section-alpha")
+        self.assertEqual(row["section_id"], "")
         self.assertIn("intake_catalog_needs_review", row["review_reasons"])
+        self.assertIn("form_identity_unavailable", row["review_reasons"])
+        self.assertEqual(h.form_calls, [])
 
     def test_collected_email_conflict_holds_saved_identity(self):
         h = Harness()
@@ -273,13 +447,15 @@ class RefreshTests(unittest.TestCase):
         self.assertIn("saved_record_needs_review", row["review_reasons"])
         self.assertNotIn(saved["hold_reason"], repr(row))
 
-    def test_file_change_during_read_does_not_publish_assignment_match(self):
+    def test_file_change_during_read_retains_form_binding_but_holds_content(self):
         h = Harness()
         def changed(token, item):
             h.drive.items[item["id"]]["version"] = "2"
             return h.texts[item["id"]]
         row = h.run(source_read=changed)["files"][0]
-        self.assertEqual(row["assignment_key"], "")
+        self.assertEqual(row["assignment_key"], "forensics:F03A")
+        self.assertEqual(row["content_assignment_key"], "")
+        self.assertEqual(row["discovery_status"], "needs_review")
         self.assertIn("intake_upload_changed", row["review_reasons"])
 
     def test_upload_budget_exhaustion_preserves_partial_review_preview(self):
@@ -293,7 +469,8 @@ class RefreshTests(unittest.TestCase):
         self.assertIn("submission_refresh_budget_exhausted", result["coverage"]["errors"])
         self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A, FILE_B])
         self.assertEqual(result["files"][0]["assignment_key"], "forensics:F03A")
-        self.assertEqual(result["files"][1]["assignment_key"], "")
+        self.assertEqual(result["files"][1]["assignment_key"], "forensics:F03A")
+        self.assertEqual(result["files"][1]["content_assignment_key"], "")
         self.assertIn("submission_refresh_budget_exhausted", result["files"][1]["review_reasons"])
         self.assertEqual(result["external_writes"], 0)
 
@@ -347,14 +524,13 @@ class RefreshTests(unittest.TestCase):
 
     def test_invalid_question_mapping_keeps_review_preview(self):
         h = Harness()
-        h.config["HUB_TURNIN_QUESTION_IDS"] = "invalid json"
+        h.config["HUB_ASSIGNMENT_FORM_QUESTION_IDS"] = "invalid json"
         result = h.run()
-        self.assertFalse(result["coverage"]["complete"])
-        self.assertIn("intake_configuration_invalid", result["coverage"]["errors"])
+        self.assertTrue(result["coverage"]["form_complete"])
         row = result["files"][0]
         self.assertEqual(row["assignment_key"], "forensics:F03A")
         self.assertEqual(row["discovery_status"], "needs_review")
-        self.assertIn("typed_section_crosscheck_unconfigured", row["review_reasons"])
+        self.assertIn("typed_crosscheck_configuration_invalid", row["review_reasons"])
 
     def test_incomplete_scan_does_not_claim_unlocated_form_file_is_outside_root(self):
         items = [file_meta(FILE_A), file_meta(FILE_B)]

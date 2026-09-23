@@ -7,7 +7,7 @@ in review. Nothing here assesses, moves a file, changes a roster or posts grades
 import json
 import re
 
-from .dated_agenda import COURSES, grid, value, link
+from .dated_agenda import COURSES, grid, value, link, turnin_form
 from .hosted_agenda import authenticated_reader, service_token, ConnectionError
 from .forms_submissions import FormsReader, FORMS_SCOPE, response_file_refs, FORM_ID
 from .submission_inventory import DriveReader, DRIVE_SCOPE, FOLDER, locate_files_under_root
@@ -72,13 +72,119 @@ def _catalog_assignment(course, week, topic, source_id, assignments, bindings):
                                   "assignment_title": topic}
 
 
+def _assignment_form_bindings(config, assignments):
+    """Private, teacher-reviewed assignment bindings; errors stay per entry."""
+    try:
+        configured = private_mapping(config, "HUB_ASSIGNMENT_FORM_IDS")
+    except ConnectionError:
+        return {}, {}, "assignment_form_mapping_invalid"
+    if any(not isinstance(key, str) or key not in assignments for key in configured):
+        return {}, {}, "assignment_form_mapping_invalid"
+    bindings, errors, by_form = {}, {}, {}
+    for key, form_id in configured.items():
+        if not isinstance(form_id, str) or not FORM_ID.fullmatch(form_id):
+            errors[key] = "assignment_form_mapping_invalid"
+            continue
+        bindings[key] = form_id
+        by_form.setdefault(form_id, []).append(key)
+    for keys in by_form.values():
+        if len(keys) > 1:
+            errors.update((key, "assignment_form_reused") for key in keys)
+    return bindings, errors, ""
+
+
+def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
+                  bindings, binding_errors, configuration_error, assignments):
+    """One assignment's direct U link is sufficient; multi-deck rows need proof.
+
+    The observed U link is retained even when a private mapping resolves an
+    ambiguous multi-assignment row to a different Form. It is not a fallback
+    global Form and its published /d/e/ identifier is never used as an API ID.
+    """
+    key = entry["assignment_key"]
+    raw = link(cells.get((row, 21), {}).get("hyperlink", "")) or value(cells, row, 21)
+    form_url, _, observed_id = turnin_form(raw)
+    targets = [r for r in range(2, 161) if map_valid
+               and value(turnins, r, 3) == title and value(turnins, r, 4) == entry["week"]]
+    label = value(turnins, targets[0], 1) if len(targets) == 1 else ""
+    matches = {item["assignment_key"] for item in row_entries
+               if label and label in {item["assignment_key"], item["assignment_title"]}}
+    multiple = len({item["assignment_key"] for item in row_entries}) > 1
+    labels = {value(turnins, target, 1) for target in targets}
+    # Map labels may be combined weekly text in another namespace. They need
+    # not equal this assignment's title, but an exact other known assignment
+    # is a contradiction worth retaining for review.
+    mapped_keys = {known_key for known_key, known in assignments.items()
+                   if known_key in labels or (known["class_key"] == entry["class_key"]
+                       and known["assignment_title"] in labels)}
+    result = {"form_url": form_url or "", "form_id": "",
+              "form_source": "", "form_mapping_verified": False,
+              "form_binding_ambiguous": multiple and len(matches) != 1,
+              "form_source_reference": f"{title}!U{row}",
+              "form_review_reason": "", "assignment_label": label}
+    reason = ""
+    if value(cells, 3, 21) != "_turnInURL":
+        reason = "assignment_form_layout_changed"
+    elif not form_url:
+        reason = "assignment_form_missing" if not raw else "assignment_form_invalid"
+    elif not multiple and mapped_keys - {key}:
+        reason = "assignment_form_mapping_conflict"
+    elif multiple and (not map_valid or not targets):
+        reason = "assignment_form_mapping_required"
+    elif multiple and (len(targets) != 1 or len(matches) != 1):
+        reason = "assignment_form_mapping_ambiguous"
+    elif multiple and matches != {key}:
+        reason = "assignment_form_belongs_to_other_assignment"
+    elif not observed_id:
+        reason = "assignment_form_api_id_required"
+    explicit = bindings.get(key)
+    error = configuration_error or binding_errors.get(key)
+    if error:
+        reason = error
+    elif explicit:
+        if reason == "assignment_form_mapping_conflict" or (not reason and observed_id != explicit):
+            reason = "assignment_form_mapping_conflict"
+        else:
+            result.update(form_id=explicit, form_source="private_assignment_mapping",
+                          form_mapping_verified=True)
+            reason = ""
+    elif not reason:
+        result.update(form_id=observed_id, form_source="agenda_u_turnin_map" if matches == {key} else "agenda_u",
+                      form_mapping_verified=True)
+    result["form_review_reason"] = reason
+    return result
+
+
+def _merge_catalog_forms(evidence):
+    verified = [item for item in evidence if item["form_mapping_verified"]]
+    ids = {item["form_id"] for item in verified}
+    result = dict((verified or [item for item in evidence if item["form_url"]] or evidence)[0])
+    result["form_source_references"] = list(dict.fromkeys(
+        item["form_source_reference"] for item in evidence))
+    conflicts = [item for item in evidence
+                 if item["form_review_reason"] == "assignment_form_mapping_conflict"]
+    if len(ids) > 1 or conflicts:
+        result.update(form_id="", form_source="", form_mapping_verified=False,
+                      form_review_reason="assignment_form_mapping_conflict")
+    return result
+
+
 def agenda_catalog(assertion, config, records, *, class_key=None):
     courses = tuple((course, title) for course, title in COURSES
                     if class_key is None or course == class_key)
     if not courses:
         raise ConnectionError("invalid_submission_scope")
     reader, source = authenticated_reader(assertion, config)
-    data = reader.read(source, tuple("'%s'!A3:U60" % t for _, t in courses))
+    metadata = reader.read(source)
+    has_map = any(sheet.get("properties", {}).get("title") == "🗂 TurnIn Map"
+                  for sheet in metadata.get("sheets", []))
+    ranges = tuple("'%s'!A3:U60" % t for _, t in courses)
+    if has_map:
+        ranges += ("'🗂 TurnIn Map'!A1:D160",)
+    data = reader.read(source, ranges)
+    turnins = grid(data, "🗂 TurnIn Map") if has_map else {}
+    map_valid = has_map and [value(turnins, 1, c) for c in (1, 2, 3, 4)] == [
+        "assignment key", "target folder id", "course", "week"]
     assignments = {}
     for assignment in records.get("assignments", []):
         key = assignment.get("assignment_key")
@@ -86,13 +192,15 @@ def agenda_catalog(assertion, config, records, *, class_key=None):
             raise ConnectionError("intake_registry_ambiguous")
         assignments[key] = assignment
     bindings = _deck_bindings(config, assignments)
-    registry, by_deck, by_assignment = [], {}, {}
+    forms, form_errors, form_config_error = _assignment_form_bindings(config, assignments)
+    registry, by_deck, by_assignment, form_evidence = [], {}, {}, {}
     for course, title in courses:
         cells = grid(data, title)
         if value(cells, 3, 16) != "_studentURL":
             raise ConnectionError("agenda_layout_changed")
         for row in range(4, 61):
             week, topic = value(cells, row, 1), value(cells, row, 3)
+            row_entries = []
             for column in (16, 15):
                 raw = link(cells.get((row, column), {}).get("hyperlink", "")) or link(value(cells, row, column))
                 if not raw:
@@ -108,14 +216,29 @@ def agenda_catalog(assertion, config, records, *, class_key=None):
                 if ((source_id in by_deck and by_deck[source_id] != key)
                         or (key in by_assignment and by_assignment[key] != source_id)):
                     raise ConnectionError("intake_registry_ambiguous")
-                if source_id in by_deck:
-                    continue  # Same exact lesson link repeated in the Agenda.
-                by_deck[source_id], by_assignment[key] = key, source_id
-                registry.append({"assignment_key": key,
-                                 "class_key": course, "assignment_title": known["assignment_title"],
-                                 "week": week, "source_deck_id": source_id, "source_url": raw})
+                entry = {"assignment_key": key,
+                         "class_key": course, "assignment_title": known["assignment_title"],
+                         "week": week, "source_deck_id": source_id, "source_url": raw}
+                row_entries.append(entry)
+                if source_id not in by_deck:
+                    by_deck[source_id], by_assignment[key] = key, source_id
+                    registry.append(entry)
+            for entry in {item["assignment_key"]: item for item in row_entries}.values():
+                form_evidence.setdefault(entry["assignment_key"], []).append(_catalog_form(
+                    entry, row_entries, cells, row, title, turnins, map_valid,
+                    forms, form_errors, form_config_error, assignments))
     if not registry or len(registry) > 342:
         raise ConnectionError("intake_catalog_needs_review")
+    by_form = {}
+    for entry in registry:
+        entry.update(_merge_catalog_forms(form_evidence[entry["assignment_key"]]))
+        if entry["form_mapping_verified"]:
+            by_form.setdefault(entry["form_id"], []).append(entry)
+    for entries in by_form.values():
+        if len({entry["assignment_key"] for entry in entries}) > 1:
+            for entry in entries:
+                entry.update(form_id="", form_source="", form_mapping_verified=False,
+                             form_review_reason="assignment_form_reused")
     return registry
 
 

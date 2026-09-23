@@ -97,7 +97,27 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   if(unassigned)line(root,`${unassigned} ${unassigned===1?'file needs':'files need'} a lesson match. Choose All lessons and Unmatched or All records to review them.`,'hint');
   const unknownClass=d.files.filter(f=>!f.class_key).length;
   if(unknownClass)line(root,`${unknownClass} ${unknownClass===1?'file has':'files have'} no verified class match. They appear under Unmatched for review, not as confirmed work for this class.`,'hint');
-  if(!d.coverage.complete){const details=node(root,'details');details.append(node(root,'summary','Discovery coverage details'));for(const [key,name]of [['form_complete','Form responses'],['roster_complete','Roster'],['catalog_complete','Lesson catalog']])if(d.coverage[key]===false)line(details,name+' could not be read completely.');for(const reason of d.coverage.errors||[])line(details,label(reason));line(details,'Incomplete coverage does not establish missing work.');root.append(details);}
+  const forms=Array.isArray(d.coverage.form_results)?d.coverage.form_results:[];
+  if(!d.coverage.complete||forms.length){
+   const details=node(root,'details');details.append(node(root,'summary','Discovery coverage details'));
+   for(const [key,name]of [['form_complete','Form responses'],['roster_complete','Roster'],['catalog_complete','Lesson catalog']])if(d.coverage[key]===false)line(details,name+' could not be read completely.');
+   if(forms.length){
+    const list=node(root,'ul');
+    for(const form of forms){
+     const assignment=(state.data.assignments||[]).find(a=>a.class_key===d.class_key&&a.assignment_key===form.assignment_key);
+     const item=node(root,'li');item.append(node(root,'strong',assignment?.assignment_title||'Assignment needs matching'));
+     if(form.complete){
+      const count=value=>Number.isInteger(value)&&value>=0?String(value):'unavailable';
+      line(item,`Form read complete · ${count(form.responses_checked)} responses checked · ${count(form.files_referenced)} files referenced · ${count(form.pages)} response pages.`);
+     }else line(item,'Form read incomplete · '+label(form.error||'Form unavailable')+'.');
+     link(item,'Open assignment Form ↗',form.form_url);list.append(item);
+    }
+    details.append(list);
+   }
+   for(const reason of d.coverage.errors||[])line(details,label(reason));
+   if(!d.coverage.complete)line(details,'Incomplete coverage does not establish missing work.');
+   root.append(details);
+  }
  }else line(root,'Submission discovery has not run in this view. Refresh submissions checks for new and changed work.','hint');
  if(sectionId==='matched'){
   const unmatched=projected.submissions.filter(r=>inClass(r,classKey)&&!r.section_id).length;

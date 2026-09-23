@@ -41,6 +41,7 @@ globalThis.fetch=async(url,options)=>{
 await import('../pages.mjs');
 const settle=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};await settle();
 const feedback=document.getElementById('page-feedback'),summary=document.getElementById('page-summary');
+assert.match(feedback.allText,/Each assignment has its own turn-in Form/);assert.doesNotMatch(feedback.allText,/exact shared-Form assignment/);
 const select=label=>feedback.all.find(e=>e.tagName==='select'&&e.attributes['aria-label']===label);
 const classSelect=select('Feedback class'),sectionSelect=select('Feedback section');
 const table=()=>feedback.all.find(e=>e.tagName==='table');

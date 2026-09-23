@@ -63,7 +63,7 @@ function scopeBar(target,page){
  date.addEventListener('change',()=>requestDay(date.value));
  const load=btn('Load lesson',()=>requestDay(date.value));
  const advBar=el('div',undefined,'workspace-controls');advBar.append(dateLabel,load);
- advanced.append(el('summary','Assess new submissions (Process work)'),el('p','Assessing brand-new work uses this lesson’s Agenda date to resolve its exact shared-Form assignment, then verifies uploaded files inside the approved turn-in root. Pick the date, Load lesson, then scan and draft below. Reviewing, grading and printing already-assessed work needs only the selectors above.','hint'),advBar);
+ advanced.append(el('summary','Assess new submissions (Process work)'),el('p','Each assignment has its own turn-in Form. Load the lesson to check its assignment-specific Form and uploaded files inside the approved turn-in root. A date with multiple assignments needs separate verified Form mappings. Reviewing, grading and printing already-assessed work uses the selectors above.','hint'),advBar);
  const context=el('section',undefined,'lesson-context');const notice=el('p','','hint');notice.setAttribute('role','status');advanced.append(context,notice);
  target.append(bar,advanced);views.push({select,date,load,context,notice});
  return advanced;

@@ -13,7 +13,8 @@ from .hosted_agenda import ConnectionError, service_token
 from .submission_inventory import (DRIVE_SCOPE, FOLDER, FORM, SHORTCUT,
     MAX_LOCATE_DEPTH, MAX_LOCATE_FOLDERS, MAX_LOCATE_PAGES)
 from .submission_refresh_reader import BudgetedDrive as DriveReader
-from .forms_submissions import FormsReader, FORMS_SCOPE, FORM_ID, response_file_refs
+from .forms_submissions import FormsReader, FORMS_SCOPE
+from . import assignment_form_intake as assignment_forms
 from .roster_matching import read_roster, match_respondent
 from . import shared_form_intake as intake
 
@@ -174,16 +175,25 @@ def refresh(assertion, payload, config):
     drive = DriveReader(token)
     found, coverage = discover_tree(drive, root_id)
     errors = list(coverage["errors"])
-    refs, form_complete = {}, False
-    form_id = config.get("HUB_TURNIN_FORM_ID", "")
+    # Resolve assignment-specific Form links before reading source-deck content.
+    # An inaccessible master cannot hide the independently readable Form index.
+    original_catalog, catalog, catalog_complete = [], [], False
     try:
-        if not FORM_ID.fullmatch(form_id):
-            raise ConnectionError("submission_form_not_configured")
+        drive.check()
+        original_catalog = intake.agenda_catalog(assertion, config, records, class_key=class_key)
+    except (ConnectionError, SheetsReadError) as error:
+        errors.append(_code(error, "intake_catalog_needs_review"))
+    refs, form_complete = {}, False
+    try:
         forms = _BudgetedForms(FormsReader(service_token(service, FORMS_SCOPE)), drive.check)
-        refs, evidence = response_file_refs(forms,
-                                            form_id, collected_identity=True)
-        form_complete = True
-        coverage["responses_checked"] = evidence.get("responses_checked", 0)
+        refs, evidence = assignment_forms.collect_assignment_forms(
+            forms, original_catalog, config, assignment_key=selected)
+        form_complete = evidence["complete"]
+        coverage.update(forms_checked=evidence["forms_checked"],
+                        forms_complete=evidence["forms_complete"],
+                        responses_checked=evidence["responses_checked"],
+                        form_results=evidence["assignments"])
+        errors.extend(evidence["errors"])
     except ConnectionError as error:
         errors.append(_code(error, "submission_form_unavailable"))
     outside = set(refs) - {f["id"] for f in found}
@@ -200,20 +210,15 @@ def refresh(assertion, payload, config):
         roster_complete = True
     except ConnectionError as error:
         errors.append(_code(error, "roster_source_unavailable"))
-    catalog, catalog_complete = [], False
-    try:
-        drive.check()
-        original_catalog = intake.agenda_catalog(assertion, config, records, class_key=class_key)
-        catalog = intake.read_catalog_decks(token, drive, original_catalog,
-                                             deck_reader=drive.read_deck)
-        catalog_complete = True
-    except (ConnectionError, SheetsReadError) as error:
-        errors.append(_code(error, "intake_catalog_needs_review"))
-    try:
-        questions = intake.private_mapping(config, "HUB_TURNIN_QUESTION_IDS")
-    except ConnectionError as error:
-        questions = {}
-        errors.append(_code(error, "intake_configuration_invalid"))
+    if original_catalog:
+        try:
+            drive.check()
+            catalog = intake.read_catalog_decks(token, drive, original_catalog,
+                                                 deck_reader=drive.read_deck)
+            catalog_complete = True
+        except (ConnectionError, SheetsReadError) as error:
+            errors.append(_code(error, "intake_catalog_needs_review"))
+    catalog_by_key = {row["assignment_key"]: row for row in original_catalog}
     domains = str(config.get("HUB_SCHOOL_EMAIL_DOMAINS", "")).split(",")
     by_file = {}
     for row in records.get("submissions", []):
@@ -242,8 +247,18 @@ def refresh(assertion, payload, config):
             holds.append(reason)
         ref = refs.get(fid)
         if ref:
-            fresh_person, reason = match_respondent(ref.get("respondent_email"), roster,
+            holds.extend(ref.get("review_reasons", []))
+            # A dedicated Form establishes the course, so a learner taking
+            # another course as well is not an identity conflict. Both A2/A3
+            # remain in this roster scope and still require a unique match.
+            course_roster = [p for p in roster if p["class_key"] == class_key]
+            fresh_person, reason = match_respondent(ref.get("respondent_email"), course_roster,
                 domains, str(config.get("HUB_EMAIL_USERNAME_PREFIX", "s.")))
+            if reason == "roster_identity_unmatched":
+                other, _ = match_respondent(ref.get("respondent_email"), roster,
+                    domains, str(config.get("HUB_EMAIL_USERNAME_PREFIX", "s.")))
+                if other and other["class_key"] != class_key:
+                    fresh_person, reason = other, None
             if reason:
                 holds.append(reason)
             if ref.get("identity_conflict"):
@@ -259,11 +274,12 @@ def refresh(assertion, payload, config):
         section = str(sections.get(person["section_name"], "")) if person else ""
         if person and not section:
             holds.append("section_mapping_unverified")
-        # A current collected identity establishes an unrelated class without
-        # exporting that learner's deck for this class's preview. Stale saved
-        # records alone never establish this exclusion.
+        # This reference came from a Form bound to the selected class. A
+        # respondent from another class is a visible mismatch, not a reason
+        # to hide the upload or assign that learner to this class.
         if person and ref and person["class_key"] != class_key:
-            continue
+            holds.append("roster_form_class_disagreement")
+            person, section = None, ""
         lesson = None
         if catalog_complete:
             try:
@@ -283,6 +299,18 @@ def refresh(assertion, payload, config):
                     errors.append(code)
         else:
             holds.append("intake_catalog_needs_review")
+        # A verified dedicated Form is independent assignment evidence. Keep
+        # that exact binding visible if source content needs review; do not
+        # replace it with a title/date/folder guess or hide a readable Form.
+        form_lesson = catalog_by_key.get(ref.get("assignment_key")) if ref else None
+        content_assignment = lesson["assignment_key"] if lesson else ""
+        if ref and ref.get("assignment_conflict"):
+            lesson = None
+        elif form_lesson and lesson and form_lesson["assignment_key"] != lesson["assignment_key"]:
+            holds.append("form_deck_assignment_disagreement")
+            lesson = form_lesson
+        elif form_lesson and not lesson:
+            lesson = form_lesson
         if person and lesson and person["class_key"] != lesson["class_key"]:
             holds.append("roster_deck_class_disagreement")
             person, section = None, ""
@@ -291,7 +319,7 @@ def refresh(assertion, payload, config):
         if person and person["class_key"] != class_key:
             continue
         if person and lesson and ref:
-            holds.extend(intake.cross_checks(ref, person, lesson, questions))
+            holds.extend(assignment_forms.cross_checks(ref, person, lesson, config))
         key = lesson["assignment_key"] if lesson else ""
         previous = {r.get("assignment_key") for r in active}
         if key and previous and previous != {key}:
@@ -320,6 +348,9 @@ def refresh(assertion, payload, config):
             "discovery_status": state, "review_reasons": sorted(set(holds)),
             "modified_at": item.get("modifiedTime", ""), "version": str(item.get("version") or ""),
             "saved_record_ids": [r["record_id"] for r in history],
+            "form_ids": ref.get("form_ids", []) if ref else [],
+            "form_assignment_keys": ref.get("assignment_keys", []) if ref else [],
+            "content_assignment_key": content_assignment,
             "source_changed_since_assessment": _assessment_state(item, history)[0] == "changed_since_assessment"})
     groups = {}
     for row in output:
@@ -332,7 +363,7 @@ def refresh(assertion, payload, config):
                 row["review_reasons"] = sorted(set(row["review_reasons"] + ["competing_submission_versions"]))
                 row["discovery_status"] = "needs_review"
                 row["related_file_ids"] = [other["file_id"] for other in group if other is not row]
-    if catalog_complete:
+    if original_catalog:
         try:
             drive.check()
             if intake.agenda_catalog(assertion, config, records, class_key=class_key) != original_catalog:

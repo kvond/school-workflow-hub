@@ -123,11 +123,16 @@ associated with the student work, after checking inherited access. Page 03 is
 where needed), not an inline paragraph. Preserve document identity and history;
 exclude generated reports/summaries from student-submission discovery.
 
-## Shared Form intake — issue #37
+## Assignment-specific Form intake — issue #37
 
-The teacher chose option A on September 22: keep the shared Form and identify
-submissions by collected email, uploaded-deck evidence and the roster. Typed
-answers are cross-checks only. The implementation and synthetic tests are in
+The teacher clarified on September 23: **each assignment has its own Form**.
+The earlier claim that the teacher chose one shared Form was incorrect. Resolve
+each Form to its exact assignment, then verify collected email, uploaded-deck
+evidence and the roster. Two assignments in the same week retain separate Form
+bindings and assignment keys even when their files share a folder. Typed
+answers are optional configured cross-checks; a typed assignment question is
+not required. Missing or ambiguous Form bindings remain coverage gaps, with no
+fallback to a global Form. The implementation and acceptance boundaries are in
 [SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md); private runtime activation,
 current Form-response access, exact private deck bindings, stopgap replacement
 and dashboard acceptance remain unverified. PR #39 also changes Page 02 Refresh

@@ -1,25 +1,41 @@
-# Submission monitoring and shared-Form intake
+# Submission monitoring and assignment-specific Forms
 
 ## Teacher decision and implementation status
 
-Issue #37 selected **A: retain the shared Form students already use**. The new
-adapter is implemented with synthetic tests. It is **not deployed or live
-accepted** by this change. No real stopgap rows were removed, no live test Form
-was submitted, and no Cloud Run revision was verified. The deployment owner
-must retain the Drive recovery priority in START_HERE before activation.
+The teacher clarified on September 23 that **each assignment has its own Form**.
+The earlier statement that the teacher chose one shared Form was incorrect and
+must not be used to configure intake. Two assignments in the same week need two
+verified assignment-to-Form bindings, even when their uploaded files share a
+folder. Neither the navigation date nor a folder name identifies an assignment.
 
-The existing route remains unchanged unless private configuration selects
-`HUB_INTAKE_ROUTE=shared`. This permits a reviewed rollout without changing
-Biology/Forensics pages on code publication alone. No schedule is created.
+PR #39's read-only Refresh and assignment matching use that contract. This
+change does **not deploy or activate** a route, schedule,
+registration writer, grading operation or model call. No real stopgap rows are
+removed and no test Form is submitted. Preserve the Drive recovery priority in
+START_HERE before any separately authorized activation.
 
 ## Sources and matching
 
-`adapters/shared_form_intake.py` reads the configured shared Form's complete,
-bounded response pages. `respondentEmail` is preserved separately from typed
-answers. Students are matched against the current roster using the collected
-school email, configured domain/prefix and explicit legal-name/nickname
-variants. No typed name, filename suffix, class period or assignment establishes
-identity in the shared route. Ambiguous matches remain review items.
+Read complete, bounded response pages from the verified Form for each selected
+assignment. Preserve both its Form ID and each original upload file ID.
+`respondentEmail` is separate from typed answers. Match students against the
+current roster using the collected school email, configured domain/prefix and
+explicit legal-name/nickname variants. A typed name, filename suffix, class
+period or assignment answer does not establish identity. Ambiguous matches
+remain review items.
+
+The assignment-to-Form binding and uploaded-deck lesson evidence must agree.
+Do not read one global Form as a substitute for an unresolved assignment Form,
+or silently attach a single Agenda Form link to both assignments in a multi-
+assignment row. Missing, ambiguous or inaccessible bindings remain explicit
+coverage gaps. A student-facing response URL is not proof of a readable editable
+Form/API ID.
+
+Each catalog entry carries `form_id`, `form_url`, `form_source`,
+`form_mapping_verified` and `form_review_reason`. Use its verified editable/API
+ID. Published or shortened Form links require an explicit API-ID binding when
+they cannot be resolved safely. If an Agenda row contains multiple assignments,
+its one Form cell does not establish a separate binding for every assignment.
 
 The roster reader accepts Last Name/First Name headers (with an optional exact
 tab title), headerless two-column Last/First rows, and single-cell `Last, First
@@ -38,11 +54,10 @@ with a different file ID is not silently equated to the Form upload**; verified
 copy provenance is still required before those copies can be substituted. A
 read-only browser check of the four Anatomy originals established upload-folder
 activity followed by moves/renames preserving their file IDs. This does not
-establish the current editable Form ID or response-email access.
+establish which Form response created those uploads.
 
 The bounded Agenda student-deck catalog is read for lesson candidates. A Refresh
-reads the selected class catalog; the existing shared intake scan reads all
-classes. A week can contain multiple assignments. Private
+reads the selected class catalog. A week can contain multiple assignments. Private
 `HUB_INTAKE_DECK_ASSIGNMENTS` bindings map exact deck IDs to existing registry
 keys. They explicitly identify an additional O-column Slides link as an
 assignment; an unbound O link remains a resource. Multiple existing same-week
@@ -56,28 +71,39 @@ image-only or changed-question decks remain held. Multiple catalog lessons using
 the same template remain ambiguous. An unreadable catalog source blocks
 uniqueness rather than being silently discarded.
 
-Typed name, period and assignment answers are cross-checks only. A mismatched
+Typed name, period and assignment answers, where configured, are cross-checks only. A mismatched
 value (including a free-text assignment or unrelated pasted link) remains a
-Needs review item even when email/deck/roster establish routing. Unconfigured
-question IDs also produce review items, not silently skipped comparisons.
+Needs review item even when email/deck/roster establish routing. Question IDs
+belong to their actual Form; do not assume different assignment Forms share
+question IDs or require an assignment question solely to recover a binding that
+the verified Form already supplies.
 
 ## Private runtime configuration
 
 Retain existing root, reader, grading-workbook and Agenda settings. Supply these
 through the deployment owner's existing approved private configuration only:
 
-- `HUB_INTAKE_ROUTE=shared`
-- `HUB_TURNIN_FORM_ID`: editable/API ID of the actual shared Form
 - `HUB_ROSTER_SPREADSHEET_ID`: the intended current roster
 - `HUB_SCHOOL_EMAIL_DOMAINS`: comma-separated school domains
 - `HUB_EMAIL_USERNAME_PREFIX`: exact prefix, default `s.`
 - `HUB_ROSTER_SECTION_IDS`: JSON mapping roster tab names to verified IC IDs
 - `HUB_INTAKE_DECK_ASSIGNMENTS`: JSON mapping reviewed Agenda P/O deck IDs to existing assignment keys
-- `HUB_TURNIN_QUESTION_IDS`: JSON mapping `name`, `section`, `assignment` to Form question IDs
+- `HUB_ASSIGNMENT_FORM_IDS`: optional JSON mapping an exact assignment key to
+  its editable Form/API ID, for unresolved published links or assignments in a
+  multi-assignment Agenda row
+- `HUB_ASSIGNMENT_FORM_QUESTION_IDS`: optional JSON mapping each assignment key
+  to its own configured `name`, `section` and/or `assignment` question IDs;
+  only configured roles are cross-checked, and an assignment question is not
+  mandatory
 - `HUB_INTAKE_WORKBOOK_WRITES=true`: explicit registration activation;
   absent/other values or `HUB_DRY_RUN=true` leave workbook writes disabled
 
-Do not commit real values. Reader permissions must cover the existing shared
+Verify each assignment's editable Form/API ID and any Form-specific question
+mapping in private configuration. New Refresh discovery has no fallback to
+`HUB_TURNIN_FORM_ID` or global question IDs. Do not select the legacy shared-Form
+route to enable assignment-specific discovery.
+
+Do not commit real values. Reader permissions must cover each selected assignment
 Form, approved root, roster, Agenda and candidate teacher/student template decks.
 Workbook registration additionally needs the existing authorized Sheets writer.
 No new credential, sharing or schedule is supplied by this implementation.
@@ -116,11 +142,14 @@ workbook. These have separate discovery and workbook-read timestamps.
 
 The reader walks every bounded page and nested folder under the privately
 configured approved root, including files absent from saved records. It reads
-current Form references when available, verifies current roster identity, and
+current references from each assignment's Form when available, verifies current roster identity, and
 matches each deck's content separately. Folder membership alone never assigns
 all files to one lesson. A2 and A3 retain their verified separate section IDs.
-An unavailable Form or catalog is a visible coverage gap; root-visible files
+An unavailable assignment Form or catalog is a visible coverage gap; root-visible files
 remain review observations, not fabricated Form matches or missing work.
+Coverage includes `forms_checked`, `responses_checked`, `form_complete` and a
+`form_results` entry for each assignment with its status and reason. One
+assignment's readable Form does not establish another assignment's coverage.
 
 The same Student work table shows new ungraded files, changed sources and
 review holds alongside saved assessments. Numeric Drive versions are compared
@@ -150,15 +179,21 @@ read-only evidence audit found two different Forensics Week 03 assignments in
 one folder and newer files absent from saved dashboard records. Private IDs,
 student data, content and detailed reports remain outside the repository.
 
-The installed router trigger's target could not be opened as an editable Form;
-that does not prove it is the Form used for the observed uploads. Current
-Form-response access, exact private deck bindings, runtime source permissions
-and teacher-path acceptance still require verification. No setup/reset function,
-Form submission, folder move, school-record edit or grade post was performed.
+The previously inspected router trigger target did not establish the editable
+Forms for the assignments. Do not treat it as a shared source for those uploads.
+Current per-assignment Form-response access, exact private deck bindings,
+runtime source permissions and teacher-path acceptance still require verification.
+On September 23, the current Agenda-linked Anatomy Form opened under the school
+account, but its response view showed zero responses and its editor reported a
+missing file-upload folder. The four previously verified uploaded decks remain
+evidence; their response linkage is unresolved. The repair prompt was dismissed
+without restoring or changing anything. No setup/reset function, Form submission,
+folder move, school-record edit or grade post was performed.
 
 Keep issue #37 open until the deployed revision's Refresh discovers the four
 Anatomy originals with verified Form/roster matching, shows both Forensics
 assignments under separate A2/A3 sections, preserves prior assessments and
-versions, and exposes concrete coverage gaps. Report that result before any
-separately authorized deployment or grading activation. Code tests and a stored
-preview are not evidence of completed live school operations.
+versions, and exposes concrete coverage gaps. Report source-access and mapping
+results before deployment; verify the new dashboard path after a separately
+authorized deployment. Grading remains off. Code tests and a stored preview are
+not evidence of completed live school operations.
