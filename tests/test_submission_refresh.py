@@ -334,10 +334,11 @@ class RefreshTests(unittest.TestCase):
         row = result["files"][0]
         self.assertEqual(row["saved_assignment_keys"], [selected])
         self.assertEqual(row["assignment_key"], "")
-        self.assertTrue(row["content_assignment_key"].startswith("discovery:forensics:"))
+        self.assertEqual(row["content_assignment_key"], "")
         self.assertEqual(row["discovery_status"], "needs_review")
-        self.assertIn("saved_assignment_conflict", row["review_reasons"])
-        self.assertIn("assignment_registry_binding_required", row["review_reasons"])
+        self.assertIn("intake_catalog_needs_review", row["review_reasons"])
+        self.assertFalse(result["coverage"]["catalog_complete"])
+        self.assertIn("assignment_form_mapping_required", result["coverage"]["errors"])
 
     def test_new_lesson_without_saved_rows_is_visible_but_not_registered(self):
         h = Harness([])
@@ -482,6 +483,98 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(h.form_calls, [(FORM_A, None)])
         self.assertTrue(result["coverage"]["form_complete"])
         self.assertTrue(result["coverage"]["complete"])
+        rows = {row["file_id"]: row for row in result["files"]}
+        self.assertEqual(rows[FILE_A]["discovery_status"], "new_ungraded")
+        # Its other Form/master was deliberately not read. Keep the root-visible
+        # file unresolved rather than guessing another lesson from its filename.
+        self.assertEqual(rows[FILE_B]["assignment_key"], "")
+        self.assertEqual(rows[FILE_B]["discovery_status"], "needs_review")
+
+    def test_selected_lesson_never_reads_unrelated_unavailable_master(self):
+        h = Harness()
+        selected = h.catalog[0]["assignment_key"]
+        calls = []
+        def master(token, drive, entries, **kwargs):
+            calls.extend(entry["assignment_key"] for entry in entries)
+            if any(entry["assignment_key"] != selected for entry in entries):
+                raise ConnectionError("intake_source_deck_unavailable")
+            return [deepcopy(h.catalog[0])]
+        result = h.run(assignment=selected, master_error=master)
+        self.assertEqual(calls, [selected])
+        self.assertTrue(result["coverage"]["catalog_complete"])
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual([row["assignment_key"] for row in result["coverage"]["catalog_results"]], [selected])
+        self.assertEqual(result["files"][0]["discovery_status"], "new_ungraded")
+
+    def test_selected_editable_form_does_not_resolve_unrelated_future_published_forms(self):
+        h = Harness()
+        h.catalog[1].update(form_id="", form_mapping_verified=False,
+            form_url="https://docs.google.com/forms/d/e/" + "q" * 24 + "/viewform",
+            form_review_reason="assignment_form_api_id_required")
+        h.drive.pages[((ROOT,), None)]["files"].append({"id": FORM_B, "mimeType": refresh.FORM,
+                                                        "parents": [ROOT], "trashed": False})
+        calls = []
+        original = h.drive.form
+        def body(form_id, **kwargs):
+            calls.append(form_id)
+            if form_id != FORM_A:
+                raise ConnectionError("submission_form_access_required")
+            return original(form_id, **kwargs)
+        h.drive.form = body
+        result = h.run(assignment=h.catalog[0]["assignment_key"])
+        self.assertEqual(set(calls), {FORM_A})
+        self.assertTrue(result["coverage"]["complete"])
+        self.assertEqual(result["files"][0]["discovery_status"], "new_ungraded")
+
+    def test_selected_form_still_detects_same_form_published_alias_on_other_lesson(self):
+        h = Harness()
+        published = "https://docs.google.com/forms/d/e/" + "q" * 24 + "/viewform"
+        h.catalog[1].update(form_id="", form_mapping_verified=False,
+            form_url=published, form_review_reason="assignment_form_api_id_required")
+        original = h.drive.form
+        h.drive.form = lambda form_id, **kwargs: {**original(form_id, **kwargs), "responderUri": published}
+        result = h.run(assignment=h.catalog[0]["assignment_key"])
+        self.assertEqual(h.form_calls, [])
+        self.assertFalse(result["coverage"]["form_complete"])
+        self.assertIn("assignment_form_mapping_conflict", result["coverage"]["errors"])
+
+    def test_selected_lesson_ignores_unrelated_future_catalog_issue_but_all_keeps_it(self):
+        h = Harness()
+        h.catalog[0]["source_references"] = ["Synthetic course!P4"]
+        issue = {"source_reference": "Synthetic course!P50", "error": "intake_source_deck_unavailable",
+                 "next_action": "Check that future source."}
+        for entry in h.catalog:
+            entry["catalog_issues"] = [issue]
+        selected = h.run(assignment=h.catalog[0]["assignment_key"])
+        self.assertEqual(selected["coverage"]["catalog_issues"], [])
+        self.assertTrue(selected["coverage"]["complete"])
+        all_lessons = h.run()
+        self.assertEqual(all_lessons["coverage"]["catalog_issues"], [issue])
+        self.assertFalse(all_lessons["coverage"]["complete"])
+
+    def test_selected_current_form_retains_saved_other_lesson_conflict_without_other_master(self):
+        h = Harness()
+        h.records["submissions"] = [h.saved(assignment=1)]
+        selected = h.catalog[0]["assignment_key"]
+        def master(token, drive, entries, **kwargs):
+            self.assertEqual([entry["assignment_key"] for entry in entries], [selected])
+            return [deepcopy(h.catalog[0])]
+        row = h.run(assignment=selected, master_error=master)["files"][0]
+        self.assertEqual(row["assignment_key"], selected)
+        self.assertEqual(row["saved_assignment_keys"], [h.catalog[1]["assignment_key"]])
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("saved_assignment_conflict", row["review_reasons"])
+
+    def test_selected_lesson_skips_saved_other_lesson_source_without_current_form_reference(self):
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        h.route(FILE_B, assignment=1)
+        h.records["submissions"] = [h.saved(FILE_B, assignment=1)]
+        calls = []
+        def source(token, item):
+            calls.append(item["id"])
+            return h.texts[item["id"]]
+        result = h.run(assignment=h.catalog[0]["assignment_key"], source_read=source)
+        self.assertEqual(calls, [FILE_A])
         self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A])
 
     def test_missing_assignment_binding_does_not_fall_back_to_global_form(self):
@@ -617,8 +710,9 @@ class RefreshTests(unittest.TestCase):
             ("forensics:F03A", "section-alpha"), ("forensics:F03B", "section-alpha"),
             ("forensics:F03A", "section-beta")])
         self.assertEqual({r["discovery_status"] for r in rows}, {"new_ungraded"})
-        self.assertEqual({r["file_id"] for r in h.run(assignment="forensics:F03B")["files"]},
-                         {FILE_B})
+        selected = h.run(assignment="forensics:F03B")["files"]
+        self.assertEqual({r["file_id"] for r in selected if r["assignment_key"]}, {FILE_B})
+        self.assertTrue(all(r["discovery_status"] == "needs_review" for r in selected if r["file_id"] != FILE_B))
 
     def test_current_drive_revision_flags_change_without_rewriting_assessment(self):
         h = Harness([file_meta(version="2")])
