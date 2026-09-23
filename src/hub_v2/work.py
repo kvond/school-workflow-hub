@@ -409,6 +409,13 @@ def lesson_work(token, config, agenda, class_key, week_label):
         mine |= {p for q in questions for p in holders[q].get("parents") or [] if p in outer}
         form["folders"] = mine
 
+    # Settle each roster section's first/last column order from the school
+    # usernames in this lesson's submissions (only where it was assumed).
+    usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] if s["email"]}
+    usernames |= {roster.username_key(u, prefix) for i in items
+                  for u in [roster.file_username(i.get("name"), prefix)] if u}
+    roster.orient(students, usernames - {""})
+
     referenced = set(response_ids)
     readable = [form for form in forms if form["form_id"]]
     pending, other = [], []

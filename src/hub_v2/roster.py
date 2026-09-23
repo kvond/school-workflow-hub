@@ -37,8 +37,22 @@ def aliases(student):
     return {compact(f + " " + student["last"]) for f in first_names(student["first"])}
 
 
-def parse_tab(cells, class_key, section):
-    students, skipped, order = [], 0, "last_first"
+LAYOUTS = {"first_last_columns": "first_last", "last_first_columns": "last_first"}
+_ORIENTATION = {}
+
+
+def parse_tab(cells, class_key, section, layouts=None):
+    """Students in one roster tab. Each student records how their column order
+    was known: a header row, a 'Last, First' cell, the configured layout, or
+    only assumed (Last | First), which orient() can correct."""
+    layouts = layouts or {}
+
+    def start(name):
+        configured = LAYOUTS.get(layouts.get(name, ""))
+        return (configured, "config") if configured else ("last_first", "assumed")
+
+    students, skipped = [], 0
+    order, basis = start(section)
     names = {plain(s): s for tabs in SECTIONS.values() for s in tabs}
     for r in range(1, 201):
         a = str(cells.get((r, 1), {}).get("formattedValue", "")).strip()
@@ -47,21 +61,44 @@ def parse_tab(cells, class_key, section):
             continue
         if plain(a) in names and not b:
             section = names[plain(a)]
+            order, basis = start(section)
             continue
         if {plain(a), plain(b)} == {"last name", "first name"}:
-            order = "last_first" if plain(a) == "last name" else "first_last"
+            order, basis = ("last_first" if plain(a) == "last name" else "first_last"), "header"
             continue
         if a and not b and "," in a:
-            last, first = [part.strip() for part in a.split(",", 1)]
+            (last, first), how = [part.strip() for part in a.split(",", 1)], "comma"
         elif order == "first_last":
-            first, last = a, b
+            first, last, how = a, b, basis
         else:
-            last, first = a, b
+            last, first, how = a, b, basis
         if not plain(last) or not plain(first):
             skipped += 1
             continue
-        students.append({"class_key": class_key, "section": section, "first": first, "last": last})
+        students.append({"class_key": class_key, "section": section, "first": first, "last": last,
+                         "order": how})
     return students, skipped
+
+
+def orient(students, usernames):
+    """Swap first and last names for any section whose column order was only
+    assumed, when the school usernames seen in its submissions (s.first.last)
+    match clearly better the other way round. A decision is remembered."""
+    by_section = {}
+    for student in students:
+        if student.get("order") == "assumed":
+            by_section.setdefault((student["class_key"], student["section"]), []).append(student)
+    for key, rows in by_section.items():
+        flip = _ORIENTATION.get(key)
+        if flip is None:
+            as_is = sum(1 for s in rows if aliases(s) & usernames)
+            flipped = sum(1 for s in rows if aliases({"first": s["last"], "last": s["first"]}) & usernames)
+            if max(as_is, flipped) < 2 or as_is == flipped:
+                continue
+            flip = _ORIENTATION[key] = flipped > as_is
+        if flip:
+            for s in rows:
+                s["first"], s["last"], s["order"] = s["last"], s["first"], "usernames"
 
 
 def load(token, config):
@@ -73,6 +110,10 @@ def load(token, config):
         configured = json.loads(config.get("HUB_ROSTER_TABS") or "{}")
     except ValueError:
         configured = {}
+    try:
+        layouts = json.loads(config.get("HUB_ROSTER_COLUMN_LAYOUTS") or "{}")
+    except ValueError:
+        layouts = {}
     try:
         _, tabs = google.sheet_tabs(token, roster_id)
     except google.GoogleError as error:
@@ -104,7 +145,8 @@ def load(token, config):
     for section, (class_key, title) in wanted.items():
         first_section.setdefault(title, (class_key, section))
     for title, (class_key, section) in sorted(first_section.items()):
-        students, skipped = parse_tab(grids.get(title, {}), class_key, section)
+        students, skipped = parse_tab(grids.get(title, {}), class_key, section,
+                                      layouts if isinstance(layouts, dict) else {})
         if skipped:
             problems.append("%d row(s) in roster tab '%s' couldn't be read as Last, First."
                             % (skipped, title))
@@ -129,6 +171,14 @@ def match_email(email, students, domains=(), prefix="s."):
     local = compact(local)
     found = [s for s in students if local in aliases(s)]
     return found[0] if len(found) == 1 else None
+
+
+def username_key(username, prefix="s."):
+    """'s.first.last' or 's.first.last@school' → 'firstlast'."""
+    local = str(username or "").strip().lower().split("@")[0]
+    if prefix and local.startswith(prefix):
+        local = local[len(prefix):]
+    return compact(local)
 
 
 def match_username(username, students, prefix="s."):

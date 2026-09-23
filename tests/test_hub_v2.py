@@ -125,6 +125,32 @@ class RosterTests(unittest.TestCase):
                           ("Lee", "Sam", "A3 Forensics")])
         self.assertEqual(skipped, 1)
 
+    def setUp(self):
+        roster._ORIENTATION.clear()
+
+    def test_headerless_first_last_tab_is_turned_round_by_school_usernames(self):
+        # Like the Biology tab: no header row, First | Last columns.
+        tab = grid({1: ["Ana", "Rivera"], 2: ["Chidi", "Okafor"], 3: ["Sam", "Lee"]})
+        students, _ = roster.parse_tab(tab, "biology", "A4 Biology")
+        self.assertEqual(students[0]["last"], "Ana")  # assumed Last | First at first
+        roster.orient(students, {roster.username_key("s.ana.rivera@school.example"),
+                                 roster.username_key("s.chidi.okafor")})
+        self.assertEqual([(s["last"], s["first"]) for s in students],
+                         [("Rivera", "Ana"), ("Okafor", "Chidi"), ("Lee", "Sam")])
+        self.assertEqual(roster.match_email("s.sam.lee@school.example", students)["last"], "Lee")
+        # The decision is remembered for a later lesson with no submissions yet.
+        again, _ = roster.parse_tab(tab, "biology", "A4 Biology")
+        roster.orient(again, set())
+        self.assertEqual(again[0]["last"], "Rivera")
+
+    def test_configured_layout_and_header_rows_are_never_turned_round(self):
+        tab = grid({1: ["Ana", "Rivera"], 2: ["Chidi", "Okafor"]})
+        students, _ = roster.parse_tab(tab, "biology", "A4 Biology", {"A4 Biology": "first_last_columns"})
+        self.assertEqual([(s["last"], s["order"]) for s in students], [("Rivera", "config"), ("Okafor", "config")])
+        headed, _ = roster.parse_tab(ROSTER, "forensics", "A2 Forensics")
+        roster.orient(headed, {"riveraana", "okaforchidi"})
+        self.assertEqual(headed[0]["last"], "Rivera")
+
     def test_matching(self):
         students, _ = roster.parse_tab(ROSTER, "forensics", "A2 Forensics")
         self.assertEqual(roster.match_email("s.ana.rivera@school.example", students, {"school.example"})["last"], "Rivera")
