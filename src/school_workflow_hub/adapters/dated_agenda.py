@@ -1,7 +1,8 @@
 """Bounded, read-only dated view of the existing weekly Agenda.
 
 Coordinates are provenance, never save targets or stable assignment identities.
-No raw source data is persisted. The current Dashboard's manual overrides win.
+No raw source data is persisted. When the optional Dashboard tab is present and
+laid out for the current week, its manual overrides win.
 """
 from datetime import date, datetime, timedelta, timezone
 import json
@@ -253,10 +254,15 @@ def read_day(assertion, selected, config=None):
     reader, source = authenticated_reader(assertion, config)
     metadata = reader.read(source)
     titles = {s['properties']['title'] for s in metadata['sheets']}
-    if not {'🗂 Weeks', '📅 Dashboard', *(title for _, title in COURSES)} <= titles:
+    if not {'🗂 Weeks', *(title for _, title in COURSES)} <= titles:
         raise ConnectionError('agenda_layout_changed')
-    mapping = reader.read(source, ("'🗂 Weeks'!A2:G43", "'📅 Dashboard'!A6:F9"))
-    weeks, dashboard = grid(mapping, '🗂 Weeks'), grid(mapping, '📅 Dashboard')
+    # The Dashboard tab is optional. The weekly class tabs are the lesson source;
+    # a present, well-formed Dashboard only adds same-day overrides.
+    has_dashboard = '📅 Dashboard' in titles
+    mapping = reader.read(source, ("'🗂 Weeks'!A2:G43",)
+                          + (("'📅 Dashboard'!A6:F9",) if has_dashboard else ()))
+    weeks = grid(mapping, '🗂 Weeks')
+    dashboard = grid(mapping, '📅 Dashboard') if has_dashboard else None
     if [value(weeks, 2, c) for c in (2,3,4)] != ['course row','week','Monday']:
         raise ConnectionError('agenda_layout_changed')
     matches = []
@@ -299,10 +305,9 @@ def read_day(assertion, selected, config=None):
         plan, notes = (value(cells,row,col),value(cells,row,col+1)) if col else ('','')
         origin = 'Weekly Agenda' if col else 'No weekly day column'
         extra = ''
-        if current and day.weekday() < 5:
-            drs = [r for r in (7,8,9) if value(dashboard,r,1) == title]
-            if len(drs) != 1 or value(dashboard,6,day.weekday()+2).split() != [weekday, day.strftime('%m/%d')]:
-                raise ConnectionError('agenda_layout_changed')
+        drs = ([r for r in (7,8,9) if value(dashboard,r,1) == title]
+               if dashboard is not None and current and day.weekday() < 5 else [])
+        if len(drs) == 1 and value(dashboard,6,day.weekday()+2).split() == [weekday, day.strftime('%m/%d')]:
             dc = dashboard.get((drs[0],day.weekday()+2),{})
             # Formula display is retained alongside the separated weekly fields;
             # literal Dashboard text is an explicit override for this date.
