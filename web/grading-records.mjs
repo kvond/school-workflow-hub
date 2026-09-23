@@ -97,7 +97,7 @@ export function score(row,key){
 }
 const CHECKPOINT={initial:'Notes checkpoint',final:'Drafts checkpoint'};
 const DISCOVERY_LABEL={new_ungraded:'New work · not graded',changed_since_assessment:'Work changed since assessment · review needed',needs_review:'Discovery needs review',unchanged:'Source unchanged'};
-const DISCOVERY_REVIEW={prior_submission_superseded:'Previously superseded work · history only; do not treat as new work.',competing_submission_versions:'Multiple submission versions need review; no current version has been selected.'};
+const DISCOVERY_REVIEW={prior_submission_superseded:'Previously superseded work · history only; do not treat as new work.',competing_submission_versions:'Multiple submission versions need review; no current version has been selected.',submission_assignment_source_unverified:'Listed only · no verified source link to the selected lesson; content was not read.'};
 export function renderRecords(root,state,{classKey,sectionId='matched',assignmentKey='all',stage='all',discovery={status:'empty'},includeUnresolved=false}){
  root.replaceChildren();
  if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
@@ -108,14 +108,19 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
  else if(discovery.status==='error')line(root,'Discovery failed: '+discovery.message+' Saved assessments are unchanged.','error');
  else if(discovery.status==='loaded'){
   const d=discovery.data;
-  line(root,`Submissions discovered ${time(d.discovered_at)} · ${d.files.length} files checked for this ${d.assignment_key==='all'?'class':'lesson'}. ${d.coverage.complete?'Discovery source read complete.':'Discovery coverage is incomplete; review the gaps.'} No work was graded.`,'hint');
+  line(root,`Submissions discovered ${time(d.discovered_at)} · ${d.files.length} files listed for review. ${d.coverage.complete?'Discovery source read complete.':'Discovery coverage is incomplete; review the gaps.'} No work was graded.`,'hint');
   const unassigned=d.files.filter(f=>!f.assignment_key).length;
   if(unassigned)line(root,`${unassigned} ${unassigned===1?'file needs':'files need'} a lesson match. ${includeUnresolved?'Unresolved work is shown for review without assigning it to this lesson.':'Choose All lessons and Unmatched or All records to review them.'}`,'hint');
   const unknownClass=d.files.filter(f=>!f.class_key).length;
   if(unknownClass)line(root,`${unknownClass} ${unknownClass===1?'file has':'files have'} no verified class match. ${includeUnresolved?'They remain visible as unresolved review items.':'They appear under Unmatched for review, not as confirmed work for this class.'}`,'hint');
   const forms=Array.isArray(d.coverage.form_results)?d.coverage.form_results:[];
-  if(!d.coverage.complete||forms.length){
+  const contentReadKnown=Number.isSafeInteger(d.coverage.deck_contents_checked)&&d.coverage.deck_contents_checked>=0;
+  if(!d.coverage.complete||forms.length||contentReadKnown){
    const details=node(root,'details');details.append(node(root,'summary','Discovery coverage details'));
+   if(Number.isSafeInteger(d.coverage.files_checked)&&d.coverage.files_checked>=0)line(details,`Drive metadata: ${d.coverage.files_checked} files listed.`);
+   if(contentReadKnown)line(details,`Deck content: ${d.coverage.deck_contents_checked} files read.`);
+   if(Number.isSafeInteger(d.coverage.unscoped_deck_content_skipped)&&d.coverage.unscoped_deck_content_skipped>0)line(details,`${d.coverage.unscoped_deck_content_skipped} decks without an established source link to this lesson were listed only; their content was not read.`);
+   if(d.coverage.content_scope==='selected_submission_sources')line(details,'Content reading was limited to this lesson’s Form responses, upload folders and saved sources.');
    for(const [key,name]of [['form_complete','Form responses'],['roster_complete','Roster'],['catalog_complete','Lesson catalog']])if(d.coverage[key]===false)line(details,name+' could not be read completely.');
    if(forms.length){
     const list=node(root,'ul');
@@ -156,13 +161,14 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   const tr=node(root,'tr'),student=node(root,'td');
   const displayName=row.discovery_only&&!row.discovery?.display_name?'Identity needs matching':surnameFirst(row.display_name)||'Identity needs matching';
   student.append(node(root,'strong',displayName));
+  if(row.discovery?.name)line(student,'File: '+row.discovery.name,'hint');
   line(student,(row.section_name||'Unmatched')+(row.student_id?(row.discovery_only?' · matched identity ':' · IC ')+row.student_id:(row.discovery_only?' · identity unverified':' · no IC number')),'hint');tr.append(student);
   if(row.discovery_only&&!row.class_key)line(student,'Class needs matching','hint');
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));
   const cell=node(root,'td');line(cell,row.discovery_only?'Not assessed':label(row.status));if(CHECKPOINT[row.assessment_stage])line(cell,CHECKPOINT[row.assessment_stage],'hint');
   if(row.discovery){line(cell,DISCOVERY_LABEL[row.discovery.discovery_status]);if(row.discovery.source_changed_since_assessment)line(cell,'Source version changed since assessment; this does not establish revised student writing.','hint');for(const reason of row.discovery.review_reasons)if(DISCOVERY_REVIEW[reason])line(cell,DISCOVERY_REVIEW[reason]);if(row.discovery_only&&!row.discovery.assessment_stage)line(cell,'Discovered work checkpoint needs review.','hint');if(!row.discovery_only&&row.discovery.discovery_status!=='unchanged')line(cell,'Scores shown are the saved assessment; they have not been updated for this discovery.','hint');}
   const details=node(root,'details');details.append(node(root,'summary','View work & feedback'));
-  if(row.discovery){const f=row.discovery;for(const reason of f.review_reasons)line(details,label(reason));if(f.modified_at)line(details,'Source modified: '+time(f.modified_at),'hint');if(f.name)line(details,'Discovered file: '+f.name,'hint');}
+  if(row.discovery){const f=row.discovery;for(const reason of f.review_reasons)line(details,label(reason));if(f.modified_at)line(details,'Source modified: '+time(f.modified_at),'hint');}
   if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,'Excluded from class counts until identity and current submission are resolved.','hint');
   if(row.feedback){line(details,row.feedback,'student-feedback-text');
    const print=node(details,'button','Print feedback');print.type='button';print.className='print-feedback-button';
