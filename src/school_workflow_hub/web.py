@@ -245,6 +245,30 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond("503 Service Unavailable", {"error": "provider_unavailable"})
 
+    if path == "/api/submission-catalog":
+        from urllib.parse import parse_qs
+        from .adapters.submission_catalog import read_catalog, safe_error
+        from .adapters.hosted_agenda import ConnectionError
+        if method != "GET":
+            return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+        try:
+            raw = environ.get("QUERY_STRING", "")
+            if len(raw) > 128:
+                raise ValueError()
+            query = parse_qs(raw, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
+            if set(query) != {"class_key"} or len(query["class_key"]) != 1:
+                raise ValueError()
+            return respond("200 OK", read_catalog(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                                                  query["class_key"][0], os.environ))
+        except ConnectionError as error:
+            code = safe_error(error)
+            return respond("403 Forbidden" if code == "sign_in_required" else "503 Service Unavailable",
+                           {"error": code, "external_writes": 0})
+        except ValueError:
+            return respond("400 Bad Request", {"error": "invalid_submission_scope", "external_writes": 0})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "submission_catalog_unavailable", "external_writes": 0})
+
     if path == "/api/submission-monitor/refresh":
         from .adapters.submission_refresh import refresh, _code
         from .adapters.hosted_agenda import ConnectionError

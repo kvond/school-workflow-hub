@@ -81,7 +81,7 @@ test('held or superseded scores never display zero; actual zero remains valid',(
 test('private answer text renders literally and identity-held records are visible outside counts',()=>{
  const data=fixture();data.submissions[1].answers=[{question_id:'q1',stage:'NOTES',response:'<script>fictional</script>',conceptual_level:'Developing',explanation_level:'Names idea'}];
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics'});
- assert.match(target.allText,/1 students with matched submissions/);
+ assert.match(target.allText,/1 matched students in this selection/);
  assert.match(target.allText,/F\., Blair/);assert.match(target.allText,/<script>fictional<\/script>/);
  assert.match(target.allText,/Excluded from class counts/);assert.doesNotMatch(target.allText,/8 \/ 10/);
 });
@@ -101,9 +101,53 @@ test('late request cannot overwrite more recent refresh',async()=>{
 
 function discovered(overrides={}){return {file_id:'fictional-file-a',source_url:'https://docs.google.com/presentation/d/fictional-file-a/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'F1',assignment_title:'Fictional One',section_id:'a',section_name:'Period A',student_id:'one',display_name:'Alex F.',discovery_status:'changed_since_assessment',review_reasons:[],modified_at:'2026-09-03T12:00:00Z',version:'2',...overrides};}
 function discovery(files){return {status:'loaded',data:{class_key:'forensics',assignment_key:'all',discovered_at:'2026-09-04T12:00:00Z',coverage:{complete:true},files}};}
+test('current-source counts include new matched students and separate unrelated metadata without mixing sections',()=>{
+ const state=discovery([
+  discovered({file_id:'new-target',student_id:'new-student',discovery_status:'new_ungraded'}),
+  discovered({file_id:'held-target',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']}),
+  discovered({file_id:'other-section',section_id:'b',name:'Other period work'}),
+  discovered({file_id:'loose-file',name:'Loose metadata only',class_key:'',assignment_key:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['submission_assignment_source_unverified']})
+ ]);state.data.assignment_key='F1';
+ const data=fixture();data.submissions=[];
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+ const walk=n=>[n,...n.children.flatMap(walk)],main=walk(target).find(n=>n.tagName==='table'&&n.attributes['aria-label']==='Submissions by class and section');
+ assert.match(target.allText,/1 matched students in this selection · 2 current source files · 0 saved records/);
+ assert.doesNotMatch(main.allText,/Loose metadata only|Other period work/);
+ assert.match(main.allText,/Identity needs matching/,'in-scope unverified work remains visible');
+ const bucket=target.children.find(n=>n.tagName==='details'&&n.children[0]?.textContent==='Other files needing a lesson match (1)');
+ assert.ok(bucket);assert.match(bucket.allText,/Loose metadata only/);assert.match(bucket.allText,/content was not read/);
+ assert.doesNotMatch(target.allText,/Other period work/);
+});
+test('matched counts preserve roster identity before an IC student number is available',()=>{
+ const data=fixture();data.submissions=[{...data.submissions[0],student_id:'',learner_key:'fictional-roster',count_key:'roster:fictional-roster',status:'roster_matched'}];
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true});
+ assert.match(target.allText,/1 matched students in this selection/);
+});
+test('cached preview stays visible but explicitly unverified while loading or after failure',()=>{
+ const original=discovery([discovered({discovery_status:'new_ungraded'})]),snapshot=structuredClone(original),data=fixture();data.submissions=[];
+ for(const status of ['loading','error']){
+  const state={...original,status,message:'Source unavailable.'},shown=recordsWithDiscovery(data,state),target=root();
+  assert.equal(shown.submissions[0].discovery.discovery_status,'needs_review');assert.equal(shown.submissions[0].content_score,null);
+  renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+  assert.match(target.allText,/Fictional deck/);assert.match(target.allText,/Earlier preview/);assert.match(target.allText,/1 earlier source files/);
+  assert.doesNotMatch(target.allText,/Discovery source read complete|Submissions discovered/);
+ }
+ assert.deepEqual(original,snapshot,'pending/error projection never mutates the verified cache');
+});
+test('canonical legacy Notes are visible in A2 while unknown checkpoints stay reviewable and A3 stays separate',()=>{
+ const data=fixture();data.submissions=[
+  {...data.submissions[0],assessment_stage:'initial',assessment_stage_source:'initial_NOTES_checkpoint'},
+  {...data.submissions[1],assignment_key:'F1',assessment_stage:'initial',assessment_stage_source:'initial_NOTES_checkpoint'},
+  {...data.submissions[0],record_id:'unknown',assessment_stage:'',assessment_stage_source:'unspecified completion review',assessment_stage_review_reason:'assessment_stage_unverified',hold_reason:'assessment_stage_unverified',included_in_counts:false}
+ ];
+ assert.deepEqual(filterReviewRecords(data,'forensics','a','F1','initial').map(r=>r.record_id),['one','unknown']);
+ assert.deepEqual(filterReviewRecords(data,'forensics','a','F1','final').map(r=>r.record_id),['unknown']);
+ const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',stage:'initial',includeUnresolved:true});
+ assert.match(target.allText,/Assessment checkpoint needs review/);assert.doesNotMatch(target.allText,/F\., Blair/);
+});
 test('an unverified discovery filename is visible outside details as literal source text, never learner identity',()=>{
  const filename='<img src=x onerror="fictional()"> Morgan example.pptx';
- const state=discovery([discovered({name:filename,class_key:'',assignment_key:'',assignment_title:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable','submission_assignment_source_unverified']})]);
+ const state=discovery([discovered({name:filename,class_key:'',assignment_key:'',assignment_title:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']})]);
  const data=fixture(),before=structuredClone(data),target=root();
  renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
  const walk=n=>[n,...n.children.flatMap(walk)];
@@ -115,9 +159,6 @@ test('an unverified discovery filename is visible outside details as literal sou
  assert.equal(source.tagName,'p');assert.equal(source.children.length,0);
  assert.equal(walk(target).some(n=>n.tagName==='img'),false);
  assert.ok(!walk(target).filter(n=>n.tagName==='details').some(n=>n.allText.includes(filename)));
- const listedHold=walk(table).find(n=>n.textContent==='Listed only · no verified source link to the selected lesson; content was not read.');
- assert.ok(listedHold,'metadata-only reading is visible in the main row');
- assert.ok(!walk(target).filter(n=>n.tagName==='details').some(n=>walk(n).includes(listedHold)));
  const shown=recordsWithDiscovery(data,state).submissions.at(-1);
  assert.equal(shown.student_id,'');assert.equal(shown.section_id,'');assert.equal(shown.included_in_counts,false);assert.equal(shown.content_score,null);
  assert.deepEqual(data,before);
