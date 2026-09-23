@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Teaching Hub</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23173857'/%3E%3Cpath d='M9 24V9h14v15M9 14h14M14 14v10' fill='none' stroke='white' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark">a.</span><strong>Teaching Hub</strong></div>
+  <nav class="tabs" aria-label="Pages">
+    <a href="#plans" data-tab="plans">Lesson plans</a>
+    <a href="#work" data-tab="work">Student work</a>
+  </nav>
+  <a class="agenda-link" id="agenda-link" target="_blank" rel="noopener noreferrer" hidden>Open Agenda ↗</a>
+</header>
+<main>
+  <section id="page-plans" hidden>
+    <div class="bar">
+      <div class="week-nav">
+        <button type="button" id="prev-week" aria-label="Previous week">←</button>
+        <div><h1 id="week-label">Lesson plans</h1><p id="week-closures" class="muted"></p></div>
+        <button type="button" id="next-week" aria-label="Next week">→</button>
+      </div>
+      <div class="controls">
+        <label>Date <input type="date" id="date"></label>
+        <button type="button" id="today">Today</button>
+        <button type="button" id="reload-plans">Reload</button>
+      </div>
+    </div>
+    <nav id="days" class="days" aria-label="Days of the week"></nav>
+    <p id="plans-status" class="status" role="status"></p>
+    <div id="cards" class="cards"></div>
+  </section>
+  <section id="page-work" hidden>
+    <div class="bar">
+      <h1>Student work</h1>
+      <div class="controls">
+        <label>Class <select id="work-class"></select></label>
+        <label>Week <select id="work-week"></select></label>
+        <label>Section <select id="work-section"></select></label>
+        <button type="button" id="reload-work">Reload</button>
+      </div>
+    </div>
+    <p id="work-status" class="status" role="status"></p>
+    <div id="work-body"></div>
+  </section>
+</main>
+</body>
+</html>
