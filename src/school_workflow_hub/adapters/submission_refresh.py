@@ -203,6 +203,48 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
         "form_refs_unlocated": len(set(refs) - set(merged)) + sum("source_error" in item for item in merged.values())}
 
 
+def discover_saved_sources(drive, records, class_key, selected, found):
+    """Retain exact historical sources after a Form or its folder is replaced.
+
+    Saved file IDs authorize only those exact metadata reads. Their parents
+    never become new traversal roots, and unreadable originals stay held.
+    """
+    merged = {item["id"]: item for item in found}
+    by_file = {}
+    for row in records.get("submissions", []):
+        if row.get("class_key") != class_key or selected not in ("all", row.get("assignment_key")):
+            continue
+        fid = source_id(row)
+        if fid:
+            by_file.setdefault(fid, set()).add(row["assignment_key"])
+    results, errors, checked = [], [], 0
+    for fid in sorted(set(by_file) - set(merged)):
+        code = None
+        if len(merged) >= MAX_FILES:
+            errors.append("submission_scan_incomplete")
+            break
+        try:
+            drive.check()
+            checked += 1
+            item = drive.metadata(fid)
+            if item.get("id") != fid or item.get("trashed") is not False:
+                raise ConnectionError("submission_folder_inactive")
+            if item.get("mimeType") in {FOLDER, SHORTCUT, FORM}:
+                raise ConnectionError("intake_deck_unsupported")
+            merged[fid] = item
+        except ConnectionError as error:
+            code = _code(error, "submission_source_unavailable")
+            errors.append(code)
+            merged[fid] = {"id": fid, "name": "", "mimeType": "", "source_error": code}
+        for key in sorted(by_file[fid]):
+            results.append({"assignment_key": key, "source_kind": "saved_source",
+                            "source_url": "https://drive.google.com/file/d/" + fid + "/view",
+                            "complete": not code, "error": code,
+                            "next_action": assignment_forms.next_action(code)})
+    return list(merged.values()), {"saved_sources_complete": not errors,
+        "saved_sources_checked": checked, "source_results": results, "errors": sorted(set(errors))}
+
+
 def _time(value):
     try:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -305,6 +347,10 @@ def refresh(assertion, payload, config):
     found, sources = discover_form_sources(drive, scoped_catalog, refs, found, coverage)
     errors.extend(sources.pop("errors"))
     coverage.update(sources)
+    found, saved_sources = discover_saved_sources(drive, records, class_key, selected, found)
+    errors.extend(saved_sources.pop("errors"))
+    coverage["source_results"].extend(saved_sources.pop("source_results"))
+    coverage.update(saved_sources)
     coverage.pop("folder_ids", None)
     roster, sections, roster_complete = [], {}, False
     try:
@@ -443,7 +489,12 @@ def refresh(assertion, payload, config):
         if key and previous and previous != {key}:
             holds.append("saved_assignment_conflict")
         if selected != "all" and key and key != selected:
-            continue
+            if selected not in previous:
+                continue
+            # The exact saved source still belongs in this history review.
+            # Do not hide it or silently approve the different current lesson.
+            # Its fresh content key remains separately visible below.
+            lesson, key = None, ""
         state, revision_holds = _assessment_state(item, history)
         holds.extend(revision_holds)
         if holds:
@@ -466,6 +517,7 @@ def refresh(assertion, payload, config):
             "discovery_status": state, "review_reasons": sorted(set(holds)),
             "modified_at": item.get("modifiedTime", ""), "version": str(item.get("version") or ""),
             "saved_record_ids": [r["record_id"] for r in history],
+            "saved_assignment_keys": sorted(k for k in previous if k),
             "form_ids": ref.get("form_ids", []) if ref else [],
             "form_assignment_keys": ref.get("assignment_keys", []) if ref else [],
             "content_assignment_key": content_assignment,

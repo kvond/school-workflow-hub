@@ -2,7 +2,7 @@
 from contextlib import ExitStack
 from copy import deepcopy
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from school_workflow_hub.adapters import submission_refresh as refresh
 from school_workflow_hub.adapters import shared_form_intake as intake
@@ -154,7 +154,7 @@ class Harness:
                 "revision_score": "2", "feedback": "Preserved synthetic feedback"}
 
     def run(self, *, assignment="all", form_error=None, form_errors=None,
-            catalog_error=None, master_error=None, source_read=None):
+            catalog_error=None, master_error=None, source_read=None, catalog_reader=None):
         before = deepcopy((self.records, self.refs, self.roster, self.files, self.config))
         forms = Forms(self, form_error, form_errors)
         with ExitStack() as stack:
@@ -166,7 +166,7 @@ class Harness:
             for name, value in replacements.items():
                 stack.enter_context(patch.object(refresh, name, value))
             catalog_call = stack.enter_context(patch.object(intake, "agenda_catalog",
-                side_effect=catalog_error, return_value=deepcopy(self.catalog)))
+                side_effect=catalog_error or catalog_reader, return_value=deepcopy(self.catalog)))
             stack.enter_context(patch.object(intake, "read_catalog_decks",
                 side_effect=master_error or (lambda token, drive, entries, **kwargs:
                     [deepcopy(src) for src in self.catalog
@@ -187,6 +187,158 @@ class Harness:
 
 
 class RefreshTests(unittest.TestCase):
+    def test_replacement_form_keeps_exact_saved_original_outside_current_upload_tree(self):
+        h = Harness([file_meta(FILE_B)])
+        old_form = h.catalog[0]["form_id"]
+        new_form = "n" * 24
+        h.catalog[0].update(form_id=new_form,
+            form_url="https://docs.google.com/forms/d/" + new_form + "/viewform")
+        h.route(FILE_B, person=1)
+        h.records["submissions"] = [h.saved(FILE_A)]
+        h.drive.items[FILE_A] = file_meta(FILE_A, parent=FOLDER)
+        h.texts[FILE_A] = h.catalog[0]["source_text"]
+        result = h.run(assignment=h.catalog[0]["assignment_key"])
+        rows = {row["file_id"]: row for row in result["files"]}
+        self.assertEqual(set(rows), {FILE_A, FILE_B})
+        self.assertEqual(rows[FILE_A]["discovery_status"], "unchanged")
+        self.assertEqual(rows[FILE_A]["saved_record_ids"], [h.records["submissions"][0]["record_id"]])
+        self.assertEqual(rows[FILE_B]["discovery_status"], "new_ungraded")
+        self.assertEqual(rows[FILE_B]["form_ids"], [new_form])
+        self.assertEqual(h.form_calls, [(new_form, None)])
+        self.assertNotEqual(old_form, new_form)
+        self.assertTrue(result["coverage"]["saved_sources_complete"])
+        self.assertEqual(result["coverage"]["saved_sources_checked"], 1)
+        self.assertFalse(any(call[0] == "children" and FOLDER in call[1] for call in h.drive.calls))
+
+    def test_deleted_and_intentionally_trashed_saved_originals_remain_held(self):
+        h = Harness([file_meta(FILE_C)])
+        h.route(FILE_C, person=1)
+        h.records["submissions"] = [h.saved(FILE_A), h.saved(FILE_B, status="superseded")]
+        h.drive.items[FILE_A] = {**file_meta(FILE_A, parent=FOLDER), "trashed": True}
+        result = h.run(assignment=h.catalog[0]["assignment_key"])
+        rows = {row["file_id"]: row for row in result["files"]}
+        self.assertEqual(set(rows), {FILE_A, FILE_B, FILE_C})
+        self.assertIn("submission_folder_inactive", rows[FILE_A]["review_reasons"])
+        self.assertIn("submission_folder_access_required", rows[FILE_B]["review_reasons"])
+        self.assertIn("prior_submission_superseded", rows[FILE_B]["review_reasons"])
+        for fid in (FILE_A, FILE_B):
+            self.assertEqual(rows[fid]["discovery_status"], "needs_review")
+            self.assertEqual(rows[fid]["version"], "")
+        self.assertEqual(rows[FILE_C]["discovery_status"], "new_ungraded")
+        self.assertFalse(result["coverage"]["saved_sources_complete"])
+        self.assertFalse(result["coverage"]["complete"])
+        self.assertTrue(h.drive.items[FILE_A]["trashed"])
+
+    def test_saved_source_reads_remain_scoped_and_do_not_follow_unrelated_parents(self):
+        h = Harness([])
+        h.records["submissions"] = [h.saved(FILE_A), h.saved(FILE_B, assignment=1),
+                                    {**h.saved(FILE_C), "class_key": "biology"}]
+        h.drive.items[FILE_A] = file_meta(FILE_A, parent=FOLDER)
+        h.texts[FILE_A] = h.catalog[0]["source_text"]
+        result = h.run(assignment=h.catalog[0]["assignment_key"])
+        self.assertEqual([row["file_id"] for row in result["files"]], [FILE_A])
+        self.assertEqual(result["coverage"]["saved_sources_checked"], 1)
+        self.assertFalse(any(call[0] == "metadata" and call[1] in (FILE_B, FILE_C, FOLDER)
+                             for call in h.drive.calls))
+
+    def test_saved_source_budget_failure_is_partial_without_school_writes(self):
+        h = Harness([])
+        h.records["submissions"] = [h.saved(FILE_A)]
+        original = h.drive.metadata
+        def exhausted(fid):
+            if fid == FILE_A:
+                raise ConnectionError("submission_refresh_budget_exhausted")
+            return original(fid)
+        h.drive.metadata = exhausted
+        result = h.run(assignment=h.catalog[0]["assignment_key"])
+        self.assertFalse(result["coverage"]["saved_sources_complete"])
+        self.assertIn("submission_refresh_budget_exhausted", result["coverage"]["errors"])
+        self.assertEqual(result["files"][0]["discovery_status"], "needs_review")
+        self.assertEqual(result["external_writes"], 0)
+
+    def test_actual_catalog_replacement_form_keeps_existing_deck_bound_assignment_key(self):
+        from tests.test_shared_intake_catalog import agenda, url, form_url
+        h = Harness([file_meta(FILE_A), file_meta(FILE_B)])
+        old_form, new_form = h.catalog[0]["form_id"], "n" * 24
+        h.catalog[0].update(form_id=new_form, form_url=form_url(new_form))
+        h.catalog[0]["source_url"] = url(h.catalog[0]["source_deck_id"])
+        h.records["submissions"] = [h.saved(FILE_A)]
+        del h.refs[FILE_A]  # The replacement has no old response history.
+        h.route(FILE_B, person=1)
+        h.config["HUB_INTAKE_DECK_ASSIGNMENTS"] = {
+            h.catalog[0]["source_deck_id"]: h.catalog[0]["assignment_key"]}
+        data = agenda(primary=h.catalog[0]["source_url"], form=form_url(new_form))
+        real_catalog = intake.agenda_catalog
+        reader = Mock(); reader.read.return_value = data
+        with patch.object(intake, "authenticated_reader", return_value=(reader, "synthetic-agenda")):
+            result = h.run(assignment=h.catalog[0]["assignment_key"], catalog_reader=real_catalog)
+        self.assertEqual([entry["assignment_key"] for entry in result["assignments"]],
+                         [h.catalog[0]["assignment_key"]])
+        self.assertEqual(result["assignments"][0]["form_id"], new_form)
+        self.assertFalse(result["assignments"][0]["discovery_only"])
+        self.assertTrue(all(row["assignment_key"] == h.catalog[0]["assignment_key"]
+                            for row in result["files"]))
+        self.assertEqual(h.form_calls, [(new_form, None)])
+        self.assertNotEqual(old_form, new_form)
+
+    def test_old_private_form_pin_cannot_silently_override_replacement_agenda_link(self):
+        from tests.test_shared_intake_catalog import agenda, url, form_url
+        h = Harness([file_meta(FILE_A)])
+        old_form, new_form = h.catalog[0]["form_id"], "n" * 24
+        h.config.update(HUB_INTAKE_DECK_ASSIGNMENTS={h.catalog[0]["source_deck_id"]: h.catalog[0]["assignment_key"]},
+                        HUB_ASSIGNMENT_FORM_IDS={h.catalog[0]["assignment_key"]: old_form})
+        h.records["submissions"] = [h.saved(FILE_A)]
+        real_catalog = intake.agenda_catalog
+        reader = Mock(); reader.read.return_value = agenda(primary=url(h.catalog[0]["source_deck_id"]), form=form_url(new_form))
+        with patch.object(intake, "authenticated_reader", return_value=(reader, "synthetic-agenda")):
+            result = h.run(assignment=h.catalog[0]["assignment_key"], catalog_reader=real_catalog)
+        self.assertFalse(result["coverage"]["form_complete"])
+        self.assertIn("assignment_form_mapping_conflict", result["coverage"]["errors"])
+        self.assertEqual(h.form_calls, [])
+        self.assertEqual(result["files"][0]["saved_record_ids"], [h.records["submissions"][0]["record_id"]])
+
+    def test_new_lesson_discovery_key_survives_form_replacement_without_registration(self):
+        from tests.test_shared_intake_catalog import agenda, url, form_url
+        h = Harness([])
+        h.records["assignments"] = []
+        old_form, new_form = h.catalog[0]["form_id"], "n" * 24
+        reader = Mock(); real_catalog = intake.agenda_catalog
+        with patch.object(intake, "authenticated_reader", return_value=(reader, "synthetic-agenda")):
+            reader.read.return_value = agenda(primary=url(h.catalog[0]["source_deck_id"]), form=form_url(old_form))
+            before = h.run(catalog_reader=real_catalog,
+                           form_errors={old_form: ConnectionError("submission_form_not_found")})
+            reader.read.return_value = agenda(primary=url(h.catalog[0]["source_deck_id"]), form=form_url(new_form))
+            after = h.run(catalog_reader=real_catalog)
+        self.assertEqual(before["assignments"][0]["assignment_key"], after["assignments"][0]["assignment_key"])
+        self.assertTrue(after["assignments"][0]["discovery_only"])
+        self.assertEqual(after["assignments"][0]["registry_assignment_key"], "")
+        self.assertEqual(after["assignments"][0]["form_id"], new_form)
+        self.assertEqual(h.form_calls, [(new_form, None)])
+
+    def test_unbound_current_catalog_cannot_hide_exact_saved_source_in_selected_lesson(self):
+        from tests.test_shared_intake_catalog import agenda, url, form_url
+        h = Harness([])
+        selected = h.catalog[0]["assignment_key"]
+        h.records["submissions"] = [h.saved(FILE_A)]
+        h.records["assignments"] = [{key: row[key] for key in ("assignment_key", "class_key", "assignment_title")}
+                                    for row in h.records["assignments"]]
+        h.drive.items[FILE_A] = file_meta(FILE_A, parent=FOLDER)
+        h.texts[FILE_A] = h.catalog[0]["source_text"]
+        def master(token, drive, entries, **kwargs):
+            return [{**entry, "source_text": h.catalog[0]["source_text"]} for entry in entries]
+        reader = Mock(); real_catalog = intake.agenda_catalog
+        reader.read.return_value = agenda(primary=url(h.catalog[0]["source_deck_id"]), form=form_url("n" * 24))
+        with patch.object(intake, "authenticated_reader", return_value=(reader, "synthetic-agenda")):
+            result = h.run(assignment=selected, catalog_reader=real_catalog, master_error=master)
+        self.assertEqual(len(result["files"]), 1)
+        row = result["files"][0]
+        self.assertEqual(row["saved_assignment_keys"], [selected])
+        self.assertEqual(row["assignment_key"], "")
+        self.assertTrue(row["content_assignment_key"].startswith("discovery:forensics:"))
+        self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertIn("saved_assignment_conflict", row["review_reasons"])
+        self.assertIn("assignment_registry_binding_required", row["review_reasons"])
+
     def test_new_lesson_without_saved_rows_is_visible_but_not_registered(self):
         h = Harness([])
         entry = h.catalog[0]

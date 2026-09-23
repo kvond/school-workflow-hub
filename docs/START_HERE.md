@@ -20,6 +20,13 @@ instructions, logs, artifacts or implementation decisions between agents.
 
 ## Immediate priority: preserve student work
 
+The teacher clarified on September 23 that the Week 04 Forensics PPTX files
+were converted to native Slides and duplicate PPTX files were intentionally
+deleted. Preserve the current native Slides and do not restore those duplicates
+as incident recovery. Exact saved source IDs remain historical evidence;
+Refresh must show an unavailable original as held without restoring it or
+silently transferring its assessment to a replacement file.
+
 The active worker reports finding student submissions in Drive trash after an
 older intake tree was trashed. Treat this as a recovery incident before further
 folder cleanup, model calls or interface polishing. It is a report requiring
