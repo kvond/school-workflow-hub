@@ -144,6 +144,11 @@ def folder_week(name):
     return int(match.group(1)) if match else None
 
 
+def _upload_folder(name, number):
+    name = str(name or "")
+    return name.endswith("(File responses)") or (number is not None and folder_week(name) == number)
+
+
 def lesson_folders(token, config, class_name, week_label, form_names, response_folders):
     """(roots, note): the lesson's turn-in folders inside 00 ALL TURN IN / <class>.
 
@@ -162,10 +167,16 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
                    if f.get("mimeType") == google.FOLDER and norm(f["name"]) == norm(class_name)]
         if len(classes) != 1:
             return roots, "No single '%s' folder in the turn-in root, so only Form uploads were read." % class_name
-        for f in google.folder_children(token, classes[0]["id"]):
-            if f.get("mimeType") == google.FOLDER and (
-                    (number is not None and folder_week(f["name"]) == number) or f["name"] in wanted):
+        children = [f for f in google.folder_children(token, classes[0]["id"]) if f.get("mimeType") == google.FOLDER]
+        for f in children:
+            if (number is not None and folder_week(f["name"]) == number) or f["name"] in wanted:
                 roots[f["id"]] = f["name"]
+        # A Form's upload folder may also sit inside another week's folder.
+        inside = {classes[0]["id"]} | {f["id"] for f in children}
+        for name in wanted - set(roots.values()):
+            for f in google.folders_named(token, name):
+                if set(f.get("parents") or []) & inside:
+                    roots[f["id"]] = f["name"]
     except google.GoogleError as error:
         return roots, "The %s turn-in folder couldn't be read (%s)." % (class_name, error)
     if not roots:
@@ -360,11 +371,18 @@ def lesson_work(token, config, agenda, class_key, week_label):
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
     response_ids = [f["id"] for form in forms for s in form["found"] for f in s["files"]]
     known = _metadata(token, response_ids)
-    upload_folders = _metadata(token, [p for info in known.values() for p in info.get("parents") or []])
+    # Folders holding the Form's uploads count only when they are Form upload
+    # folders or named for this lesson's week — never the class folder itself,
+    # even when uploads were moved loose into it or into the Form's folder.
+    holders = {fid: info for fid, info in _metadata(
+        token, [p for info in known.values() for p in info.get("parents") or []]).items()
+        if _upload_folder(info.get("name"), number)}
+    outer_ids = {p for info in holders.values() if info.get("name", "").endswith("(File responses)")
+                 for p in info.get("parents") or []} - set(holders)
+    outer = {fid: info for fid, info in _metadata(token, outer_ids).items()
+             if info.get("name", "").endswith("(File responses)")}
+    upload_folders = {**holders, **outer}
     response_folders = set(upload_folders)
-    for info in upload_folders.values():
-        if info.get("name", "").endswith("(File responses)"):
-            response_folders.update(info.get("parents") or [])
 
     roots, folder_note = lesson_folders(token, config, class_name, week_label,
                                         [f["name"] for f in forms], response_folders)
@@ -385,11 +403,18 @@ def lesson_work(token, config, agenda, class_key, week_label):
     # responses were saved (plus the Form folder around that question folder).
     for form in forms:
         mine = {fid for fid, name in names.items() if form["name"] and name == form["name"] + " (File responses)"}
-        questions = {p for s in form["found"] for f in s["files"] for p in known.get(f["id"], {}).get("parents") or []}
+        questions = {p for s in form["found"] for f in s["files"]
+                     for p in known.get(f["id"], {}).get("parents") or []} & set(holders)
         mine |= questions
-        mine |= {p for q in questions if upload_folders.get(q, {}).get("name", "").endswith("(File responses)")
-                 for p in upload_folders[q].get("parents") or []}
+        mine |= {p for q in questions for p in holders[q].get("parents") or [] if p in outer}
         form["folders"] = mine
+
+    # Settle each roster section's first/last column order from the school
+    # usernames in this lesson's submissions (only where it was assumed).
+    usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] if s["email"]}
+    usernames |= {roster.username_key(u, prefix) for i in items
+                  for u in [roster.file_username(i.get("name"), prefix)] if u}
+    roster.orient(students, usernames - {""})
 
     referenced = set(response_ids)
     readable = [form for form in forms if form["form_id"]]
