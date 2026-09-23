@@ -353,6 +353,37 @@ class FolderTests(unittest.TestCase):
         self.assertEqual([f["name"] for f in result["folders"]],
                          ["Biology — Cycle 04 — Old title — Turn In (File responses)"])
 
+    def test_section_and_lesson_folders_are_read_and_matched_to_their_assignment(self):
+        folder = "application/vnd.google-apps.folder"
+
+        def item(ident, name, mime=SLIDES):
+            return {"id": ident, "name": name, "mimeType": mime, "createdTime": "2026-09-23T12:00:00Z"}
+        # The new layout: class / section / one folder per lesson; Forms' folders under 📨 Form uploads.
+        tree = {"ROOT": [item("CLASSF", "🔬 Forensics", folder)],
+                "CLASSF": [item("A2", "A2 Forensics", folder), item("A3", "A3 Forensics", folder),
+                           item("INBOX", "📨 Form uploads", folder)],
+                "A2": [item("A2R", "📥 Wk 04 — Reasoning", folder), item("A2X", "📥 Wk 05 — Later", folder)],
+                "A3": [item("A3O", "📥 Wk 04 — Observation", folder)],
+                "A2R": [item("R1", "My deck - Ana Rivera")],
+                "A3O": [item("O1", "My deck - Sam Lee")],
+                "A2X": [item("LATER", "Later deck - Ana Rivera")],
+                "INBOX": [item("FORMF", "Forensics — Week 04 — Observation — Turn In (File responses)", folder)],
+                "FORMF": [item("NEW", "Copy of deck - Chidi Okafor")]}
+        names = {"FICTIONALFORMID1234567890abc": "Forensics — Week 04 — Reasoning — Turn In",
+                 "FICTIONALFORMID0987654321xyz": "Forensics — Week 04 — Observation — Turn In"}
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
+                patch.object(google, "form_responses", return_value=[]), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)), \
+                patch.object(google, "drive_file", side_effect=lambda t, fid: {"name": names.get(fid, fid), "mimeType": SLIDES}):
+            result = work.lesson_work("token", self.config, fixture(), "forensics", "Wk 04")
+        reasoning, observation = result["lessons"][0]["forms"]
+        self.assertEqual([f["id"] for r in reasoning["students"] for f in r["files"]], ["R1"])
+        self.assertEqual(sorted(f["id"] for r in observation["students"] for f in r["files"]), ["NEW", "O1"])
+        self.assertEqual(result["other_files"], [])
+        self.assertEqual(work.lesson_folder_name("Wk 04", "📤 Eyewitness Testimony — Turn in"),
+                         "📥 Wk 04 — Eyewitness Testimony")
+
     def test_shared_folder_files_are_sorted_by_the_deck_they_were_copied_from(self):
         folder = "application/vnd.google-apps.folder"
 

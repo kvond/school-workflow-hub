@@ -149,12 +149,31 @@ def _upload_folder(name, number):
     return name.endswith("(File responses)") or (number is not None and folder_week(name) == number)
 
 
-def lesson_folders(token, config, class_name, week_label, form_names, response_folders):
+def assignment_title(label):
+    """'📤 Eyewitness Testimony — Turn in' → 'Eyewitness Testimony'."""
+    text = re.sub(r"^[^\w(]+", "", str(label or ""))
+    text = re.sub(r"\s*[—–-]+\s*turn\s*(it\s*)?in\s*$", "", text, flags=re.I)
+    return text.strip() or "Turn in"
+
+
+def lesson_folder_name(week_label, label):
+    """The one folder per section per lesson: '📥 Wk 03 — Observation Skills'."""
+    return "📥 %s — %s" % (week_label, assignment_title(label))
+
+
+def _lesson_folder_title(name):
+    return norm(re.sub(r"^\W*(?:wk|week)\s*\d+\s*[—–-]+\s*", "", str(name or ""), flags=re.I))
+
+
+def lesson_folders(token, config, class_name, week_label, form_names, response_folders,
+                   sections=(), titles=()):
     """(roots, note): the lesson's turn-in folders inside 00 ALL TURN IN / <class>.
 
     A folder belongs to the lesson when its name carries the lesson's week
     number, or it is one of the lesson's Forms' own '(File responses)' upload
     folders (found by the Form's title, or by where its responses were saved).
+    Inside each section folder ('A2 Forensics'), a lesson folder belongs to the
+    lesson by its week number or by its assignment title.
     """
     root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
     roots = {folder_id: "" for folder_id in response_folders}
@@ -162,6 +181,8 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
         return roots, "No turn-in root folder is configured, so only Form uploads were read."
     number = week_number(week_label)
     wanted = {name + " (File responses)" for name in form_names if name}
+    wanted_titles = {norm(assignment_title(t)) for t in titles if t}
+    section_names = {norm(s) for s in sections}
     try:
         classes = [f for f in google.folder_children(token, root)
                    if f.get("mimeType") == google.FOLDER and norm(f["name"]) == norm(class_name)]
@@ -171,6 +192,12 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
         for f in children:
             if (number is not None and folder_week(f["name"]) == number) or f["name"] in wanted:
                 roots[f["id"]] = f["name"]
+        for section in [f for f in children if norm(f["name"]) in section_names]:
+            for f in google.folder_children(token, section["id"]):
+                if f.get("mimeType") == google.FOLDER and (
+                        (number is not None and folder_week(f["name"]) == number)
+                        or _lesson_folder_title(f["name"]) in wanted_titles):
+                    roots[f["id"]] = f["name"]
         # A Form's upload folder may also sit inside another week's folder.
         inside = {classes[0]["id"]} | {f["id"] for f in children}
         for name in wanted - set(roots.values()):
@@ -385,7 +412,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
     response_folders = set(upload_folders)
 
     roots, folder_note = lesson_folders(token, config, class_name, week_label,
-                                        [f["name"] for f in forms], response_folders)
+                                        [f["name"] for f in forms], response_folders,
+                                        roster.SECTIONS[class_key], [f["label"] for f in forms])
     try:
         items, parents = list_tree(token, roots)
     except google.GoogleError as error:
@@ -401,8 +429,15 @@ def lesson_work(token, config, agenda, class_key, week_label):
 
     # Which folders hold each Form's uploads: its titled folder, and wherever its
     # responses were saved (plus the Form folder around that question folder).
+    # A section's lesson folder named for one assignment belongs to that Form.
+    for fid, name in roots.items():
+        title = _lesson_folder_title(name)
+        owners = [f for f in forms if f["form_id"] and title and title == norm(assignment_title(f["label"]))]
+        if len(owners) == 1:
+            owners[0].setdefault("lesson_folders", set()).add(fid)
     for form in forms:
         mine = {fid for fid, name in names.items() if form["name"] and name == form["name"] + " (File responses)"}
+        mine |= form.get("lesson_folders", set())
         questions = {p for s in form["found"] for f in s["files"]
                      for p in known.get(f["id"], {}).get("parents") or []} & set(holders)
         mine |= questions
