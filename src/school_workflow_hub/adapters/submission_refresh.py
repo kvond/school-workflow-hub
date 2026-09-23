@@ -325,11 +325,24 @@ def refresh(assertion, payload, config):
         errors.append(_code(error, "intake_catalog_needs_review"))
     if selected.startswith("discovery:") and selected not in {e["assignment_key"] for e in original_catalog}:
         raise ValueError("invalid_submission_scope")
+    candidate_form_ids = coverage.pop("form_file_ids", [])
+    requested_entries = [entry for entry in original_catalog if selected in ("all", entry["assignment_key"])]
+    if selected != "all" and not any(entry.get("form_review_reason") == "assignment_form_api_id_required"
+            and not entry.get("form_binding_ambiguous") for entry in requested_entries):
+        # Known editable IDs need no search through future published Forms.
+        # Resolving their responder URI can still reveal a conflicting catalog
+        # binding to that same Form, without fetching an unrelated Form body.
+        candidate_form_ids = [form_id for entry in requested_entries
+                              for form_id, error in [assignment_forms._binding(entry)] if not error]
     resolved_catalog = assignment_forms.resolve_published_forms(
-        original_catalog, coverage.pop("form_file_ids", []), drive.form)
+        original_catalog, candidate_form_ids, drive.form)
     scoped_catalog = [e for e in resolved_catalog if selected in ("all", e["assignment_key"])]
+    scoped_references = {reference for entry in scoped_catalog
+                         for reference in entry.get("source_references", [entry.get("source_reference", "")])
+                         if reference}
     coverage["catalog_issues"] = [issue for entry in original_catalog[:1]
-                                  for issue in entry.get("catalog_issues", [])]
+                                  for issue in entry.get("catalog_issues", [])
+                                  if selected == "all" or issue.get("source_reference") in scoped_references]
     errors.extend(issue["error"] for issue in coverage["catalog_issues"])
     refs, form_complete = {}, False
     try:
@@ -361,7 +374,10 @@ def refresh(assertion, payload, config):
     except ConnectionError as error:
         errors.append(_code(error, "roster_source_unavailable"))
     catalog_results = []
-    for entry in resolved_catalog:
+    # Exact-lesson refresh does not depend on future or unrelated masters.
+    # Retain the complete binding catalog above for cross-assignment conflicts,
+    # but read source content and compute completeness only for this scope.
+    for entry in scoped_catalog:
         result = {"assignment_key": entry["assignment_key"], "complete": False, "error": None,
                   "source_url": entry["source_url"]}
         try:
@@ -386,6 +402,11 @@ def refresh(assertion, payload, config):
     for item in sorted(found, key=lambda f: f["id"]):
         fid = item["id"]
         history = by_file.get(fid, [])
+        if selected != "all" and history and fid not in refs:
+            saved_scopes = {(row.get("class_key"), row.get("assignment_key")) for row in history}
+            if ((class_key, selected) not in saved_scopes
+                    and all(row.get("status") in {"assessed", "roster_matched", "superseded"} for row in history)):
+                continue  # A current selected-Form reference would retain a conflict instead.
         # Generated Docs/Sheets reports in private class folders are not deck
         # submissions. A Form reference or saved source remains visible even
         # for an unsupported type, so an actual upload is never silently lost.
