@@ -180,6 +180,96 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(result["problems"], [])
 
 
+SLIDES = "application/vnd.google-apps.presentation"
+
+
+def drive_tree():
+    """00 ALL TURN IN / 🔬 Forensics / 📥 Wk 04 / Form (File responses) / question folder."""
+    def item(ident, name, mime=SLIDES, created="2026-09-20T12:00:00Z"):
+        return {"id": ident, "name": name, "mimeType": mime, "createdTime": created}
+    folder = "application/vnd.google-apps.folder"
+    return {
+        "ROOT": [item("CLASSF", "🔬 Forensics", folder), item("CLASSB", "🌿 Biology", folder)],
+        "CLASSF": [item("WK03", "📥 Wk 03 — Earlier — 2026-09-14", folder),
+                   item("WK04", "📥 Wk 04 — Fictional topic — 2026-09-23", folder)],
+        "WK04": [item("FORMFOLDER", "Fictional Wk 04 Form (File responses)", folder),
+                 item("LOOSE", "Loose deck - Sam Lee")],
+        "FORMFOLDER": [item("QFOLDER", "Upload your deck (File responses)", folder)],
+        "QFOLDER": [item("FILENEW", "Copy of Week 04 deck - Ana Rivera"),
+                    item("OLDANA", "s.ana.rivera — 09-16 12.40 — Copy of Week 04 deck - Ana Rivera"),
+                    item("OLDCHIDI", "s.chidi.okafor — 09-16 12.41 — Copy of Week 04 deck - Chidi Okafor"),
+                    item("FEEDBACK", "Growth Report - Ana Rivera", "application/vnd.google-apps.document")],
+    }
+
+
+class FolderTests(unittest.TestCase):
+    def setUp(self):
+        self.students, _ = roster.parse_tab(ROSTER, "forensics", "A2 Forensics")
+        self.config = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_SCHOOL_EMAIL_DOMAINS": "school.example",
+                       "HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+
+    def run_work(self, responses, agenda_fixture=None):
+        tree = drive_tree()
+
+        names = {"FICTIONALFORMID1234567890abc": "Fictional Wk 04 Form",
+                 "FICTIONALFORMID0987654321xyz": "Second Form",
+                 "SHEPPARD": "Copy of Week 01 Sheppard deck - Ana Rivera"}
+
+        def drive_file(token, file_id):
+            return {"name": names.get(file_id, file_id), "mimeType": SLIDES, "trashed": False}
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
+                patch.object(google, "form_responses", side_effect=lambda t, form_id: responses.get(form_id, [])), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "drive_file", side_effect=drive_file):
+            return work.lesson_work("token", self.config, agenda_fixture or fixture(), "forensics", "Wk 04")
+
+    def test_folder_files_fill_in_work_the_form_missed(self):
+        one_form = fixture()
+        one_form.classes["forensics"]["cells"][5, 20] = cell("Turn it in", hyperlink=DIRECT)
+        result = self.run_work({"FICTIONALFORMID1234567890abc": [
+            response("s.ana.rivera@school.example", "2026-09-23T14:00:00Z", ("FILENEW", "Copy of Week 04 deck - Ana Rivera")),
+            response("s.ana.rivera@school.example", "2026-09-23T14:05:00Z", ("SHEPPARD", "Copy of Week 01 Sheppard deck - Ana Rivera"))]},
+            one_form)
+        self.assertEqual(result["folder"]["name"], "📥 Wk 04 — Fictional topic — 2026-09-23")
+        form = result["lessons"][0]["forms"][0]
+        rows = {r["last"]: r for r in form["students"]}
+        # Ana: the Week 01 deck is newer but named for another week, so the Week 04 Form upload is current.
+        self.assertEqual(rows["Rivera"]["files"][0]["id"], "FILENEW")
+        self.assertEqual({(e["source"], e["files"][0]["id"]) for e in rows["Rivera"]["earlier"]},
+                         {("form", "SHEPPARD"), ("folder", "OLDANA")})
+        self.assertEqual([e for e in rows["Rivera"]["earlier"] if e["source"] == "form"][0]["files"][0]["other_week"], 1)
+        # Chidi only exists in the folder, matched by the username in the file name.
+        self.assertEqual((rows["Okafor"]["source"], rows["Okafor"]["matched_by"]), ("folder", "file name"))
+        # A loose file in the week folder belongs to the lesson's only Form; feedback docs are skipped.
+        self.assertEqual(rows["Lee"]["files"][0]["id"], "LOOSE")
+        self.assertEqual(form["missing"], [])
+        self.assertEqual(form["folder_files"], 3)
+        self.assertNotIn("FEEDBACK", json.dumps(result))
+
+    def test_two_forms_keep_loose_files_separate(self):
+        result = self.run_work({"FICTIONALFORMID1234567890abc": [
+            response("s.ana.rivera@school.example", "2026-09-23T14:00:00Z", ("FILENEW", "Copy of Week 04 deck"))]})
+        first, second = result["lessons"][0]["forms"]
+        self.assertEqual({r["last"] for r in first["students"]}, {"Rivera", "Okafor"})
+        self.assertEqual(second["students"], [])
+        self.assertEqual([r["last"] for r in result["other_files"]], ["Lee"])
+
+    def test_missing_week_folder_is_a_note(self):
+        tree = drive_tree()
+        tree["CLASSF"] = tree["CLASSF"][:1]
+        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])):
+            folder, note = work.turnin_folder("token", self.config, "Forensics", "Wk 04")
+        self.assertIsNone(folder)
+        self.assertIn("Wk 04", note)
+
+    def test_named_week(self):
+        self.assertEqual(work.named_week("Copy of ▶ LIVE — Week 01 — Sheppard", 4), 1)
+        self.assertIsNone(work.named_week("Copy of ▶ LIVE — Week 04 — Eyewitness", 4))
+        self.assertIsNone(work.named_week("My deck", 4))
+        self.assertEqual(roster.file_username("s.ana.rivera — 09-16 12.40 — Copy of deck"), "s.ana.rivera")
+        self.assertEqual(roster.file_username("Copy of deck - Ana Rivera"), "")
+
+
 def call(path, method="GET", query="", assertion=None, config=None):
     environ = {"PATH_INFO": path, "REQUEST_METHOD": method, "QUERY_STRING": query, "wsgi.input": io.BytesIO()}
     if assertion:

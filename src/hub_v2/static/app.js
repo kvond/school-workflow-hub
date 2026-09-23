@@ -1,5 +1,6 @@
 // Teaching Hub v2: lesson plans from the Agenda, and student work found from
-// each lesson's Form responses. Read-only; the grade sheet downloads to you.
+// each lesson's Form responses and turn-in folder. Read-only; the grade sheet
+// downloads to you.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
@@ -185,8 +186,16 @@ function fileList(files) {
   if (!files.length) return el('span', {class: 'muted', text: 'Form sent with no file'});
   return el('ul', {class: 'files'}, files.map(f => el('li', {},
     link(f.name, f.url),
+    f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
+    f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
+}
+
+function sheetNotes(row) {
+  return [row.source === 'folder' ? 'From turn-in folder' : '',
+    ...row.files.filter(f => f.other_week).map(f => `Named Week ${f.other_week}`),
+    row.earlier.length ? `${row.earlier.length} earlier file(s)` : ''].filter(Boolean).join('; ');
 }
 
 function studentRow(row) {
@@ -197,10 +206,11 @@ function studentRow(row) {
       row.typed.length ? el('small', {class: 'muted', text: ' · typed: ' + row.typed.join(' / ')}) : null);
   const earlier = row.earlier.length
     ? el('details', {class: 'earlier'}, el('summary', {text: `${row.earlier.length} earlier`}),
-      row.earlier.map(e => el('div', {}, el('small', {class: 'muted', text: when(e.submitted_at)}), fileList(e.files))))
+      row.earlier.map(e => el('div', {}, el('small', {class: 'muted', text: e.source === 'folder' ? 'In the turn-in folder' : when(e.submitted_at)}), fileList(e.files))))
     : null;
   return el('tr', {class: row.matched ? '' : 'unmatched'}, who, el('td', {text: row.section || '—'}),
-    el('td', {text: when(row.submitted_at)}), el('td', {}, fileList(row.files), earlier));
+    el('td', {text: row.source === 'folder' ? 'In the turn-in folder' : when(row.submitted_at)}),
+    el('td', {}, fileList(row.files), earlier));
 }
 
 function csvCell(value) {
@@ -213,10 +223,10 @@ function downloadSheet(form, lesson) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
   const rows = [
-    ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', when(r.submitted_at), '', r.files[0]?.url || '', r.earlier.length ? `${r.earlier.length} earlier submission(s)` : '']),
+    ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', r.source === 'folder' ? '' : when(r.submitted_at), '', r.files[0]?.url || '', sheetNotes(r)]),
     ...form.missing.filter(inSection).map(m => [m.last, m.first, m.section, 'No', '', '', '', '']),
   ].sort((a, b) => (a[2] + a[0] + a[1]).localeCompare(b[2] + b[0] + b[1]));
-  const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', when(r.submitted_at), '', r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || 'no email')]);
+  const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', r.source === 'folder' ? '' : when(r.submitted_at), '', r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || r.files[0]?.name || 'unknown')]);
   const lines = [['Last name', 'First name', 'Section', 'Turned in', 'Turned in at', 'Score', 'Work link', 'Notes'], ...rows, ...unmatched];
   const blob = new Blob(['﻿' + lines.map(line => line.map(csvCell).join(',')).join('\r\n')], {type: 'text/csv;charset=utf-8'});
   const name = [CLASSES.find(([k]) => k === work.cls)[1], work.week, form.label, section === 'all' ? 'all sections' : section]
@@ -232,13 +242,14 @@ function renderForm(form, lesson) {
   const box = el('section', {class: 'form-work'},
     el('div', {class: 'form-head'}, el('h3', {text: form.label}), link('Open Form ↗', form.url, 'chip')));
   if (form.problem) box.append(note(form.problem));
-  if (!form.form_id || (form.problem && !form.responses)) return box;
+  if (!form.form_id || (form.problem && !form.students.length)) return box;
   const matched = form.students.filter(r => r.matched && inSection(r));
   const unmatched = form.students.filter(r => !r.matched);
   const missing = form.missing.filter(inSection);
   box.append(el('p', {class: 'summary'},
     el('strong', {text: `${matched.length} of ${matched.length + missing.length}`}), ' turned in',
     unmatched.length ? el('span', {class: 'badge warn', text: `${unmatched.length} not matched to the roster`}) : null,
+    form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
     el('button', {type: 'button', class: 'primary', onclick: () => downloadSheet(form, lesson)}, 'Download grade sheet (CSV)')));
   const shown = [...matched, ...unmatched];
   if (shown.length) {
@@ -260,10 +271,25 @@ function renderWork() {
   if (!data) return;
   const parts = data.problems.map(p => note(p));
   if (!data.roster_size) parts.push(note('No roster students were found for this class, so nobody can be listed as missing.'));
+  if (data.folder) {
+    parts.push(el('p', {class: 'muted'}, 'Read the Form responses and the turn-in folder ',
+      link(data.folder.name + ' ↗', data.folder.url), ` (${data.folder.files} files).`));
+  } else if (data.folder_note) {
+    parts.push(note(data.folder_note, 'info'));
+  }
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week}), link('Edit in the Agenda ↗', lesson.edit_url, 'edit')));
     if (lesson.problem) parts.push(note(lesson.problem));
     lesson.forms.forEach(form => parts.push(renderForm(form, lesson)));
+  }
+  const other = (data.other_files || []).filter(r => !r.matched || work.section === 'all' || r.section === work.section);
+  if (other.length) {
+    parts.push(el('section', {class: 'form-work'},
+      el('div', {class: 'form-head'}, el('h3', {text: 'Other files in the turn-in folder'})),
+      note('These files are in the week’s turn-in folder but not tied to one Form. Check which assignment each belongs to.', 'info'),
+      el('div', {class: 'table-wrap'}, el('table', {},
+        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
+        el('tbody', {}, other.map(studentRow))))));
   }
   $('work-body').replaceChildren(...parts);
 }
