@@ -126,6 +126,10 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
       const count=value=>Number.isInteger(value)&&value>=0?String(value):'unavailable';
       line(item,`Form read complete · ${count(form.responses_checked)} responses checked · ${count(form.files_referenced)} files referenced · ${count(form.pages)} response pages.`);
      }else line(item,'Form read incomplete · '+label(form.error||'Form unavailable')+'.');
+     const published=form.is_published===true?'Published':form.is_published===false?'Unpublished':'Publication unknown';
+     const accepting=form.is_accepting_responses===true?'accepting responses':form.is_accepting_responses===false?'responses closed':'response acceptance unknown';
+     line(item,published+' · '+accepting+'.');
+     if(form.is_published!==true||form.is_accepting_responses!==true)line(item,'Check this Form’s publication and response settings before sharing its link. Historical responses remain separate.','hint');
      if(form.next_action)line(item,form.next_action);
      link(item,'Open assignment Form ↗',form.form_url);list.append(item);
     }

@@ -4,8 +4,11 @@ Coordinates are provenance, never save targets or stable assignment identities.
 No raw source data is persisted. The current Dashboard's manual overrides win.
 """
 from datetime import date, datetime, timedelta, timezone
+import json
+import os
 import re
 from urllib.parse import parse_qs, urlsplit
+from .agenda_rows import cell_links
 from .hosted_agenda import authenticated_reader, ConnectionError
 
 COURSES = (("biology", "🌿 Biology"), ("forensics", "🔬 Forensics"), ("anatomy", "🫀 A&P"))
@@ -72,6 +75,117 @@ def turnin_form(raw):
         return None, (), None
 
 
+def form_cell_links(cell):
+    """Read every observed Form destination without choosing by its label."""
+    try:
+        links = cell_links(cell)
+        forms = [turnin_form(url)[0] for url in links]
+        if not all(forms):
+            return [], 'assignment_form_turn_in_link_invalid'
+        return forms, ''
+    except (ValueError, TypeError, AttributeError):
+        return [], 'assignment_form_turn_in_link_invalid'
+
+
+def _form_link_label(cell, target):
+    """Rich-text labels are display only; Sheets offsets use UTF-16 units."""
+    text = cell.get('formattedValue', '')
+    encoded = text.encode('utf-16-le')
+    runs = cell.get('textFormatRuns', [])
+    pieces = []
+    try:
+        offsets = [run.get('startIndex', 0) for run in runs] + [len(encoded) // 2]
+        if any(type(n) is not int or n < 0 for n in offsets) or offsets != sorted(offsets):
+            return ''
+        for index, run in enumerate(runs):
+            uri = run.get('format', {}).get('link', {}).get('uri', '')
+            if turnin_form(uri)[2] == target:
+                pieces.append(encoded[offsets[index] * 2:offsets[index + 1] * 2].decode('utf-16-le'))
+        return ' '.join(' '.join(pieces).split())[:300]
+    except (ValueError, TypeError, AttributeError, UnicodeError):
+        return ''
+
+
+def explicit_assignment_forms(cells, row, title, entries, deck_bindings, form_bindings):
+    """One weekly row may expose separate, explicitly bound assignment Forms.
+
+    None means the ordinary single-link rules still apply. Multiple named
+    links never bind by text or order. All current P/O decks need exact private
+    bindings, T must expose precisely their distinct direct-ID Forms, and U
+    remains the primary P Form. Published IDs cannot stand in for API IDs.
+    """
+    visible, visible_error = form_cell_links(cells.get((row, 20), {}))
+    keys = [entry['assignment_key'] for entry in entries]
+    if len(visible) <= 1 and not (len(set(keys)) > 1 and all(key in form_bindings for key in keys)):
+        return None
+    hidden, hidden_error = form_cell_links(cells.get((row, 21), {}))
+    result = {'forms': [], 'visible_urls': visible, 'raw_url': hidden[0] if len(hidden) == 1 else '',
+              'error': ''}
+    expected = [form_bindings.get(key) for key in keys]
+    primary_cell = cells.get((row, 16), {})
+    primary_url = link(primary_cell.get('hyperlink', '')) or link(value(cells, row, 16)) or ''
+    primary_match = re.fullmatch(r'https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?', primary_url)
+    if visible_error or hidden_error:
+        result['error'] = visible_error or hidden_error
+    elif cells.get((row, 20), {}).get('userEnteredValue', {}).get('formulaValue'):
+        result['error'] = 'assignment_form_turn_in_link_invalid'
+    elif len(set(keys)) < 2:
+        result['error'] = 'assignment_form_turn_in_links_disagree'
+    elif (re.sub(r'[^a-z ]', '', value(cells, 3, 20).lower()).strip() != 'turn it in'
+          or value(cells, 3, 21) != '_turnInURL'):
+        result['error'] = 'assignment_form_layout_changed'
+    elif (len(keys) != len(set(keys)) or not primary_match
+          or entries[0]['source_deck_id'] != primary_match[1] or any(
+            deck_bindings.get(entry['source_deck_id']) != entry['assignment_key'] for entry in entries)
+          or any(not isinstance(fid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{20,128}', fid)
+                 for fid in expected)):
+        result['error'] = 'assignment_form_mapping_required'
+    elif len(set(expected)) != len(expected) or any(
+            sum(value == fid for value in form_bindings.values()) != 1 for fid in expected):
+        result['error'] = 'assignment_form_reused'
+    elif any(not turnin_form(url)[2] for url in visible + hidden):
+        result['error'] = 'assignment_form_api_id_required'
+    elif any(not urlsplit(url).path.endswith('/viewform') for url in visible + hidden):
+        result['error'] = 'assignment_form_turn_in_link_invalid'
+    elif (len(visible) != len(expected) or {turnin_form(url)[2] for url in visible} != set(expected)
+          or len(hidden) != 1 or turnin_form(hidden[0])[2] != expected[0]):
+        result['error'] = 'assignment_form_turn_in_links_disagree'
+    else:
+        by_id = {turnin_form(url)[2]: url for url in visible}
+        for index, entry in enumerate(entries):
+            fid = expected[index]
+            result['forms'].append({'assignment_key': entry['assignment_key'],
+                'assignment_title': _form_link_label(cells.get((row, 20), {}), fid)
+                                    or entry.get('assignment_title', 'Submit assignment'),
+                'url': by_id[fid], 'form_id': fid, 'primary': index == 0,
+                'source_reference': f'{title}!T{row}',
+                'source_references': [f'{title}!T{row}'] + ([f'{title}!U{row}'] if index == 0 else [])})
+    return result
+
+
+def _day_assignment_forms(cells, row, title, course, config):
+    """Display the same explicit bindings without loading the grading registry."""
+    try:
+        mappings = []
+        for name in ('HUB_INTAKE_DECK_ASSIGNMENTS', 'HUB_ASSIGNMENT_FORM_IDS'):
+            raw = config.get(name, {})
+            mappings.append(json.loads(raw) if isinstance(raw, str) else raw)
+        decks, forms = mappings
+        if not all(isinstance(mapping, dict) for mapping in mappings):
+            raise ValueError()
+        entries = []
+        for column in (16, 15):
+            cell = cells.get((row, column), {})
+            raw = link(cell.get('hyperlink', '')) or link(value(cells, row, column)) or ''
+            match = re.fullmatch(r'https://docs\.google\.com/presentation/d/([\w-]{20,128})/(?:copy|edit|view|preview)(?:[?#].*)?', raw)
+            key = decks.get(match[1]) if match else None
+            if isinstance(key, str) and re.fullmatch(re.escape(course) + r':[A-Za-z0-9:_-]{1,128}', key):
+                entries.append({'assignment_key': key, 'source_deck_id': match[1]})
+        return explicit_assignment_forms(cells, row, title, entries, decks, forms)
+    except (ValueError, TypeError, AttributeError):
+        return {'forms': [], 'error': 'assignment_form_mapping_invalid'}
+
+
 def source_date(text):
     try:
         return datetime.strptime(text, '%m/%d/%Y').date()
@@ -86,6 +200,7 @@ def read_day(assertion, selected, config=None):
             raise ValueError()
     except (ValueError, TypeError):
         raise ConnectionError('invalid_date') from None
+    config = os.environ if config is None else config
     reader, source = authenticated_reader(assertion, config)
     metadata = reader.read(source)
     titles = {s['properties']['title'] for s in metadata['sheets']}
@@ -185,9 +300,16 @@ def read_day(assertion, selected, config=None):
                 assignment_label = prefilled[0]
             if not assignment_label or assignment_label not in prefilled:
                 form_url = None
+        explicit_forms = _day_assignment_forms(cells, row, title, key, config)
+        form_links = (explicit_forms['forms'] if explicit_forms is not None else
+                      ([{'assignment_key': '', 'assignment_title': assignment_label or 'Turn in',
+                         'url': form_url, 'form_id': form_id, 'primary': True,
+                         'source_reference': f'{title}!U{row}'}] if form_url else []))
         lessons.append({'class_key':key,'title':value(cells,row,3),'plan':plan,'notes':notes,
             'teacher_slides':teacher,'turnin_folder':turnin_folder,'turnin_form':form_url,
             'turnin_form_id':form_id if form_url else None,
+            'turnin_forms':form_links,
+            'turnin_forms_review_reason':explicit_forms['error'] if explicit_forms else '',
             'assignment_label':assignment_label,'links':resources,'origin':origin,'dashboard_text':extra,
             'weekly_plan':value(cells,row,col) if col else '',
             'todo':value(cells,row,10),'prep':value(cells,row,11),

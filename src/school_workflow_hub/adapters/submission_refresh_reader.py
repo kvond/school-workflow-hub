@@ -147,7 +147,8 @@ class BudgetedDrive(DriveReader):
             raise ConnectionError("assignment_form_mapping_required")
         if fresh or form_id not in self.form_cache:
             raw = self._read("forms/" + form_id, {"fields":
-                "formId,responderUri,revisionId,items(questionItem(question(fileUploadQuestion(folderId))))"}, form=True)
+                "formId,responderUri,revisionId,publishSettings(publishState(isPublished,isAcceptingResponses)),"
+                "items(questionItem(question(fileUploadQuestion(folderId))))"}, form=True)
             try:
                 value = json.loads(raw)
             except (ValueError, UnicodeDecodeError):

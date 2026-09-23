@@ -30,6 +30,19 @@ def form_url(form_id=FORM_A, *, published=False):
     return "https://docs.google.com/forms/d/" + ("e/" if published else "") + form_id + "/viewform"
 
 
+def named_forms(form_ids=(FORM_A, FORM_B)):
+    labels = {FORM_A: "Observation — submit", FORM_B: "Reasoning — submit"}
+    text, runs = "", []
+    for fid in form_ids:
+        if text:
+            runs.append({"startIndex": len(text.encode("utf-16-le")) // 2, "format": {}})
+            text += "\n"
+        runs.append({"startIndex": len(text.encode("utf-16-le")) // 2,
+                     "format": {"link": {"uri": form_url(fid)}}})
+        text += labels.get(fid, "Other assignment — submit")
+    return {"formattedValue": text, "userEnteredValue": {"stringValue": text}, "textFormatRuns": runs}
+
+
 def agenda(primary=None, additional=None, topic="Two synthetic assignments", form="", map_rows=None):
     sheets = []
     for course, title in intake.COURSES:
@@ -315,13 +328,12 @@ class AssignmentFormCatalogTests(unittest.TestCase):
                 self.assertIn("T4", entry["form_review_action"])
                 self.assertIn("U4", entry["form_review_action"])
 
-    def test_agreeing_visible_link_preserves_private_multideck_bindings(self):
+    def test_one_visible_link_cannot_hide_missing_secondary_assignment_form(self):
         data = self.visible_link(self.mapped_agenda(label="Two synthetic assignments",
             additional=url(ADDITIONAL)), hyperlink=form_url())
         entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
-        self.assertEqual([e["form_id"] for e in entries], [FORM_A, FORM_B])
-        self.assertTrue(all(e["form_mapping_verified"] for e in entries))
-        self.assertTrue(all(e["form_source"] == "private_assignment_mapping" for e in entries))
+        self.assertTrue(all(not e["form_mapping_verified"] for e in entries))
+        self.assertTrue(all(e["form_review_reason"] == "assignment_form_turn_in_links_disagree" for e in entries))
 
     def test_ambiguous_or_computed_visible_links_do_not_fall_back_to_u(self):
         variants = [{"textFormatRuns": [{"format": {"link": {"uri": form_url()}}},
@@ -398,16 +410,91 @@ class AssignmentFormCatalogTests(unittest.TestCase):
         self.assertEqual(entries[1]["form_review_reason"], "assignment_form_belongs_to_other_assignment")
 
     def test_reviewed_private_ids_resolve_each_ambiguous_assignment_separately(self):
-        entries = catalog(data=self.mapped_agenda(label="Two synthetic assignments",
-                                                  additional=url(ADDITIONAL)),
+        entries = catalog(data=self.visible_link(self.mapped_agenda(label="Two synthetic assignments",
+                                                  additional=url(ADDITIONAL)), **named_forms()),
                           forms={KEY_A: FORM_A, KEY_B: FORM_B})
         self.assertEqual([entry["form_id"] for entry in entries], [FORM_A, FORM_B])
         for entry in entries:
             self.assertTrue(entry["form_mapping_verified"])
-            self.assertEqual(entry["form_url"], form_url())  # Preserve observed U, not a constructed link.
+            self.assertEqual(entry["form_url"], form_url(entry["form_id"]))
+            self.assertEqual(entry["form_raw_url"], form_url(FORM_A))
             self.assertEqual(entry["form_source"], "private_assignment_mapping")
-            self.assertTrue(entry["form_binding_ambiguous"])
+            self.assertFalse(entry["form_binding_ambiguous"])
             self.assertEqual(entry["form_review_reason"], "")
+
+    def test_two_named_forms_bind_by_id_not_label_order_or_week_map(self):
+        for ids in ((FORM_A, FORM_B), (FORM_B, FORM_A)):
+            with self.subTest(ids=ids):
+                data = self.visible_link(agenda(additional=url(ADDITIONAL), form=form_url()), **named_forms(ids))
+                entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+                self.assertEqual([e["form_id"] for e in entries], [FORM_A, FORM_B])
+                self.assertTrue(all(e["form_mapping_verified"] for e in entries))
+                self.assertEqual(entries[0]["form_source_references"], ["🔬 Forensics!T4", "🔬 Forensics!U4"])
+                self.assertEqual(entries[1]["form_source_references"], ["🔬 Forensics!T4"])
+                self.assertEqual(entries[1]["form_visible_url"], form_url(FORM_B))
+                self.assertEqual(set(entries[1]["form_visible_urls"]), {form_url(FORM_A), form_url(FORM_B)})
+
+    def test_actual_catalog_reads_each_assignment_form_and_scopes_exact_selection(self):
+        from school_workflow_hub.adapters.assignment_form_intake import collect_assignment_forms
+        from tests.test_assignment_form_intake import Reader, response
+        data = self.visible_link(agenda(additional=url(ADDITIONAL), form=form_url()), **named_forms((FORM_B, FORM_A)))
+        entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+        uploads = {FORM_A: "x" * 24, FORM_B: "y" * 24}
+        for selected in ("all", KEY_A, KEY_B):
+            with self.subTest(selected=selected):
+                reader = Reader({(fid, None): {"responses": [response(upload)]} for fid, upload in uploads.items()})
+                refs, evidence = collect_assignment_forms(reader, entries, assignment_key=selected)
+                expected = {entry["form_id"]: entry["assignment_key"] for entry in entries
+                            if selected in ("all", entry["assignment_key"])}
+                self.assertEqual(set(reader.calls), {(fid, None) for fid in expected})
+                self.assertEqual({ref["form_id"]: ref["assignment_key"] for ref in refs.values()}, expected)
+                self.assertTrue(evidence["complete"])
+
+    def test_multiform_missing_extra_wrong_primary_or_reused_form_stays_held(self):
+        variants = [((FORM_A,), FORM_A, {KEY_A: FORM_A, KEY_B: FORM_B}),
+                    ((FORM_A, FORM_B, "h" * 24), FORM_A, {KEY_A: FORM_A, KEY_B: FORM_B}),
+                    ((FORM_A, FORM_B), FORM_B, {KEY_A: FORM_A, KEY_B: FORM_B}),
+                    ((FORM_A, FORM_B), FORM_A, {KEY_A: FORM_A, KEY_B: FORM_A}),
+                    ((FORM_A, FORM_B), FORM_A, {KEY_A: FORM_A})]
+        for ids, hidden, bindings in variants:
+            with self.subTest(ids=ids, hidden=hidden, bindings=bindings):
+                data = self.visible_link(agenda(additional=url(ADDITIONAL), form=form_url(hidden)), **named_forms(ids))
+                entries = catalog(data=data, forms=bindings)
+                self.assertTrue(all(not e["form_mapping_verified"] and not e["form_id"] for e in entries))
+                self.assertTrue(all(e["form_review_action"] for e in entries))
+
+    def test_multiform_requires_exact_primary_deck_binding_and_direct_form_ids(self):
+        data = self.visible_link(agenda(additional=url(ADDITIONAL), topic="Synthetic observation", form=form_url()), **named_forms())
+        with self.assertRaisesRegex(ConnectionError, "intake_registry_mapping_required"):
+            catalog(data=data, bindings={ADDITIONAL: KEY_B}, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+        data = self.visible_link(agenda(additional=url(ADDITIONAL), form=form_url()), **named_forms())
+        row = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")["data"][0]["rowData"][1]
+        row["values"][19]["textFormatRuns"][-1]["format"]["link"]["uri"] = form_url(FORM_B, published=True)
+        entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+        self.assertTrue(all(e["form_review_reason"] == "assignment_form_api_id_required" for e in entries))
+
+    def test_bad_multiform_continuation_cannot_hide_behind_verified_row(self):
+        data = self.visible_link(agenda(additional=url(ADDITIONAL), form=form_url()), **named_forms())
+        rows = next(s for s in data["sheets"] if s["properties"]["title"] == "🔬 Forensics")["data"][0]["rowData"]
+        repeated = copy.deepcopy(rows[1])
+        repeated["values"][19] = {"formattedValue": "Missing links"}
+        rows.append(repeated)
+        entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+        self.assertTrue(all(not e["form_mapping_verified"] for e in entries))
+        self.assertTrue(all("T5" in e["form_review_action"] for e in entries))
+
+    def test_multiform_rejects_editor_links_and_incompatible_formula_cells(self):
+        for problem in ("editor", "formula"):
+            with self.subTest(problem=problem):
+                cell = named_forms()
+                if problem == "editor":
+                    cell["textFormatRuns"][-1]["format"]["link"]["uri"] = form_url(FORM_B).replace('/viewform', '/edit')
+                else:
+                    cell["userEnteredValue"] = {"formulaValue": '=HYPERLINK("' + form_url() + '","Submit")'}
+                data = self.visible_link(agenda(additional=url(ADDITIONAL), form=form_url()), **cell)
+                entries = catalog(data=data, forms={KEY_A: FORM_A, KEY_B: FORM_B})
+                self.assertTrue(all(not e["form_mapping_verified"] for e in entries))
+                self.assertTrue(all(e["form_review_reason"] == "assignment_form_turn_in_link_invalid" for e in entries))
 
     def test_published_identifier_is_never_treated_as_editable_api_id(self):
         published = form_url("h" * 24, published=True)

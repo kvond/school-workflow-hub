@@ -3,7 +3,7 @@ import json
 import unittest
 
 from school_workflow_hub.adapters.assignment_form_intake import (
-    collect_assignment_forms, cross_checks, resolve_published_forms, upload_folders)
+    collect_assignment_forms, cross_checks, publication_evidence, resolve_published_forms, upload_folders)
 from school_workflow_hub.adapters.hosted_agenda import ConnectionError
 
 FORM_A, FORM_B = "form_a_" + "x" * 20, "form_b_" + "y" * 20
@@ -43,6 +43,45 @@ class Reader:
 
 
 class AssignmentFormsTests(unittest.TestCase):
+    def test_publication_observation_does_not_discard_historical_responses(self):
+        for published, accepting in ((True, True), (True, False), (False, False)):
+            with self.subTest(published=published, accepting=accepting):
+                reader = Reader({(FORM_A, None): {"responses": [response(FILE_A)]}})
+                observed = []
+                def read_form(form_id):
+                    observed.append(form_id)
+                    return {"formId": form_id, "publishSettings": {"publishState": {
+                        "isPublished": published, "isAcceptingResponses": accepting}}}
+                refs, evidence = collect_assignment_forms(reader, [binding(KEY_A, FORM_A)], read_form=read_form)
+                result = evidence["assignments"][0]
+                self.assertEqual(observed, [FORM_A])
+                self.assertIs(result["is_published"], published)
+                self.assertIs(result["is_accepting_responses"], accepting)
+                self.assertTrue(evidence["complete"])
+                self.assertIn(FILE_A, refs)
+
+    def test_legacy_missing_and_nonboolean_publication_fields_remain_unknown(self):
+        for form in ({}, {"publishSettings": {}}, {"publishSettings": None},
+                     {"publishSettings": {"publishState": {"isPublished": "false", "isAcceptingResponses": 1}}}):
+            with self.subTest(form=form):
+                self.assertEqual(publication_evidence(form), {"is_published": None, "is_accepting_responses": None})
+        reader = Reader({(FORM_A, None): {"responses": []}})
+        _, evidence = collect_assignment_forms(reader, [binding(KEY_A, FORM_A)],
+                                               read_form=lambda fid: {"formId": fid})
+        self.assertIsNone(evidence["assignments"][0]["is_published"])
+        self.assertIsNone(evidence["assignments"][0]["is_accepting_responses"])
+
+    def test_publication_read_failure_is_safe_and_independent_of_response_read(self):
+        reader = Reader({(FORM_A, None): {"responses": [response(FILE_A)]}})
+        def unavailable(form_id):
+            raise ConnectionError("private provider output: https://example.invalid/private")
+        refs, evidence = collect_assignment_forms(reader, [binding(KEY_A, FORM_A)], read_form=unavailable)
+        result = evidence["assignments"][0]
+        self.assertIsNone(result["is_published"])
+        self.assertEqual(result["publication_error"], "submission_form_unavailable")
+        self.assertTrue(evidence["complete"])
+        self.assertIn(FILE_A, refs)
+
     def test_two_assignments_read_their_own_forms_and_complete_pagination(self):
         reader = Reader({
             (FORM_A, None): {"responses": [], "nextPageToken": "next"},

@@ -37,10 +37,10 @@ def fixtures():
 
 
 class DatedTests(unittest.TestCase):
-    def run_day(self, selected='2032-01-05', data=None):
+    def run_day(self, selected='2032-01-05', data=None, config=None):
         reader=Mock();reader.read.side_effect=data or fixtures()
         with patch.object(day,'authenticated_reader',return_value=(reader,'fictional')):
-            result=day.read_day('signed',selected)
+            result=day.read_day('signed',selected,config)
         for call in reader.read.call_args_list[1:]:
             validate_ranges(call.args[1])
         return result
@@ -139,3 +139,71 @@ class TurnInMapTests(unittest.TestCase):
             source=sheet('🗂 TurnIn Map',{1:['assignment key','target folder id','course','week'],**rows})
             meta['sheets'].append({'properties':source['properties']});data['sheets'].append(source)
             self.assertIsNone(self.run_day(data=(meta,mapping,data))['lessons'][0]['turnin_folder'])
+
+
+class MultipleFormDayTests(unittest.TestCase):
+    run_day = DatedTests.run_day
+
+    def inputs(self, ids=None):
+        from tests.test_shared_intake_catalog import PRIMARY, ADDITIONAL, KEY_A, KEY_B, FORM_A, FORM_B, named_forms, form_url, url
+        meta, mapping, data = fixtures()
+        course = next(s for s in data['sheets'] if s['properties']['title'] == '🔬 Forensics')
+        row = course['data'][1]['rowData'][0]['values']
+        row[15] = {'formattedValue': url(PRIMARY)}
+        row[14] = {'formattedValue': url(ADDITIONAL)}
+        row[19] = named_forms(ids or (FORM_A, FORM_B))
+        row[20] = {'formattedValue': form_url(FORM_A)}
+        source = sheet('🗂 TurnIn Map', {1: ['assignment key', 'target folder id', 'course', 'week'],
+            2: ['Combined weekly display', 'z' * 24, '🔬 Forensics', 'Wk example']})
+        meta['sheets'].append({'properties': source['properties']})
+        data['sheets'].append(source)
+        config = {'HUB_INTAKE_DECK_ASSIGNMENTS': {PRIMARY: KEY_A, ADDITIONAL: KEY_B},
+                  'HUB_ASSIGNMENT_FORM_IDS': {KEY_A: FORM_A, KEY_B: FORM_B}}
+        return (meta, mapping, data), config, row
+
+    def test_two_named_links_keep_primary_compatibility_and_assignment_keys(self):
+        from tests.test_shared_intake_catalog import KEY_A, KEY_B, FORM_A, FORM_B, form_url
+        for order in ((FORM_A, FORM_B), (FORM_B, FORM_A)):
+            with self.subTest(order=order):
+                data, config, _ = self.inputs(order)
+                lesson = self.run_day(data=data, config=config)['lessons'][1]
+                self.assertEqual(lesson['turnin_form'], form_url(FORM_A))
+                self.assertEqual(lesson['turnin_form_id'], FORM_A)
+                self.assertEqual([f['assignment_key'] for f in lesson['turnin_forms']], [KEY_A, KEY_B])
+                self.assertEqual([f['form_id'] for f in lesson['turnin_forms']], [FORM_A, FORM_B])
+                self.assertEqual([f['assignment_title'] for f in lesson['turnin_forms']],
+                                 ['Observation — submit', 'Reasoning — submit'])
+                self.assertEqual([f['primary'] for f in lesson['turnin_forms']], [True, False])
+                self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_missing_extra_wrong_primary_reused_or_unconfigured_links_are_held(self):
+        from tests.test_shared_intake_catalog import KEY_A, KEY_B, FORM_A, FORM_B, form_url, named_forms
+        for problem in ('missing', 'extra', 'wrong_primary', 'reused', 'unconfigured'):
+            with self.subTest(problem=problem):
+                data, config, row = self.inputs()
+                if problem == 'missing':
+                    row[19] = named_forms((FORM_A,))
+                elif problem == 'extra':
+                    row[19] = named_forms((FORM_A, FORM_B, 'h' * 24))
+                elif problem == 'wrong_primary':
+                    row[20] = {'formattedValue': form_url(FORM_B)}
+                elif problem == 'reused':
+                    config['HUB_ASSIGNMENT_FORM_IDS'][KEY_B] = FORM_A
+                else:
+                    config['HUB_INTAKE_DECK_ASSIGNMENTS'] = {}
+                lesson = self.run_day(data=data, config=config)['lessons'][1]
+                self.assertEqual(lesson['turnin_forms'], [])
+                self.assertTrue(lesson['turnin_forms_review_reason'])
+
+    def test_existing_single_form_is_unchanged_and_added_to_link_array(self):
+        lesson = self.run_day()['lessons'][0]
+        self.assertEqual(len(lesson['turnin_forms']), 1)
+        self.assertEqual(lesson['turnin_forms'][0]['url'], lesson['turnin_form'])
+        self.assertEqual(lesson['turnin_forms'][0]['assignment_title'], lesson['assignment_label'])
+
+    def test_label_text_cannot_change_assignment_binding(self):
+        from tests.test_shared_intake_catalog import KEY_A, KEY_B
+        data, config, row = self.inputs()
+        row[19]['formattedValue'] = row[19]['formattedValue'].replace('Observation', 'Anything at')
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual([f['assignment_key'] for f in lesson['turnin_forms']], [KEY_A, KEY_B])

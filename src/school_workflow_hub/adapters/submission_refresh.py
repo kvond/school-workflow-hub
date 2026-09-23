@@ -348,7 +348,7 @@ def refresh(assertion, payload, config):
     try:
         forms = _BudgetedForms(FormsReader(service_token(service, FORMS_SCOPE)), drive.check)
         refs, evidence = assignment_forms.collect_assignment_forms(
-            forms, resolved_catalog, config, assignment_key=selected)
+            forms, resolved_catalog, config, assignment_key=selected, read_form=drive.form)
         form_complete = evidence["complete"]
         coverage.update(forms_checked=evidence["forms_checked"],
                         forms_complete=evidence["forms_complete"],
@@ -399,7 +399,17 @@ def refresh(assertion, payload, config):
             by_file.setdefault(fid, []).append(row)
     output = []
     ignored_non_decks = 0
-    for item in sorted(found, key=lambda f: f["id"]):
+    def read_priority(item):
+        fid = item["id"]
+        if fid in refs:
+            return (0, fid)  # Current selected Form uploads must not wait behind loose files.
+        active_scope = any(row.get("class_key") == class_key
+                           and selected in ("all", row.get("assignment_key"))
+                           and row.get("status") != "superseded"
+                           for row in by_file.get(fid, []))
+        return (1 if active_scope and not item.get("source_error") else 2, fid)
+
+    for item in sorted(found, key=read_priority):
         fid = item["id"]
         history = by_file.get(fid, [])
         if selected != "all" and history and fid not in refs:

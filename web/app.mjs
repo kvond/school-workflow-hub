@@ -10,6 +10,7 @@ const saveAccess=new Map();
 const draftKey=c=>c.key+':'+selected;
 const fields=d=>({title:d.title,plan:d.plan,notes:d.notes});
 const equalFields=(a,b)=>a&&b&&['title','plan','notes'].every(k=>a[k]===b[k]);
+const validTurnin=url=>safeLink(url)&&/^https:\/\/docs\.google\.com\/forms\/d\/(?:e\/)?[A-Za-z0-9_-]{20,256}\/viewform(?:[?#]|$)/.test(url);
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
 function button(text,fn,cls){const n=node('button',text,cls);n.type='button';n.addEventListener('click',fn);return n;}
 function dayDate(s){return new Date(s+'T12:00:00');}
@@ -32,7 +33,7 @@ function render(){
   const save=button('Save to Agenda',()=>saveLesson(c));save.disabled=!access?.revision||d.saving===true;save.title=access?.revision?'Copy this dashboard title, plan and notes to the weekly Agenda':access?.error?saveAccessMessage(access.error):'Checking Agenda editing access';
   title.readOnly=notes.readOnly=!source;
   title.addEventListener('input',()=>{d.title=title.value;changed(d,status)});notes.addEventListener('input',()=>{d.notes=notes.value;changed(d,status)});
-  const resources=node('div',undefined,'resources');function links(){resources.replaceChildren();if(!d.links.length){for(const text of ['No additional resources loaded'])resources.append(node('span',text,'resource-chip'));}d.links.forEach(l=>{const a=node('a',l.label+' ↗');a.href=l.url;a.target='_blank';a.rel='noopener noreferrer';resources.append(a)});}links();
+  const resources=node('div',undefined,'resources');function links(){resources.replaceChildren();const forms=Array.isArray(source?.turnin_forms)?source.turnin_forms.map(f=>({label:'Turn in · '+f.assignment_title,url:f.url})):source?.turnin_form?[{label:'Turn in',url:source.turnin_form}]:[];const formUrls=new Set(forms.map(f=>f.url)),items=[...d.links.filter(l=>!formUrls.has(l.url)),...forms];if(!items.length)resources.append(node('span','No additional resources loaded','resource-chip'));items.forEach(l=>{const a=node('a',l.label+' ↗');a.href=l.url;a.target='_blank';a.rel='noopener noreferrer';resources.append(a)});if(source?.turnin_forms_review_reason)resources.append(node('p','Turn-in Form links need review in this week’s Agenda.','hint'));}links();
   const form=node('form',undefined,'resource-form');form.hidden=true;const name=node('input'),url=node('input');name.placeholder='Link name';name.setAttribute('aria-label',c.name+' resource name');url.placeholder='https://…';url.type='url';url.setAttribute('aria-label',c.name+' resource URL');const error=node('small');
   const add=button('Add to draft',()=>{const valid=safeLink(url.value);if(!name.value.trim()||!valid){error.textContent='Add a name and an HTTPS link without embedded credentials.';return;}d.links.push({label:name.value.trim(),url:valid});links();changed(d,status);form.hidden=true;name.value='';url.value='';error.textContent='';});form.addEventListener('submit',e=>{e.preventDefault();add.click()});form.append(name,url,error,add);
   const resourceHead=node('div',undefined,'resource-header');resourceHead.append(node('span','Materials for this lesson','field-label'));
@@ -76,6 +77,8 @@ async function loadDay(){
   for(const l of data.lessons){
    if(!['biology','forensics','anatomy'].includes(l.class_key)||!['title','plan','notes','origin','weekly_plan','todo','prep','source_reference'].every(k=>typeof l[k]==='string'&&l[k].length<=20000)||!Array.isArray(l.links))throw Error();
    if(l.turnin_folder!=null&&!safeLink(l.turnin_folder))throw Error();
+   if(l.turnin_form!=null&&!validTurnin(l.turnin_form))throw Error();
+   if(l.turnin_forms!==undefined){if(!Array.isArray(l.turnin_forms)||l.turnin_forms.length>100)throw Error();for(const form of l.turnin_forms)if(!form||typeof form.assignment_title!=='string'||!form.assignment_title.trim()||form.assignment_title.length>20000||!validTurnin(form.url))throw Error();}
    if(l.assignment_label!=null&&typeof l.assignment_label!=='string')throw Error();
    if(l.teacher_slides!==null&&(!safeLink(l.teacher_slides)||!/^https:\/\/docs\.google\.com\/presentation\/d\/[A-Za-z0-9_-]+\/edit(?:[?#]|$)/.test(l.teacher_slides)))throw Error();
    for(const link of l.links)if(typeof link.label!=='string'||!safeLink(link.url))throw Error();

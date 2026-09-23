@@ -159,7 +159,17 @@ def _merge(prior, ref, binding):
     return result
 
 
-def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=None):
+def publication_evidence(form):
+    """Read observed flags only; legacy or missing fields remain unknown."""
+    settings = form.get("publishSettings") if isinstance(form, dict) else None
+    state = settings.get("publishState") if isinstance(settings, dict) else None
+    state = state if isinstance(state, dict) else {}
+    return {name: state.get(field) if type(state.get(field)) is bool else None
+            for name, field in (("is_published", "isPublished"),
+                                ("is_accepting_responses", "isAcceptingResponses"))}
+
+
+def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=None, read_form=None):
     """Return exact upload references and independent per-assignment coverage.
 
     ``reader.responses`` may be budget-wrapped by the caller. Each Form uses the
@@ -168,6 +178,9 @@ def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=Non
     only verified catalog bindings are used, never HUB_TURNIN_FORM_ID.
     ``source_events`` retains each Form's latest file reference and its retained
     identity-conflict flag, not an invented complete history of response edits.
+    Optional ``read_form`` reuses the caller's bounded structure reader. Its
+    publication observation is separate from historical response completeness;
+    a closed Form can still supply valid old responses. Nothing is published.
     """
     entries = [e for e in catalog if assignment_key in (None, "all", e.get("assignment_key"))]
     if assignment_key not in (None, "all") and not entries:
@@ -185,7 +198,8 @@ def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=Non
                    "form_source_references": list(entry.get("form_source_references", [])),
                    "next_action": entry.get("form_review_action", "") if error else "",
                    "complete": False, "error": error, "pages": 0,
-                   "responses_checked": 0, "files_referenced": 0}
+                   "responses_checked": 0, "files_referenced": 0,
+                   **publication_evidence(None), "publication_error": None}
         previous = by_assignment.get(key)
         if previous:
             if previous["form_id"] != binding["form_id"] or previous["error"] != error:
@@ -221,6 +235,14 @@ def collect_assignment_forms(reader, catalog, config=None, *, assignment_key=Non
             binding["error"] = "assignment_form_scan_incomplete"
             continue
         forms_checked += 1
+        if read_form is not None:
+            try:
+                form = read_form(binding["form_id"])
+                if not isinstance(form, dict) or form.get("formId") != binding["form_id"]:
+                    raise ConnectionError("submission_form_structure_invalid")
+                binding.update(publication_evidence(form))
+            except ConnectionError as error:
+                binding["publication_error"] = _code(error, "submission_form_unavailable")
         try:
             found, evidence = response_file_refs(reader, binding["form_id"], collected_identity=True)
             if len(set(refs) | set(found)) > MAX_FILES:

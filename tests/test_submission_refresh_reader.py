@@ -75,8 +75,9 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(reader.stats["exports"], 2)
 
     def test_form_structure_uses_existing_token_bounded_stream_and_fresh_recheck(self):
-        payload = {"formId": ID, "revisionId": "first", "items": []}
-        changed = {**payload, "revisionId": "second"}
+        payload = {"formId": ID, "revisionId": "first", "items": [],
+                   "publishSettings": {"publishState": {"isPublished": True, "isAcceptingResponses": True}}}
+        changed = {**payload, "publishSettings": {"publishState": {"isPublished": True, "isAcceptingResponses": False}}}
         reader, session = self.reader(Response([json.dumps(payload).encode()]),
                                       Response([json.dumps(changed).encode()]))
         self.assertEqual(reader.form(ID), payload)
@@ -86,6 +87,8 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(len(session.calls), 2)
         self.assertEqual(session.calls[0][0], "https://forms.googleapis.com/v1/forms/" + ID)
         self.assertIn("folderId", session.calls[0][1]["params"]["fields"])
+        self.assertIn("publishSettings(publishState(isPublished,isAcceptingResponses))",
+                      session.calls[0][1]["params"]["fields"])
         self.assertEqual(session.headers["Authorization"], "Bearer synthetic-token")
         self.assertFalse(session.calls[0][1]["allow_redirects"])
         self.assertTrue(session.calls[0][1]["stream"])

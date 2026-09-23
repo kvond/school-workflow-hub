@@ -67,6 +67,7 @@ class SheetsReaderTests(unittest.TestCase):
         self.assertEqual(query["ranges"], [RANGE])
         self.assertIn("hyperlink", query["fields"][0])
         self.assertIn("textFormatRuns", query["fields"][0])
+        self.assertIn("textFormatRuns(startIndex,format(link(uri)))", query["fields"][0])
         self.assertEqual(query["fields"][0].count("("), query["fields"][0].count(")"))
 
     def test_dedicated_grading_read_uses_one_bounded_get_for_exact_four_grids(self):
