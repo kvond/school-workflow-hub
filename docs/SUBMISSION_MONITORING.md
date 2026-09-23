@@ -236,7 +236,13 @@ student-source scan. Choose a lesson to refresh its submissions. Sign-in failure
 removes the private preview cache and saved records from the visible view.
 
 The table counts matched students, current source files and saved records
-separately. Files with no established source link to the selected lesson remain
+separately. A readable-file count requires active metadata and a successful
+content read with unchanged metadata afterward (`source_availability=active`,
+`content_read=true`). Exact trashed or inaccessible saved sources remain listed
+as unavailable historical references, separate from readable files. Other
+unverified or unread content stays in its own count. A cached preview labels
+these observations as previous checks; none imply a current assessment.
+Files with no established source link to the selected lesson remain
 in an expandable, counted review list. Unverified identity within an established
 lesson source remains in the main table; known other-section records stay out.
 The saved-record projection accepts canonical `initial` / `final` checkpoints

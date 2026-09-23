@@ -126,6 +126,10 @@ test('read-only discovery rejects wrong scopes, effects, duplicate files and unk
  const repeated=freshDiscovery();repeated.files.push({...repeated.files[0]});assert.throws(()=>validateDiscovery(repeated,discoveryScope));
  const unknown=freshDiscovery();unknown.files[0].discovery_status='assessed';assert.throws(()=>validateDiscovery(unknown,discoveryScope));
  const scoped=freshDiscovery({assignment_key:'selected'});assert.throws(()=>validateDiscovery(scoped,{classKey:'forensics',assignmentKey:'selected'}));
+ for(const patch of [{source_availability:'missing'},{content_read:'true'},{content_read:true,source_availability:'trashed'},{content_read:true}]){
+  const malformed=freshDiscovery();Object.assign(malformed.files[0],patch);assert.throws(()=>validateDiscovery(malformed,discoveryScope));
+ }
+ const readable=freshDiscovery();Object.assign(readable.files[0],{source_availability:'active',content_read:true});assert.equal(validateDiscovery(readable,discoveryScope),readable);
 });
 test('Refresh uses only the read-only discovery endpoint with exact assignment scope',async()=>{
  const calls=[],states=[];const loader=createDiscoveryLoader({fetcher:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>freshDiscovery()};},onState:s=>states.push(s)});

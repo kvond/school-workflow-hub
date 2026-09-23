@@ -108,8 +108,12 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
  const primaryRows=rows.filter(row=>!unscoped(row)),unscopedRows=rows.filter(unscoped);
  const identity=row=>row.discovery?.learner_key||row.learner_key||row.student_id||row.count_key;
  const matched=primaryRows.filter(r=>r.section_id&&identity(r)&&(r.discovery_only||r.included_in_counts));
- const sourceFiles=new Set(primaryRows.filter(r=>r.discovery).map(r=>r.discovery.file_id)).size,saved=primaryRows.filter(r=>!r.discovery_only).length;
- line(root,discovery.status==='loading'&&!discovery.data?`${saved} saved records · current submissions are being checked · workbook read ${time(state.data.checked_at)}`:`${new Set(matched.map(r=>r.section_id+'\0'+identity(r))).size} matched students in this selection · ${sourceFiles} ${discovery.status==='loaded'?'current':'earlier'} source files · ${saved} saved records · workbook read ${time(state.data.checked_at)}`,'hint');
+ const sources=[...new Map(primaryRows.filter(r=>r.discovery).map(r=>[r.discovery.file_id,r.discovery])).values()],saved=primaryRows.filter(r=>!r.discovery_only).length;
+ const readable=sources.filter(f=>f.source_availability==='active'&&f.content_read===true).length;
+ const historical=sources.filter(f=>['trashed','unavailable'].includes(f.source_availability)&&f.saved_record_ids?.length).length;
+ const other=sources.length-readable-historical;
+ const sourceCount=`${readable} ${discovery.status==='loaded'?'readable':'previously readable'} source files`+(historical?` · ${historical} ${discovery.status==='loaded'?'unavailable':'previously unavailable'} historical references`:'')+(other?` · ${other} other source references needing verification`:'');
+ line(root,discovery.status==='loading'&&!discovery.data?`${saved} saved records · current submissions are being checked · workbook read ${time(state.data.checked_at)}`:`${new Set(matched.map(r=>r.section_id+'\0'+identity(r))).size} matched students in this selection · ${sourceCount} · ${saved} saved records · workbook read ${time(state.data.checked_at)}`,'hint');
  if(discovery.status==='loading')line(root,'Checking current submissions for new or changed work… '+(discovery.data?'The earlier preview stays visible until this check finishes. ':'')+'Saved assessments are unchanged.','hint');
  else if(discovery.status==='error')line(root,'Discovery failed: '+discovery.message+(discovery.data?' The earlier preview stays visible; it has not been reverified.':'')+' Saved assessments are unchanged.','error');
  else if(discovery.status==='loaded'){
@@ -175,6 +179,8 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   if(row.discovery?.name)line(student,'File: '+row.discovery.name,'hint');
   line(student,(row.section_name||'Unmatched')+(row.student_id?(row.discovery_only?' · matched identity ':' · IC ')+row.student_id:(row.discovery_only?' · identity unverified':' · no IC number')),'hint');tr.append(student);
   if(row.discovery_only&&!row.class_key)line(student,'Class needs matching','hint');
+  if(row.discovery?.source_availability==='trashed')line(student,'Source was in Trash at its last check; retained here for history and review.','hint');
+  else if(row.discovery?.source_availability==='unavailable')line(student,'Source could not be read at its last check; its reference is retained for review.','hint');
   for(const text of [row.assignment_title,score(row,'content_score'),score(row,'revision_score')])tr.append(node(root,'td',text));
   const cell=node(root,'td');line(cell,row.discovery_only?'Not assessed':label(row.status));if(CHECKPOINT[row.assessment_stage])line(cell,CHECKPOINT[row.assessment_stage],'hint');
   if(row.discovery){line(cell,DISCOVERY_LABEL[row.discovery.discovery_status]);if(row.discovery.source_changed_since_assessment)line(cell,'Source version changed since assessment; this does not establish revised student writing.','hint');for(const reason of row.discovery.review_reasons)if(DISCOVERY_REVIEW[reason])line(cell,DISCOVERY_REVIEW[reason]);if(row.discovery_only&&!row.discovery.assessment_stage)line(cell,'Discovered work checkpoint needs review.','hint');if(!row.discovery_only&&row.discovery.discovery_status!=='unchanged')line(cell,'Scores shown are the saved assessment; they have not been updated for this discovery.','hint');}
