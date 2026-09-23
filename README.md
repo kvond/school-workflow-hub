@@ -28,12 +28,16 @@ deferred. Save and Run remain disabled; publishing this code does not deploy it.
 `src/hub_v2/` is a small, read-only replacement for Pages 01 and 02, served at
 `/v2/` by the same Cloud Run service, sign-in and settings. **Lesson plans**
 reads each class's weekly Agenda tab by header name and week label.
-**Student work** reads the Form linked in the lesson's "Turn it in" cell and
-everything in that week's turn-in folder (`00 ALL TURN IN / <class> / 📥 Wk NN`),
-matches each file to the roster by school email or by the username/name in its
-file name, shows each student's current file (Form uploads first; trashed files
-and files named for another week are never picked) with the rest as history,
-lists who hasn't turned in, and downloads a grade sheet CSV. A problem
+**Student work** reads the Form(s) linked in the lesson's "Turn it in" cell and
+everything in the lesson's turn-in folders in `00 ALL TURN IN / <class>`: any
+folder named for the lesson's week, and each Form's own `(File responses)`
+folder wherever it sits. Files are sorted to an assignment by where they sit or,
+when one folder holds several assignments, by the deck they were copied from;
+anything unsortable is listed as "Not sorted". Each file is matched to the
+roster by school email or by the username/name in its file name. Each student's
+current file is shown (Form uploads first; trashed files and files named for
+another week are never picked) with the rest as history, alongside who hasn't
+turned in and a grade sheet CSV. A problem
 with one tab, cell or Form is shown on that card; it never blanks the page.
 
 ## Validation

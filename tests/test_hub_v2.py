@@ -230,7 +230,7 @@ class FolderTests(unittest.TestCase):
             response("s.ana.rivera@school.example", "2026-09-23T14:00:00Z", ("FILENEW", "Copy of Week 04 deck - Ana Rivera")),
             response("s.ana.rivera@school.example", "2026-09-23T14:05:00Z", ("SHEPPARD", "Copy of Week 01 Sheppard deck - Ana Rivera"))]},
             one_form)
-        self.assertEqual(result["folder"]["name"], "📥 Wk 04 — Fictional topic — 2026-09-23")
+        self.assertEqual([f["name"] for f in result["folders"]], ["📥 Wk 04 — Fictional topic — 2026-09-23"])
         form = result["lessons"][0]["forms"][0]
         rows = {r["last"]: r for r in form["students"]}
         # Ana: the Week 01 deck is newer but named for another week, so the Week 04 Form upload is current.
@@ -258,9 +258,62 @@ class FolderTests(unittest.TestCase):
         tree = drive_tree()
         tree["CLASSF"] = tree["CLASSF"][:1]
         with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])):
-            folder, note = work.turnin_folder("token", self.config, "Forensics", "Wk 04")
-        self.assertIsNone(folder)
+            roots, note = work.lesson_folders("token", self.config, "Forensics", "Wk 04", [], set())
+        self.assertEqual(roots, {})
         self.assertIn("Wk 04", note)
+
+    def test_form_upload_folders_are_found_by_title_anywhere_in_the_class_folder(self):
+        folder = "application/vnd.google-apps.folder"
+        tree = {"ROOT": [{"id": "BIO", "name": "🌿 Biology", "mimeType": folder}],
+                "BIO": [{"id": "WK01", "name": "📥 Wk 01 — Intro", "mimeType": folder},
+                        {"id": "CYC03", "name": "Biology — Cycle 03 — Energy Flow — Turn In (File responses)",
+                         "mimeType": folder},
+                        {"id": "CYC02", "name": "Biology — Cycle 02 — Ecosystems — Turn In (File responses)",
+                         "mimeType": folder}]}
+        with patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])):
+            roots, note = work.lesson_folders("token", self.config, "Biology", "Wk 03",
+                                              ["Biology — Cycle 03 — Energy Flow — Turn In"], set())
+        self.assertEqual(list(roots), ["CYC03"])
+        self.assertIsNone(note)
+
+    def test_shared_folder_files_are_sorted_by_the_deck_they_were_copied_from(self):
+        folder = "application/vnd.google-apps.folder"
+
+        def item(ident, name):
+            return {"id": ident, "name": name, "mimeType": SLIDES, "createdTime": "2026-09-23T12:00:00Z"}
+        tree = {"ROOT": [{"id": "CLASSF", "name": "🔬 Forensics", "mimeType": folder}],
+                "CLASSF": [{"id": "WK04", "name": "📥 Wk 04 — Two assignments", "mimeType": folder}],
+                "WK04": [item("R1", "s.ana.rivera — 09-16 11.36 — Copy of Inductive_Deductive_Forensics_Google_Slides - Ana Rivera"),
+                         item("O1", "s.chidi.okafor — 09-16 11.25 — Copy of Observation_Deductive_Reasoning_VT_CSI_1_markered - Chidi Okafor"),
+                         item("O2", "s.ana.rivera — 09-16 09.29 — _markered - Ana Rivera"),
+                         item("X1", "s.sam.lee — 09-16 11.38 — Samjay and Maxo - Sam Lee")]}
+        names = {"FICTIONALFORMID1234567890abc": "Forensics — Week 04 — Reasoning — Turn In",
+                 "FICTIONALFORMID0987654321xyz": "Forensics — Week 04 — Observation — Turn In",
+                 "FICTIONALDECK1234567890": "Inductive_Deductive_Forensics_Google_Slides",
+                 "RESP1": "Copy of Observation_Deductive_Reasoning_VT_CSI_1_markered - Sam Lee"}
+        responses = {"FICTIONALFORMID0987654321xyz": [
+            response("s.sam.lee@school.example", "2026-09-23T14:00:00Z", ("RESP1", "deck"))]}
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
+                patch.object(google, "form_responses", side_effect=lambda t, form_id: responses.get(form_id, [])), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "drive_file", side_effect=lambda t, fid: {"name": names.get(fid, fid), "mimeType": SLIDES}):
+            result = work.lesson_work("token", self.config, fixture(), "forensics", "Wk 04")
+        reasoning, observation = result["lessons"][0]["forms"]
+        self.assertEqual([(r["last"], r["files"][0]["id"]) for r in reasoning["students"]], [("Rivera", "R1")])
+        self.assertEqual(sorted((r["last"], r["files"][0]["id"]) for r in observation["students"]),
+                         [("Lee", "RESP1"), ("Okafor", "O1"), ("Rivera", "O2")])
+        self.assertEqual([(r["last"], r["files"][0]["id"]) for r in result["other_files"]], [("Lee", "X1")])
+        self.assertEqual({m["last"]: m["unsorted"] for m in reasoning["missing"]}, {"Okafor": False, "Lee": True})
+        # A moved copy is dated by the time in its name, not when it was moved.
+        rivera = next(r for r in reasoning["students"] if r["last"] == "Rivera")
+        self.assertEqual(rivera["submitted_at"], "2026-09-16T15:36:00Z")
+
+    def test_name_time_and_deck_stem(self):
+        self.assertEqual(work.name_time("s.a.b — 09-16 11.29 — x", "2026-09-20T01:00:00Z"), "2026-09-16T15:29:00Z")
+        self.assertEqual(work.name_time("s.a.b — 01-05 10.00 — x", "2027-01-06T01:00:00Z"), "2027-01-05T15:00:00Z")
+        self.assertIsNone(work.name_time("Copy of deck - Ana", "2026-09-20T01:00:00Z"))
+        self.assertEqual(work.deck_stem("s.a.b — 09-16 11.29 — Copy of ▶ LIVE — Week 04 — Eyewitness (VT) - Ana B.pptx"),
+                         "week04eyewitnessvt")
 
     def test_named_week(self):
         self.assertEqual(work.named_week("Copy of ▶ LIVE — Week 01 — Sheppard", 4), 1)

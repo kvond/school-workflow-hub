@@ -1,17 +1,21 @@
 """Student work for one lesson: its Google Form responses plus everything in
-that week's turn-in folder.
+the lesson's turn-in folders.
 
-The Form link in the lesson's Agenda row names the assignment. Each response
+The Form link(s) in the lesson's Agenda row name the assignments. Each response
 says who submitted (their school email) and which files they uploaded. The
-week's folder (00 ALL TURN IN / <class> / 📥 Wk NN — ...) also holds files that
-reached it another way, such as uploads moved from an earlier Form; those are
-matched to students by file name and shown as found in the folder.
+lesson's turn-in folders in 00 ALL TURN IN / <class> (any folder named for the
+lesson's week, and each Form's own '(File responses)' folder) also hold files
+that arrived another way, such as uploads moved from an earlier Form; those
+are matched to students by file name and shown as found in the folder.
 
-A student's current work is their latest usable Form submission (not trashed,
-not named for a different week), else their latest usable folder file. Every
-other file stays visible as an earlier version. Nothing is dropped: a file that
-can't be matched to the roster is listed by email or file name.
+Files are sorted to an assignment by where they sit, or, when one folder holds
+several assignments, by the deck they were copied from. A student's current
+work is their latest usable Form upload (not trashed, not named for a different
+week), else their latest usable folder file; everything else stays visible as
+an earlier version. Nothing is dropped: a file that can't be matched to the
+roster or to an assignment is still listed.
 """
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
@@ -60,7 +64,9 @@ def submissions(responses):
 
 
 def folder_submission(item):
-    return {"source": "folder", "email": "", "key": item["id"], "submitted_at": item.get("createdTime", ""),
+    created = item.get("createdTime", "")
+    return {"source": "folder", "email": "", "key": item["id"],
+            "submitted_at": name_time(item.get("name"), created) or created,
             "files": [{"id": item["id"], "name": item.get("name", ""), "mime": item.get("mimeType", "")}],
             "typed": []}
 
@@ -132,45 +138,104 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
     return rows, missing
 
 
-def turnin_folder(token, config, class_name, week_label):
-    """({'id','name','url','items','parents'}, note). Walks 00 ALL TURN IN →
-    the class folder → the '📥 Wk NN' folder, and lists everything inside."""
+def folder_week(name):
+    """The week number in a folder name: '📥 Wk 03 — …', 'A&P — Wk 03 — …', '… Week 03 …'."""
+    match = re.search(r"\b(?:wk|week)\s*0*(\d+)\b", str(name or ""), re.I)
+    return int(match.group(1)) if match else None
+
+
+def lesson_folders(token, config, class_name, week_label, form_names, response_folders):
+    """(roots, note): the lesson's turn-in folders inside 00 ALL TURN IN / <class>.
+
+    A folder belongs to the lesson when its name carries the lesson's week
+    number, or it is one of the lesson's Forms' own '(File responses)' upload
+    folders (found by the Form's title, or by where its responses were saved).
+    """
     root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
+    roots = {folder_id: "" for folder_id in response_folders}
     if not root:
-        return None, "No turn-in root folder is configured, so only Form responses were read."
+        return roots, "No turn-in root folder is configured, so only Form uploads were read."
     number = week_number(week_label)
-
-    def folder_week(name):
-        match = re.search(r"\bwk\s*0*(\d+)", name, re.I)
-        return int(match.group(1)) if match else None
-
+    wanted = {name + " (File responses)" for name in form_names if name}
     try:
         classes = [f for f in google.folder_children(token, root)
                    if f.get("mimeType") == google.FOLDER and norm(f["name"]) == norm(class_name)]
         if len(classes) != 1:
-            return None, "No single '%s' folder in the turn-in root, so only Form responses were read." % class_name
-        weeks = [f for f in google.folder_children(token, classes[0]["id"])
-                 if f.get("mimeType") == google.FOLDER and number is not None
-                 and folder_week(f["name"]) == number]
-        if len(weeks) != 1:
-            return None, ("No '📥 %s' folder in %s, so only Form responses were read." % (week_label, class_name)
-                          if not weeks else "More than one '%s' folder in %s; only Form responses were read."
-                          % (week_label, class_name))
-        folder = weeks[0]
-        items, parents, queue, seen = [], {}, [folder["id"]], 0
-        while queue and seen < MAX_FOLDERS:
-            current = queue.pop(0)
-            seen += 1
-            for item in google.folder_children(token, current):
-                parents[item["id"]] = current
-                if item.get("mimeType") == google.FOLDER:
-                    queue.append(item["id"])
-                items.append(item)
+            return roots, "No single '%s' folder in the turn-in root, so only Form uploads were read." % class_name
+        for f in google.folder_children(token, classes[0]["id"]):
+            if f.get("mimeType") == google.FOLDER and (
+                    (number is not None and folder_week(f["name"]) == number) or f["name"] in wanted):
+                roots[f["id"]] = f["name"]
     except google.GoogleError as error:
-        return None, "The turn-in folder couldn't be read (%s), so only Form responses were read." % error
-    note = None if not queue else "The turn-in folder has more subfolders than were read."
-    return {"id": folder["id"], "name": folder["name"], "items": items, "parents": parents,
-            "url": "https://drive.google.com/drive/folders/" + folder["id"]}, note
+        return roots, "The %s turn-in folder couldn't be read (%s)." % (class_name, error)
+    if not roots:
+        return roots, "No turn-in folder for %s %s was found in %s." % (class_name, week_label, class_name)
+    return roots, None
+
+
+def list_tree(token, roots):
+    """(items, parents): everything inside the given folders, subfolders included."""
+    items, parents, queue, seen = [], {}, list(roots), set()
+    while queue and len(seen) < MAX_FOLDERS:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        for item in google.folder_children(token, current):
+            if item["id"] in parents:
+                continue
+            parents[item["id"]] = current
+            items.append(item)
+            if item.get("mimeType") == google.FOLDER:
+                queue.append(item["id"])
+    return items, parents
+
+
+def name_time(name, created):
+    """The submission time earlier routing wrote into copies' names
+    ('s.first.last — 09-16 11.29 — …', Eastern time), as UTC ISO."""
+    match = re.search(r"[—-]\s*(\d{2})-(\d{2})\s+(\d{2})\.(\d{2})\s*[—-]", str(name or ""))
+    if not match or not re.match(r"\d{4}", str(created or "")):
+        return None
+    from datetime import datetime, timedelta
+    year = int(created[:4])
+    month, day, hour, minute = (int(g) for g in match.groups())
+    try:
+        local = datetime(year, month, day, hour, minute)
+    except ValueError:
+        return None
+    # US Eastern: daylight time from the 2nd Sunday of March to the 1st Sunday of November.
+    march = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
+    november = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
+    offset = 4 if march <= local < november else 5
+    return (local + timedelta(hours=offset)).strftime("%Y-%m-%dT%H:%M:00Z")
+
+
+def deck_stem(name):
+    """The deck a copy was made from: 's.x — 09-16 11.29 — Copy of ▶ LIVE — Deck - Name.pptx' → 'deck'."""
+    text = re.sub(r"^\s*s\.[a-z0-9.\-]+\s+[—-]\s+\d{2}-\d{2}\s+\d{2}\.\d{2}\s+[—-]\s*", "", str(name or ""), flags=re.I)
+    text = re.sub(r"\.(pptx?|pdf|docx?|key)$", "", text, flags=re.I)
+    if " - " in text:
+        text = text.rsplit(" - ", 1)[0]
+    text = re.sub(r"^(?:\s*(?:copy of|new|live|▶|[—-])\s*)+", "", text, flags=re.I)
+    return norm(text)
+
+
+def _matches(stem, signature):
+    """How strongly a file's deck stem matches a set of known deck names: the
+    shared length when one contains the other, or a long shared beginning
+    (students sometimes rename the end of their copy)."""
+    best = 0
+    for known in signature:
+        if not known or not stem:
+            continue
+        if known in stem or (len(stem) >= 6 and stem in known):
+            best = max(best, min(len(known), len(stem)))
+            continue
+        shared = len(os.path.commonprefix([known, stem]))
+        if shared >= 16:
+            best = max(best, shared)
+    return best
 
 
 def describe_files(token, submissions_list, known):
@@ -217,6 +282,66 @@ def _ancestors(item_id, parents):
     return chain
 
 
+def _metadata(token, file_ids):
+    def fetch(file_id):
+        try:
+            return google.drive_file(token, file_id)
+        except google.GoogleError as error:
+            if error.status in (403, 404):
+                return {"problem": "The dashboard can't open this file, but you can."}
+            return {"problem": str(error)}
+    ids = sorted(set(file_ids))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return dict(zip(ids, pool.map(fetch, ids)))
+
+
+def read_form(token, form, account):
+    """One Form's responses and its Drive title (which names its upload folder)."""
+    item = {"label": form["label"], "url": form["url"], "form_id": form["form_id"],
+            "problem": form["problem"], "responses": 0, "found": [], "name": "", "folders": set()}
+    if not form["form_id"]:
+        return item
+    try:
+        item["found"] = submissions(google.form_responses(token, form["form_id"]))
+    except google.GoogleError as error:
+        item["problem"] = form_problem(error, account)
+        return item
+    item["responses"] = len(item["found"])
+    try:
+        item["name"] = google.drive_file(token, form["form_id"]).get("name", "")
+    except google.GoogleError:
+        pass
+    return item
+
+
+def _words(text):
+    return {w for w in re.findall(r"[a-z]{4,}", str(text or "").lower())} - {"turn", "copy", "live", "week"}
+
+
+def pair_decks(forms, decks):
+    """Give each unclaimed lesson deck to the Form it most plausibly belongs to:
+    the only Form with no uploads yet, or the pairing whose names share the most
+    words. Ambiguous pairings are left alone."""
+    import itertools
+    empty = [f for f in forms if f["form_id"] and not f["signature"]]
+    unclaimed = [d for d in decks if not any(_matches(d, f["signature"]) for f in forms)]
+    if not empty or not unclaimed:
+        return
+    if len(empty) == 1 and len(unclaimed) == 1:
+        empty[0]["signature"].add(unclaimed[0])
+        return
+    if len(empty) != len(unclaimed) or len(empty) > 4:
+        return
+    scored = []
+    for order in itertools.permutations(unclaimed):
+        scored.append((sum(len(_words(f["label"] + " " + f["name"]) & _words(d))
+                           for f, d in zip(empty, order)), order))
+    scored.sort(key=lambda s: s[0], reverse=True)
+    if scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+        for form, deck in zip(empty, scored[0][1]):
+            form["signature"].add(deck)
+
+
 def lesson_work(token, config, agenda, class_key, week_label):
     by_class, problems = roster.load(token, config)
     students = by_class.get(class_key, [])
@@ -228,34 +353,94 @@ def lesson_work(token, config, agenda, class_key, week_label):
     number = week_number(week_label)
     if not lessons:
         problems.append("No %s row labelled '%s' was found in the Agenda." % (class_name, week_label))
-    folder, folder_note = turnin_folder(token, config, class_name, week_label) if lessons else (None, None)
-    items = folder["items"] if folder else []
-    parents = folder["parents"] if folder else {}
-    known = {i["id"]: i for i in items}
+        return {"class_key": class_key, "week": week_label, "lessons": [], "other_files": [],
+                "folders": [], "folder_files": 0, "folder_note": None,
+                "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students), "problems": problems}
 
-    # Read every Form in the week first, so no Form's uploads are mistaken
-    # for loose folder files.
-    forms = [read_form(token, form, account, items, parents)
-             for lesson in lessons for form in lesson["forms"]]
-    referenced = {f["id"] for form in forms for s in form["found"] for f in s["files"]}
+    forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
+    response_ids = [f["id"] for form in forms for s in form["found"] for f in s["files"]]
+    known = _metadata(token, response_ids)
+    upload_folders = _metadata(token, [p for info in known.values() for p in info.get("parents") or []])
+    response_folders = set(upload_folders)
+    for info in upload_folders.values():
+        if info.get("name", "").endswith("(File responses)"):
+            response_folders.update(info.get("parents") or [])
+
+    roots, folder_note = lesson_folders(token, config, class_name, week_label,
+                                        [f["name"] for f in forms], response_folders)
+    try:
+        items, parents = list_tree(token, roots)
+    except google.GoogleError as error:
+        items, parents = [], {}
+        folder_note = "The turn-in folders couldn't be read (%s), so only Form uploads were read." % error
+    for fid, info in list(known.items()) + list(upload_folders.items()):
+        if fid not in parents and info.get("parents"):
+            parents[fid] = info["parents"][0]
+    names = {i["id"]: i["name"] for i in items if i.get("mimeType") == google.FOLDER}
+    names.update({fid: name for fid, name in roots.items() if name})
+    names.update({fid: info.get("name", "") for fid, info in upload_folders.items()})
+    known = {**{i["id"]: i for i in items}, **known}
+
+    # Which folders hold each Form's uploads: its titled folder, and wherever its
+    # responses were saved (plus the Form folder around that question folder).
+    for form in forms:
+        mine = {fid for fid, name in names.items() if form["name"] and name == form["name"] + " (File responses)"}
+        questions = {p for s in form["found"] for f in s["files"] for p in known.get(f["id"], {}).get("parents") or []}
+        mine |= questions
+        mine |= {p for q in questions if upload_folders.get(q, {}).get("name", "").endswith("(File responses)")
+                 for p in upload_folders[q].get("parents") or []}
+        form["folders"] = mine
+
+    referenced = set(response_ids)
     readable = [form for form in forms if form["form_id"]]
-    other = []
+    pending, other = [], []
     for entry in items:
         if (entry["id"] in referenced or entry.get("mimeType") not in STUDENT_WORK
                 or NOT_STUDENT_WORK.search(entry.get("name", ""))):
             continue
         chain = set(_ancestors(entry["id"], parents))
         owners = [form for form in forms if form["folders"] & chain]
-        if len(owners) != 1 and len(readable) == 1:
-            owners = readable
-        (owners[0]["found"] if len(owners) == 1 else other).append(folder_submission(entry))
+        if len(owners) == 1:
+            owners[0]["found"].append(folder_submission(entry))
+        elif len(readable) == 1:
+            readable[0]["found"].append(folder_submission(entry))
+        else:
+            pending.append(entry)
 
+    if pending:
+        # Several Forms and files in shared folders: sort by the deck each file
+        # was copied from, learned from each Form's own files and the lesson's deck links.
+        for form in forms:
+            form["signature"] = {stem for s in form["found"] for f in s["files"]
+                                 for stem in [deck_stem(known.get(f["id"], {}).get("name") or f["name"])]
+                                 if len(stem) >= 8}
+        index = 0
+        for lesson in lessons:
+            lesson_forms = forms[index:index + len(lesson["forms"])]
+            index += len(lesson["forms"])
+            deck_ids = {m.group(1) for material in lesson["materials"]
+                        for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
+            decks = [deck_stem(info.get("name", "")) for info in _metadata(token, deck_ids).values()]
+            pair_decks(lesson_forms, [d for d in decks if len(d) >= 8])
+        for entry in pending:
+            stem = deck_stem(entry.get("name"))
+            scores = sorted(((_matches(stem, form["signature"]), i) for i, form in enumerate(forms)), reverse=True)
+            if scores and scores[0][0] and (len(scores) == 1 or scores[0][0] > scores[1][0]):
+                forms[scores[0][1]]["found"].append(folder_submission(entry))
+            else:
+                other.append(folder_submission(entry))
+
+    describe_files(token, other, known)
+    other_rows, _ = group(other, students, domains, prefix, number, with_missing=False)
+    unsorted = {(r["section"], roster.plain(r["last"]), roster.plain(r["first"])) for r in other_rows if r["matched"]}
     result, index = [], 0
     for lesson in lessons:
         out_forms = []
         for form in forms[index:index + len(lesson["forms"])]:
             describe_files(token, form["found"], known)
             rows, missing = group(form["found"], students, domains, prefix, number)
+            for m in missing:
+                m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
@@ -265,33 +450,13 @@ def lesson_work(token, config, agenda, class_key, week_label):
                        "forms": out_forms,
                        "problem": None if lesson["forms"] else
                        "This lesson has no Form link in its 'Turn it in' column."})
-    describe_files(token, other, known)
-    other_rows, _ = group(other, students, domains, prefix, number, with_missing=False)
+    folder_list = [{"name": name or names.get(fid, "") or "Form upload folder",
+                    "url": "https://drive.google.com/drive/folders/" + fid}
+                   for fid, name in roots.items() if not _ancestors(fid, parents) or not
+                   set(_ancestors(fid, parents)) & set(roots)]
     return {"class_key": class_key, "week": week_label, "lessons": result, "other_files": other_rows,
-            "folder": {"name": folder["name"], "url": folder["url"], "files": sum(
-                1 for i in items if i.get("mimeType") != google.FOLDER)} if folder else None,
+            "folders": folder_list,
+            "folder_files": sum(1 for i in items if i.get("mimeType") != google.FOLDER),
             "folder_note": folder_note,
             "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students),
             "problems": problems}
-
-
-def read_form(token, form, account, items, parents):
-    """One Form's responses, and the folders in the week folder that hold its uploads."""
-    item = {"label": form["label"], "url": form["url"], "form_id": form["form_id"],
-            "problem": form["problem"], "responses": 0, "found": [], "folders": set()}
-    if not form["form_id"]:
-        return item
-    try:
-        item["found"] = submissions(google.form_responses(token, form["form_id"]))
-    except google.GoogleError as error:
-        item["problem"] = form_problem(error, account)
-        return item
-    item["responses"] = len(item["found"])
-    try:
-        name = google.drive_file(token, form["form_id"]).get("name", "")
-    except google.GoogleError:
-        name = ""
-    item["folders"] = {i["id"] for i in items if i.get("mimeType") == google.FOLDER
-                       and name and i["name"] == name + " (File responses)"}
-    item["folders"] |= {parents[f["id"]] for s in item["found"] for f in s["files"] if f["id"] in parents}
-    return item
