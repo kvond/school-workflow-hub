@@ -27,7 +27,7 @@ def fixtures():
         first,second=('Tue','Thu') if key=='anatomy' else ('Mon','Wed')
         headers=['Wk','Dates & closures','Topic',first+' — plan','note',second+' — plan','note','Fri — plan','note','To-do','Prep','Student','Teacher','Folder','Other','_studentURL','_teacherURL','_folderURL','_extraURL','📤 Turn it in','_turnInURL']
         row=['Wk example','Example closure','Fictional topic','Plan','Note','Second plan','Second note','Does not meet','Friday note','To-do','Prep','','','','',
-            'https://docs.google.com/presentation/d/FICTIONAL/copy','https://docs.google.com/presentation/d/FICTIONAL/edit','https://example.com/folder','','Turn it in',
+            'https://docs.google.com/presentation/d/FICTIONALDECK1234567890/copy','https://docs.google.com/presentation/d/FICTIONALDECK1234567890/edit','https://example.com/folder','','Turn it in',
             'https://docs.google.com/forms/d/e/FICTIONALFORM123456789012345/viewform?usp=pp_url&entry.123=Fictional+assignment']
         courses.append(sheet(title,{3:headers,4:row}))
     mapping={'sheets':[weeks,dashboard]}
@@ -175,6 +175,42 @@ class MultipleFormDayTests(unittest.TestCase):
                                  ['Observation — submit', 'Reasoning — submit'])
                 self.assertEqual([f['primary'] for f in lesson['turnin_forms']], [True, False])
                 self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_three_named_forms_follow_exact_sources_and_keep_primary_scalar(self):
+        from tests.test_shared_intake_catalog import (ADDITIONAL, THIRD, KEY_A, KEY_B, KEY_C,
+            FORM_A, FORM_B, FORM_C, form_url, named_forms, named_decks)
+        data, config, row = self.inputs()
+        row[14] = named_decks((THIRD, ADDITIONAL))
+        row[19] = named_forms((FORM_C, FORM_B, FORM_A))
+        config['HUB_INTAKE_DECK_ASSIGNMENTS'][THIRD] = KEY_C
+        config['HUB_ASSIGNMENT_FORM_IDS'][KEY_C] = FORM_C
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual(lesson['turnin_form'], form_url(FORM_A))
+        self.assertEqual([f['assignment_key'] for f in lesson['turnin_forms']], [KEY_A, KEY_B, KEY_C])
+        self.assertEqual([f['form_id'] for f in lesson['turnin_forms']], [FORM_A, FORM_B, FORM_C])
+        self.assertEqual([f['primary'] for f in lesson['turnin_forms']], [True, False, False])
+        self.assertEqual(len({f['assignment_title'] for f in lesson['turnin_forms']}), 3)
+        self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_computed_primary_and_additional_links_still_display_named_forms(self):
+        from tests.test_shared_intake_catalog import PRIMARY, ADDITIONAL, KEY_A, KEY_B, url
+        data, config, row = self.inputs()
+        row[15] = {'formattedValue': url(PRIMARY), 'hyperlink': url(PRIMARY), 'userEnteredValue': {
+            'formulaValue': '=IF($Q4="","",IFERROR(REGEXEXTRACT($Q4,"https://docs.google.com/presentation/d/[^/]+")&"/copy",""))'}}
+        row[14] = {'formattedValue': 'Activity ↗', 'hyperlink': url(ADDITIONAL), 'userEnteredValue': {
+            'formulaValue': '=IF($S4="","—",HYPERLINK($S4,"Activity ↗"))'}}
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual([form['assignment_key'] for form in lesson['turnin_forms']], [KEY_A, KEY_B])
+        self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_unbound_third_source_is_held_even_if_its_form_has_a_name(self):
+        from tests.test_shared_intake_catalog import ADDITIONAL, THIRD, FORM_A, FORM_B, FORM_C, named_forms, named_decks
+        data, config, row = self.inputs()
+        row[14] = named_decks((ADDITIONAL, THIRD))
+        row[19] = named_forms((FORM_A, FORM_B, FORM_C))
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual(lesson['turnin_forms'], [])
+        self.assertEqual(lesson['turnin_forms_review_reason'], 'assignment_form_source_links_need_review')
 
     def test_missing_extra_wrong_primary_reused_or_unconfigured_links_are_held(self):
         from tests.test_shared_intake_catalog import KEY_A, KEY_B, FORM_A, FORM_B, form_url, named_forms
