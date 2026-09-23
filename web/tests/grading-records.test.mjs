@@ -101,6 +101,39 @@ test('late request cannot overwrite more recent refresh',async()=>{
 
 function discovered(overrides={}){return {file_id:'fictional-file-a',source_url:'https://docs.google.com/presentation/d/fictional-file-a/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'F1',assignment_title:'Fictional One',section_id:'a',section_name:'Period A',student_id:'one',display_name:'Alex F.',discovery_status:'changed_since_assessment',review_reasons:[],modified_at:'2026-09-03T12:00:00Z',version:'2',...overrides};}
 function discovery(files){return {status:'loaded',data:{class_key:'forensics',assignment_key:'all',discovered_at:'2026-09-04T12:00:00Z',coverage:{complete:true},files}};}
+test('an unverified discovery filename is visible outside details as literal source text, never learner identity',()=>{
+ const filename='<img src=x onerror="fictional()"> Morgan example.pptx';
+ const state=discovery([discovered({name:filename,class_key:'',assignment_key:'',assignment_title:'',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable','submission_assignment_source_unverified']})]);
+ const data=fixture(),before=structuredClone(data),target=root();
+ renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+ const walk=n=>[n,...n.children.flatMap(walk)];
+ const table=walk(target).find(n=>n.tagName==='table');
+ const student=walk(table).find(n=>n.tagName==='td'&&n.children.some(c=>c.textContent==='File: '+filename));
+ assert.ok(student,'filename is in the main student/source cell');
+ assert.equal(student.children.find(n=>n.tagName==='strong').textContent,'Identity needs matching');
+ const source=student.children.find(n=>n.textContent==='File: '+filename);
+ assert.equal(source.tagName,'p');assert.equal(source.children.length,0);
+ assert.equal(walk(target).some(n=>n.tagName==='img'),false);
+ assert.ok(!walk(target).filter(n=>n.tagName==='details').some(n=>n.allText.includes(filename)));
+ const listedHold=walk(table).find(n=>n.textContent==='Listed only · no verified source link to the selected lesson; content was not read.');
+ assert.ok(listedHold,'metadata-only reading is visible in the main row');
+ assert.ok(!walk(target).filter(n=>n.tagName==='details').some(n=>walk(n).includes(listedHold)));
+ const shown=recordsWithDiscovery(data,state).submissions.at(-1);
+ assert.equal(shown.student_id,'');assert.equal(shown.section_id,'');assert.equal(shown.included_in_counts,false);assert.equal(shown.content_score,null);
+ assert.deepEqual(data,before);
+});
+test('coverage distinguishes listed metadata from read content and unscoped decks',()=>{
+ const state=discovery([]);state.data.assignment_key='F1';
+ state.data.coverage={complete:false,files_checked:47,deck_contents_checked:10,unscoped_deck_content_skipped:34,content_scope:'selected_submission_sources'};
+ const target=root();renderRecords(target,{status:'loaded',data:fixture()},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',discovery:state});
+ const details=target.children.find(n=>n.tagName==='details');
+ assert.match(details.allText,/Drive metadata: 47 files listed/);
+ assert.match(details.allText,/Deck content: 10 files read/);
+ assert.match(details.allText,/34 decks.*listed only; their content was not read/);
+ assert.match(details.allText,/limited to this lesson’s Form responses, upload folders and saved sources/);
+ assert.doesNotMatch(target.allText,/47 files checked for this lesson/);
+ assert.match(target.allText,/No work was graded/);
+});
 test('discovery overlays exact source identity while preserving saved grades and feedback',()=>{
  const data=fixture();data.submissions[0].source_url='https://docs.google.com/presentation/d/fictional-file-a/edit';data.submissions[0].feedback='Saved report';
  const original=structuredClone(data),state=discovery([discovered()]);
