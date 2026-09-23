@@ -131,6 +131,22 @@ def match_email(email, students, domains=(), prefix="s."):
     return found[0] if len(found) == 1 else None
 
 
+def match_username(username, students, prefix="s."):
+    """The one student whose name is this school username ('s.first.last')."""
+    local = str(username or "").strip().lower()
+    if prefix and local.startswith(prefix):
+        local = local[len(prefix):]
+    local = compact(local)
+    found = [s for s in students if local and local in aliases(s)]
+    return found[0] if len(found) == 1 else None
+
+
+def file_username(file_name, prefix="s."):
+    """Earlier routing named copies 's.first.last — 09-16 12.40 — Original name'."""
+    match = re.match(r"\s*(%s[a-z0-9.\-]+)\s+[—-]" % re.escape(prefix or ""), str(file_name or ""), re.I)
+    return match.group(1) if match else ""
+
+
 def match_name(name, students):
     """The one student whose full name matches, e.g. a Forms upload's ' - Name' suffix."""
     target = compact(name)

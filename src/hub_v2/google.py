@@ -18,7 +18,8 @@ SCOPES = (
 SHEET_FIELDS = ("sheets(properties(sheetId,title),data(startRow,startColumn,rowData(values("
                 "formattedValue,hyperlink,textFormatRuns(startIndex,format(link(uri))),"
                 "userEnteredValue(formulaValue)))))")
-FILE_FIELDS = "id,name,mimeType,trashed,modifiedTime"
+FILE_FIELDS = "id,name,mimeType,trashed,createdTime,modifiedTime,parents"
+FOLDER = "application/vnd.google-apps.folder"
 
 
 class GoogleError(Exception):
@@ -180,3 +181,20 @@ def form_responses(token, form_id):
 def drive_file(token, file_id):
     return get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
                     {"fields": FILE_FIELDS, "supportsAllDrives": "true"}, timeout=10)
+
+
+def folder_children(token, folder_id):
+    """Every item directly inside a Drive folder, trashed items excluded."""
+    items, cursor = [], None
+    for _ in range(20):
+        params = {"q": "'%s' in parents and trashed = false" % folder_id.replace("'", ""),
+                  "fields": "nextPageToken,files(%s)" % FILE_FIELDS, "pageSize": 1000,
+                  "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+        if cursor:
+            params["pageToken"] = cursor
+        page = get_json("https://www.googleapis.com/drive/v3/files", token, params)
+        items.extend(page.get("files", []) or [])
+        cursor = page.get("nextPageToken")
+        if not cursor:
+            break
+    return items
