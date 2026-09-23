@@ -224,7 +224,12 @@ class RefreshTests(unittest.TestCase):
         for fid in (FILE_A, FILE_B):
             self.assertEqual(rows[fid]["discovery_status"], "needs_review")
             self.assertEqual(rows[fid]["version"], "")
+            self.assertFalse(rows[fid]["content_read"])
+        self.assertEqual(rows[FILE_A]["source_availability"], "trashed")
+        self.assertEqual(rows[FILE_B]["source_availability"], "unavailable")
         self.assertEqual(rows[FILE_C]["discovery_status"], "new_ungraded")
+        self.assertEqual(rows[FILE_C]["source_availability"], "active")
+        self.assertTrue(rows[FILE_C]["content_read"])
         self.assertFalse(result["coverage"]["saved_sources_complete"])
         self.assertFalse(result["coverage"]["complete"])
         self.assertTrue(h.drive.items[FILE_A]["trashed"])
@@ -381,6 +386,8 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["file_id"], FILE_A)
         self.assertEqual(row["assignment_key"], "forensics:F03A")
         self.assertEqual(row["version"], "")
+        self.assertEqual(row["source_availability"], "unavailable")
+        self.assertFalse(row["content_read"])
         self.assertEqual(row["discovery_status"], "needs_review")
         self.assertIn("submission_folder_access_required", row["review_reasons"])
         self.assertFalse(result["coverage"]["complete"])
@@ -884,6 +891,40 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["content_assignment_key"], "")
         self.assertEqual(row["discovery_status"], "needs_review")
         self.assertIn("intake_upload_changed", row["review_reasons"])
+        self.assertEqual(row["source_availability"], "active")
+        self.assertFalse(row["content_read"])
+
+    def test_export_failure_does_not_claim_readable_content_from_active_metadata(self):
+        h = Harness()
+        row = h.run(source_read=ConnectionError("uploaded_deck_unreadable"))["files"][0]
+        self.assertEqual(row["source_availability"], "active")
+        self.assertFalse(row["content_read"])
+        self.assertIn("uploaded_deck_unreadable", row["review_reasons"])
+
+    def test_latest_source_metadata_controls_availability_after_content_read(self):
+        for trashed in (True, None):
+            with self.subTest(trashed=trashed):
+                h = Harness()
+                def changed(token, item):
+                    if trashed:
+                        h.drive.items[item["id"]]["trashed"] = True
+                    else:
+                        del h.drive.items[item["id"]]
+                    return h.texts[item["id"]]
+                row = h.run(source_read=changed)["files"][0]
+                self.assertEqual(row["source_availability"], "trashed" if trashed else "unavailable")
+                self.assertFalse(row["content_read"])
+                self.assertEqual(row["discovery_status"], "needs_review")
+
+    def test_trashed_current_form_reference_is_not_a_readable_or_historical_submission(self):
+        h = Harness([])
+        h.route(FILE_A)
+        h.drive.items[FILE_A] = {**file_meta(), "trashed": True}
+        row = h.run()["files"][0]
+        self.assertEqual(row["source_availability"], "trashed")
+        self.assertFalse(row["content_read"])
+        self.assertEqual(row["saved_record_ids"], [])
+        self.assertTrue(h.drive.items[FILE_A]["trashed"])
 
     def test_imported_deck_is_read_when_get_omits_listed_parent(self):
         h = Harness()
@@ -903,6 +944,8 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(row["review_reasons"], ["form_identity_unavailable"])
         self.assertEqual(row["section_id"], "")
         self.assertEqual(row["discovery_status"], "needs_review")
+        self.assertEqual(row["source_availability"], "active")
+        self.assertTrue(row["content_read"])
         self.assertTrue(result["coverage"]["drive_complete"])
         self.assertEqual(h.files[0]["parents"], [ROOT])
 
@@ -989,6 +1032,8 @@ class RefreshTests(unittest.TestCase):
             self.assertNotIn("submission_refresh_budget_exhausted", rows[fid]["review_reasons"])
         self.assertEqual(rows[FILE_A]["content_assignment_key"], "")
         self.assertIn("submission_assignment_source_unverified", rows[FILE_A]["review_reasons"])
+        self.assertEqual(rows[FILE_A]["source_availability"], "active")
+        self.assertFalse(rows[FILE_A]["content_read"])
         self.assertTrue(result["coverage"]["complete"])
         self.assertEqual(result["coverage"]["deck_contents_checked"], 2)
         self.assertEqual(result["coverage"]["unscoped_deck_content_skipped"], 1)

@@ -66,6 +66,15 @@ def _same_file_observation(first, second):
     return left == right
 
 
+def _source_availability(item, expected_id):
+    """Current metadata evidence only; absence of access never means deleted."""
+    if not isinstance(item, dict) or item.get("id") != expected_id:
+        return "unverified"
+    if item.get("trashed") is True:
+        return "trashed"
+    return "active" if item.get("trashed") is False else "unverified"
+
+
 def discover_tree(reader, root_id):
     """Walk every page and child folder, regardless of saved submission IDs.
 
@@ -212,8 +221,10 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
     unlocated = set(refs) - set(merged)
     for fid in sorted(unlocated):
         ref = refs[fid]
+        availability = "unavailable"
         try:
             item = drive.metadata(fid)
+            availability = _source_availability(item, fid)
             if item.get("id") != fid or item.get("trashed") is not False:
                 raise ConnectionError("submission_folder_inactive")
             if item.get("mimeType") in {FOLDER, SHORTCUT, FORM}:
@@ -229,7 +240,8 @@ def discover_form_sources(drive, catalog, refs, found, root_coverage):
             # a source version, score or missing-work conclusion.
             if len(merged) < MAX_FILES:
                 merged[fid] = {"id": fid, "name": ref.get("form_name", ""),
-                               "mimeType": ref.get("form_mime_type", ""), "source_error": code}
+                               "mimeType": ref.get("form_mime_type", ""), "source_error": code,
+                               "source_availability": availability}
             results.append({"assignment_key": ref.get("assignment_key", ""),
                             "source_kind": "form_reference", "complete": False, "error": code,
                             "source_url": "https://drive.google.com/file/d/" + fid + "/view",
@@ -258,6 +270,7 @@ def discover_saved_sources(drive, records, class_key, selected, found):
     results, errors, checked = [], [], 0
     for fid in sorted(set(by_file) - set(merged)):
         code = None
+        availability = "unavailable"
         if len(merged) >= MAX_FILES:
             errors.append("submission_scan_incomplete")
             break
@@ -265,6 +278,7 @@ def discover_saved_sources(drive, records, class_key, selected, found):
             drive.check()
             checked += 1
             item = drive.metadata(fid)
+            availability = _source_availability(item, fid)
             if item.get("id") != fid or item.get("trashed") is not False:
                 raise ConnectionError("submission_folder_inactive")
             if item.get("mimeType") in {FOLDER, SHORTCUT, FORM}:
@@ -273,7 +287,8 @@ def discover_saved_sources(drive, records, class_key, selected, found):
         except ConnectionError as error:
             code = _code(error, "submission_source_unavailable")
             errors.append(code)
-            merged[fid] = {"id": fid, "name": "", "mimeType": "", "source_error": code}
+            merged[fid] = {"id": fid, "name": "", "mimeType": "", "source_error": code,
+                           "source_availability": availability}
         for key in sorted(by_file[fid]):
             results.append({"assignment_key": key, "source_kind": "saved_source",
                             "source_url": "https://drive.google.com/file/d/" + fid + "/view",
@@ -461,6 +476,8 @@ def refresh(assertion, payload, config):
 
     for item in sorted(found, key=read_priority):
         fid = item["id"]
+        availability = item.get("source_availability", _source_availability(item, fid))
+        content_read = False
         history = by_file.get(fid, [])
         if selected != "all" and history and fid not in refs and fid not in form_upload_files:
             saved_scopes = {(row.get("class_key"), row.get("assignment_key")) for row in history}
@@ -534,15 +551,21 @@ def refresh(assertion, payload, config):
             unscoped_decks += 1
         elif candidates:
             try:
+                availability = "unavailable"
                 before = drive.metadata(fid)
-                if not _same_file_observation(before, item):
+                availability = _source_availability(before, fid)
+                if availability != "active" or not _same_file_observation(before, item):
                     raise ConnectionError("intake_upload_changed")
                 source_text = drive.read_deck(item)
                 deck_contents_checked += 1
                 lesson, reason = intake.match_deck(source_text, candidates)
-                if not _same_file_observation(drive.metadata(fid), before):
+                availability = "unavailable"
+                after = drive.metadata(fid)
+                availability = _source_availability(after, fid)
+                if availability != "active" or not _same_file_observation(after, before):
                     lesson = None
                     raise ConnectionError("intake_upload_changed")
+                content_read = True
                 if reason:
                     holds.append(reason)
             except ConnectionError as error:
@@ -605,6 +628,7 @@ def refresh(assertion, payload, config):
             "learner_key": person["learner_key"] if person else "",
             "display_name": (person["first"] + " " + person["last"]) if person else "",
             "discovery_status": state, "review_reasons": sorted(set(holds)),
+            "source_availability": availability, "content_read": content_read,
             "modified_at": item.get("modifiedTime", ""), "version": str(item.get("version") or ""),
             "saved_record_ids": [r["record_id"] for r in history],
             "saved_assignment_keys": sorted(k for k in previous if k),

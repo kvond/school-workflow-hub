@@ -99,7 +99,7 @@ test('late request cannot overwrite more recent refresh',async()=>{
  assert.equal(waiting[1].options.cache,'no-store');assert.equal(waiting[1].options.credentials,'same-origin');
 });
 
-function discovered(overrides={}){return {file_id:'fictional-file-a',source_url:'https://docs.google.com/presentation/d/fictional-file-a/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'F1',assignment_title:'Fictional One',section_id:'a',section_name:'Period A',student_id:'one',display_name:'Alex F.',discovery_status:'changed_since_assessment',review_reasons:[],modified_at:'2026-09-03T12:00:00Z',version:'2',...overrides};}
+function discovered(overrides={}){return {file_id:'fictional-file-a',source_url:'https://docs.google.com/presentation/d/fictional-file-a/edit',name:'Fictional deck',class_key:'forensics',assignment_key:'F1',assignment_title:'Fictional One',section_id:'a',section_name:'Period A',student_id:'one',display_name:'Alex F.',discovery_status:'changed_since_assessment',review_reasons:[],modified_at:'2026-09-03T12:00:00Z',version:'2',source_availability:'active',content_read:true,...overrides};}
 function discovery(files){return {status:'loaded',data:{class_key:'forensics',assignment_key:'all',discovered_at:'2026-09-04T12:00:00Z',coverage:{complete:true},files}};}
 test('current-source counts include new matched students and separate unrelated metadata without mixing sections',()=>{
  const state=discovery([
@@ -111,7 +111,7 @@ test('current-source counts include new matched students and separate unrelated 
  const data=fixture();data.submissions=[];
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
  const walk=n=>[n,...n.children.flatMap(walk)],main=walk(target).find(n=>n.tagName==='table'&&n.attributes['aria-label']==='Submissions by class and section');
- assert.match(target.allText,/1 matched students in this selection · 2 current source files · 0 saved records/);
+ assert.match(target.allText,/1 matched students in this selection · 2 readable source files · 0 saved records/);
  assert.doesNotMatch(main.allText,/Loose metadata only|Other period work/);
  assert.match(main.allText,/Identity needs matching/,'in-scope unverified work remains visible');
  const bucket=target.children.find(n=>n.tagName==='details'&&n.children[0]?.textContent==='Other files needing a lesson match (1)');
@@ -123,13 +123,33 @@ test('matched counts preserve roster identity before an IC student number is ava
  const target=root();renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true});
  assert.match(target.allText,/1 matched students in this selection/);
 });
+test('ten readable files and four unavailable historical references stay distinct and all remain reviewable',()=>{
+ const active=Array.from({length:10},(_,i)=>discovered({file_id:'active-'+i,name:'Current synthetic deck '+i,student_id:'',display_name:'',section_id:'',section_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']}));
+ const old=Array.from({length:4},(_,i)=>discovered({file_id:'old-'+i,name:'Historical reference '+i,student_id:'',display_name:'',section_id:'',section_name:'',assignment_key:'',assignment_title:'',source_availability:i===3?'unavailable':'trashed',content_read:false,saved_record_ids:['saved-'+i],discovery_status:'needs_review',review_reasons:['submission_folder_inactive','assessment_revision_unverified']}));
+ const state=discovery([...active,...old]);state.data.assignment_key='F1';
+ const data=fixture();data.submissions=[];const before=structuredClone(state),target=root();
+ renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
+ assert.match(target.allText,/10 readable source files · 4 unavailable historical references · 0 saved records/);
+ assert.doesNotMatch(target.allText,/14 (current|readable) source files/);
+ for(const file of [...active,...old])assert.ok(target.allText.includes(file.name),'all references stay visible');
+ assert.match(target.allText,/Source was in Trash at its last check; retained here for history and review/);
+ assert.match(target.allText,/Source could not be read at its last check/);
+ assert.deepEqual(state,before);assert.equal(data.submissions.length,0);
+});
+test('metadata-only and failed content reads never enter readable file counts',()=>{
+ const files=[discovered({file_id:'failed-read',content_read:false}),discovered({file_id:'legacy-response',source_availability:undefined,content_read:undefined}),discovered({file_id:'unavailable-new',source_availability:'unavailable',content_read:false,saved_record_ids:[]})];
+ const data=fixture();data.submissions=[];const target=root();
+ renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:discovery(files)});
+ assert.match(target.allText,/0 readable source files · 3 other source references needing verification/);
+ assert.doesNotMatch(target.allText,/unavailable historical references/);
+});
 test('cached preview stays visible but explicitly unverified while loading or after failure',()=>{
  const original=discovery([discovered({discovery_status:'new_ungraded'})]),snapshot=structuredClone(original),data=fixture();data.submissions=[];
  for(const status of ['loading','error']){
   const state={...original,status,message:'Source unavailable.'},shown=recordsWithDiscovery(data,state),target=root();
   assert.equal(shown.submissions[0].discovery.discovery_status,'needs_review');assert.equal(shown.submissions[0].content_score,null);
   renderRecords(target,{status:'loaded',data},{classKey:'forensics',sectionId:'a',assignmentKey:'F1',includeUnresolved:true,discovery:state});
-  assert.match(target.allText,/Fictional deck/);assert.match(target.allText,/Earlier preview/);assert.match(target.allText,/1 earlier source files/);
+  assert.match(target.allText,/Fictional deck/);assert.match(target.allText,/Earlier preview/);assert.match(target.allText,/1 previously readable source files/);
   assert.doesNotMatch(target.allText,/Discovery source read complete|Submissions discovered/);
  }
  assert.deepEqual(original,snapshot,'pending/error projection never mutates the verified cache');

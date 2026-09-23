@@ -45,6 +45,9 @@ export function validateDiscovery(data,scope){
   if(!file||typeof file.file_id!=='string'||!file.file_id||seen.has(file.file_id)||![scope.classKey,''].includes(file.class_key)||typeof file.assignment_key!=='string'||!DISCOVERY_STATES.has(file.discovery_status)||!Array.isArray(file.review_reasons)||file.review_reasons.some(reason=>typeof reason!=='string')||!['','initial','final',undefined,null].includes(file.assessment_stage))throw Error('The discovered submissions need review.');
   if(!file.class_key&&file.discovery_status!=='needs_review')throw Error('The discovered class needs review.');
   if(file.source_changed_since_assessment!==undefined&&typeof file.source_changed_since_assessment!=='boolean')throw Error('The discovered source version needs review.');
+  if(file.content_read!==undefined&&typeof file.content_read!=='boolean')throw Error('The discovered source read needs review.');
+  if(file.source_availability!==undefined&&!['active','trashed','unavailable','unverified'].includes(file.source_availability))throw Error('The discovered source availability needs review.');
+  if(file.content_read===true&&file.source_availability!=='active')throw Error('The discovered source read needs review.');
   if(scope.assignmentKey!=='all'&&file.assignment_key&&file.assignment_key!==scope.assignmentKey)throw Error('The submission discovery scope could not be verified.');
   for(const field of ['source_url','name','assignment_title','section_id','section_name','student_id','display_name'])if(typeof file[field]!=='string')throw Error('The discovered submissions need review.');
   seen.add(file.file_id);
