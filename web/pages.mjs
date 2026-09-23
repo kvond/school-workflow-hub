@@ -34,7 +34,7 @@ async function copyPrompt(kind){const titles={completion:'Completion check',feed
 
 const classes={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy'};
 let scope={date:$('date').value,classKey:'biology',assignmentKey:'all',stage:'all',data:null,loading:false,error:''};
-let recordState={status:'empty'},sectionId='matched',sectionSelect,lessonSelect,workSelect;
+let recordState={status:'empty'},sectionId='matched',sectionSelectionExplicit=false,sectionSelect,lessonSelect,workSelect;
 let discoveryState={status:'empty'},discoveryLoader;
 function resetDiscoveryForSelection(){
  const current=discoveryState.data?{classKey:discoveryState.data.class_key,assignmentKey:discoveryState.data.assignment_key}:discoveryState.scope;
@@ -48,9 +48,9 @@ function scopeBar(target,page){
  const bar=el('div',undefined,'workspace-controls');
  const classLabel=el('label','Class'),select=el('select');select.setAttribute('aria-label',page+' class');
  for(const [key,name]of Object.entries(classes)){const option=el('option',name);option.value=key;select.append(option);}select.value=scope.classKey;
- select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';scope.assignmentKey='all';resetDiscoveryForSelection();resetProcess();renderScope();renderPrivateRecords();});classLabel.append(select);
+ select.addEventListener('change',()=>{scope.classKey=select.value;sectionId='matched';sectionSelectionExplicit=false;scope.assignmentKey='all';resetDiscoveryForSelection();resetProcess();renderScope();renderPrivateRecords();});classLabel.append(select);
  const sectionLabel=el('label','Section');sectionSelect=el('select');sectionSelect.setAttribute('aria-label','Feedback section');sectionSelect.append(el('option','Matched sections'));sectionSelect.firstChild.value='matched';
- sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;renderPrivateRecords()});sectionLabel.append(sectionSelect);
+ sectionSelect.addEventListener('change',()=>{sectionId=sectionSelect.value;sectionSelectionExplicit=true;renderPrivateRecords()});sectionLabel.append(sectionSelect);
  const lessonLabel=el('label','Lesson name');lessonSelect=el('select');lessonSelect.setAttribute('aria-label','Feedback lesson');lessonSelect.append(el('option','All lessons'));lessonSelect.firstChild.value='all';
  lessonSelect.addEventListener('change',()=>{scope.assignmentKey=lessonSelect.value;resetDiscoveryForSelection();resetProcess();renderPrivateRecords()});lessonLabel.append(lessonSelect);
  const workLabel=el('label','Work');workSelect=el('select');workSelect.setAttribute('aria-label','Feedback checkpoint');for(const [v,name]of [['all','Notes & drafts'],['initial','Notes'],['final','Drafts']]){const o=el('option',name);o.value=v;workSelect.append(o);}workSelect.value=scope.stage;
@@ -220,13 +220,29 @@ const summaryActions=el('div',undefined,'action-row summary-actions');promptActi
 const summaryResults=el('div',undefined,'section-grid');summaryResults.setAttribute('aria-live','polite');summary.append(summaryResults);
 function renderPrivateRecords(){
  const displayed=recordState.status==='loaded'?recordsWithDiscovery(recordState.data,discoveryState):null;
- if(sectionSelect){const options=displayed?sectionOptions(displayed,scope.classKey):[];sectionSelect.replaceChildren();for(const [id,name]of [['matched','Matched sections'],['all','All records'],...options]){const option=el('option',name);option.value=id;sectionSelect.append(option);}if(recordState.status==='loaded'&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId))sectionId='matched';sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';}
+ if(sectionSelect){
+  const options=displayed?sectionOptions(displayed,scope.classKey):[];
+  if(sectionSelectionExplicit&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId)){
+   const priorLabel=[...sectionSelect.children].find(option=>option.value===sectionId)?.textContent;
+   options.push([sectionId,sectionId===''?'Unmatched (0)':priorLabel||'Selected section']);
+  }
+  sectionSelect.replaceChildren();for(const [id,name]of [['matched','Matched sections'],['all','All records'],...options]){const option=el('option',name);option.value=id;sectionSelect.append(option);}
+  if(recordState.status==='loaded'&&!['matched','all'].includes(sectionId)&&!options.some(([id])=>id===sectionId))sectionId='matched';
+  sectionSelect.value=sectionId;sectionSelect.disabled=recordState.status!=='loaded';
+ }
  if(lessonSelect){const lessons=displayed?lessonOptions(displayed,scope.classKey):[];lessonSelect.replaceChildren();for(const [id,name]of [['all','All lessons'],...lessons]){const option=el('option',name);option.value=id;lessonSelect.append(option);}if(recordState.status==='loaded'&&scope.assignmentKey!=='all'&&!lessons.some(([id])=>id===scope.assignmentKey))scope.assignmentKey='all';lessonSelect.value=scope.assignmentKey;lessonSelect.disabled=recordState.status!=='loaded';}
  if(workSelect)workSelect.value=scope.stage;
  renderRecords(feedbackResults,recordState,{classKey:scope.classKey,sectionId,assignmentKey:scope.assignmentKey,stage:scope.stage,discovery:discoveryState});renderSummaries(summaryResults,recordState);
 }
 const retrieveRecords=createRecordsLoader({onState:state=>{recordState=state;renderPrivateRecords()}});
-discoveryLoader=createDiscoveryLoader({onState:state=>{discoveryState=state;renderPrivateRecords()}});
+discoveryLoader=createDiscoveryLoader({onState:state=>{
+ discoveryState=state;
+ // Reveal fresh unmatched work in the existing table while Section is still
+ // untouched. A teacher's explicit section choice always remains in force.
+ if(state.status==='loaded'&&!sectionSelectionExplicit&&sectionId==='matched'&&state.data.class_key===scope.classKey&&state.data.files.some(file=>
+  !file.section_id&&(file.class_key===scope.classKey||!file.class_key)&&(scope.assignmentKey==='all'||file.assignment_key===scope.assignmentKey)&&(scope.stage==='all'||!file.assessment_stage||file.assessment_stage===scope.stage)))sectionId='all';
+ renderPrivateRecords();
+}});
 qhead.append(btn('Refresh submissions',async()=>{const requested={classKey:scope.classKey,assignmentKey:scope.assignmentKey};await discoveryLoader.load(requested);if(scope.classKey===requested.classKey&&(requested.assignmentKey==='all'||scope.assignmentKey===requested.assignmentKey))await retrieveRecords();}));summaryActions.append(btn('Refresh summaries',()=>retrieveRecords()));
 function loadResults(){clearInventory();renderPrivateRecords();}
 renderScope();loadResults();retrieveRecords();

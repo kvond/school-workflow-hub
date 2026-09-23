@@ -28,13 +28,15 @@ const fixture={schema_version:'hub-grading-records/v1',provenance:'source_read',
  {record_id:'b',class_key:'forensics',section_id:'a',section_name:'Period A',student_id:'f-b',display_name:'Blair F.',assignment_key:'FOR-REASON',assignment_title:'Fictional reasoning',assessment_stage:'final',status:'assessed',content_score:3.75,revision_score:null,answers:[],included_in_counts:true},
  {record_id:'d',class_key:'forensics',section_id:'b',section_name:'Period B',student_id:'f-d',display_name:'Devon F.',assignment_key:'FOR-SCENE',assignment_title:'Fictional scene',assessment_stage:'final',status:'assessed',content_score:10,revision_score:null,answers:[],included_in_counts:true}
  ],summaries:['biology:c','forensics:a','forensics:b','anatomy:d'].map(scope=>({class_key:scope.split(':')[0],section_id:scope.split(':')[1],section_name:'Fictional '+scope,summary:'One concise fictional teaching next step.',coverage:'Fictional partial sample.',submitted_students:1,checked_at:'2026-09-16T12:00:00Z'}))};
-let readCount=0,failNext=false;const discoveryCalls=[];
+let readCount=0,failNext=false,waitForDiscovery=null;const discoveryCalls=[];
+let discoveryFiles=[{file_id:'fictional-new-file',source_url:'https://docs.google.com/presentation/d/fictional-new-file/edit',name:'New fictional work',class_key:'forensics',assignment_key:'FOR-REASON',assignment_title:'Fictional reasoning',section_id:'a',section_name:'Period A',student_id:'f-new',display_name:'New F.',discovery_status:'new_ungraded',review_reasons:[]}];
 for(let i=1;i<=5;i++)fixture.submissions.push({record_id:'unmatched-'+i,class_key:'biology',section_id:'',section_name:'',student_id:'',display_name:'Fictional unmatched '+i,assignment_title:'Fictional held work',status:'identity_unverified',content_score:null,revision_score:null,answers:[],included_in_counts:false});
 globalThis.fetch=async(url,options)=>{
  if(url==='/api/grading-records'){readCount++;if(failNext)return{ok:false,status:503};return{ok:true,status:200,json:async()=>structuredClone(fixture)};}
  if(url==='/api/submission-monitor/refresh'){
   discoveryCalls.push({url,options});const requested=JSON.parse(options.body);
-  return {ok:true,status:200,json:async()=>({schema_version:'hub-submission-refresh/v1',provenance:'source_read',external_writes:0,live_model_calls:0,...requested,discovered_at:'2026-09-22T12:00:00Z',coverage:{complete:true},files:[{file_id:'fictional-new-file',source_url:'https://docs.google.com/presentation/d/fictional-new-file/edit',name:'New fictional work',class_key:'forensics',assignment_key:'FOR-REASON',assignment_title:'Fictional reasoning',section_id:'a',section_name:'Period A',student_id:'f-new',display_name:'New F.',discovery_status:'new_ungraded',review_reasons:[]}]})};
+  if(waitForDiscovery)await waitForDiscovery;
+  return {ok:true,status:200,json:async()=>({schema_version:'hub-submission-refresh/v1',provenance:'source_read',external_writes:0,live_model_calls:0,...requested,discovered_at:'2026-09-22T12:00:00Z',coverage:{complete:true},files:structuredClone(discoveryFiles)})};
  }
  return{ok:false,status:503,json:async()=>({error:'fictional-unavailable'})};
 };
@@ -81,6 +83,30 @@ classSelect.value='biology';classSelect.dispatchEvent(new Event('change'));
 assert.equal(lessonSelect.value,'all');assert.match(table().allText,/F\., Alex/);assert.doesNotMatch(table().allText,/F\., Blair/);
 assert.doesNotMatch(feedback.allText,/F\., New|Submissions discovered/,'class changes clear the previous discovery preview');
 classSelect.value='forensics';classSelect.dispatchEvent(new Event('change'));
+// Fresh unverified work is visible after Refresh without changing an explicit filter.
+const refreshSubmissions=feedback.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh submissions');
+discoveryFiles.push({...discoveryFiles[0],file_id:'fictional-held-file',name:'Held original upload',section_id:'',section_name:'',student_id:'',display_name:'',discovery_status:'needs_review',review_reasons:['form_identity_unavailable']});
+lessonSelect.value='FOR-REASON';lessonSelect.dispatchEvent(new Event('change'));
+assert.equal(sectionSelect.value,'matched');refreshSubmissions.dispatchEvent(new Event('click'));await settle();
+assert.equal(sectionSelect.value,'all','untouched default reveals newly discovered unmatched work');
+assert.equal(lessonSelect.value,'FOR-REASON','the selected lesson stays unchanged');
+assert.match(table().allText,/Held original upload/);assert.match(table().allText,/form identity unavailable/);assert.match(table().allText,/Not assessed/);
+assert.doesNotMatch(table().allText,/F\., Devon/,'the known other lesson stays excluded');
+sectionSelect.value='matched';sectionSelect.dispatchEvent(new Event('change'));refreshSubmissions.dispatchEvent(new Event('click'));await settle();
+assert.equal(sectionSelect.value,'matched','explicit Matched sections is preserved');assert.doesNotMatch(table().allText,/Held original upload/);
+assert.match(feedback.allText,/record needs a section match/,'held work remains discoverable through the existing hint');
+sectionSelect.value='a';sectionSelect.dispatchEvent(new Event('change'));refreshSubmissions.dispatchEvent(new Event('click'));await settle();
+assert.equal(sectionSelect.value,'a');assert.match(table().allText,/F\., Blair/);assert.doesNotMatch(table().allText,/Held original upload|F\., Devon/);
+sectionSelect.value='';sectionSelect.dispatchEvent(new Event('change'));refreshSubmissions.dispatchEvent(new Event('click'));await settle();
+assert.equal(sectionSelect.value,'');assert.match(table().allText,/Held original upload/);assert.doesNotMatch(table().allText,/F\., Blair/);
+// A choice made while the read is pending wins over automatic default reveal.
+classSelect.value='biology';classSelect.dispatchEvent(new Event('change'));
+classSelect.value='forensics';classSelect.dispatchEvent(new Event('change'));
+let releaseDiscovery;waitForDiscovery=new Promise(resolve=>{releaseDiscovery=resolve;});
+refreshSubmissions.dispatchEvent(new Event('click'));
+sectionSelect.value='b';sectionSelect.dispatchEvent(new Event('change'));
+releaseDiscovery();waitForDiscovery=null;await settle();
+assert.equal(sectionSelect.value,'b');assert.match(table().allText,/F\., Devon/);assert.doesNotMatch(table().allText,/Held original upload|F\., Blair|F\., New/);
 const cards=summary.all.filter(e=>e.tagName==='section'&&e.className==='surface');assert.equal(cards.length,4);assert.ok(cards.every(e=>e.children.filter(c=>c.tagName==='h2').length===1));
 location.hash='#summary';window.dispatchEvent(new Event('hashchange'));assert.equal(summary.hidden,false);assert.equal(feedback.hidden,true);
 failNext=true;summary.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh summaries').dispatchEvent(new Event('click'));await settle();assert.equal(summary.all.filter(e=>e.tagName==='section'&&e.className==='surface').length,0);assert.match(summary.allText,/workbook is unavailable/);assert.equal(table(),undefined);
