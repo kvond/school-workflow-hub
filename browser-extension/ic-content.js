@@ -25,7 +25,7 @@
    if(Date.now()>=session.expires_at&&action!=='finish')throw Error('review_expired');
    let response;try{response=await chrome.runtime.sendMessage({type:'ic_hub_call',session_id:session.session_id,request_id:session.request_id,call_id,action,payload:checked});}catch{throw Error(action==='finish'?'report_unconfirmed':'companion_unavailable');}
    if(response?.session_id!==session.session_id||response.call_id!==call_id||typeof response.ok!=='boolean')throw Error(action==='finish'?'report_unconfirmed':'companion_unavailable');
-   if(!response.ok)throw Error(P.safeError(response.code));
+   if(!response.ok){if(response.diag)console.warn('School Workflow Hub: relay_rejected ('+String(response.diag).slice(0,40)+')');throw Error(P.safeError(response.code));}
    return response.data;
   };
   const onResult=async result=>{

@@ -120,19 +120,9 @@ workbook, hosted read, or IC posting verification.
 ```sh
 PYTHONPATH=src python3 -m unittest tests.test_grading_records tests.test_google_sheets_reader tests.test_teaching_results tests.test_web_hosting
 node --test web/tests/grading-records.test.mjs web/tests/grading-recovery.test.mjs
-node --check web/grading-records.mjs
 node --check web/pages.mjs
 ```
 
 All test data is fictional. Tests cover auth before private reads, range gaps,
 reference conflicts, partial identity, held grades, exact section filtering,
 single summary cards, plain-text student responses and stale-request rejection.
-
-September 17 recovery patch verification: the two listed JavaScript test files
-passed 43 tests (8 existing, 35 new), with zero failures or skips; the changed
-module passed `node --check`. This was a scoped local run, not a rerun of the
-Python/full-repository suite or a browser/Cloud Run acceptance test. GitHub code
-access and a separate live Agenda connector read succeeded, but authenticated
-Cloud Run access was not established in this session. The original production
-workbook failure's cause remains unconfirmed. No school records, grades, source
-documents, cloud configuration, deployment settings or schedules were changed.

@@ -44,15 +44,32 @@ def authorize(assertion, audience, allowed_emails, request=None):
 
 
 def service_token(expected_email, scope=SCOPE):
+    """A short-lived access token carrying `scope`, as the attached identity.
+
+    Cloud Run's metadata server returns the runtime's own token and ignores a
+    requested scope, so compute_engine.Credentials(scopes=[...]) yields a
+    credential Drive and Sheets-write both reject with
+    ACCESS_TOKEN_SCOPE_INSUFFICIENT while read-only Sheets still succeeds — a
+    failure that reads as a sharing problem and is not one. Mint the scoped
+    token through IAM Credentials, self-impersonating the same runtime account,
+    which needs neither a downloaded key nor domain-wide delegation.
+    """
     try:
-        from google.auth import compute_engine
-        # Use only the attached runtime identity, never a downloaded JSON key
-        # or the caller's bearer token. Google obtains fresh short-lived tokens.
-        credential = compute_engine.Credentials(scopes=[scope])
-        credential.refresh(_request())
-        if credential.service_account_email != expected_email or not credential.token:
+        from google.auth import compute_engine, impersonated_credentials
+        request = _request()
+        # The attached runtime identity, never a downloaded JSON key or the
+        # caller's bearer token. Google obtains fresh short-lived tokens.
+        runtime = compute_engine.Credentials()
+        runtime.refresh(request)
+        if runtime.service_account_email != expected_email:
             raise ValueError("unexpected runtime identity")
-        return credential.token
+        scoped = impersonated_credentials.Credentials(
+            source_credentials=runtime, target_principal=expected_email,
+            target_scopes=[scope], lifetime=300)
+        scoped.refresh(request)
+        if not scoped.token:
+            raise ValueError("no scoped token")
+        return scoped.token
     except Exception:
         raise ConnectionError("runtime_identity_unavailable") from None
 

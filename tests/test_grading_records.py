@@ -21,6 +21,7 @@ def tables():
         "Submissions": [{"record_id": "one", "assignment_key": "f01", "section_id": "section-a",
             "section_name": "Period A", "student_id": "fictional-1", "display_name": "Alex F.",
             "source_url": "https://example.invalid/work", "source_revision": "revision-one", "status": "proposed",
+            "assessment_stage": "initial",
             "content_score": "6.25", "revision_score": "", "hold_reason": "", "feedback": "Explain the evidence.",
             "checked_at": "2026-09-01T12:00:00Z", "ic_posting_status": "not_posted"}],
         "Answers": [{"record_id": "one", "question_id": "q1", "stage": "NOTES", "response": "Fictional writing",
@@ -34,7 +35,8 @@ class Reader:
     def __init__(self):
         self.values, self.properties, self.calls = {}, [], []
         for number, (title, rows) in enumerate(tables().items()):
-            headers = list(HEADERS[title]) + (["meaningful_complete"] if title == "Answers" else [])
+            headers = list(HEADERS[title]) + (["meaningful_complete"] if title == "Answers" else
+                                            ["assessment_stage"] if title == "Submissions" else [])
             self.values[title] = [headers] + [[r.get(h, "") for h in headers] for r in rows]
             self.properties.append({"sheetId": number, "title": title,
                                     "gridProperties": {"rowCount": 700, "columnCount": 26}})
@@ -58,6 +60,142 @@ class Reader:
 
 
 class GradingRecordsTests(unittest.TestCase):
+    def test_explicit_legacy_notes_checkpoint_preserves_source_and_normalizes_for_filtering(self):
+        values = tables()
+        source = values["Submissions"][0]
+        source.update(assessment_stage="initial_NOTES_checkpoint", status="assessed")
+        result = project(values)
+        row = result["submissions"][0]
+        self.assertEqual(row["assessment_stage"], "initial")
+        self.assertEqual(row["assessment_stage_source"], "initial_NOTES_checkpoint")
+        self.assertEqual(row["assessment_stage_review_reason"], "")
+        self.assertEqual(row["hold_reason"], "")
+        self.assertEqual(row["content_score"], 6.25)
+        self.assertTrue(row["included_in_counts"])
+        self.assertEqual(row["answers"][0]["stage"], "NOTES")
+        self.assertEqual(source["assessment_stage"], "initial_NOTES_checkpoint")
+        self.assertEqual(source["content_score"], "6.25")
+        self.assertNotIn("assessment_stage_source", source)
+        self.assertEqual(result["external_writes"], 0)
+
+    def test_canonical_checkpoints_remain_separate_with_original_provenance(self):
+        for stage in ("initial", "final"):
+            with self.subTest(stage=stage):
+                values = tables()
+                values["Submissions"][0]["assessment_stage"] = stage
+                row = project(values)["submissions"][0]
+                self.assertEqual(row["assessment_stage"], stage)
+                self.assertEqual(row["assessment_stage_source"], stage)
+                self.assertEqual(row["assessment_stage_review_reason"], "")
+                self.assertTrue(row["included_in_counts"])
+
+    def test_unknown_or_missing_checkpoint_is_unclassified_held_and_not_counted(self):
+        unknown = (None, "", "NOTES", "Drafts", "notes then final", "INITIAL",
+                   "final_DRAFTS_checkpoint", " initial_NOTES_checkpoint ")
+        for stage in unknown:
+            with self.subTest(stage=stage):
+                values = tables()
+                source = values["Submissions"][0]
+                if stage is None:
+                    del source["assessment_stage"]
+                else:
+                    source["assessment_stage"] = stage
+                source.update(status="assessed", revision_score="9")
+                result = project(values)
+                row = result["submissions"][0]
+                self.assertEqual(row["assessment_stage"], "")
+                self.assertEqual(row["assessment_stage_source"], stage or "")
+                self.assertEqual(row["assessment_stage_review_reason"], "assessment_stage_unverified")
+                self.assertEqual(row["hold_reason"], "assessment_stage_unverified")
+                self.assertFalse(row["included_in_counts"])
+                self.assertIsNone(row["content_score"])
+                self.assertIsNone(row["revision_score"])
+                self.assertEqual(result["summaries"][0]["submitted_students"], 0)
+                self.assertEqual(row["answers"][0]["response"], "Fictional writing")
+                self.assertEqual(source["revision_score"], "9")
+
+    def test_checkpoint_review_retains_prior_hold_and_does_not_infer_stage_from_answers(self):
+        values = tables()
+        values["Submissions"][0].update(assessment_stage="mixed checkpoint", hold_reason="Existing source hold")
+        values["Answers"].append({**values["Answers"][0], "question_id": "q2", "stage": "DRAFT"})
+        row = project(values)["submissions"][0]
+        self.assertEqual(row["hold_reason"], "Existing source hold; assessment_stage_unverified")
+        self.assertEqual(row["assessment_stage"], "")
+        self.assertEqual([answer["stage"] for answer in row["answers"]], ["NOTES", "DRAFT"])
+
+    def test_unassessed_intake_remains_unclassified_without_blocking_first_assessment(self):
+        values = tables()
+        source = values["Submissions"][0]
+        source.update(status="roster_matched", content_score="", revision_score="")
+        del source["assessment_stage"]
+        row = project(values)["submissions"][0]
+        self.assertEqual(row["assessment_stage"], "")
+        self.assertEqual(row["assessment_stage_review_reason"], "")
+        self.assertEqual(row["hold_reason"], "")
+        self.assertTrue(row["included_in_counts"])
+        self.assertIsNone(row["content_score"])
+        self.assertIsNone(row["revision_score"])
+        for changed in ({"assessment_stage": "draft maybe"}, {"content_score": "0"},
+                        {"revision_score": "8"}, {"status": "assessed"}):
+            with self.subTest(changed=changed):
+                held = copy.deepcopy(values)
+                held["Submissions"][0].update(changed)
+                result = project(held)["submissions"][0]
+                self.assertEqual(result["assessment_stage"], "")
+                self.assertEqual(result["hold_reason"], "assessment_stage_unverified")
+                self.assertFalse(result["included_in_counts"])
+
+    def test_planned_intake_readback_keeps_original_holds_and_retries_without_writes(self):
+        from school_workflow_hub.adapters import intake_records as intake
+        for holds in ([], ["typed_section_disagreement"]):
+            with self.subTest(holds=holds):
+                values = tables()
+                assignment = values["Assignments"][0]
+                book = {"Assignments": {"sheet_id": 1, "headers": list(HEADERS["Assignments"]),
+                                         "rows": [(1, assignment)]},
+                        "Submissions": {"sheet_id": 2, "headers": list(HEADERS["Submissions"])
+                                        + ["learner_key", "source_file_id"], "rows": []}}
+                item = {"id": "fictional_upload_1234567890", "version": "1", "assignment_key": "f01",
+                        "section_id": "section-a", "intake_holds": holds,
+                        "roster_match": {"class_key": "forensics", "section_name": "Period A",
+                                         "learner_key": "fictional-roster-a", "first": "Alex", "last": "F."}}
+                _, expected, _ = intake.plan(book, [assignment], [item], "2026-09-01T12:00:00Z")
+                book["Submissions"]["rows"] = [(1, expected[0])]
+                values.update(Submissions=expected, Answers=[])
+                readback = project(values)
+                with patch.object(intake, "_workbook", return_value=book), \
+                     patch.object(intake, "SheetsReader"), patch.object(intake, "service_token"), \
+                     patch.object(intake, "read_records", return_value=readback), \
+                     patch.object(intake, "_batch") as batch:
+                    result = intake.reconcile("synthetic", {"HUB_INTAKE_WORKBOOK_WRITES": "true"},
+                                              [assignment], [item], "2026-09-01T12:00:00Z", lambda: None)
+                self.assertEqual(result, {"status": "verified", "external_writes": 0,
+                                          "registered": 1, "superseded": 0})
+                batch.assert_not_called()
+                self.assertEqual(readback["submissions"][0]["hold_reason"], "; ".join(holds))
+
+    def test_authoritative_empty_roster_sections_are_exposed_without_saved_students(self):
+        section={'class_key':'anatomy','section_id':'section-empty','section_name':'B3 A&P'}
+        with patch('school_workflow_hub.adapters.grading_records.authorize'), \
+             patch('school_workflow_hub.adapters.grading_records.service_token'), \
+             patch('school_workflow_hub.adapters.grading_records.SheetsReader',return_value=Reader()), \
+             patch('school_workflow_hub.adapters.grading_records.read_roster_snapshot',return_value={
+                 'entries':[],'sections':[section],'section_mapping_complete':True}):
+            result=read_records('signed',CONFIG)
+        self.assertEqual(result['sections'],[section])
+        self.assertEqual(result['sections_status'],'source_read')
+
+    def test_roster_failure_preserves_history_without_stale_section_fallback(self):
+        with patch('school_workflow_hub.adapters.grading_records.authorize'), \
+             patch('school_workflow_hub.adapters.grading_records.service_token'), \
+             patch('school_workflow_hub.adapters.grading_records.SheetsReader',return_value=Reader()), \
+             patch('school_workflow_hub.adapters.grading_records.read_roster_snapshot',
+                   side_effect=ConnectionError('roster_tab_mapping_required')):
+            result=read_records('signed',CONFIG)
+        self.assertTrue(result['submissions'])
+        self.assertEqual(result['sections'],[])
+        self.assertEqual(result['sections_review_reason'],'roster_tab_mapping_required')
+
     def test_three_reads_preserve_the_complete_table_projection(self):
         reader = Reader()
         self.assertEqual(_tables(reader, SOURCE), tables())

@@ -1,10 +1,17 @@
 {
   "manifest_version": 3,
-  "name": "School Workflow Hub — browser companion",
+  "name": "School Workflow Hub \u2014 browser companion",
   "description": "Review recorded grades against the current Infinite Campus assignment in your signed-in school browser.",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "minimum_chrome_version": "102",
-  "background": {"service_worker": "background.js"},
-  "action": {"default_title": "School Workflow Hub", "default_popup": "popup.html"},
-  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"}
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "School Workflow Hub",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"
+  }
 }

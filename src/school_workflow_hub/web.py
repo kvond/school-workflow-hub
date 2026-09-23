@@ -18,7 +18,8 @@ ASSETS = {
         "workspace-preview.mjs", "draft-review.mjs", "completion-view.mjs",
         "review-view.mjs", "agenda-connection.mjs", "agenda-editor.mjs", "teaching-results.mjs", "learning-progress.mjs",
         "browser-runs.mjs", "grading-records.mjs", "grade-posting.mjs", "browser-companion.mjs",
-        "control-panel.mjs",
+        "control-panel.mjs", "submission-monitor.mjs", "assessment-review.mjs",
+        "ic-grade-sheet.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -153,6 +154,195 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
 
+    if path == "/api/assessment-save":
+        from .adapters import assessment_save
+        from .adapters.hosted_agenda import ConnectionError
+        from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
+        import re as _re
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if method == "GET":
+                from urllib.parse import parse_qs
+                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
+                if set(query) != {"file_id"} or len(query["file_id"]) != 1:
+                    raise ValueError("invalid_assessment_source")
+                return respond("200 OK", assessment_save.capture(
+                    assertion, query["file_id"][0], os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "save_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 400000:
+                raise ValueError("invalid_assessment_save")
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", assessment_save.save(assertion, payload, os.environ))
+        except Busy:
+            return respond("409 Conflict", {"error": "assessment_save_busy"})
+        except LeaseLost:
+            return respond("409 Conflict", {"error": "assessment_claim_expired"})
+        except Conflict as error:
+            code = str(error)
+            if code not in {"submission_changed_reassess", "assessment_record_conflict"}:
+                code = "assessment_save_conflict"
+            return respond("409 Conflict", {"error": code})
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable", {"error": str(error)})
+        except (ValueError, KeyError, TypeError, OverflowError) as error:
+            # Only this module's fixed validation codes may cross the boundary.
+            code = str(error)
+            if not _re.fullmatch(r"[a-z0-9_]{1,64}", code):
+                code = "invalid_assessment_save"
+            return respond("400 Bad Request", {"error": code})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "assessment_state_unavailable"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "assessment_save_unavailable"})
+
+    if path == "/api/assessment-run":
+        from .adapters import assessment_provider
+        from .adapters.hosted_agenda import ConnectionError
+        import re as _re
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if method == "GET":
+                if environ.get("QUERY_STRING", ""):
+                    from urllib.parse import parse_qs
+                    query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=5)
+                    scoped = {"draft_for", "class_key", "assignment_key", "section_id", "stage"}
+                    if set(query) not in ({"draft_for"}, scoped) or any(len(value) != 1 for value in query.values()):
+                        raise ValueError("invalid_provider_request")
+                    target = {key: query[key][0] for key in scoped - {"draft_for"}} if set(query) == scoped else None
+                    return respond("200 OK", assessment_provider.stored_draft_for(
+                        assertion, query["draft_for"][0], os.environ, target=target))
+                return respond("200 OK", assessment_provider.status(assertion, os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "save_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 100000:
+                raise ValueError("invalid_provider_request")
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", assessment_provider.draft(assertion, payload, os.environ))
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable", {"error": str(error)})
+        except (ValueError, KeyError, TypeError, OverflowError) as error:
+            code = str(error)
+            if not _re.fullmatch(r"[a-z0-9_]{1,64}", code):
+                code = "invalid_provider_request"
+            return respond("400 Bad Request", {"error": code})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "provider_unavailable"})
+
+    if path == "/api/submission-catalog":
+        from urllib.parse import parse_qs
+        from .adapters.submission_catalog import read_catalog, safe_error
+        from .adapters.hosted_agenda import ConnectionError
+        if method != "GET":
+            return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+        try:
+            raw = environ.get("QUERY_STRING", "")
+            if len(raw) > 128:
+                raise ValueError()
+            query = parse_qs(raw, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
+            if set(query) != {"class_key"} or len(query["class_key"]) != 1:
+                raise ValueError()
+            return respond("200 OK", read_catalog(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                                                  query["class_key"][0], os.environ))
+        except ConnectionError as error:
+            code = safe_error(error)
+            return respond("403 Forbidden" if code == "sign_in_required" else "503 Service Unavailable",
+                           {"error": code, "external_writes": 0})
+        except ValueError:
+            return respond("400 Bad Request", {"error": "invalid_submission_scope", "external_writes": 0})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "submission_catalog_unavailable", "external_writes": 0})
+
+    if path == "/api/submission-monitor/refresh":
+        from .adapters.submission_refresh import refresh, _code
+        from .adapters.hosted_agenda import ConnectionError
+        if method != "POST":
+            return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+        try:
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "monitor_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 512:
+                raise ValueError()
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", refresh(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                                              payload, os.environ))
+        except ConnectionError as error:
+            code = _code(error, "submission_refresh_unavailable")
+            return respond("403 Forbidden" if code == "sign_in_required"
+                           else "503 Service Unavailable", {"error": code, "external_writes": 0})
+        except (ValueError, KeyError, TypeError, OverflowError):
+            return respond("400 Bad Request", {"error": "invalid_submission_scope"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "submission_refresh_unavailable"})
+
+    if path == "/api/submission-monitor":
+        from .adapters.submission_monitor import read_status, scan_and_persist
+        from .adapters.hosted_agenda import ConnectionError
+        from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if method == "GET":
+                from urllib.parse import parse_qs
+                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
+                if set(query) != {"date", "class_key"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError()
+                return respond("200 OK", read_status(assertion, query["date"][0],
+                                                     query["class_key"][0], os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            # A scan persists observations, so it needs the same explicit
+            # same-origin JSON gate as the other state-changing endpoints.
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "monitor_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 256:
+                raise ValueError()
+            data = json.loads(environ["wsgi.input"].read(length))
+            if (not isinstance(data, dict) or set(data) != {"action", "date", "class_key"}
+                    or data["action"] != "scan"):
+                raise ValueError()
+            return respond("200 OK", scan_and_persist(assertion, data["date"],
+                                                      data["class_key"], os.environ))
+        except Busy:
+            return respond("409 Conflict", {"error": "monitor_scan_in_progress"})
+        except (Conflict, LeaseLost):
+            return respond("409 Conflict", {"error": "monitor_scan_conflict"})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "monitor_state_unavailable"})
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable",
+                           {"error": str(error), "external_writes": 0})
+        except (ValueError, KeyError, TypeError, OverflowError):
+            return respond("400 Bad Request", {"error": "invalid_monitor_request"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "monitor_unavailable"})
+
     # Remaining endpoints are read-only.
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "method_not_allowed"},
@@ -168,14 +358,24 @@ def application(environ, start_response, *, teaching_provider=None):
             teaching_provider_configured=teaching_provider is not None))
     if path == "/api/submission-inventory" and method == "GET":
         from urllib.parse import parse_qs
-        from .adapters.submission_inventory import read_inventory
+        from .adapters.submission_inventory import read_inventory, read_lesson_inventory
         from .adapters.hosted_agenda import ConnectionError
         try:
-            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
-            if set(query) != {"date", "class_key"} or any(len(v) != 1 for v in query.values()):
+            query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=3)
+            if any(len(v) != 1 for v in query.values()):
                 raise ValueError()
-            return respond("200 OK", read_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
-                query["date"][0], query["class_key"][0], os.environ))
+            if set(query) == {"date", "class_key"}:
+                return respond("200 OK", read_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                    query["date"][0], query["class_key"][0], os.environ))
+            if set(query) == {"class_key", "assignment"}:
+                return respond("200 OK", read_lesson_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                    query["class_key"][0], query["assignment"][0], os.environ))
+            if set(query) in ({"class_key", "assignment", "section_id"},
+                              {"class_key", "assignment_key", "section_id"}):
+                assignment = query.get("assignment_key", query.get("assignment"))[0]
+                return respond("200 OK", read_lesson_inventory(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"),
+                    query["class_key"][0], assignment, os.environ, section_id=query["section_id"][0]))
+            raise ValueError()
         except ConnectionError as error:
             return respond("403 Forbidden" if str(error) == "sign_in_required" else "503 Service Unavailable",
                            {"error": str(error), "external_writes": 0})

@@ -42,10 +42,10 @@ for(const [code,[category,retryable]] of Object.entries(expected))test(`specific
 test('teacher authentication is separate from the server reader identity',async()=>{
  for(const status of [401,403]){
   const result=await loadResult({ok:false,status,json:async()=>{throw Error('fictional proxy HTML');}});
-  assert.equal(result.code,'sign_in_required');assert.equal(result.category,'sign_in');
+  assert.equal(result.code,'sign_in_required');assert.equal(result.category,'sign_in');assert.equal(result.authExpired,true);
  }
  const server=await loadResult(failure('grading_records_authentication_required'));
- assert.equal(server.category,'identity');assert.match(server.message,/separate from your dashboard sign-in/);
+ assert.equal(server.category,'identity');assert.equal(server.authExpired,false);assert.match(server.message,/separate from your dashboard sign-in/);
 });
 
 test('unknown, inherited, and malicious diagnostics never appear in the error state',()=>{

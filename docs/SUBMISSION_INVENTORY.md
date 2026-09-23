@@ -24,3 +24,7 @@ exists and passes acceptance.
 September 16 validation: 539 Python tests passed including nested pagination,
 wrong-lesson/parent rejection, partial-scan rejection and signed identity checks.
 Hosted read acceptance must be recorded separately after deployment.
+
+Durable change monitoring over the same folders is documented in
+[SUBMISSION_MONITORING.md](SUBMISSION_MONITORING.md); this inventory check
+remains the stateless read-only view.

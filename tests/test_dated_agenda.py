@@ -25,9 +25,10 @@ def fixtures():
     courses=[]
     for key,title in day.COURSES:
         first,second=('Tue','Thu') if key=='anatomy' else ('Mon','Wed')
-        headers=['Wk','Dates & closures','Topic',first+' — plan','note',second+' — plan','note','Fri — plan','note','To-do','Prep','Student','Teacher','Folder','Other','_studentURL','_teacherURL','_folderURL']
+        headers=['Wk','Dates & closures','Topic',first+' — plan','note',second+' — plan','note','Fri — plan','note','To-do','Prep','Student','Teacher','Folder','Other','_studentURL','_teacherURL','_folderURL','_extraURL','📤 Turn it in','_turnInURL']
         row=['Wk example','Example closure','Fictional topic','Plan','Note','Second plan','Second note','Does not meet','Friday note','To-do','Prep','','','','',
-            'https://docs.google.com/presentation/d/FICTIONAL/copy','https://docs.google.com/presentation/d/FICTIONAL/edit','https://example.com/folder']
+            'https://docs.google.com/presentation/d/FICTIONALDECK1234567890/copy','https://docs.google.com/presentation/d/FICTIONALDECK1234567890/edit','https://example.com/folder','','Turn it in',
+            'https://docs.google.com/forms/d/e/FICTIONALFORM123456789012345/viewform?usp=pp_url&entry.123=Fictional+assignment']
         courses.append(sheet(title,{3:headers,4:row}))
     mapping={'sheets':[weeks,dashboard]}
     data={'sheets':courses}
@@ -36,10 +37,10 @@ def fixtures():
 
 
 class DatedTests(unittest.TestCase):
-    def run_day(self, selected='2032-01-05', data=None):
+    def run_day(self, selected='2032-01-05', data=None, config=None):
         reader=Mock();reader.read.side_effect=data or fixtures()
         with patch.object(day,'authenticated_reader',return_value=(reader,'fictional')):
-            result=day.read_day('signed',selected)
+            result=day.read_day('signed',selected,config)
         for call in reader.read.call_args_list[1:]:
             validate_ranges(call.args[1])
         return result
@@ -54,6 +55,8 @@ class DatedTests(unittest.TestCase):
         self.assertEqual(anatomy['plan'],'')
         self.assertTrue(bio['teacher_slides'].endswith('/edit'))
         self.assertTrue(bio['links'][0]['url'].endswith('/copy'))
+        self.assertTrue(bio['turnin_form'].startswith('https://docs.google.com/forms/'))
+        self.assertEqual(bio['assignment_label'],'Fictional assignment')
         self.assertFalse(result['save_enabled'])
         self.assertFalse(result['run_enabled'])
 
@@ -113,8 +116,22 @@ class TurnInMapTests(unittest.TestCase):
         result=self.run_day(data=(meta,mapping,data))
         self.assertEqual(result['lessons'][0]['assignment_label'],'Fictional assignment')
         self.assertEqual(result['lessons'][0]['turnin_folder'],'https://drive.google.com/drive/folders/FICTIONAL_FOLDER_123456789')
+        self.assertIsNotNone(result['lessons'][0]['turnin_form'])
         self.assertIsNone(result['lessons'][1]['turnin_folder'])
         self.assertNotIn('submitted',result)
+
+    def test_assignment_specific_form_needs_no_prefilled_assignment_field(self):
+        meta,mapping,data=fixtures()
+        source=sheet('🗂 TurnIn Map',{1:['assignment key','target folder id','course','week'],
+            2:['Fictional assignment','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example']})
+        meta['sheets'].append({'properties':source['properties']});data['sheets'].append(source)
+        row=data['sheets'][0]['data'][1]['rowData'][0]['values']
+        row[20]['formattedValue']='https://docs.google.com/forms/d/FICTIONALFORM123456789012345/viewform'
+        result=self.run_day(data=(meta,mapping,data))
+        self.assertEqual(result['lessons'][0]['turnin_form_id'],
+                         'FICTIONALFORM123456789012345')
+        self.assertEqual(result['lessons'][0]['assignment_label'],'Fictional assignment')
+        self.assertIsNotNone(result['lessons'][0]['turnin_form'])
 
     def test_duplicate_or_unsafe_folder_is_not_offered(self):
         for rows in ({2:['Lesson','invalid/path','🌿 Biology','Wk example']},{2:['Lesson','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example'],3:['Other lesson','FICTIONAL_FOLDER_123456789','🌿 Biology','Wk example']}):
@@ -122,3 +139,107 @@ class TurnInMapTests(unittest.TestCase):
             source=sheet('🗂 TurnIn Map',{1:['assignment key','target folder id','course','week'],**rows})
             meta['sheets'].append({'properties':source['properties']});data['sheets'].append(source)
             self.assertIsNone(self.run_day(data=(meta,mapping,data))['lessons'][0]['turnin_folder'])
+
+
+class MultipleFormDayTests(unittest.TestCase):
+    run_day = DatedTests.run_day
+
+    def inputs(self, ids=None):
+        from tests.test_shared_intake_catalog import PRIMARY, ADDITIONAL, KEY_A, KEY_B, FORM_A, FORM_B, named_forms, form_url, url
+        meta, mapping, data = fixtures()
+        course = next(s for s in data['sheets'] if s['properties']['title'] == '🔬 Forensics')
+        row = course['data'][1]['rowData'][0]['values']
+        row[15] = {'formattedValue': url(PRIMARY)}
+        row[14] = {'formattedValue': url(ADDITIONAL)}
+        row[19] = named_forms(ids or (FORM_A, FORM_B))
+        row[20] = {'formattedValue': form_url(FORM_A)}
+        source = sheet('🗂 TurnIn Map', {1: ['assignment key', 'target folder id', 'course', 'week'],
+            2: ['Combined weekly display', 'z' * 24, '🔬 Forensics', 'Wk example']})
+        meta['sheets'].append({'properties': source['properties']})
+        data['sheets'].append(source)
+        config = {'HUB_INTAKE_DECK_ASSIGNMENTS': {PRIMARY: KEY_A, ADDITIONAL: KEY_B},
+                  'HUB_ASSIGNMENT_FORM_IDS': {KEY_A: FORM_A, KEY_B: FORM_B}}
+        return (meta, mapping, data), config, row
+
+    def test_two_named_links_keep_primary_compatibility_and_assignment_keys(self):
+        from tests.test_shared_intake_catalog import KEY_A, KEY_B, FORM_A, FORM_B, form_url
+        for order in ((FORM_A, FORM_B), (FORM_B, FORM_A)):
+            with self.subTest(order=order):
+                data, config, _ = self.inputs(order)
+                lesson = self.run_day(data=data, config=config)['lessons'][1]
+                self.assertEqual(lesson['turnin_form'], form_url(FORM_A))
+                self.assertEqual(lesson['turnin_form_id'], FORM_A)
+                self.assertEqual([f['assignment_key'] for f in lesson['turnin_forms']], [KEY_A, KEY_B])
+                self.assertEqual([f['form_id'] for f in lesson['turnin_forms']], [FORM_A, FORM_B])
+                self.assertEqual([f['assignment_title'] for f in lesson['turnin_forms']],
+                                 ['Observation — submit', 'Reasoning — submit'])
+                self.assertEqual([f['primary'] for f in lesson['turnin_forms']], [True, False])
+                self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_three_named_forms_follow_exact_sources_and_keep_primary_scalar(self):
+        from tests.test_shared_intake_catalog import (ADDITIONAL, THIRD, KEY_A, KEY_B, KEY_C,
+            FORM_A, FORM_B, FORM_C, form_url, named_forms, named_decks)
+        data, config, row = self.inputs()
+        row[14] = named_decks((THIRD, ADDITIONAL))
+        row[19] = named_forms((FORM_C, FORM_B, FORM_A))
+        config['HUB_INTAKE_DECK_ASSIGNMENTS'][THIRD] = KEY_C
+        config['HUB_ASSIGNMENT_FORM_IDS'][KEY_C] = FORM_C
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual(lesson['turnin_form'], form_url(FORM_A))
+        self.assertEqual([f['assignment_key'] for f in lesson['turnin_forms']], [KEY_A, KEY_B, KEY_C])
+        self.assertEqual([f['form_id'] for f in lesson['turnin_forms']], [FORM_A, FORM_B, FORM_C])
+        self.assertEqual([f['primary'] for f in lesson['turnin_forms']], [True, False, False])
+        self.assertEqual(len({f['assignment_title'] for f in lesson['turnin_forms']}), 3)
+        self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_computed_primary_and_additional_links_still_display_named_forms(self):
+        from tests.test_shared_intake_catalog import PRIMARY, ADDITIONAL, KEY_A, KEY_B, url
+        data, config, row = self.inputs()
+        row[15] = {'formattedValue': url(PRIMARY), 'hyperlink': url(PRIMARY), 'userEnteredValue': {
+            'formulaValue': '=IF($Q4="","",IFERROR(REGEXEXTRACT($Q4,"https://docs.google.com/presentation/d/[^/]+")&"/copy",""))'}}
+        row[14] = {'formattedValue': 'Activity ↗', 'hyperlink': url(ADDITIONAL), 'userEnteredValue': {
+            'formulaValue': '=IF($S4="","—",HYPERLINK($S4,"Activity ↗"))'}}
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual([form['assignment_key'] for form in lesson['turnin_forms']], [KEY_A, KEY_B])
+        self.assertEqual(lesson['turnin_forms_review_reason'], '')
+
+    def test_unbound_third_source_is_held_even_if_its_form_has_a_name(self):
+        from tests.test_shared_intake_catalog import ADDITIONAL, THIRD, FORM_A, FORM_B, FORM_C, named_forms, named_decks
+        data, config, row = self.inputs()
+        row[14] = named_decks((ADDITIONAL, THIRD))
+        row[19] = named_forms((FORM_A, FORM_B, FORM_C))
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual(lesson['turnin_forms'], [])
+        self.assertEqual(lesson['turnin_forms_review_reason'], 'assignment_form_source_links_need_review')
+
+    def test_missing_extra_wrong_primary_reused_or_unconfigured_links_are_held(self):
+        from tests.test_shared_intake_catalog import KEY_A, KEY_B, FORM_A, FORM_B, form_url, named_forms
+        for problem in ('missing', 'extra', 'wrong_primary', 'reused', 'unconfigured'):
+            with self.subTest(problem=problem):
+                data, config, row = self.inputs()
+                if problem == 'missing':
+                    row[19] = named_forms((FORM_A,))
+                elif problem == 'extra':
+                    row[19] = named_forms((FORM_A, FORM_B, 'h' * 24))
+                elif problem == 'wrong_primary':
+                    row[20] = {'formattedValue': form_url(FORM_B)}
+                elif problem == 'reused':
+                    config['HUB_ASSIGNMENT_FORM_IDS'][KEY_B] = FORM_A
+                else:
+                    config['HUB_INTAKE_DECK_ASSIGNMENTS'] = {}
+                lesson = self.run_day(data=data, config=config)['lessons'][1]
+                self.assertEqual(lesson['turnin_forms'], [])
+                self.assertTrue(lesson['turnin_forms_review_reason'])
+
+    def test_existing_single_form_is_unchanged_and_added_to_link_array(self):
+        lesson = self.run_day()['lessons'][0]
+        self.assertEqual(len(lesson['turnin_forms']), 1)
+        self.assertEqual(lesson['turnin_forms'][0]['url'], lesson['turnin_form'])
+        self.assertEqual(lesson['turnin_forms'][0]['assignment_title'], lesson['assignment_label'])
+
+    def test_label_text_cannot_change_assignment_binding(self):
+        from tests.test_shared_intake_catalog import KEY_A, KEY_B
+        data, config, row = self.inputs()
+        row[19]['formattedValue'] = row[19]['formattedValue'].replace('Observation', 'Anything at')
+        lesson = self.run_day(data=data, config=config)['lessons'][1]
+        self.assertEqual([f['assignment_key'] for f in lesson['turnin_forms']], [KEY_A, KEY_B])

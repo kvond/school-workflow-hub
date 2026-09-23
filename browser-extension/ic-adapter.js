@@ -15,23 +15,34 @@
  function buttons(scope,text){return [...scope.querySelectorAll('button')].filter(e=>visible(e)&&label(e)===text);}
  async function until(fn,ms=10000){const end=Date.now()+ms;while(Date.now()<end){const value=fn();if(value)return value;await new Promise(r=>setTimeout(r,100));}fail('destination_not_ready');}
  function surface(){
-  const f=one([...document.querySelectorAll('iframe#main-workspace')].filter(visible),'gradebook_required');
+  const f=one([...document.querySelectorAll('iframe#main-workspace')].filter(visible),'assignment_frame_required');
   let d,u;try{d=f.contentDocument;u=new URL(f.contentWindow.location.href);}catch{fail('school_sign_in_required');}
   if(!d||u.origin!==location.origin)fail('school_sign_in_required');
-  const score=one([...d.querySelectorAll('ic-multiscore')].filter(visible),'gradebook_required');
+  const score=one([...d.querySelectorAll('ic-multiscore')].filter(visible),'score_panel_required');
   const outer=new URL(location.href),p=u.searchParams,op=outer.searchParams;
   const section=p.get('classroomSectionID'),term=p.get('classroomTermID');
   const path=/\/resource\/(\d+)\/view\(secondaryRouteOutlet:multiscore\/assignmentEditor\/sectionID\/(\d+)\/objectSectionID\/(\d+)\/calendarID\/(\d+)\/structureID\/(\d+)\)/.exec(u.pathname);
   if(!path||path[1]!==path[3]||path[2]!==section||op.get('classroomSectionID')!==section||op.get('classroomTermID')!==term)fail('destination_context_changed');
-  const inputs=[...score.querySelectorAll('input.multiscore__simple-score--input[aria-label]')].filter(visible);
-  if(!inputs.length||inputs.length>100)fail('unsupported_gradebook');
+  // Student Summary overlays render inside ic-multiscore and can linger closed
+  // with layout boxes, so the score-panel reads must not count their content.
+  const summaryDialogs=[...score.querySelectorAll('[role="dialog"]')].filter(g=>[...g.querySelectorAll('h2')].some(h=>norm(h.textContent).startsWith('Student Summary')));
+  const inPanel=e=>!summaryDialogs.some(g=>g.contains(e));
+  const unsupported=reason=>{console.warn('School Workflow Hub: unsupported_gradebook ('+reason+')');fail('unsupported_gradebook');};
+  // IC uses this CSS class for its bulk-fill box as well as individual grades.
+  // Only the explicit per-student score IDs are posting destinations.
+  const inputs=[...score.querySelectorAll('input.multiscore__simple-score--input[aria-label][id^="as_alignmentMultiScore_"]')].filter(e=>visible(e)&&inPanel(e));
+  if(!inputs.length||inputs.length>100)unsupported('score_input_count');
   const groups=new Set(inputs.map(e=>/^as_alignmentMultiScore_(\d+)-\d+$/.exec(e.id)?.[1]));
-  if(groups.size!==1||groups.has(undefined))fail('unsupported_gradebook');
-  const titleNode=one([...score.querySelectorAll('h2')].filter(visible),'unsupported_gradebook');
+  if(groups.size!==1||groups.has(undefined))unsupported('score_group_identifiers');
+  const titles=[...score.querySelectorAll('h2')].filter(e=>visible(e)&&inPanel(e));
+  if(titles.length!==1)unsupported('assignment_heading_count');
+  const titleNode=titles[0];
   const heading=norm(titleNode.textContent),title=norm(titleNode.firstElementChild?.textContent||heading.split(/\s+\d{4}-\d+\s/)[0]);
-  const points=[...score.querySelectorAll('th,[role="columnheader"]')].filter(visible).map(e=>norm(e.textContent)).find(t=>/^MP \(10 pts\)/.test(t));
+  const points=[...score.querySelectorAll('th,[role="columnheader"]')].filter(e=>visible(e)&&inPanel(e)).map(e=>norm(e.textContent)).find(t=>/^MP \(10 pts\)/.test(t));
   if(!points)fail('unsupported_points_scale');
-  const save=one(buttons(score,'Save'),'unsupported_gradebook');
+  const saves=buttons(score,'Save').filter(inPanel);
+  if(saves.length!==1)unsupported('save_button_count');
+  const save=saves[0];
   const context={section_id:section,term_id:term,year:op.get('year'),school_id:op.get('schoolID'),calendar_id:path[4],assignment_id:path[1],title,points:10};
   if(Object.entries(context).some(([k,v])=>k!=='points'&&(!v||k!=='title'&&!/^\d+$/.test(v))))fail('destination_context_changed');
   return {frame:f,doc:d,score,inputs,save,context,group:[...groups][0],path:u.href};
@@ -55,19 +66,39 @@
   const rowParts=[...s.score.querySelectorAll('tr[data-kendo-grid-item-index]')].filter(r=>r.getAttribute('data-kendo-grid-item-index')===index);
   const link=one(rowParts.flatMap(r=>[...r.querySelectorAll('a')]).filter(a=>visible(a)&&norm(a.textContent)===name),'student_identity_unverified');
   link.click();
-  const summary=await until(()=>[...s.doc.querySelectorAll('h2')].find(e=>visible(e)&&norm(e.textContent).startsWith('Student Summary')));
-  let panel=summary.parentElement;
-  while(panel&&buttons(panel,'Close').length===0)panel=panel.parentElement;
-  if(!panel)fail('student_identity_unverified');
-  const personLink=await until(()=>[...panel.querySelectorAll('a[href]')].find(a=>visible(a)&&norm(a.textContent).includes('Go to Student Information')&&new URL(a.href).searchParams.has('selectedPersonID')));
-  const person_id=new URL(personLink.href).searchParams.get('selectedPersonID');
-  const numberHeading=one([...panel.querySelectorAll('h4')].filter(h=>visible(h)&&norm(h.textContent)==='Number'),'student_identity_unverified');
-  const number=/^Number\s*#(\d+)$/.exec(norm(numberHeading.parentElement.textContent))?.[1];
-  if(!number||!/^\d+$/.test(person_id||''))fail('student_identity_unverified');
-  const studentHeading=one([...panel.querySelectorAll('h3')].filter(h=>visible(h)&&norm(h.textContent).replace(/\s*\(/g,'(')===name.replace(/\s*\(/g,'(')),'student_identity_unverified');
-  if(!studentHeading)fail('student_identity_unverified');
-  const close=one(buttons(panel,'Close'),'student_identity_unverified');close.click();
-  await until(()=>!visible(summary));
+  // Closed Student Summary panels can linger in the document with layout boxes,
+  // so several such dialogs may exist at once and render their bodies late.
+  // Accept only one consistent reading: every panel naming this student must
+  // agree, and the frame route must name the same person for this exact section
+  // and assignment.
+  const summaryPanels=()=>[...s.doc.querySelectorAll('h2')].filter(e=>visible(e)&&norm(e.textContent).startsWith('Student Summary')).map(h=>h.closest('[role="dialog"]')).filter(Boolean);
+  const read=await until(()=>{
+   let route;try{route=/\/\/tertiaryRouteOutlet:studentInfoSidePanel\/multiscore\/(\d+)\/(\d+)\/1\/(\d+)\)/.exec(new URL(s.frame.contentWindow.location.href).pathname);}catch{return null;}
+   if(!route||route[1]!==s.context.section_id||route[3]!==s.context.assignment_id)return null;
+   const readings=new Set();
+   for(const panel of summaryPanels()){
+    const links=[...panel.querySelectorAll('a[href]')].filter(a=>{const u=new URL(a.href);return visible(a)&&u.origin===location.origin&&u.pathname==='/campus/sis/navigation/parent/student.ToolSet'&&u.searchParams.has('selectedPersonID');});
+    const numberHeadings=[...panel.querySelectorAll('h4')].filter(h=>visible(h)&&norm(h.textContent)==='Number');
+    const nameHeadings=[...panel.querySelectorAll('h3')].filter(h=>visible(h)&&norm(h.textContent).replace(/\s*\(/g,'(')===name.replace(/\s*\(/g,'('));
+    if(links.length>1||numberHeadings.length>1||nameHeadings.length>1)fail('student_identity_unverified');
+    if(!links.length||!numberHeadings.length||!nameHeadings.length)continue;
+    const person_id=new URL(links[0].href).searchParams.get('selectedPersonID');
+    const number=/^Number\s*#(\d+)$/.exec(norm(numberHeadings[0].parentElement.textContent))?.[1];
+    if(!number||!/^\d+$/.test(person_id||'')||route[2]!==person_id)continue;
+    readings.add(JSON.stringify([number,person_id]));
+   }
+   if(readings.size>1)fail('student_identity_unverified');
+   return readings.size?JSON.parse([...readings][0]):null;
+  });
+  const number=read[0],person_id=read[1];
+  // Close every Student Summary dialog; lingering closed copies ignore the
+  // click. Done means the student route left the frame URL and the same
+  // assignment score panel is current again.
+  await until(()=>{
+   try{if(JSON.stringify(surface().context)===JSON.stringify(s.context))return true;}catch{}
+   for(const panel of summaryPanels())for(const button of buttons(panel,'Close'))button.click();
+   return false;
+  });
   const identity={student_id:number,person_id,display_name:name};identityCache.set(key,{doc:s.doc,identity});return identity;
  }
  let relevantIds=null;
@@ -75,9 +106,9 @@
   let s=surface();const saved=norm(s.save.getAttribute('title'))==='All scores have been saved.';if(requireSaved&&!saved)fail('destination_not_saved');
   const start=JSON.stringify(s.context),students=[];
   for(const original of s.inputs){
-   const inputLabel=original.getAttribute('aria-label'),identity=await identify(original,s);
+   const inputLabel=norm(original.getAttribute('aria-label')),identity=await identify(original,s);
    s=surface();if(JSON.stringify(s.context)!==start)fail('destination_context_changed');
-   const input=one(s.inputs.filter(e=>e.getAttribute('aria-label')===inputLabel),'student_identity_unverified');
+   const input=one(s.inputs.filter(e=>norm(e.getAttribute('aria-label'))===inputLabel),'student_identity_unverified');
    students.push({...identity,input_label:inputLabel,current_score:currentScore(input),flags:renderedFlags(input.closest('tr'))});
   }
   return [{context:s.context,students,saved}];
@@ -122,10 +153,20 @@
   return root.HubPostingProtocol.validateReview({...copy(review),rows:copy(rows),record_ids:rows.map(row=>row.record_id)});
  }
  let active=null;
- async function prepare(review,{hubCall,onResult}){
+ async function prepare(review,{hubCall,onResult:sendResult}){
+  // Result delivery crosses the extension bridge and can reject after this
+  // review expired or the worker restarted; the review is over either way, so
+  // report the delivery failure without an unhandled rejection.
+  const onResult=result=>Promise.resolve().then(()=>sendResult(result)).catch(error=>{console.warn('School Workflow Hub: result_delivery_failed ('+(['review_expired','companion_unavailable'].includes(error?.message)?error.message:'unknown')+')');});
   if(active)fail('companion_busy');
   root.HubPostingProtocol.validateReview(review);
-  const s=surface();review=selectAssignmentReview(review,s);relevantIds=new Set(review.rows.map(r=>r.student_id).filter(Boolean));
+  let s;
+  try{s=surface();review=selectAssignmentReview(review,s);}catch(error){
+   const codes=['assignment_frame_required','score_panel_required','school_sign_in_required','destination_context_changed','unsupported_gradebook','unsupported_points_scale','destination_mapping_required'];
+   console.warn('School Workflow Hub: '+(codes.includes(error.message)?error.message:'assignment_check_failed'));
+   throw error;
+  }
+  relevantIds=new Set(review.rows.map(r=>r.student_id).filter(Boolean));
   const host=node('div');host.style.cssText='position:fixed;inset:16px 16px auto auto;z-index:2147483647;width:min(620px,calc(100vw - 32px));max-height:90vh;overflow:auto;background:white;color:#15281c;border:2px solid #315a42;border-radius:12px;padding:22px;box-shadow:0 8px 40px #0005;font:15px/1.5 system-ui';
   host.setAttribute('role','dialog');host.setAttribute('aria-label','School Workflow Hub grade posting review');
   const heading=node('h2','Review grades for this Infinite Campus assignment'),status=node('p','Reading the current assignment and matching student numbers…');host.append(heading,status);document.body.append(host);
@@ -155,7 +196,7 @@
        refreshSource:async()=>sameSource(review,await hubCall('source',{})),snapshot:async()=>{verifyBindings(plan,surface());return snapshot();},hubCall,
        fill:async (row,lease)=>{
         const current=surface();if(JSON.stringify(current.context)!==context)fail('destination_context_changed');verifyBindings(plan,current);
-        const input=one(current.inputs.filter(i=>i.getAttribute('aria-label')===row.target.input_label));
+        const input=one(current.inputs.filter(i=>norm(i.getAttribute('aria-label'))===row.target.input_label));
         const id=await identify(input,current);if(id.student_id!==row.target.student_id||id.person_id!==row.target.person_id||currentScore(input)!==row.previous_score||renderedFlags(input.closest('tr')).length)fail('destination_changed');
         if(!lease||Date.now()>=Date.parse(lease.expires_at))fail('run_ownership_expired');
         const setter=Object.getOwnPropertyDescriptor(current.doc.defaultView.HTMLInputElement.prototype,'value').set;
@@ -181,7 +222,10 @@
      }catch{status.textContent='Stopped for review. Verify any changes in Infinite Campus before trying again.';try{if(lastResult)publish(lastResult);else onResult({code:'needs_review',counts:{checked:0,changed:0,needs_review:1},external_writes:executionStarted?null:0,...(executionStarted?{possible_changes:true}:{})});}catch{}}
      finally{active.working=false;cancel.disabled=false;}
     });
-   }catch(e){status.textContent=e.message==='source_changed'?'The workbook changed. Refresh Page 2 and open a new review.':'The current score panel could not be verified. No grades were changed.';onResult({code:e.message==='source_changed'?'source_changed':'needs_review',counts:{checked:0,changed:0,needs_review:1},external_writes:0});}
+   }catch(e){
+    const codes=['source_changed','source_unavailable','review_expired','destination_not_ready','destination_not_saved','student_identity_unverified','unsupported_gradebook','destination_context_changed','invalid_destination','invalid_review_request'];
+    console.warn('School Workflow Hub: '+(codes.includes(e.message)?e.message:'review_check_failed'));
+    status.textContent=e.message==='source_changed'?'The workbook changed. Refresh Page 2 and open a new review.':'The current score panel could not be verified. No grades were changed.';onResult({code:e.message==='source_changed'?'source_changed':'needs_review',counts:{checked:0,changed:0,needs_review:1},external_writes:0});}
   })();
   return {code:'review_opened'};
  }

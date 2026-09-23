@@ -8,6 +8,7 @@ import math
 import re
 
 from .google_sheets import SheetsReader, SheetsReadError
+from .roster_matching import read_roster_snapshot
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize,
                             service_token)
 from ..core.cloud_state import content_hash
@@ -15,6 +16,10 @@ from ..core.cloud_state import content_hash
 SCHEMA = "hub-grading-records/v1"
 CLASSES = {"biology", "forensics", "anatomy"}
 EXCLUDED = {"identity_unverified", "superseded"}
+# The historical NOTES checkpoint is an explicit saved value. Do not infer a
+# checkpoint from free text, answer labels, scores, or a plausible final alias.
+ASSESSMENT_STAGES = {"initial": "initial", "final": "final",
+                     "initial_NOTES_checkpoint": "initial"}
 # Only fixed reader codes may cross the authenticated HTTP boundary. Never
 # forward an arbitrary exception message, provider response, or cell value.
 SHEETS_READ_ERRORS = frozenset({
@@ -159,20 +164,39 @@ def _score(value):
         raise ConnectionError("grading_score_invalid") from None
 
 
+def _checkpoint(row):
+    source = row.get("assessment_stage", "")
+    row["assessment_stage_source"] = source
+    stage = ASSESSMENT_STAGES.get(source, "") if isinstance(source, str) else ""
+    row["assessment_stage"] = stage
+    # Intake has verified identity but has not assessed a checkpoint yet. Keep
+    # those unscored rows eligible for their first assessment and writer readback.
+    pending = (source == "" and row["status"] == "roster_matched"
+               and row["content_score"] == "" and row["revision_score"] == "")
+    row["assessment_stage_review_reason"] = "" if stage or pending else "assessment_stage_unverified"
+    if row["assessment_stage_review_reason"]:
+        # Keep the source's existing hold and history, but never make an unknown
+        # checkpoint an actionable/countable assessment in the read projection.
+        row["hold_reason"] = "; ".join(filter(None, (
+            row["hold_reason"], "assessment_stage_unverified")))
+
+
 def project(tables):
     assignments = _unique(tables["Assignments"], lambda r: r["assignment_key"])
     if any(r["class_key"] not in CLASSES for r in assignments.values()):
         raise ConnectionError("grading_class_invalid")
-    records = _unique(tables["Submissions"], lambda r: r["record_id"])
+    records = _unique([dict(row) for row in tables["Submissions"]], lambda r: r["record_id"])
     for row in records.values():
         assignment = assignments.get(row["assignment_key"])
         if assignment is None:
             raise ConnectionError("grading_assignment_unresolved")
         row.update(class_key=assignment["class_key"], assignment_title=assignment["assignment_title"], answers=[])
+        _checkpoint(row)
         roster_key = row.get("learner_key", "") if row["status"] in {"assessed", "roster_matched"} else ""
         row["count_key"] = ("ic:" + row["student_id"] if row["student_id"] else
                             "roster:" + roster_key if roster_key else "")
-        row["included_in_counts"] = bool(row["count_key"] and row["section_id"] and row["status"] not in EXCLUDED)
+        row["included_in_counts"] = bool(row["count_key"] and row["section_id"]
+            and row["status"] not in EXCLUDED and not row["assessment_stage_review_reason"])
         row["content_score"] = _score(row["content_score"])
         row["revision_score"] = _score(row["revision_score"])
         # Holds and conflicting identity records never become numeric zeroes.
@@ -215,7 +239,18 @@ def read_records(assertion, config):
         raise ConnectionError("grading_records_not_connected")
     try:
         reader = SheetsReader(service_token(config.get("HUB_READER_SERVICE_ACCOUNT", "")))
-        return project(_tables(reader, config["HUB_GRADING_SPREADSHEET_ID"]))
+        result = project(_tables(reader, config["HUB_GRADING_SPREADSHEET_ID"]))
+        result.update(sections=[], sections_status="needs_review")
+        try:
+            roster = read_roster_snapshot(config)
+            result["sections"] = roster["sections"]
+            result["sections_status"] = "source_read" if roster["section_mapping_complete"] else "needs_review"
+            if not roster["section_mapping_complete"]:
+                result["sections_review_reason"] = "roster_section_mapping_required"
+        except ConnectionError as error:
+            code = str(error)
+            result["sections_review_reason"] = code if re.fullmatch(r"[a-z_]{1,64}", code) else "roster_source_unavailable"
+        return result
     except ConnectionError:
         raise
     except SheetsReadError as error:
