@@ -965,6 +965,10 @@ class CompletionTests(unittest.TestCase):
         code, required, basis, _ = completion.inventory(deck)
         self.assertEqual((code, basis, required["NOTES"], required["DRAFT"]), ("C01", "census", ["A"], ["A"]))
 
+    def test_scores_are_a_share_of_this_decks_boxes_on_a_ten_point_scale(self):
+        self.assertEqual([completion.score(20, 27), completion.score(1, 2), completion.score(13, 13),
+                          completion.score(0, 5), completion.score(0, 0)], [7.4, 5.0, 10.0, 0.0, None])
+
     def test_added_words(self):
         self.assertEqual(completion.added("[ Type name here ]", "Oak tree"), "oak tree")
         self.assertEqual(completion.added("Producers Count: [ Enter # ]", "Producers Count: 12"), "12")

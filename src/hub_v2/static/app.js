@@ -227,16 +227,21 @@ function scoreCells(row, scores, closed) {
   if (!result) return [el('td', {class: 'muted', text: '…'}), el('td', {class: 'muted', text: '…'})];
   if (result.problem) return [el('td', {colspan: 2}, el('small', {class: 'muted', text: result.problem}))];
   const [notesShown, revisionShown] = shown(result, closed);
-  const cell = value => value === '' ? el('span', {class: 'muted', title: 'Blank until the two weeks are over', text: '—'}) : el('strong', {text: value});
   const c = result.counts;
+  // Each score is the share of this deck's own coded boxes that were done, on a 10-point scale.
+  const cell = (value, done, required, what) => value === ''
+    ? el('span', {class: 'muted', title: 'Blank until the two weeks are over', text: '—'})
+    : el('span', {}, el('strong', {text: value}),
+      required ? el('small', {class: 'muted', text: ` · ${Math.round(100 * done / required)}% (${done} of ${required} ${what})`}) : null);
   const todo = result.items.filter(i => i.status !== 'done' && i.category !== 'OPTIONAL');
   const detail = el('details', {class: 'earlier'},
-    el('summary', {text: `Notes ${c.NOTES.done}/${c.NOTES.required} · Bank ${c.BANK.done}/${c.BANK.required} · Draft ${c.DRAFT.done}/${c.DRAFT.required}`}),
+    el('summary', {text: todo.length ? `What’s not counted yet (${todo.length})` : 'Everything counted'}),
     todo.length
       ? el('ul', {class: 'files'}, todo.map(i => el('li', {}, `${i.category} ${i.id}${i.slide ? ` (slide ${i.slide})` : ''} — ${STATUS[i.status] || i.status}`)))
       : el('p', {class: 'muted', text: 'Every coded box has writing.'}));
-  return [el('td', {}, cell(notesShown), detail, result.note ? el('small', {class: 'note warn', text: result.note}) : null),
-    el('td', {}, cell(revisionShown))];
+  return [el('td', {}, cell(notesShown, c.NOTES.done + c.BANK.done, c.NOTES.required + c.BANK.required, 'notes boxes and Concept Bank terms'),
+    detail, result.note ? el('small', {class: 'note warn', text: result.note}) : null),
+    el('td', {}, cell(revisionShown, c.DRAFT.done, c.DRAFT.required, 'revised answers'))];
 }
 
 async function scoreForm(form) {
@@ -485,6 +490,9 @@ function renderForm(form, lesson) {
     scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
       ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use Teacher Claude)') : null,
     ui.progress ? el('span', {class: 'muted', text: ui.progress}) : null));
+  if (scores) {
+    box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
+  }
   if (scores && !ui.progress) {
     const failed = Object.values(scores).filter(s => s.problem).length;
     if (failed) box.append(note(`${failed} deck(s) couldn’t be scored — see the note in their row.`, 'info'));
