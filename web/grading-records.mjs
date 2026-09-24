@@ -59,6 +59,56 @@ export function recordsWithDiscovery(data,discovery){
  }
  return {...data,assignments,submissions};
 }
+// Fixed, non-sensitive messages only: never render provider bodies or exception text.
+const recoveryKinds={
+ sign_in:{title:'Dashboard sign-in required',message:'The dashboard needs your signed-in school session.',kind:'connect',next:'Sign in to this dashboard, then refresh.',retryable:false},
+ connection:{title:'Grading workbook connection missing',message:'The dashboard has no valid private grading-workbook connection.',kind:'connect',next:'Restore the existing workbook connection before refreshing.',retryable:false},
+ access:{title:'Grading workbook access denied',message:'The dashboard reader was denied access to the configured workbook.',kind:'connect',next:'Restore the existing reader’s approved workbook access, then refresh.',retryable:false},
+ not_found:{title:'Grading workbook not found',message:'The configured workbook could not be found or is not visible to the dashboard reader.',kind:'connect',next:'Verify the existing workbook connection and reader access before refreshing.',retryable:false},
+ identity:{title:'Dashboard reader authentication failed',message:'The server could not authenticate its workbook reader. This is separate from your dashboard sign-in.',kind:'connect',next:'Restore the existing server reader identity before refreshing.',retryable:false},
+ layout:{title:'Grading workbook layout needs review',message:'The existing workbook does not match the required tabs, headers, or bounded grid layout.',kind:'review',next:'Review the existing workbook layout; preserve its records, then refresh.',retryable:false},
+ records:{title:'Grading records need review',message:'The workbook contains unresolved or invalid grading records. The dashboard has not treated them as missing work.',kind:'review',next:'Resolve the reported record issue in the existing private workbook, then refresh.',retryable:false},
+ changed:{title:'Grading workbook changed during the read',message:'The workbook structure changed while the dashboard was reading it.',kind:'recheck',next:'Finish the current workbook edit, then refresh for a new read.',retryable:true},
+ limit:{title:'Grading workbook read limit reached',message:'The workbook exceeded a bounded read limit; this is not an empty-submission result.',kind:'review',next:'Review the existing workbook’s read bounds without deleting student history, then refresh.',retryable:false},
+ temporary:{title:'Grading workbook temporarily unavailable',message:'The workbook service is busy or could not complete this read.',kind:'recheck',next:'Retry Refresh after the temporary service issue clears.',retryable:true},
+ invalid:{title:'Grading response could not be verified',message:'The dashboard received an unreadable or invalid grading response.',kind:'review',next:'Check the workbook reader response before relying on these records; then refresh.',retryable:false},
+ request:{title:'Dashboard request could not be completed',message:'The request did not return a verified grading response. The cause has not been confirmed.',kind:'recheck',next:'Check the dashboard connection and signed-in session, then refresh.',retryable:true},
+ unknown:{title:'Grading workbook unavailable',message:'The dashboard could not read verified grading records. The cause has not been confirmed.',kind:'recheck',next:'Retry Refresh; a repeated failure needs the existing service connection checked.',retryable:true},
+};
+const recoveryCodes={
+ sign_in_required:'sign_in',
+ grading_records_not_connected:'connection',
+ grading_records_access_denied:'access',
+ grading_records_source_not_found:'not_found',
+ grading_records_authentication_required:'identity',
+ grading_records_invalid_credential:'identity',
+ grading_workbook_layout_required:'layout',
+ grading_workbook_headers_required:'layout',
+ grading_workbook_changed:'changed',
+ grading_workbook_limit:'limit',
+ grading_records_response_limit:'limit',
+ grading_records_range_limit:'limit',
+ grading_records_source_rate_limited:'temporary',
+ grading_records_source_transient_failure:'temporary',
+ grading_records_source_unavailable:'temporary',
+ grading_records_invalid_response:'invalid',
+ grading_record_conflict:'records',
+ grading_identity_conflict:'records',
+ grading_assignment_unresolved:'records',
+ grading_answer_unresolved:'records',
+ grading_score_invalid:'records',
+ grading_class_invalid:'records',
+ grading_summary_invalid:'records',
+ grading_records_unavailable:'unknown',
+};
+export function recordsFailure(status,payload){
+ const reported=payload&&!Array.isArray(payload)&&typeof payload.error==='string'?payload.error:'';
+ const code=status===401||status===403?'sign_in_required':Object.hasOwn(recoveryCodes,reported)?reported:'grading_records_unavailable';
+ const category=status===0?'request':recoveryCodes[code];
+ const recovery=recoveryKinds[category];
+ return {status:'error',authExpired:category==='sign_in',code,category,title:recovery.title,message:recovery.message,
+  next_action:{kind:recovery.kind,label:recovery.next},retryable:recovery.retryable};
+}
 export function createRecordsLoader({fetcher=fetch,onState}){
  let generation=0,controller;
  return async()=>{
@@ -66,10 +116,26 @@ export function createRecordsLoader({fetcher=fetch,onState}){
   try{
    const response=await fetcher('/api/grading-records',{cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal});
    if(current!==generation)return;
-   if(!response.ok)throw Error(response.status===403?'Sign in to read your private grading records.':'The private grading workbook is unavailable. Refresh after its connection is restored.');
-   const data=validateRecords(await response.json());if(current===generation)onState({status:'loaded',data});
-  }catch(error){if(current===generation&&error.name!=='AbortError')onState({status:'error',message:error.message});}
+   if(!response.ok){
+    let payload;try{payload=await response.json();}catch{} // IAP/proxies may return non-JSON.
+    if(current===generation)onState(recordsFailure(response.status,payload));
+    return;
+   }
+   let data;
+   try{data=validateRecords(await response.json());}
+   catch{if(current===generation)onState(recordsFailure(503,{error:'grading_records_invalid_response'}));return;}
+   if(current===generation)onState({status:'loaded',data});
+  }catch(error){if(current===generation&&error?.name!=='AbortError')onState(recordsFailure(0));}
  };
+}
+function renderReadState(root,state,waiting){
+ if(state.status!=='error'){line(root,state.message||waiting);return;}
+ const panel=node(root,'section');panel.className='surface';panel.setAttribute('role','alert');
+ line(panel,state.title||'Grading records unavailable');line(panel,state.message||'No verified read is available.');
+ if(state.next_action)line(panel,'Next action: '+state.next_action.label);
+ if(state.code)line(panel,'Diagnostic: '+state.code,'hint');
+ line(panel,'A failed read does not establish missing work. Refresh does not change grades.','hint');
+ root.append(panel);
 }
 function node(root,tag,text){const n=root.ownerDocument.createElement(tag);if(text!==undefined)n.textContent=String(text);return n;}
 function line(root,text,cls){const p=node(root,'p',text);if(cls)p.className=cls;root.append(p);return p;}
@@ -101,7 +167,7 @@ const DISCOVERY_LABEL={new_ungraded:'New work · not graded',changed_since_asses
 const DISCOVERY_REVIEW={prior_submission_superseded:'Previously superseded work · history only; do not treat as new work.',competing_submission_versions:'Multiple submission versions need review; no current version has been selected.',submission_assignment_source_unverified:'Listed only · no verified source link to the selected lesson; content was not read.',discovery_refresh_pending:'Earlier preview · checking the current source.',discovery_refresh_failed:'Earlier preview · the current source check failed.'};
 export function renderRecords(root,state,{classKey,sectionId='matched',assignmentKey='all',stage='all',discovery={status:'empty'},includeUnresolved=false}){
  root.replaceChildren();
- if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.'));return;}
+ if(state.status!=='loaded'){renderReadState(root,state,state.status==='loading'?'Loading private grading records…':'Refresh to load the private grading workbook.');return;}
  const projected=recordsWithDiscovery(state.data,discovery);
  const rows=(includeUnresolved?filterReviewRecords:filterRecords)(projected,classKey,sectionId,assignmentKey,stage);
  const unscoped=row=>assignmentKey!=='all'&&row.discovery_only&&row.discovery?.review_reasons.includes('submission_assignment_source_unverified');
@@ -190,7 +256,7 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
   if(row.hold_reason)line(details,row.hold_reason);if(!row.included_in_counts)line(details,row.discovery_only?'Not included in saved assessment counts.':'Excluded from class counts until identity and current submission are resolved.','hint');
   if(row.feedback){line(details,row.feedback,'student-feedback-text');
    const print=node(details,'button','Print feedback');print.type='button';print.className='print-feedback-button';
-   print.addEventListener('click',()=>printFeedback(row));details.append(print);}
+   print.addEventListener('click',()=>printFeedback(row,state.data?.submissions||[]));details.append(print);}
   link(details,'Open submitted work ↗',row.source_url);
   if(!row.hold_reason&&!['identity_unverified','superseded'].includes(row.status)){
    if(row.content_score_exact&&Number.isFinite(row.content_score))line(details,`Content calculation: ${row.content_score_exact} points. Score display rounded to two decimals.`,'hint');
@@ -204,19 +270,147 @@ export function renderRecords(root,state,{classKey,sectionId='matched',assignmen
  table.append(body);const wrap=node(root,'div');wrap.className='work-table-wrap';wrap.append(table);destination.append(wrap);
  }
 }
-// One print-only sheet of a student-facing report: scores, the report text and
-// a written-reflection space. Teacher-only evidence notes never print. Each
-// sheet is a top-level sibling so the print CSS shows every sheet and starts
-// each subsequent student on a new page. Returns the created sheet.
-export function appendSheet(doc,row){
+// Printed student report (teacher decision, September 23, 2026). Page one: year
+// graphs for this lesson's critical aspects, the lesson title, current
+// understanding per aspect on one four-level scale, and first/revised answers
+// side by side. Page two: the written sections from the saved report, one
+// question, exact evidence, the hand-back reflection and the rubric key.
+// Scores and teacher-only evidence notes never print. Each sheet is a
+// top-level sibling so the print CSS shows every sheet on its own pages.
+export const SCALE=['Beginning','Developing','Proficient','Extending'];
+export const SCALE_VERSION='critical-aspect-4/v1';
+export const RUBRIC_KEY=[['Beginning','Names an idea; the relationship is missing or inaccurate.'],['Developing','Connects some ideas; the mechanism is partly explained.'],['Proficient','Explains the relationship using a scientifically sound mechanism.'],['Extending','Uses the mechanism to explain a new case and its limits.']];
+// Headings the saved report text uses. The report speaks to the student as
+// "you" and quotes the student's own words; earlier first-person headings are
+// still recognized so older reports print.
+const WRITTEN=['Current understanding','How your thinking changed','One question to think about','Evidence of your understanding'];
+const ALIASES={'how my thinking changed':'How your thinking changed','evidence for my conceptual understanding':'Evidence of your understanding'};
+const QUESTION_NOTE='Think this through for yourself; reworking concept notes is for your understanding, not for submission or another grade.';
+const HAND_BACK='Write this yourself, then hand this page back to me. This is the part I read.';
+const EDGE=/^[\s.,:;\u00b7\u2014\u2013-]+|[\s.,:;\u00b7\u2014\u2013-]+$/g;
+// Mirrors understanding_scale.aspect_key: exact-name joins only.
+export function aspectKey(name){
+ if(typeof name!=='string')return '';
+ const t=name.trim().replace(/^\s*(?:your answer\s*[\u2014\u2013-]\s*)?(?:critical aspect\s*\d*\s*[\u00b7:.\u2014\u2013-]?\s*)?/i,'');
+ return t.replace(/\s+/g,' ').replace(EDGE,'').toLowerCase();
+}
+function levelClass(level){return 'fb-level-'+String(level||'unavailable').toLowerCase().replace(/[^a-z]+/g,'-');}
+// Splits the saved report text at the teacher's headings; text before the
+// first heading is kept, and an old-style reflection block is dropped because
+// the sheet prints its own.
+export function reportSections(text){
+ const sections={},preamble=[];let current=null;
+ for(const raw of String(text||'').split(/\r?\n/)){
+  const bare=raw.replace(/^[\s#*_]+|[\s*_:]+$/g,'');
+  const hit=WRITTEN.find(h=>h.toLowerCase()===bare.toLowerCase())||ALIASES[bare.toLowerCase()];
+  if(hit){current=hit;sections[hit]=[];continue;}
+  if(/^(what i understand now|my reflection$|rubric key$)/i.test(bare)){current='';continue;}
+  if(current)sections[current].push(raw);else if(current===null)preamble.push(raw);
+ }
+ const clean=list=>list.join('\n').trim();
+ const out={};for(const [k,v] of Object.entries(sections))if(clean(v))out[k]=clean(v);
+ return {found:Object.keys(sections).length>0,sections:out,preamble:clean(preamble)};
+}
+function answerLabel(a){return a.critical_aspect||String(a.prompt||'').split('\n')[0].slice(0,90)||('Question '+a.question_id);}
+// One item per critical aspect (or per question when no aspect is named),
+// preferring the revised answer.
+export function understandingItems(row){
+ const items=new Map();
+ for(const a of row.answers||[]){
+  if(a.stage==='BANK'||!a.conceptual_level)continue;
+  const key=aspectKey(a.critical_aspect)||('q:'+a.question_id),prev=items.get(key);
+  if(!prev||(a.stage==='DRAFT'&&prev.stage!=='DRAFT'))items.set(key,a);
+ }
+ return [...items.values()].map(a=>({label:answerLabel(a),level:a.conceptual_level}));
+}
+export function answerPairs(row){
+ const first=new Map(),revised=new Map();
+ for(const a of row.answers||[]){if(a.stage==='NOTES')first.set(a.question_id,a);else if(a.stage==='DRAFT')revised.set(a.question_id,a);}
+ const pairs=[];
+ for(const [id,d] of revised){const n=first.get(id);if(!n||!(String(d.response||'').trim()||String(n.response||'').trim()))continue;
+  pairs.push({label:answerLabel(d.critical_aspect?d:n),first:n.response||'',firstLevel:n.conceptual_level,revised:d.response||'',revisedLevel:d.conceptual_level,slide:d.slide_number||n.slide_number||''});}
+ return pairs;
+}
+function sameLearner(a,b){
+ if(!a||!b||a.class_key!==b.class_key)return false;
+ if(a.student_id&&b.student_id)return a.student_id===b.student_id;
+ if(a.count_key&&b.count_key)return a.count_key===b.count_key;
+ return !!a.learner_key&&a.learner_key===b.learner_key&&!!a.section_id&&a.section_id===b.section_id;
+}
+// Graph lines for this lesson's named aspects, including earlier aspects the
+// student used again under the same name. Only four-level ratings plot;
+// older three-level ratings are never placed on these lines.
+export function aspectHistory(row,history){
+ const printed=new Map();
+ for(const a of row.answers||[]){const k=aspectKey(a.critical_aspect);if(a.stage!=='BANK'&&k&&!printed.has(k))printed.set(k,a.critical_aspect.replace(EDGE,''));}
+ const points=new Map([...printed.keys()].map(k=>[k,[]])),seen=new Set();
+ const reportDate=validDate(row.checked_at),year=reportDate?schoolYear(reportDate):null;
+ for(const r of [row,...(history||[])]){
+  if(!r||!r.record_id||seen.has(r.record_id)||['superseded','identity_unverified'].includes(r.status)||r.hold_reason||r.discovery_only||!sameLearner(r,row))continue;seen.add(r.record_id);
+  const date=validDate(r.checked_at);if(!date||!year||Date.parse(date)<year[0]||date>reportDate)continue;
+  for(const a of r.answers||[]){const k=aspectKey(a.critical_aspect);
+   // "What if" is a task label, not a shared concept across unrelated lessons.
+   if(k==='what if'&&r!==row&&(!r.assignment_key||r.assignment_key!==row.assignment_key))continue;
+   if(points.has(k)&&['NOTES','DRAFT'].includes(a.stage)&&a.rubric_version===SCALE_VERSION&&(SCALE.includes(a.conceptual_level)||a.conceptual_level==='Evidence unavailable'))points.get(k).push({date,level:a.conceptual_level,revised:a.stage==='DRAFT'});}
+ }
+ return [...printed].map(([key,label])=>({key,label,points:points.get(key).sort((x,y)=>x.date.localeCompare(y.date))}));
+}
+function validDate(value){const date=String(value||'').slice(0,10),time=Date.parse(date);return /^\d{4}-\d{2}-\d{2}$/.test(date)&&Number.isFinite(time)&&new Date(time).toISOString().slice(0,10)===date?date:'';}
+function schoolYear(date){const [y,m]=date.split('-').map(Number);const start=m>=8?y:y-1;return [Date.parse(start+'-08-01'),Date.parse((start+1)+'-07-31')];}
+function drawGraph(doc,host,item,today){
+ const card=node(host,'div');card.className='fb-graph';card.append(node(host,'h4',item.label));host.append(card);
+ if(!item.points.some(p=>SCALE.includes(p.level))){const empty=node(host,'div');empty.className='fb-graph-empty';empty.append(node(host,'strong','No dated evidence'),node(host,'span','No points plotted'));card.append(empty);line(card,'School year · dated evidence','fb-graph-caption');return;}
+ if(typeof doc.createElementNS!=='function'){for(const p of item.points)line(card,p.date+' · '+p.level+(p.revised?' (revised answer)':' (first answer)'));return;}
+ const NS='http://www.w3.org/2000/svg',el=(tag,attrs,text)=>{const n=doc.createElementNS(NS,tag);for(const [k,v] of Object.entries(attrs))n.setAttribute(k,String(v));if(text!==undefined)n.textContent=text;return n;};
+ const svg=el('svg',{viewBox:'0 0 330 112',role:'img','aria-label':item.label+': understanding by date across the school year'});
+ const left=74,right=320,y=level=>88-SCALE.indexOf(level)*22;
+ [...SCALE].reverse().forEach(level=>{svg.append(el('line',{x1:left,x2:right,y1:y(level),y2:y(level),stroke:'#D5DEE7','stroke-width':1}),el('text',{x:left-6,y:y(level)+3,'text-anchor':'end','font-size':8.5,fill:'#23384A'},level));});
+ const [lo,hi]=schoolYear(item.points[item.points.length-1].date||today),x=d=>left+Math.min(1,Math.max(0,(Date.parse(d)-lo)/(hi-lo)))*(right-left);
+ const revised=item.points.filter(p=>p.revised);
+ for(let i=1;i<revised.length;i++)if(SCALE.includes(revised[i-1].level)&&SCALE.includes(revised[i].level))svg.append(el('line',{x1:x(revised[i-1].date),y1:y(revised[i-1].level),x2:x(revised[i].date),y2:y(revised[i].level),stroke:'#23384A','stroke-width':1.5}));
+ for(const p of item.points){if(!SCALE.includes(p.level))continue;const dot=el('circle',{cx:x(p.date),cy:y(p.level),r:4,fill:p.revised?'#23384A':'#FFFFFF',stroke:'#23384A','stroke-width':1.5});dot.append(el('title',{},p.date+' · '+p.level+(p.revised?' · revised answer':' · first answer')));svg.append(dot);}
+ svg.append(el('text',{x:(left+right)/2,y:108,'text-anchor':'middle','font-size':8,fill:'#5B6B7A'},'School year · dated evidence'));
+ card.append(svg);
+}
+function block(doc,parent,heading,cls){const s=node(doc.body,'section');s.className='fb-section'+(cls?' '+cls:'');s.append(node(doc.body,'h2',heading));parent.append(s);return s;}
+function text(doc,parent,value,cls){const p=node(doc.body,'p',value);p.className='fb-text'+(cls?' '+cls:'');parent.append(p);return p;}
+export function appendSheet(doc,row,history=[]){
  const sheet=node(doc.body,'div');sheet.className='print-sheet';doc.body.append(sheet);
- sheet.append(node(doc.body,'h1',(row.display_name||'Student')+' · '+row.assignment_title));
- const meta=node(doc.body,'p',(row.section_name||'')+' · Feedback prepared '+time(row.checked_at));meta.className='hint';sheet.append(meta);
- sheet.append(node(doc.body,'p','Content / notes: '+score(row,'content_score')+'    Revision: '+score(row,'revision_score')));
- const report=node(doc.body,'div');report.className='student-feedback-text';report.textContent=row.feedback||'';sheet.append(report);
- sheet.append(node(doc.body,'h2','My reflection'));
- sheet.append(node(doc.body,'p','What is one thing this feedback tells you to do next, in your own words?'));
- for(let i=0;i<6;i++){const ruled=node(doc.body,'div');ruled.className='reflection-line';sheet.append(ruled);}
+ const written=reportSections(row.feedback),items=understandingItems(row),aspects=aspectHistory(row,history),pairs=answerPairs(row);
+ const fourLevel=(row.answers||[]).some(a=>a.rubric_version===SCALE_VERSION);
+ const one=node(doc.body,'div');one.className='fb-page';sheet.append(one);
+ if(aspects.length){
+  const g=node(doc.body,'section');g.className='fb-section fb-year';g.append(node(doc.body,'h3','Your understanding through the year'));
+  const grid=node(doc.body,'div');grid.className='fb-graphs';for(const item of aspects)drawGraph(doc,grid,item,String(row.checked_at||'').slice(0,10));g.append(grid);
+  text(doc,g,aspects.some(a=>a.points.length>1)?'Each graph is one critical aspect. Filled dots are revised answers; open dots are first answers.':'Each graph is one critical aspect. One dated answer is a starting point, not a trend.','fb-note');
+  one.append(g);
+ }
+ one.append(node(doc.body,'h1',row.assignment_title||'Lesson'));
+ const prepared=new Date(row.checked_at);text(doc,one,[row.display_name||'Student',row.section_name,Number.isNaN(prepared.valueOf())?'':'Feedback prepared '+prepared.toLocaleDateString(undefined,{dateStyle:'long'})].filter(Boolean).join(' · '),'fb-subtitle');
+ const current=block(doc,one,'Current understanding');
+ if(items.length){const cards=node(doc.body,'div');cards.className='fb-cards';
+  for(const item of items){const card=node(doc.body,'div');card.className='fb-card '+levelClass(item.level);card.append(node(doc.body,'h4',item.label),node(doc.body,'strong',item.level||'Evidence unavailable'));cards.append(card);}
+  current.append(cards);}
+ if(written.sections['Current understanding'])text(doc,current,written.sections['Current understanding']);
+ if(!written.found&&row.feedback)text(doc,current,row.feedback,'student-feedback-text');
+ const compare=block(doc,one,'Your earlier and current explanations');
+ if(pairs.length){const grid=node(doc.body,'div');grid.className='fb-compare';
+  const firstLabel=node(doc.body,'div','Your first answer'),revisedLabel=node(doc.body,'div','Your revised answer');firstLabel.className='fb-col-label fb-first';revisedLabel.className='fb-col-label fb-revised';grid.append(firstLabel,revisedLabel);
+  for(const pair of pairs){
+   const a=node(doc.body,'div');a.className='fb-card '+levelClass(pair.firstLevel);a.append(node(doc.body,'h4',pair.label));text(doc,a,pair.first.trim()?'“'+pair.first.trim()+'”':'No first answer was recorded.');
+   const b=node(doc.body,'div');b.className='fb-card '+levelClass(pair.revisedLevel);b.append(node(doc.body,'h4',pair.label+(pair.slide?' · slide '+pair.slide:'')));text(doc,b,pair.revised.trim()?'“'+pair.revised.trim()+'”':'No revised answer was recorded.');
+   grid.append(a,b);}
+  compare.append(grid);
+ }else text(doc,compare,'Your first and revised answers are not both available for this lesson.','fb-note');
+ const two=node(doc.body,'div');two.className='fb-page fb-page-two';sheet.append(two);
+ if(written.sections['How your thinking changed'])text(doc,block(doc,two,'How your thinking changed'),written.sections['How your thinking changed']);
+ if(written.sections['One question to think about']){const q=block(doc,two,'One question to think about','fb-question');
+  text(doc,q,written.sections['One question to think about'].split('\n').filter(l=>!/not for submission/i.test(l)).join('\n').trim());text(doc,q,QUESTION_NOTE,'fb-note');}
+ if(written.sections['Evidence of your understanding'])text(doc,block(doc,two,'Evidence of your understanding'),written.sections['Evidence of your understanding']);
+ const reflect=block(doc,two,"What I understand now that I didn't before");text(doc,reflect,HAND_BACK,'fb-handback');
+ for(let i=0;i<4;i++){const ruled=node(doc.body,'div');ruled.className='reflection-line';reflect.append(ruled);}
+ if(fourLevel){const key=block(doc,two,'Rubric key','fb-key');
+  for(const [level,description] of RUBRIC_KEY){const r=node(doc.body,'div');r.className='fb-key-row';const badge=node(doc.body,'span',level);badge.className='fb-badge '+levelClass(level);r.append(badge,node(doc.body,'span',description));key.append(r);}}
  return sheet;
 }
 function printSheets(){
@@ -227,23 +421,25 @@ function printSheets(){
  window.print();
  setTimeout(done,60000);
 }
-export function printFeedback(row){
+// history: every loaded record, so each student's year graphs can use their
+// earlier lessons. It is read only for the same learner and class.
+export function printFeedback(row,history=[]){
  document.querySelectorAll('.print-sheet').forEach(s=>s.remove());
- appendSheet(document,row);
+ appendSheet(document,row,history);
  printSheets();
 }
 // A multi-student packet: one report per student, each starting on a new page.
-export function printFeedbackPacket(rows){
+export function printFeedbackPacket(rows,history=[]){
  const withReport=(rows||[]).filter(r=>r.feedback);
  if(!withReport.length)return 0;
  document.querySelectorAll('.print-sheet').forEach(s=>s.remove());
- for(const row of withReport)appendSheet(document,row);
+ for(const row of withReport)appendSheet(document,row,history);
  printSheets();
  return withReport.length;
 }
 
 export function renderSummaries(root,state){
- root.replaceChildren();if(state.status!=='loaded'){line(root,state.message||(state.status==='loading'?'Loading class summaries…':'Refresh to load class summaries.'));return;}
+ root.replaceChildren();if(state.status!=='loaded'){renderReadState(root,state,state.status==='loading'?'Loading class summaries…':'Refresh to load class summaries.');return;}
  const summaries=state.data.summaries;
  if(!summaries.length){line(root,'No reviewed class summaries have been recorded.');return;}
  // Exactly one card per explicit class/section. No score averages or repeated panels.

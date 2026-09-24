@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateRecords,sectionOptions,verifiedSectionOptions,filterRecords,filterReviewRecords,lessonOptions,createRecordsLoader,renderRecords,renderSummaries,score,appendSheet,recordsWithDiscovery} from '../grading-records.mjs';
+import {validateRecords,sectionOptions,verifiedSectionOptions,filterRecords,filterReviewRecords,lessonOptions,createRecordsLoader,renderRecords,renderSummaries,score,appendSheet,recordsWithDiscovery,reportSections,aspectHistory,aspectKey,understandingItems,answerPairs} from '../grading-records.mjs';
 
 function fixture(){return {schema_version:'hub-grading-records/v1',provenance:'source_read',external_writes:0,source_revision:'fictional-read',checked_at:'2026-09-01T12:00:00Z',assignments:[
  {assignment_key:'F1',class_key:'forensics',assignment_title:'Fictional One'},
@@ -49,7 +49,8 @@ test('a print sheet carries the student report and no teacher-only evidence',()=
  const row={display_name:'Alex F.',assignment_title:'Fictional One',section_name:'Period A',checked_at:'2026-09-01T12:00:00Z',content_score:6.25,status:'proposed',revision_score:null,feedback:'Do this next.',evidence_note:'TEACHER ONLY — never print'};
  const sheet=appendSheet(printDoc,row);
  assert.equal(printDoc.body.children.length,1);
- assert.match(sheet.allText,/Alex F\./);assert.match(sheet.allText,/Do this next\./);assert.match(sheet.allText,/My reflection/);
+ assert.match(sheet.allText,/Alex F\./);assert.match(sheet.allText,/Do this next\./);assert.match(sheet.allText,/What I understand now that I didn't before/);
+  assert.match(sheet.allText,/hand this page back to me/);assert.doesNotMatch(sheet.allText,/6\.25|Content \/ notes/);
  assert.doesNotMatch(sheet.allText,/TEACHER ONLY/);
 });
 test('unmatched work has a counted option and stays outside default class view',()=>{
@@ -290,4 +291,103 @@ test('Form response completeness is distinct from published and accepting status
  assert.match(text,/Publication unknown · response acceptance unknown/);
  assert.match(text,/Historical responses remain separate/);
  assert.doesNotMatch(text,/accepting responses\./);
+});
+
+// Fictional four-level report fixtures (September 23, 2026 layout).
+function aspectRow(extra={}){return {record_id:'r2',class_key:'biology',section_id:'c',student_id:'s1',display_name:'Casey F.',assignment_title:'Fictional ecosystems',section_name:'Period C',checked_at:'2026-10-02T12:00:00Z',status:'proposed',content_score:9,
+ feedback:'**Current understanding:**\nMy answers explain how energy enters the web.\n## How my thinking changed\nI replaced "used up" with heat.\nOne question to think about\nHow does a vent bacterium act like a door?\nThink this through for yourself; this is not for submission or another grade.\nEvidence for my conceptual understanding\n"It leaves as heat." — revised response, slide 13\nWhat I understand now that I didn\'t before\n____',
+ answers:[{question_id:'Q1',stage:'NOTES',response:'Plants make food.',conceptual_level:'Beginning',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point',slide_number:'7',evidence_note:'TEACHER ONLY'},
+  {question_id:'Q1',stage:'DRAFT',response:'Plants and vent bacteria bring outside energy in.',conceptual_level:'Proficient',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point',slide_number:'7'},
+  {question_id:'Q2',stage:'DRAFT',response:'It leaves as heat.',conceptual_level:'Extending',rubric_version:'critical-aspect-4/v1',critical_aspect:'Critical Aspect 2 · Where transferred energy goes',slide_number:'13'},
+  {question_id:'B1',stage:'BANK',response:'producer',conceptual_level:'Proficient',rubric_version:'critical-aspect-4/v1',critical_aspect:''}],...extra};}
+test('report text splits at the teacher headings, tolerating markdown and colons',()=>{
+ const parsed=reportSections(aspectRow().feedback);
+ assert.equal(parsed.found,true);
+ assert.equal(parsed.sections['Current understanding'],'My answers explain how energy enters the web.');
+ assert.match(parsed.sections['One question to think about'],/vent bacterium/);
+ assert.equal(Object.keys(parsed.sections).length,4);
+});
+test('aspect names join only on the same name after the deck prefix',()=>{
+ assert.equal(aspectKey('Your answer — Critical Aspect 2 · Where transferred energy goes'),'where transferred energy goes');
+ assert.equal(aspectKey('Critical Aspect 2 · Where transferred energy goes'),aspectKey('where transferred energy goes.'));
+ assert.notEqual(aspectKey('Energy transfer'),aspectKey('Where transferred energy goes'));
+});
+test('current understanding keeps one revised item per aspect and skips Concept Bank terms',()=>{
+ const items=understandingItems(aspectRow());
+ assert.deepEqual(items.map(i=>[i.label,i.level]),[['Producers as the entry point','Proficient'],['Critical Aspect 2 · Where transferred energy goes','Extending']]);
+ assert.deepEqual(answerPairs(aspectRow()).map(p=>[p.first,p.revised,p.slide]),[['Plants make food.','Plants and vent bacteria bring outside energy in.','7']]);
+});
+test('year graphs use this learner only, four-level ratings only, and never superseded work',()=>{
+ const earlier={record_id:'r1',class_key:'biology',section_id:'c',student_id:'s1',display_name:'Casey F.',checked_at:'2026-09-10T12:00:00Z',status:'proposed',answers:[
+  {question_id:'Q9',stage:'DRAFT',conceptual_level:'Developing',rubric_version:'critical-aspect-4/v1',critical_aspect:'producers as the entry point'},
+  {question_id:'Q8',stage:'DRAFT',conceptual_level:'Almost there',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point'}]};
+ const other={...earlier,record_id:'x',student_id:'s2'};
+ const replaced={...earlier,record_id:'old',status:'superseded',answers:[{question_id:'Q9',stage:'DRAFT',conceptual_level:'Beginning',rubric_version:'critical-aspect-4/v1',critical_aspect:'Producers as the entry point'}]};
+ const lines=aspectHistory(aspectRow(),[earlier,other,replaced]);
+ const producers=lines.find(l=>l.key==='producers as the entry point');
+ assert.deepEqual(producers.points.map(p=>[p.date,p.level,p.revised]),[['2026-09-10','Developing',true],['2026-10-02','Beginning',false],['2026-10-02','Proficient',true]]);
+ assert.equal(lines.length,2);
+});
+test('the printed report follows the sample layout with no scores or teacher notes',()=>{
+ const printDoc={createElement(tag){return new Element(printDoc,tag);}};printDoc.body=new Element(printDoc,'body');
+ const text=appendSheet(printDoc,aspectRow(),[]).allText;
+ for(const expected of ['Your understanding through the year','Fictional ecosystems','Current understanding','Producers as the entry point','Proficient','Extending','Your earlier and current explanations','Your first answer','Your revised answer','slide 7','How your thinking changed','One question to think about','reworking concept notes is for your understanding','Evidence of your understanding',"What I understand now that I didn't before",'hand this page back to me','Rubric key','Uses the mechanism to explain a new case and its limits.'])
+  assert.ok(text.includes(expected),expected);
+ assert.doesNotMatch(text,/TEACHER ONLY|Content \/ notes|____/);
+ assert.equal((text.match(/not for submission/g)||[]).length,1);
+});
+test('an older three-level report still prints its full text and no rubric key',()=>{
+ const printDoc={createElement(tag){return new Element(printDoc,tag);}};printDoc.body=new Element(printDoc,'body');
+ const row={display_name:'Alex F.',assignment_title:'Fictional One',checked_at:'2026-09-01T12:00:00Z',feedback:'You explained osmosis well.',answers:[{question_id:'Q1',stage:'DRAFT',response:'water moves',conceptual_level:'Almost there'}]};
+ const text=appendSheet(printDoc,row).allText;
+ assert.match(text,/You explained osmosis well\./);assert.match(text,/Almost there/);assert.doesNotMatch(text,/Rubric key/);
+});
+test('second-person headings parse, and older first-person headings still map to them',()=>{
+ const text='Current understanding\nYour answers explain how energy enters the web.\nHow your thinking changed\nYour first answer said, "Plants make food."\nEvidence of your understanding\n"It leaves as heat." — revised response, slide 13';
+ const parsed=reportSections(text);
+ assert.deepEqual(Object.keys(parsed.sections),['Current understanding','How your thinking changed','Evidence of your understanding']);
+ assert.match(reportSections(aspectRow().feedback).sections['How your thinking changed'],/used up/);
+});
+test('printed headings and fixed lines never speak as the student except the student-written reflection',()=>{
+ const printDoc={createElement(tag){return new Element(printDoc,tag);}};printDoc.body=new Element(printDoc,'body');
+ const row=aspectRow({feedback:'Current understanding\nYour answers explain it.',answers:[]});
+ // The hand-back line is the teacher speaking ("the part I read"), which is intended.
+ const text=appendSheet(printDoc,row).allText.replace("What I understand now that I didn't before",'').replace('Write this yourself, then hand this page back to me. This is the part I read.','');
+ assert.doesNotMatch(text,/\bMy\b|\bI\b/);
+});
+
+test('shared rating names and aspect labels never substitute for a rubric version',()=>{
+ const row=aspectRow();
+ const earlier={...row,record_id:'unversioned',checked_at:'2026-09-10',answers:row.answers.map(({rubric_version,...answer})=>answer)};
+ const otherVersion={...earlier,record_id:'other-rubric',answers:row.answers.map(a=>({...a,rubric_version:'legacy/v1'}))};
+ assert.deepEqual(aspectHistory(row,[earlier,otherVersion]),aspectHistory(row,[]));
+ const printDoc={createElement(tag){return new Element(printDoc,tag);}};printDoc.body=new Element(printDoc,'body');
+ assert.doesNotMatch(appendSheet(printDoc,earlier).allText,/Rubric key/);
+});
+test('history requires verified learner identity and ignores held, future and previous-year records',()=>{
+ const row=aspectRow();
+ const earlier={...row,record_id:'earlier',checked_at:'2026-09-10'};
+ const excluded=[{...earlier,student_id:'',count_key:'',learner_key:''},
+  {...earlier,record_id:'held',hold_reason:'Source needs review'},
+  {...earlier,record_id:'unmatched',status:'identity_unverified'},
+  {...earlier,record_id:'old-year',checked_at:'2025-09-10'},
+  {...earlier,record_id:'future',checked_at:'2026-11-10'},
+  {...earlier,record_id:'bad-date',checked_at:'2026-02-31'}];
+ assert.deepEqual(aspectHistory(row,excluded),aspectHistory(row,[]));
+ const roster={...row,student_id:'',count_key:'roster:verified-learner'};
+ assert.ok(aspectHistory(roster,[{...earlier,student_id:'',count_key:roster.count_key}])[0].points.some(p=>p.date==='2026-09-10'));
+});
+test('What-if tasks in different lessons do not become one concept history',()=>{
+ const row=aspectRow({assignment_key:'new-lesson',answers:[{stage:'DRAFT',critical_aspect:'What if',rubric_version:'critical-aspect-4/v1',conceptual_level:'Proficient'}]});
+ const other={...row,record_id:'old-lesson',assignment_key:'other-lesson',checked_at:'2026-09-10'};
+ assert.equal(aspectHistory(row,[other])[0].points.length,1);
+});
+test('unavailable evidence creates a gap instead of a connecting graph line',()=>{
+ const row=aspectRow({answers:[{stage:'DRAFT',critical_aspect:'Energy',rubric_version:'critical-aspect-4/v1',conceptual_level:'Proficient'}]});
+ const first={...row,record_id:'first',checked_at:'2026-09-01'};
+ const gap={...row,record_id:'gap',checked_at:'2026-09-15',answers:row.answers.map(a=>({...a,conceptual_level:'Evidence unavailable'}))};
+ const doc={createElement(tag){return new Element(doc,tag);},createElementNS(ns,tag){return new Element(doc,tag);}};doc.body=new Element(doc,'body');
+ const sheet=appendSheet(doc,row,[first,gap]),all=n=>[n,...n.children.flatMap(all)];
+ assert.equal(all(sheet).filter(n=>n.tagName==='circle').length,2);
+ assert.equal(all(sheet).filter(n=>n.tagName==='line'&&n.attributes['stroke-width']==='1.5').length,0);
 });

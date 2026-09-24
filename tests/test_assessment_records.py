@@ -123,6 +123,42 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ar.validate_packet(bad, SOURCE)
 
+    def test_four_level_scale_with_named_critical_aspect_is_accepted(self):
+        item = packet()
+        for level in ("Beginning", "Extending"):
+            item["responses"][0].update(conceptual_level=level, explanation_level="",
+                                        critical_aspect="Producers as the entry point",
+                                        rubric_version="critical-aspect-4/v1")
+            self.assertIs(ar.validate_packet(item, SOURCE), item)
+
+    def test_older_three_level_packets_stay_valid(self):
+        item = packet()
+        item["responses"][0]["conceptual_level"] = "Almost there"
+        self.assertIs(ar.validate_packet(item, SOURCE), item)
+
+    def test_four_level_version_rejects_old_levels_and_separate_explanation(self):
+        for change in ({"conceptual_level": "Almost there"},
+                       {"explanation_level": "Names an idea"},
+                       {"rubric_version": "unknown"},
+                       {"judgment": "blank", "response_excerpt": ""}):
+            item = packet()
+            item["responses"][0].update(critical_aspect="A named aspect",
+                rubric_version="critical-aspect-4/v1", explanation_level="")
+            item["responses"][0].update(change)
+            with self.assertRaises(ValueError):
+                ar.validate_packet(item, SOURCE)
+
+    def test_critical_aspect_is_one_bounded_line_and_no_other_key_is_added(self):
+        for bad_value in ("two\nlines", "x" * 201):
+            bad = packet()
+            bad["responses"][0]["critical_aspect"] = bad_value
+            with self.assertRaises(ValueError):
+                ar.validate_packet(bad, SOURCE)
+        bad = packet()
+        bad["responses"][0]["unexpected"] = "value"
+        with self.assertRaises(ValueError):
+            ar.validate_packet(bad, SOURCE)
+
 
 class CompletionTests(unittest.TestCase):
     def test_final_stage_arithmetic_matches_the_policy(self):
@@ -199,6 +235,27 @@ class RowTests(unittest.TestCase):
         self.assertEqual(draft["meaningful_complete"], "FALSE")
         optional = next(a for a in rows["answers"] if a["question_id"] == "OPT1")
         self.assertEqual(optional["counts_toward_current_score"], "FALSE")
+        self.assertNotIn("critical_aspect", first)
+        self.assertNotIn("rubric_version", first)
+
+    def test_rows_carry_the_named_critical_aspect(self):
+        item = packet()
+        item["responses"][0]["critical_aspect"] = "Where transferred energy goes"
+        rows = ar.build_rows(item, ar.completion(item), CAPTURE, now="2026-09-18T15:05:00+00:00")
+        self.assertEqual(rows["answers"][0]["critical_aspect"], "Where transferred energy goes")
+
+    def test_rubric_version_survives_save_and_missing_new_columns_fail_closed(self):
+        item = packet()
+        item["responses"][0].update(critical_aspect="Where transferred energy goes",
+            rubric_version="critical-aspect-4/v1", explanation_level="")
+        rows = ar.build_rows(item, ar.completion(item), CAPTURE, now="2026-09-18T15:05:00+00:00")
+        answer = rows["answers"][0]
+        self.assertEqual(answer["rubric_version"], "critical-aspect-4/v1")
+        with self.assertRaisesRegex(ValueError, "assessment_column_missing"):
+            ar.aligned_cells([k for k in answer if k != "rubric_version"], answer)
+        cells = ar.aligned_cells(list(answer), answer)
+        self.assertEqual(cells["values"][list(answer).index("rubric_version")]["userEnteredValue"]["stringValue"],
+                         "critical-aspect-4/v1")
 
     def test_rows_refuse_a_capture_with_a_different_hash(self):
         item = packet()

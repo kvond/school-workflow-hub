@@ -16,7 +16,9 @@ HEADINGS = (
     "Current understanding", "How my thinking changed", "One question to think about",
     "Evidence for my conceptual understanding", "What I understand now that I didn't before",
 )
-LEVELS = ("Developing", "Almost there", "Proficient")
+from .understanding_scale import ALL_LEVELS
+
+LEVELS = ALL_LEVELS
 
 
 @dataclass(frozen=True)

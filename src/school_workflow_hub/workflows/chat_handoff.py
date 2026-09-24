@@ -26,7 +26,9 @@ RETURN_FIELDS = (
 )
 
 STAGES = frozenset({"initial", "final"})
-UNDERSTANDING = frozenset({"Developing", "Almost there", "Proficient", "Evidence unavailable"})
+from .understanding_scale import ALL_LEVELS, UNAVAILABLE
+
+UNDERSTANDING = frozenset({*ALL_LEVELS, UNAVAILABLE})
 
 # A first name and an initial, nothing more. Anything longer is a real name and
 # must not leave the teacher's side.

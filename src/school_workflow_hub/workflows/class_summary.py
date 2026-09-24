@@ -8,7 +8,10 @@ import copy
 
 from school_workflow_hub.workflows.completion_policy import CATEGORIES, _key
 
-LEVELS = ("Developing", "Almost there", "Proficient")
+from .understanding_scale import ALL_LEVELS
+
+# Four-level critical-aspect scale; "Almost there" is read only from older records.
+LEVELS = ALL_LEVELS
 TIMINGS = ("genuine_earlier_answer", "known_later_completion", "documented_revision", "unknown")
 
 

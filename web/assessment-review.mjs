@@ -7,8 +7,11 @@
 import {deadlineLine} from './submission-monitor.mjs';
 import {verifiedSectionOptions} from './grading-records.mjs';
 const JUDGMENTS=['meaningful_attempt','blank','printed_copy','review'];
-const CONCEPTUAL=['Developing','Almost there','Proficient','Evidence unavailable'];
+// Four-level critical-aspect scale (September 23, 2026). An older draft's saved
+// value stays selectable so reviewing it never silently changes it.
+const CONCEPTUAL=['Beginning','Developing','Proficient','Extending','Evidence unavailable'];
 const EXPLANATION=['Names an idea','Connects ideas','Explains how or why','Evidence unavailable'];
+const withCurrent=(list,value)=>list.includes(value)||value===undefined?list:[...list,value];
 const RATES={input:3/1e6,output:15/1e6};// claude-sonnet-5 list prices
 const BUDGET=5;
 const FAILURES={
@@ -20,6 +23,7 @@ const FAILURES={
  provider_request_refused:'The provider refused the request. Check the workspace spend limit and credit balance.',
  provider_unavailable:'The assessment provider could not be reached. Nothing was drafted or saved.',
  provider_draft_invalid:'The drafted output failed validation and was discarded. Generate again.',
+ assessment_column_missing:'The grading workbook needs its report columns updated before this assessment can be saved. Keep this draft; it remains stored for review.',
  provider_prompts_unavailable:'The live Agenda instructions could not be read; drafting refuses to run on stale prompts.',
  agenda_prompts_layout_changed:'The Agenda’s Workflow Prompts tab changed layout; the live instructions could not be verified.',
  assessment_manifest_missing:'This deck has no marker-inventory manifest header, so its requirements cannot be verified. It is held for manual reconciliation.',
@@ -234,8 +238,9 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    const tr=node(review,'tr');
    tr.append(node(review,'td',response.question_id+' · '+response.category+(response.optional?' · optional':'')));
    const judgment=select(review,JUDGMENTS.map(j=>[j,j.replace(/_/g,' ')]),response.judgment);
-   const conceptual=select(review,CONCEPTUAL.map(c=>[c,c]),response.conceptual_level);
-   const explanation=select(review,EXPLANATION.map(e=>[e,e]),response.explanation_level);
+   const conceptual=select(review,withCurrent(CONCEPTUAL,response.conceptual_level).map(c=>[c,c]),response.conceptual_level);
+   // '' means explanation is not rated separately under the four-level scale.
+   const explanation=select(review,[['','Not rated separately'],...EXPLANATION.map(e=>[e,e])],response.explanation_level??'');
    const evidence=node(review,'td');
    if(response.response_excerpt){const details=node(review,'details');details.append(node(review,'summary','Quoted excerpt'),node(review,'div',response.response_excerpt));evidence.append(details);}
    else evidence.append(node(review,'span','(no response)','hint'));
@@ -267,7 +272,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      judgment:judgment.value,
      response_excerpt:judgment.value==='blank'?'':response.response_excerpt,
      conceptual_level:judgment.value==='blank'?'Evidence unavailable':conceptual.value,
-     explanation_level:judgment.value==='blank'?'Evidence unavailable':explanation.value,
+     explanation_level:response.rubric_version==='critical-aspect-4/v1'?'':judgment.value==='blank'?'Evidence unavailable':explanation.value,
      conceptual_feedback:feedback.value}));
     const reviewed={...packet,responses,feedback:feedbackBox.value};
     const requestId=crypto.randomUUID().replace(/-/g,'').slice(0,32);

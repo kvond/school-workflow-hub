@@ -33,7 +33,7 @@ let readCount=0,failNext=false,waitForDiscovery=null,discoveryAssignments=[];con
 let discoveryFiles=[{file_id:'fictional-new-file',source_url:'https://docs.google.com/presentation/d/fictional-new-file/edit',name:'New fictional work',class_key:'forensics',assignment_key:'FOR-REASON',assignment_title:'Fictional reasoning',section_id:'a',section_name:'Period A',student_id:'f-new',display_name:'New F.',discovery_status:'new_ungraded',review_reasons:[]}];
 for(let i=1;i<=5;i++)fixture.submissions.push({record_id:'unmatched-'+i,class_key:'biology',section_id:'',section_name:'',student_id:'',display_name:'Fictional unmatched '+i,assignment_title:'Fictional held work',status:'identity_unverified',content_score:null,revision_score:null,answers:[],included_in_counts:false});
 globalThis.fetch=async(url,options)=>{
- if(url==='/api/grading-records'){readCount++;if(failNext)return{ok:false,status:503};return{ok:true,status:200,json:async()=>structuredClone(fixture)};}
+ if(url==='/api/grading-records'){readCount++;if(failNext)return{ok:false,status:failNext===true?503:failNext};return{ok:true,status:200,json:async()=>structuredClone(fixture)};}
  if(url.startsWith('/api/submission-catalog?')){
   const classKey=new URL(url,'https://fictional.invalid').searchParams.get('class_key');catalogCalls.push({url,options});
   return {ok:true,status:200,json:async()=>({schema_version:'hub-submission-catalog/v1',provenance:'source_read',external_writes:0,live_model_calls:0,class_key:classKey,checked_at:'2026-09-22T12:00:00Z',coverage:{complete:true,issues:[]},assignments:structuredClone(discoveryAssignments.filter(a=>a.class_key===classKey))})};
@@ -127,7 +127,7 @@ choose(classSelect,'biology');assert.equal(sectionSelect.value,'c');assert.equal
 const cards=summary.all.filter(e=>e.tagName==='section'&&e.className==='surface');assert.equal(cards.length,4);
 location.hash='#summary';window.dispatchEvent(new Event('hashchange'));assert.equal(summary.hidden,false);assert.equal(feedback.hidden,true);
 failNext=true;summary.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh summaries').dispatchEvent(new Event('click'));await settle();
-assert.match(summary.allText,/workbook is unavailable/);assert.equal(table(),undefined);
+assert.match(summary.allText,/Diagnostic: grading_records_unavailable/);assert.equal(table(),undefined);
 // A fresh page starts a source read for its restored, server-known exact lesson.
 // Only filter IDs were stored, never response data or student evidence.
 failNext=false;discoveryFiles=[{file_id:'reload-source',source_url:'https://docs.google.com/presentation/d/reload-source/edit',name:'Reloaded source',class_key:'forensics',assignment_key:'FOR-SCENE',assignment_title:'Alias title',section_id:'b',section_name:'A3',student_id:'fictional-reload',display_name:'Reload F.',discovery_status:'new_ungraded',review_reasons:[]}];
@@ -156,4 +156,12 @@ assert.equal(discoveryCalls.length,beforeUnavailable+1,'a restored exact discove
 assert.equal(JSON.parse(discoveryCalls.at(-1).options.body).assignment_key,discoveryKey);
 assert.match(document.getElementById('page-feedback').allText,/Freshly verified discovered lesson/);
 assert.match(document.getElementById('page-feedback').allText,/registry binding needs verification before grading/);
+// A workbook sign-in failure also removes the cached submission preview.
+discoveryFiles=[{file_id:'fictional-private-preview',source_url:'https://docs.google.com/presentation/d/fictional-private-preview/edit',name:'Private fictional preview',class_key:'forensics',assignment_key:discoveryKey,assignment_title:'Fictional discovery',section_id:'a',section_name:'A2',student_id:'fictional-learner',display_name:'Private F.',discovery_status:'new_ungraded',review_reasons:[]}];
+document.getElementById('page-feedback').all.find(e=>e.tagName==='button'&&e.textContent==='Refresh submissions').dispatchEvent(new Event('click'));await settle();
+assert.match(document.getElementById('page-feedback').allText,/Private fictional preview/);
+failNext=403;
+document.getElementById('page-summary').all.find(e=>e.tagName==='button'&&e.textContent==='Refresh summaries').dispatchEvent(new Event('click'));await settle();
+assert.match(document.getElementById('page-feedback').allText,/Dashboard sign-in required/);
+assert.doesNotMatch(document.getElementById('page-feedback').allText,/Private fictional preview/);
 console.log('Page 02 scope checks passed: automatic exact-lesson reads, reload startup, cache visibility, named stable targets, section isolation, and review holds.');

@@ -24,7 +24,7 @@ Output `class-summary/v1` includes:
   `comparison_timing` separately counts students with known later completion,
   documented revision, genuine earlier answers, or unknown timing from their
   per-question comparisons. These counts may overlap.
-- `proficiency_by_question`: Developing, Almost there, Proficient, unavailable.
+- `proficiency_by_question`: Beginning, Developing, Proficient, Extending, unavailable (four-level critical-aspect scale since September 23, 2026; Almost there appears only in older records).
 - `recurring_misconceptions`: only assessor-defined ideas supported by more than
   one distinct student, preserving exact quotes and supplied timing labels.
 - `instructional_contrasts`: teacher/assessor-supplied concrete case pairs,
