@@ -6,7 +6,7 @@ import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, app, completion, feedback, google, ledger, roster, tidy, work
+from hub_v2 import agenda, answers, app, completion, feedback, google, ledger, roster, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -988,6 +988,31 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(completion.added("Producers Count: [ Enter # ]", "Producers Count: 12"), "12")
         self.assertEqual(completion.added("↑ ↓ ?", "↑"), "chose ↑")
         self.assertEqual(completion.added("Your answer", "Your answer"), "")
+        # As the student wrote it: capitals and punctuation kept, the printed words left out.
+        self.assertEqual(completion.added("[ Type name here ]", "Oak Tree, mostly.", exact=True), "Oak Tree, mostly.")
+        self.assertEqual(completion.added("Producers Count: [ Enter # ]", "Producers Count: 12", exact=True), "12")
+        self.assertEqual(completion.added("↑ ↓ ?", "↑", exact=True), "chose ↑")
+
+    def test_answers_are_kept_as_the_student_wrote_them_with_their_slide(self):
+        result = self.score(RULE="Energy enters through PRODUCERS, like kelp!", B1="Only plants use sunlight.",
+                            B2="Vent bacteria use chemical energy.")
+        items = {(i["category"], i["id"]): i for i in result["items"]}
+        self.assertEqual(items[("NOTES", "Q-RULE")]["answer"], "Energy enters through PRODUCERS, like kelp!")
+        self.assertEqual(items[("NOTES", "Q-RULE")]["at"], 2)
+        self.assertEqual(items[("NOTES", "Q-RULE")]["question"],
+                         "Finish this sentence as a rule: energy enters through ____.")
+        self.assertEqual(items[("NOTES", "Q-MASTERY")]["answer"], "Only plants use sunlight.")
+        self.assertEqual(items[("DRAFT", "Q-MASTERY")]["answer"], "Vent bacteria use chemical energy.")
+        self.assertEqual(items[("NOTES", "Q-COUNT")]["answer"], "")  # left blank
+
+    def test_a_slide_is_named_by_its_title_box_else_its_top_line(self):
+        titled = {"units": [{"text": "Body text", "box": (0, 10, 10, 10)},
+                            {"text": "Your answer — Critical Aspect 1 · Energy flow", "box": None, "title": True}]}
+        self.assertEqual(completion.slide_title(titled), "Your answer — Critical Aspect 1 · Energy flow")
+        untitled = {"units": [{"text": "Lower", "box": (0, 300, 10, 10)},
+                              {"text": "Top line\nsecond line", "box": (0, 20, 10, 10)},
+                              {"text": "[[NOTES:C01:A]]", "box": (0, 0, 10, 10)}]}
+        self.assertEqual(completion.slide_title(untitled), "Top line")
 
     def test_not_a_deck(self):
         with self.assertRaises(completion.Unreadable):
@@ -1169,6 +1194,121 @@ class RecordEndpointTests(unittest.TestCase):
         self.assertEqual(record.call_args.args[3], "ic")
         status, record = self.post("https://hub.fictional.example", body.replace(b'"ic"', b'"grades"'))
         self.assertEqual(status, "400 Bad Request")
+
+
+class ResearchSheetTests(unittest.TestCase):
+    CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+    FORM = "FICTIONALFORMID1234567890abc"
+    CONTEXT = {"class": "🧬 Biology", "week": "Wk 03", "assignment": "Energy flow — Turn in", "form_id": FORM}
+    CLOSED = {"window": {"at": "2026-09-20T03:59:00Z", "label": "Sat Sep 19, 11:59 PM"}}
+    NOW = datetime(2026, 9, 24, 14, 0, tzinfo=timezone.utc)
+
+    def scored(self):
+        row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A4 Biology",
+               "submitted_at": "2026-09-15T14:30:00Z",
+               "files": [{"id": "DECK1", "url": "https://docs.google.com/presentation/d/DECK1/edit"}]}
+        result = {"file_id": "DECK1", "problem": None, "file_updated": "2026-09-16T01:00:00Z", "items": [
+            {"category": "NOTES", "id": "CA1", "status": "done", "answer": "=Energy flows one way", "at": 4,
+             "question": "Your answer — Critical Aspect 1 · Energy flow"},
+            {"category": "DRAFT", "id": "CA1", "status": "blank", "answer": "", "at": 4,
+             "question": "Your answer — Critical Aspect 1 · Energy flow"}]}
+        unscorable = ({**row, "last": "Lee", "first": "Bo", "files": [{"id": "DECK2"}]},
+                      {"file_id": "DECK2", "problem": "Couldn't read this deck."})
+        return [(row, result), unscorable]
+
+    def run_save(self, header, keys, form=None, sheets=None):
+        sheets = sheets if sheets is not None else [{"id": "SHEETID", "name": "Student answers — Biology"}]
+        values = lambda token, sid, cell_range: header if cell_range.endswith("!1:1") else keys
+        with patch.object(google, "files_named_in", return_value=sheets) as search, \
+                patch.object(google, "sheet_tabs", return_value=("Student answers", {"Answers": 0})), \
+                patch.object(google, "sheet_values", side_effect=values) as read, \
+                patch.object(google, "append_rows") as append:
+            out = answers.save("token", "write", self.CONFIG, "biology", self.CONTEXT, "Energy flow",
+                               form or self.CLOSED, self.scored(), now=self.NOW)
+        return out, append, read, search
+
+    def test_a_closed_assignment_adds_one_row_per_box_and_never_twice(self):
+        out, append, _, _ = self.run_save([], [])
+        self.assertEqual((out["saved"], out["already"]), (2, 0))
+        self.assertEqual(append.call_args.args[0], "write")  # only the write token writes
+        written = append.call_args.args[3]
+        self.assertEqual(written[0], answers.HEADER)
+        first = dict(zip(answers.HEADER, written[1]))
+        self.assertEqual(first["Student"], "Rivera, Ana")
+        self.assertEqual((first["Section"], first["Week"], first["Lesson"]), ("A4 Biology", "Wk 03", "Energy flow"))
+        self.assertEqual((first["Slide"], first["Type"], first["Code"]), (4, "NOTES", "CA1"))
+        self.assertEqual(first["Answer"], "=Energy flows one way")  # written as text, never run
+        self.assertEqual((first["Status"], first["Turned in"]), ("answered", "2026-09-15 10:30"))
+        self.assertEqual(dict(zip(answers.HEADER, written[2]))["Status"], "blank")
+        self.assertEqual(len(written), 3)  # the deck that couldn't be scored adds nothing
+        keys = [[r[-1]] for r in written[1:]]
+        out, append, _, _ = self.run_save([answers.HEADER], keys)
+        self.assertEqual((out["saved"], out["already"]), (0, 2))
+        append.assert_not_called()
+
+    def test_keys_are_found_by_their_heading_if_a_column_was_added(self):
+        _, _, read, _ = self.run_save([["Code it"] + answers.HEADER], [])
+        self.assertIn("!R2:R200000", read.call_args_list[-1].args[2])
+
+    def test_an_open_assignment_waits_and_touches_nothing(self):
+        form = {"window": {"at": "2026-09-29T03:59:00Z", "label": "Mon Sep 28, 11:59 PM"}}
+        out, append, read, search = self.run_save([], [], form=form)
+        self.assertEqual(out["waiting"], "Mon Sep 28, 11:59 PM")
+        search.assert_not_called()
+        read.assert_not_called()
+        append.assert_not_called()
+
+    def test_only_the_sheet_with_the_exact_name_is_written_to(self):
+        sheets = [{"id": "COPY", "name": "Copy of Student answers — Biology", "createdTime": "2026-09-01T00:00:00Z"},
+                  {"id": "CODED", "name": "Student answers — Biology coded", "createdTime": "2026-09-02T00:00:00Z"},
+                  {"id": "HERS", "name": "student answers - Biology", "createdTime": "2026-09-03T00:00:00Z"}]
+        with patch.object(google, "files_named_in", return_value=sheets):
+            self.assertEqual(answers.find("token", self.CONFIG, "biology")["id"], "HERS")
+        out, append, _, _ = self.run_save([], [], sheets=sheets[:2])
+        self.assertEqual(out["configured"], False)
+        self.assertIn("Student answers — Biology", out["setup"])
+        append.assert_not_called()
+
+    def test_rows_are_appended_as_plain_text(self):
+        with patch.object(google, "get_json") as call_google:
+            google.append_rows("write", "SHEETID", "'Answers'!A1", [["=1+1"]])
+        self.assertEqual(call_google.call_args.args[2]["valueInputOption"], "RAW")
+
+    def test_only_biology_has_a_research_sheet(self):
+        with self.assertRaises(ValueError):
+            answers.save("token", "write", self.CONFIG, "forensics", self.CONTEXT, "", self.CLOSED, [], now=self.NOW)
+
+
+class AnswersEndpointTests(unittest.TestCase):
+    def post(self, origin, body):
+        environ = {"PATH_INFO": "/v2/api/answers", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
+        seen = {}
+        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+        form_id = "FICTIONALFORMID1234567890abc"
+        found = {"lessons": [{"topic": "Energy flow", "forms": [{"form_id": form_id}]}]}
+        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "_form_context", return_value=({"form_id": form_id}, {}, found)), \
+                patch.object(answers, "closed", return_value=True), \
+                patch.object(app, "_score_rows", return_value=[]), \
+                patch.object(answers, "save", return_value={"configured": True, "saved": 0}) as save:
+            b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+        return seen["status"], save
+
+    def test_saving_answers_needs_the_dashboard_page_and_a_research_class(self):
+        body = json.dumps({"class": "biology", "week": "Wk 03", "form": "FICTIONALFORMID1234567890abc"}).encode()
+        status, save = self.post("https://elsewhere.example", body)
+        self.assertEqual(status, "403 Forbidden")
+        save.assert_not_called()
+        status, save = self.post("https://hub.fictional.example", body)
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(save.call_args.args[3:6], ("biology", {"form_id": "FICTIONALFORMID1234567890abc"}, "Energy flow"))
+        status, save = self.post("https://hub.fictional.example", body.replace(b"biology", b"forensics"))
+        self.assertEqual(status, "400 Bad Request")
+        save.assert_not_called()
 
 
 def bank_deck(**changes):

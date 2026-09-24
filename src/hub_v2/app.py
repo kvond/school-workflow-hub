@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import completion, feedback, google, ledger, tidy, work
+from . import answers, completion, feedback, google, ledger, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -165,6 +165,10 @@ def _form_context(token, config, agenda, class_key, week, form_id):
 def _form_rows(token, config, agenda, class_key, week, form_id):
     """(context, [(row, score)]) for the roster-matched, on-time students of one Form."""
     context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
+    return context, _score_rows(token, agenda, class_key, week, form_id, form, found)
+
+
+def _score_rows(token, agenda, class_key, week, form_id, form, found):
     rows = [r for r in form["students"] if r["matched"] and r["files"]]
 
     def one(row):
@@ -172,7 +176,7 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
         return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)
     with ThreadPoolExecutor(max_workers=4) as pool:
         scores = list(pool.map(one, rows))
-    return context, list(zip(rows, scores))
+    return list(zip(rows, scores))
 
 
 def feedback_list(token, config, agenda, class_key, week, form_id):
@@ -235,6 +239,31 @@ def record_post(environ, respond, config):
         return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing was recorded."})
 
 
+def answers_post(environ, respond, config):
+    """Add a closed assignment's final answers to the class's research sheet
+    (Biology only). Nothing is scored or written while the two weeks are open."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        class_key, week, form_id = _form_args(_json_body(environ, 2000))
+        if class_key not in answers.SHEETS:
+            raise ValueError()
+        token = google.service_token(config)
+        agenda = load_agenda(token, config)
+        context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
+        lesson = next((l["topic"] for l in found["lessons"] if any(f["form_id"] == form_id for f in l["forms"])), "")
+        scored = _score_rows(token, agenda, class_key, week, form_id, form, found) if answers.closed(form) else []
+        return respond("200 OK", answers.save(token, google.service_token(config, write=True), config, class_key,
+                                              context, lesson, form, scored))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return respond("400 Bad Request", {"error": "That request wasn't understood."})
+    except google.GoogleError as error:
+        return respond("502 Bad Gateway", {"error": str(error)})
+    except Exception:
+        return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing was saved."})
+
+
 def _same_origin_json(environ, respond, config):
     """A response refusing the request, or None when it is the signed-in
     teacher posting JSON from the dashboard page itself."""
@@ -276,6 +305,8 @@ def application(environ, start_response, config=None):
         return tidy_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/record":
         return record_post(environ, respond, config)
+    if method == "POST" and path == "/v2/api/answers":
+        return answers_post(environ, respond, config)
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "This page only reads."},
                        extra=[("Allow", "GET, HEAD")])
