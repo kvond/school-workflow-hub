@@ -126,6 +126,7 @@ def parse_class_tab(cells):
         "todo": col("todo"), "prep": col(ends="prep"),
         "teacher_url": col("teacherurl"), "student_url": col("studenturl"),
         "folder_url": col("folderurl"), "extra_url": col("extraurl"),
+        "second_deck": col("2nddeck", "seconddeck"),
         "teacher_deck": col("teacherdeck"), "student_deck": col("studentdeck"),
         "folder": col("folder"), "activity": col(starts="activity"),
         "turnin": col("turnitin"), "turnin_url": col("turninurl"),
@@ -154,6 +155,7 @@ def build_lesson(cells, layout, row, edit_url):
     for hidden, visible, label in (("teacher_url", "teacher_deck", "Teacher deck"),
                                    ("student_url", "student_deck", "Student copy"),
                                    ("folder_url", "folder", "Lesson folder"),
+                                   ("second_deck", None, "2nd deck"),
                                    ("extra_url", None, "Extra material")):
         found = links(cell(hidden)) or (links(cell(visible)) if visible else [])
         if found:
