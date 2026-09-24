@@ -105,6 +105,11 @@ tr.unmatched td { background: var(--warn-bg); }
 .roster-check .flags { margin: 8px 0 0; padding-left: 18px; }
 .roster-check .flags li { margin: 4px 0; }
 .late { margin-top: 12px; }
+.ic-panel { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 12px 0; background: var(--bg); }
+.ic-panel h4 { margin: 0 0 6px; }
+.for-claude { white-space: pre-wrap; font-size: 12px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px; max-height: 260px; overflow: auto; }
+button[disabled] { opacity: 0.6; cursor: default; }
 .late h4 { margin: 0 0 4px; }
 
 @media (max-width: 640px) {

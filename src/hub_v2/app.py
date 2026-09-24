@@ -2,12 +2,13 @@
 
 Runs inside the existing Cloud Run service behind the same Cloud IAP sign-in,
 and uses the same settings and service account as v1. It reads the Agenda, the
-roster workbook, Form responses and Drive file details. Its one write is the
-Tidy button, which moves a previewed set of files and folders into a week's one
+roster workbook, Form responses, Drive file details and (to count completed
+boxes) the student decks themselves. Its one write is the Tidy button, which moves a previewed set of files and folders into a week's one
 📥 folder when the teacher confirms.
 """
 import json
 import os
+import re
 import threading
 import time
 from datetime import date
@@ -15,7 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from . import agenda as agenda_module
-from . import google, tidy, work
+from . import completion, google, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -30,8 +31,26 @@ SECURITY_HEADERS = [
      "form-action 'none'; frame-ancestors 'none'"),
 ]
 CACHE_SECONDS = 60
+WORK_CACHE_SECONDS = 600
 _cache = {"agenda": None, "at": 0.0}
 _cache_lock = threading.Lock()
+_work_cache = {}
+
+
+def lesson_work(token, config, agenda, class_key, week, fresh=True):
+    """Student work for a lesson, kept for ten minutes so scoring can reuse
+    the list the page is showing instead of re-reading every folder."""
+    key = (class_key, week)
+    with _cache_lock:
+        cached = _work_cache.get(key)
+    if not fresh and cached and time.time() - cached[0] < WORK_CACHE_SECONDS:
+        return cached[1]
+    result = work.lesson_work(token, config, agenda, class_key, week)
+    with _cache_lock:
+        if len(_work_cache) > 40:
+            _work_cache.clear()
+        _work_cache[key] = (time.time(), result)
+    return result
 
 
 def load_agenda(token, config, fresh=False):
@@ -97,7 +116,14 @@ def api(sub, query, config):
         week = _one(query, "week")
         if not 1 <= len(week) <= 100:
             raise ValueError("week")
-        return {**work.lesson_work(token, config, agenda, class_key, week), "agenda": sheet}
+        return {**lesson_work(token, config, agenda, class_key, week), "agenda": sheet}
+    if sub == "api/score":
+        class_key = _class_key(_one(query, "class"))
+        week, form_id, file_id = _one(query, "week"), _one(query, "form"), _one(query, "file")
+        if not 1 <= len(week) <= 100 or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", form_id + file_id):
+            raise ValueError("score")
+        found = lesson_work(token, config, agenda, class_key, week, fresh=False)
+        return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
     return None
 
 

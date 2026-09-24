@@ -2,10 +2,11 @@
 import io
 import json
 import unittest
+import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, app, google, roster, tidy, work
+from hub_v2 import agenda, app, completion, google, roster, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -844,3 +845,163 @@ class TidyEndpointTests(unittest.TestCase):
         status, _, applied = self.post("https://hub.fictional.example")
         self.assertEqual(status, "200 OK")
         applied.assert_called_once()
+
+
+def pptx(slides, size=(1000, 600)):
+    """A minimal fictional .pptx: slides are lists of (name, text, (x, y, w, h))."""
+    from xml.sax.saxutils import escape
+    ns = ('xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+          'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"')
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        ids = "".join('<p:sldId id="%d" r:id="rId%d"/>' % (256 + i, i + 1) for i in range(len(slides)))
+        z.writestr("ppt/presentation.xml", '<p:presentation %s><p:sldIdLst>%s</p:sldIdLst>'
+                   '<p:sldSz cx="%d" cy="%d"/></p:presentation>' % (ns, ids, size[0], size[1]))
+        rels = "".join('<Relationship Id="rId%d" Target="slides/slide%d.xml"/>' % (i + 1, i + 1)
+                       for i in range(len(slides)))
+        z.writestr("ppt/_rels/presentation.xml.rels",
+                   '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s'
+                   '</Relationships>' % rels)
+        for number, shapes in enumerate(slides, 1):
+            body = ""
+            for i, (name, text, (x, y, w, h)) in enumerate(shapes):
+                paragraphs = "".join("<a:p><a:r><a:t>%s</a:t></a:r></a:p>" % escape(line)
+                                     for line in text.split("\n"))
+                body += ('<p:sp><p:nvSpPr><p:cNvPr id="%d" name="%s"/></p:nvSpPr><p:spPr><a:xfrm>'
+                         '<a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/></a:xfrm></p:spPr>'
+                         '<p:txBody>%s</p:txBody></p:sp>' % (i + 2, name, x, y, w, h, paragraphs))
+            z.writestr("ppt/slides/slide%d.xml" % number,
+                       '<p:sld %s><p:cSld><p:spTree>%s</p:spTree></p:cSld></p:sld>' % (ns, body))
+    return out.getvalue()
+
+
+HEADER = ("[[MARKER-INVENTORY:C09]] NOTES=3 DRAFT=1 OPTIONAL=0 BANK_TERMS=2 "
+          "NOTES_IDS=Q-RULE,Q-COUNT,Q-MASTERY DRAFT_IDS=Q-MASTERY OPTIONAL_IDS= "
+          "BANK_IDS=Producer,Trophic level COURSE=Biology VERSION=2026-09-18")
+
+
+def handout(**changes):
+    """The distributed copy, or a student's copy with some boxes changed."""
+    def text(name, default):
+        return changes.get(name, default)
+    return pptx([
+        [("S1", HEADER, (0, 0, 900, 40))],
+        # Codes placed on their answer boxes.
+        [("PROMPT", "Finish this sentence as a rule: energy enters through ____.", (20, 20, 900, 60)),
+         ("RULE", text("RULE", "[ Write your rule here ]"), (20, 120, 400, 100)),
+         ("COUNT", text("COUNT", "Producers Count: [ Enter # ]"), (500, 120, 300, 100)),
+         ("CHOICE", text("CHOICE", "↑ ↓ ?"), (20, 300, 100, 40)),
+         ("M1", "[[NOTES:C09:Q-RULE]]", (30, 130, 80, 10)),
+         ("M2", "[[NOTES:C09:Q-COUNT]]", (510, 130, 80, 10))],
+        # First and revised answer, codes listed together in a corner.
+        [("L1", "Your first answer", (20, 80, 400, 30)),
+         ("B1", text("B1", ""), (20, 120, 400, 150)),
+         ("L2", "Your revised answer", (20, 320, 400, 30)),
+         ("B2", text("B2", ""), (20, 360, 400, 150)),
+         ("M3", "[[NOTES:C09:Q-MASTERY]]", (900, 540, 90, 10)),
+         ("M4", "[[DRAFT:C09:Q-MASTERY]]", (900, 552, 90, 10))],
+        # Concept Bank, codes listed together.
+        [("T1", text("T1", "Producer  "), (20, 20, 400, 80)),
+         ("T2", text("T2", "Trophic level  "), (20, 120, 400, 80)),
+         ("M5", "[[BANK:C09:Producer]]\n[[BANK:C09:Trophic level]]", (900, 500, 90, 30))],
+        # No codes here.
+        [("FREE", text("FREE", "Notes space"), (20, 20, 800, 400))],
+    ])
+
+
+class CompletionTests(unittest.TestCase):
+    def score(self, **changes):
+        template = completion.read_deck(handout())
+        student = completion.read_deck(handout(**changes))
+        return completion.assess(student, template)
+
+    def test_the_header_lists_what_is_required(self):
+        code, required, basis, note = completion.inventory(completion.read_deck(handout()))
+        self.assertEqual((code, basis, note), ("C09", "header", None))
+        self.assertEqual(required["BANK"], ["Producer", "Trophic level"])
+        self.assertEqual(required["NOTES"], ["Q-RULE", "Q-COUNT", "Q-MASTERY"])
+        self.assertEqual(required["OPTIONAL"], [])
+
+    def test_untouched_copy_scores_zero(self):
+        result = self.score()
+        self.assertEqual((result["notes_score"], result["revision_score"]), (0.0, 0.0))
+        self.assertEqual(result["uncoded"], [])
+
+    def test_boxes_the_student_wrote_in_count_and_nothing_else(self):
+        result = self.score(RULE="Energy enters through producers", COUNT="Producers Count: 12",
+                            B2="Plants catch light and make sugar", T1="Producer  makes its own food")
+        status = {(i["category"], i["id"]): i["status"] for i in result["items"]}
+        self.assertEqual(status[("NOTES", "Q-RULE")], "done")
+        self.assertEqual(status[("NOTES", "Q-COUNT")], "done")
+        self.assertEqual(status[("NOTES", "Q-MASTERY")], "blank")  # only the revised box was filled
+        self.assertEqual(status[("DRAFT", "Q-MASTERY")], "done")
+        self.assertEqual(status[("BANK", "Producer")], "done")
+        self.assertEqual(status[("BANK", "Trophic level")], "blank")
+        # Notes = 10 x (2 NOTES + 1 BANK) / (3 + 2); Revision = 10 x 1 / 1.
+        self.assertEqual((result["notes_score"], result["revision_score"]), (6.0, 10.0))
+
+    def test_first_answer_goes_to_notes_not_revision(self):
+        result = self.score(B1="Only plants can use sunlight")
+        status = {(i["category"], i["id"]): i["status"] for i in result["items"]}
+        self.assertEqual((status[("NOTES", "Q-MASTERY")], status[("DRAFT", "Q-MASTERY")]), ("done", "blank"))
+
+    def test_printed_prompt_copied_back_is_flagged_not_credited(self):
+        result = self.score(RULE="Finish this sentence as a rule: energy enters through")
+        item = next(i for i in result["items"] if i["id"] == "Q-RULE")
+        self.assertEqual(item["status"], "copied")
+
+    def test_writing_in_an_uncoded_box_is_reported_not_scored(self):
+        result = self.score(FREE="Notes space my own notes about energy")
+        self.assertEqual([u["slide"] for u in result["uncoded"]], [5])
+        self.assertEqual(result["notes_score"], 0.0)
+
+    def test_a_deck_without_a_header_uses_every_code_in_it(self):
+        deck = completion.read_deck(pptx([[("M", "[[NOTES:C01:A]]", (0, 0, 10, 10)),
+                                           ("N", "[[DRAFT:C01:A]]", (0, 20, 10, 10))]]))
+        code, required, basis, _ = completion.inventory(deck)
+        self.assertEqual((code, basis, required["NOTES"], required["DRAFT"]), ("C01", "census", ["A"], ["A"]))
+
+    def test_added_words(self):
+        self.assertEqual(completion.added("[ Type name here ]", "Oak tree"), "oak tree")
+        self.assertEqual(completion.added("Producers Count: [ Enter # ]", "Producers Count: 12"), "12")
+        self.assertEqual(completion.added("↑ ↓ ?", "↑"), "chose ↑")
+        self.assertEqual(completion.added("Your answer", "Your answer"), "")
+
+    def test_not_a_deck(self):
+        with self.assertRaises(completion.Unreadable):
+            completion.read_deck(b"%PDF-1.4 not a deck")
+
+
+class ScoreFileTests(unittest.TestCase):
+    FORM = "FICTIONALFORMID1234567890abc"
+
+    def work_result(self, late=False):
+        row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics",
+               "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES}], "late": late, "earlier": []}
+        return {"lessons": [{"forms": [{"form_id": self.FORM, "students": [] if late else [row],
+                                        "late": [row] if late else []}]}]}
+
+    def run_score(self, file_id="STUDENTDECK123", late=False):
+        completion._templates.clear()
+        completion._results.clear()
+        decks = {"FICTIONALDECK1234567890": handout(), "STUDENTDECK123": handout(RULE="Through producers")}
+        with patch.object(google, "drive_file", side_effect=lambda t, fid, fields=None: {
+                    "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "2026-09-22T00:00:00Z"}), \
+                patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]) as read:
+            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM, file_id,
+                                           self.work_result(late))
+        return result, read
+
+    def test_a_students_current_file_is_scored_against_the_lessons_deck(self):
+        result, read = self.run_score()
+        self.assertIsNone(result["problem"])
+        self.assertEqual(result["counts"]["NOTES"], {"done": 1, "required": 3})
+        self.assertEqual(result["notes_score"], 2.0)  # 10 x 1 / (3 NOTES + 2 BANK)
+        self.assertEqual(sorted(c.args[1] for c in read.call_args_list), ["FICTIONALDECK1234567890", "STUDENTDECK123"])
+
+    def test_only_files_on_the_page_can_be_scored_and_late_work_never_is(self):
+        with self.assertRaises(ValueError):
+            self.run_score(file_id="SOMEOTHERFILE99")
+        with self.assertRaises(ValueError):
+            self.run_score(late=True)

@@ -46,6 +46,18 @@ A week's work counts until the end of the Friday two weeks after that week
 work from someone on another class's roster or on no roster is flagged, and the
 Rosters sheet's last change is shown.
 
+**Score completion** (per assignment) exports each student's current on-time
+deck from Drive and compares it, box by box, with the copy linked in the
+lesson's Agenda row. The required items are the codes in the deck's
+`[[MARKER-INVENTORY:…]]` header: Notes = 10 × (completed NOTES + BANK) ÷
+required, Revision = 10 × completed DRAFT ÷ required, following the teacher's
+Prompt 1. It counts; it never judges quality, and no model is called. A box
+counts when the student wrote something new in it; the printed prompt copied
+back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
+ready to enter in IC** lists the scores for typing into Infinite Campus, or
+copies them with instructions for the Claude extension to enter while the
+teacher watches. The page itself never writes to IC.
+
 **Tidy this week's folders** is v2's one write. It previews, then on the
 teacher's confirmation moves a week's extra folders' contents, loose Form
 folders and the earlier shared Form's uploads into that week's one `📥` folder,
