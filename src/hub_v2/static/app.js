@@ -589,7 +589,7 @@ function renderRosterCheck(check) {
     el('p', {class: 'muted', text: [`Students: ${sections}.`, updated].filter(Boolean).join(' ')}));
   if (check.stale) box.append(note(`The Rosters sheet hasn’t changed in over ${check.stale_days} days. Check that your roster job is still running.`));
   if (!flags.length) {
-    box.append(el('p', {class: 'ok', text: '✓ Everyone who turned in work this week is on this class’s roster.'}));
+    box.append(el('p', {class: 'ok', text: '✓ Nothing to check: everyone who turned in work in the last week is on this class’s roster.'}));
     return box;
   }
   const say = {

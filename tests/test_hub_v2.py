@@ -223,6 +223,7 @@ class WorkTests(unittest.TestCase):
                      response("s.new.student@school.example", "2026-09-22T14:00:00Z", ("F3", "Deck"))]
         config["HUB_SCHOOL_EMAIL_DOMAINS"] = "school.example"
         with patch.object(work.roster, "load", return_value=({"forensics": self.students, "biology": biology}, [])), \
+                patch.object(work, "_now", return_value=datetime(2026, 9, 24, 12, tzinfo=timezone.utc)), \
                 patch.object(google, "form_responses", side_effect=lambda t, form_id: responses
                              if form_id == "FICTIONALFORMID1234567890abc" else []), \
                 patch.object(google, "drive_file", return_value={"name": "Deck", "trashed": False,
@@ -235,6 +236,11 @@ class WorkTests(unittest.TestCase):
                           ("no_roster", "s.new.student@school.example", "")])
         notes = [r.get("roster_note") for r in result["lessons"][0]["forms"][0]["students"] if not r["matched"]]
         self.assertEqual(notes, ["On the A4 Biology roster", "Not on any class roster"])
+        # A week later the same work is old news: the flags are dropped.
+        with patch.object(work, "_now", return_value=datetime(2026, 10, 1, 12, tzinfo=timezone.utc)):
+            later = work.roster_check("token", config, {"forensics": self.students, "biology": biology}, "forensics",
+                                      result["lessons"], [], {"school.example"})
+        self.assertEqual(later["flags"], [])
 
     def test_lesson_work_reports_a_form_it_cannot_read(self):
         def responses(token, form_id):
