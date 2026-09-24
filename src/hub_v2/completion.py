@@ -177,9 +177,11 @@ def markers(deck):
     return found
 
 
-def _parse_header(header):
-    """{category: [ids]} from a code list, or None when its lists don't match its own counts."""
-    lists = {c: [] for c in CATEGORIES}
+def _parse_header(header, census):
+    """{category: [ids]} from a code list, or None when its lists don't match its own counts.
+    A category the list gives a count for but no ids (BANK_TERMS=6 with no BANK_IDS=)
+    uses the deck's own codes for it."""
+    lists = {c: list(census[c]) for c in CATEGORIES}
     for category, values in ID_LIST.findall(header):
         lists[category] = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
     counts = {("BANK" if k == "BANK_TERMS" else k): int(v) for k, v in COUNT.findall(header)}
@@ -205,7 +207,7 @@ def inventory(deck):
     # order first, then the order the boxes were made in.
     by_position = sorted(slide["units"], key=lambda u: (u["box"][1], u["box"][0]) if u["box"] else (0, 0))
     for units in (by_position, slide["units"]):
-        lists = _parse_header("\n".join(u["text"] for u in units if u["text"]))
+        lists = _parse_header("\n".join(u["text"] for u in units if u["text"]), census)
         if lists:
             return code, lists, "header", None
     return code, census, "census", "The deck's code list doesn't match its own counts, so every code in it was used."
@@ -236,6 +238,11 @@ def added(before, after):
     if not any(re.search(r"\w", w) for w in words):
         return ""
     return " ".join(new[spans[0][0]:spans[-1][1]])
+
+
+def _squash(text):
+    """'Inductive reasoning', 'inductive-reasoning' and 'InductiveReasoning' all read 'inductivereasoning'."""
+    return re.sub(r"[^a-z0-9]+", "", _plain(text).lower())
 
 
 def _center(box):
@@ -342,20 +349,17 @@ def _assign(slide_markers, written, template_slide, size):
     # box labels ("first"/"revised" answer, Concept Bank terms), then by order.
     remaining = [item for item in written if not item[1].startswith("moved: ")]
     for m in [m for m in slide_markers if m["category"] == "BANK"]:
-        term = m["id"].lower()
+        term = _squash(m["id"])
         for item in list(remaining):
             before = next((u for u in template_units if u["key"] == item[0]["key"]), None)
-            label = (before or item[0])["text"].lower()
-            if label.startswith(term) or re.match(r"\W*" + re.escape(term) + r"\b", label):
+            if term and _squash((before or item[0])["text"]).startswith(term):
                 result[("BANK", m["id"])].append(item)
                 remaining.remove(item)
     bank = [m for m in slide_markers if m["category"] == "BANK"]
     if bank and remaining:
         # An answer box without the term in it belongs to the nearest term label.
-        labels = {}
-        for m in bank:
-            pattern = re.compile(r"\W*" + re.escape(m["id"].lower()) + r"\b")
-            labels[m["id"]] = next((u for u in template_units if u["box"] and pattern.match(u["text"].lower())), None)
+        labels = {m["id"]: next((u for u in template_units if u["box"] and _squash(m["id"])
+                                 and _squash(u["text"]).startswith(_squash(m["id"]))), None) for m in bank}
         placed_labels = [(m, labels[m["id"]]) for m in bank if labels[m["id"]]]
         only_bank = len(bank) == len(slide_markers)
         for item in list(remaining):
@@ -445,10 +449,12 @@ def assess(student, template):
                   "required": len(required[c])} for c in CATEGORIES}
     scored_items = [i for i in items if i["category"] != "OPTIONAL"]
     missing_codes = sum(1 for i in scored_items if i["status"] == "not found")
+    student_note = None
     if scored_items and missing_codes * 10 >= len(scored_items) * 3:
-        note = ("This copy is missing %d of its %d codes, so it may have been copied from an older version of "
-                "the deck. Check it by hand." % (missing_codes, len(scored_items)))
-    return {"code": code, "inventory": basis, "note": note, "coding": coding_issues(template or student),
+        student_note = ("This copy is missing %d of its %d codes, so it may have been copied from an older version "
+                        "of the deck. Check it by hand." % (missing_codes, len(scored_items)))
+    return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
+            "coding": coding_issues(template or student),
             "notes_score": score(counts["NOTES"]["done"] + counts["BANK"]["done"],
                                  counts["NOTES"]["required"] + counts["BANK"]["required"]),
             "revision_score": score(counts["DRAFT"]["done"], counts["DRAFT"]["required"]),

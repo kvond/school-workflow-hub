@@ -108,6 +108,14 @@ class AgendaTests(unittest.TestCase):
         self.assertIsNone(day["week"])
         self.assertIn("isn't in any week", day["problems"][0])
 
+    def test_a_second_deck_column_is_read_as_a_lesson_material(self):
+        cells = grid({1: ["Wk", "Topic", "🎞 2nd deck", "📤 Turn it in"],
+                      2: ["Wk 03", "Two assignments", "https://docs.google.com/presentation/d/FICTIONALSECONDDECK12345/edit?slide=id.g1", ""]})
+        layout, problem = agenda.parse_class_tab(cells)
+        lesson = agenda.build_lesson(cells, layout, 2, "")
+        self.assertEqual([(m["label"], m["url"]) for m in lesson["materials"]],
+                         [("2nd deck", "https://docs.google.com/presentation/d/FICTIONALSECONDDECK12345/edit?slide=id.g1")])
+
     def test_week_options(self):
         options = fixture().week_options("forensics")
         self.assertEqual([(o["label"], o["topic"], o["forms"]) for o in options],
@@ -1184,6 +1192,25 @@ class RealDeckShapeTests(unittest.TestCase):
         result = self.assess(A2="one step in a food chain")
         status = {i["id"]: i["status"] for i in result["items"] if i["category"] == "BANK"}
         self.assertEqual(status, {"Producer": "blank", "Trophic level": "done"})
+
+    def test_a_code_list_with_a_bank_count_but_no_bank_ids_uses_the_decks_bank_codes(self):
+        deck = completion.read_deck(pptx([
+            [("H", "[[MARKER-INVENTORY:F09]] NOTES=1 DRAFT=0 OPTIONAL=0 BANK_TERMS=2 NOTES_IDS=Q1 DRAFT_IDS= OPTIONAL_IDS=",
+              (0, 0, 900, 60))],
+            [("M0", "[[NOTES:F09:Q1]]", (0, 0, 10, 10)), ("M1", "[[BANK:F09:Premise]]", (0, 20, 10, 10)),
+             ("M2", "[[BANK:F09:Hypothesis]]", (0, 40, 10, 10))]]))
+        code, required, basis, note = completion.inventory(deck)
+        self.assertEqual((basis, required["BANK"], note), ("header", ["Premise", "Hypothesis"], None))
+
+    def test_a_camelcase_bank_code_matches_its_spaced_label(self):
+        deck = lambda **c: pptx([
+            [("L1", "inductive reasoning", (20, 20, 300, 30)), ("A1", c.get("A1", ""), (20, 60, 300, 80)),
+             ("L2", "hypothesis", (20, 200, 300, 30)), ("A2", c.get("A2", ""), (20, 240, 300, 80)),
+             ("M1", "[[BANK:F09:InductiveReasoning]]", (900, 540, 90, 10)),
+             ("M2", "[[BANK:F09:Hypothesis]]", (900, 552, 90, 10))]])
+        result = completion.assess(completion.read_deck(deck(A1="patterns from examples")), completion.read_deck(deck()))
+        status = {i["id"]: i["status"] for i in result["items"]}
+        self.assertEqual(status, {"InductiveReasoning": "done", "Hypothesis": "blank"})
 
     def test_a_dragged_card_is_not_uncoded_writing(self):
         result = self.assess(CARD=(600, 100, 80, 30))
