@@ -498,6 +498,8 @@ function renderForm(form, lesson) {
     if (failed) box.append(note(`${failed} deck(s) couldn’t be scored — see the note in their row.`, 'info'));
     const report = uncodedReport(scores);
     if (report) box.append(report);
+    const listNote = Object.values(scores).map(r => r.inventory_note).find(Boolean);
+    if (listNote) box.append(note(`Deck code list: ${listNote}`, 'info'));
     const coding = Object.values(scores).map(r => r.coding).find(c => c && (c.missing.length || c.extra.length));
     if (coding) {
       box.append(note(['Deck codes to fix before next time:',
