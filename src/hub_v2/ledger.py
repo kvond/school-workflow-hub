@@ -1,42 +1,22 @@
-"""The teacher's own "Scores entered" sheet: which scores she has entered in
-Infinite Campus and who has had feedback, so the next list shows only what is
-new or changed (a resubmission with revisions updates the same grade).
+"""The dashboard's own notes on each assignment, kept in the teacher's
+"Scores entered" sheet: when she last entered its scores in Infinite Campus
+and when she last made its feedback. She never needs to open the sheet.
 
-She makes a Google Sheet whose name starts with "Scores entered" (for example
+It is a Google Sheet whose name starts with "Scores entered" (for example
 "Scores entered (school workflow-hub)") inside the turn-in root, which is
-shared with the dashboard's account as an Editor. The dashboard adds rows to
-its first tab when she clicks "I entered these" or "Mark feedback done"; it
-never edits or deletes a row, so the sheet is also her history.
+shared with the dashboard's account as an Editor. Each click of "I entered
+these in IC" or "Mark feedback done" adds one row for that class and
+assignment to its first tab; rows are never edited or deleted.
 """
+import re
 from datetime import datetime, timedelta, timezone
 
-from . import google, roster, work
+from . import google, work
 
 NAME = "Scores entered"
-HEADER = ["Recorded at", "Kind", "Class", "Week", "Assignment", "Form ID", "Section", "Last name",
-          "First name", "Notes /10", "Revision /10", "File ID", "File updated"]
+HEADER = ["Recorded at", "Kind", "Class", "Week", "Assignment", "Form ID"]
 KINDS = {"ic": "Entered in IC", "feedback": "Feedback made"}
 MAX_ROWS = 20000
-
-
-def score_text(value):
-    return "N/A" if value is None else "%g" % value
-
-
-def shown_scores(score, closed):
-    """(Notes, Revision) as they go into IC. While an assignment's two weeks
-    are open an empty result stays blank; once they close it is 0. No work
-    turned in on time (score None) is blank, then 0."""
-    if score is None:
-        return ("0", "0") if closed else ("", "")
-    out = []
-    for value in (score.get("notes_score"), score.get("revision_score")):
-        out.append("" if value == 0 and not closed else score_text(value))
-    return tuple(out)
-
-
-def student_key(section, last, first):
-    return "|".join(roster.plain(v) for v in (section, last, first))
 
 
 def find(token, config):
@@ -56,46 +36,52 @@ def _first_tab(token, sheet_id):
     return "'%s'" % title.replace("'", "''") if title else None
 
 
+def eastern_now():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    local = now - timedelta(hours=4)
+    if work.eastern_offset(local) == 5:
+        local = now - timedelta(hours=5)
+    return local.strftime("%Y-%m-%d %H:%M")
+
+
+def _utc(stamp):
+    """'2026-09-24 10:15' (school time) as a UTC ISO time, or None."""
+    match = re.fullmatch(r"\s*(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})\s*", str(stamp or ""))
+    if not match:
+        return None
+    local = datetime(*(int(g) for g in match.groups()))
+    return (local + timedelta(hours=work.eastern_offset(local))).strftime("%Y-%m-%dT%H:%M:00Z")
+
+
 def read(token, config, form_id):
-    """What the sheet says about one assignment: the latest entered scores per
-    student, and who has had feedback."""
-    out = {"configured": False, "url": None, "entered": {}, "feedback": {}, "problem": None,
-           "setup": "To track what you've entered, make a Google Sheet whose name starts with “%s” inside "
-                    "00 REAL ALL TURN IN (it needs the dashboard's account as an Editor there)." % NAME}
+    """When this assignment's scores were last entered in IC and its feedback last made."""
+    out = {"configured": False, "url": None, "entered_at": None, "feedback_at": None, "problem": None,
+           "setup": "To keep track of what you've entered, make a Google Sheet whose name starts with "
+                    "“%s” inside 00 REAL ALL TURN IN." % NAME}
     try:
         sheet = find(token, config)
         if not sheet:
             return out
         out["configured"], out["url"] = True, "https://docs.google.com/spreadsheets/d/%s/edit" % sheet["id"]
         tab = _first_tab(token, sheet["id"])
-        rows = google.sheet_values(token, sheet["id"], "%s!A1:M%d" % (tab, MAX_ROWS)) if tab else []
+        rows = google.sheet_values(token, sheet["id"], "%s!A1:F%d" % (tab, MAX_ROWS)) if tab else []
     except google.GoogleError as error:
         out["problem"] = "The “%s” sheet couldn't be read (%s)." % (NAME, error)
         return out
     for row in rows:
         row = list(row) + [""] * (len(HEADER) - len(row))
-        if row[5] != form_id:
+        at = _utc(row[0])
+        if row[5] != form_id or not at:
             continue
-        key = student_key(row[6], row[7], row[8])
-        if row[1] == KINDS["ic"]:
-            out["entered"][key] = {"notes": row[9], "revision": row[10], "at": row[0], "file_id": row[11]}
-        elif row[1] == KINDS["feedback"]:
-            out["feedback"][key] = {"at": row[0], "file_id": row[11]}
+        key = {KINDS["ic"]: "entered_at", KINDS["feedback"]: "feedback_at"}.get(row[1])
+        if key and (not out[key] or at > out[key]["at"]):  # the latest by date, whatever the row order
+            out[key] = {"label": row[0].strip(), "at": at}
     return out
 
 
-def eastern_now():
-    now = datetime.now(timezone.utc)
-    naive = now.replace(tzinfo=None)
-    local = naive - timedelta(hours=4)
-    if work.eastern_offset(local) == 5:
-        local = naive - timedelta(hours=5)
-    return local.strftime("%Y-%m-%d %H:%M")
-
-
-def record(token, write_token, config, kind, context, entries):
-    """Add one row per entry; returns how many were added."""
-    if kind not in KINDS or not entries:
+def record(token, write_token, config, kind, context):
+    """Add one row noting that this assignment was entered in IC or had feedback made."""
+    if kind not in KINDS:
         raise ValueError("kind")
     sheet = find(token, config)
     if not sheet:
@@ -105,11 +91,8 @@ def record(token, write_token, config, kind, context, entries):
     if not tab:
         raise google.GoogleError("The “%s” sheet has no tab to write to." % NAME)
     rows = [] if google.sheet_values(token, sheet["id"], tab + "!A1:B1") else [HEADER]
-    stamp = eastern_now()
-    for entry in entries:
-        rows.append([stamp, KINDS[kind], context["class"], context["week"], context["assignment"],
-                     context["form_id"], entry["section"], entry["last"], entry["first"],
-                     entry["notes"], entry["revision"], entry["file_id"], entry["file_updated"]])
+    rows.append([eastern_now(), KINDS[kind], context["class"], context["week"], context["assignment"],
+                 context["form_id"]])
     try:
         google.append_rows(write_token, sheet["id"], tab + "!A1", rows)
     except google.GoogleError as error:
@@ -118,4 +101,4 @@ def record(token, write_token, config, kind, context, entries):
                                      "with %s as an Editor." % (NAME, google.service_account(config)),
                                      error.status) from None
         raise
-    return len(entries)
+    return 1

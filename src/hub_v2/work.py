@@ -40,6 +40,7 @@ NOT_STUDENT_WORK = re.compile(r"growth report|feedback|class summary|template|an
 MAX_FOLDERS = 60
 LATE_AFTER_DAYS = 14
 ROSTER_STALE_DAYS = 7
+ROSTER_FLAG_DAYS = 7  # roster-change flags about older work are dropped
 
 
 def week_number(label):
@@ -490,11 +491,16 @@ def shared_submissions(token, config, class_name, number):
     return found, None
 
 
+def _now():
+    return datetime.now(timezone.utc)
+
+
 def roster_check(token, config, by_class, class_key, lessons, other_rows, domains=(), prefix="s."):
-    """The roster pass run with every load. It flags work from someone who is
-    on another class's roster (turned in to the wrong class?) or on no roster
-    (new, left, or a visitor), anyone listed twice, and says how many students
-    each section has and when the Rosters sheet last changed."""
+    """The roster pass run with every load. It flags work turned in during the
+    last week from someone who is on another class's roster (turned in to the
+    wrong class?) or on no roster (new, left, or a visitor), anyone listed
+    twice, and says how many students each section has and when the Rosters
+    sheet last changed. Flags about older work are dropped."""
     students = by_class.get(class_key, [])
     sections = {name: 0 for name in roster.SECTIONS[class_key]}
     listed = {}
@@ -506,8 +512,12 @@ def roster_check(token, config, by_class, class_key, lessons, other_rows, domain
              for same in listed.values() if len(same) > 1]
     places = [(form["label"], row) for lesson in lessons for form in lesson["forms"]
               for row in form["students"] + form["late"]] + [("Not sorted", row) for row in other_rows]
+    recent = _now() - timedelta(days=ROSTER_FLAG_DAYS)
     for label, row in places:
         if row["matched"]:
+            continue
+        turned_in = when(row["submitted_at"])
+        if not turned_in or turned_in < recent:
             continue
         probe = {"email": row["email"], "files": row["files"], "typed": row["typed"]}
         elsewhere = next((student for key, others in by_class.items() if key != class_key

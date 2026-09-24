@@ -136,7 +136,7 @@ function renderPlans(data) {
 }
 
 // ---------- Student work ----------
-const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}};
+const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}};
 
 function fillSelect(select, options, value) {
   select.replaceChildren(...options.map(([v, label]) => el('option', {value: v, text: label})));
@@ -178,7 +178,9 @@ async function loadWork(fresh = false) {
     work.data = data;
     work.scores = {};
     work.ui = {};
+    work.marks = {};
     renderWork();
+    loadMarks(data.lessons.flatMap(l => l.forms).filter(f => f.form_id), seq);
     setStatus('work-status', `Read ${when(new Date().toISOString())}.`);
     // Score every assignment right away; results are kept on the server, so this is quick after the first time.
     for (const form of data.lessons.flatMap(l => l.forms)) {
@@ -280,8 +282,6 @@ function uncodedReport(scores) {
   return note(`Writing in boxes with no code (not scored): ${list.map(([slide, n]) => `slide ${slide} (${n} student${n > 1 ? 's' : ''})`).join(', ')}. Run your embed-coding program on this deck before you hand it out next time.`, 'info');
 }
 
-const plain = v => String(v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-const studentKey = r => [r.section, r.last, r.first].map(plain).join('|');
 
 async function postJSON(url, body) {
   const response = await fetch(url, {method: 'POST', credentials: 'same-origin',
@@ -295,26 +295,36 @@ async function postJSON(url, body) {
 async function openPanel(form, which) {
   const ui = work.ui[form.form_id] = {...work.ui[form.form_id]};
   if (ui.open === which) { ui.open = null; renderWork(); return; }
-  ui.open = which; ui.error = null; ui.busy = which === 'ic' ? 'Checking the Scores entered sheet…' : 'Finding students with revised answers…';
+  ui.open = which; ui.error = null; ui.busy = which === 'ic' ? null : 'Finding students with revised answers…';
   renderWork();
-  const q = `class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`;
+  if (which !== 'feedback') return;
   try {
-    if (which === 'ic') ui.ledger = await getJSON(`api/ledger?${q}`);
-    else ui.feedback = await getJSON(`api/feedback?${q}`);
+    ui.feedback = await getJSON(`api/feedback?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`);
   } catch (error) { ui.error = error.message; }
   ui.busy = null;
   renderWork();
 }
 
-async function recordRows(form, kind, files, zeros = []) {
+async function loadMarks(forms, seq) {
+  await Promise.all(forms.map(async form => {
+    try {
+      const sheet = await getJSON(`api/ledger?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`);
+      if (seq === work.seq) work.marks[form.form_id] = sheet;
+    } catch { /* the card simply shows no marks */ }
+  }));
+  if (seq === work.seq) renderWork();
+}
+
+async function recordMark(form, kind) {
   const ui = work.ui[form.form_id];
-  ui.busy = 'Adding them to the Scores entered sheet…'; ui.error = null; renderWork();
+  ui.busy = 'Noting it…'; ui.error = null; renderWork();
   try {
-    const done = await postJSON('api/record', {class: work.cls, week: work.week, form: form.form_id, kind, files, zeros});
-    ui.saved = `Added ${done.recorded} row(s) to Scores entered.`;
-    ui.open = null;
-    await openPanel(form, kind === 'ic' ? 'ic' : 'feedback');
-  } catch (error) { ui.error = error.message; ui.busy = null; renderWork(); }
+    const done = await postJSON('api/record', {class: work.cls, week: work.week, form: form.form_id, kind});
+    work.marks[form.form_id] = done.sheet;
+    ui.saved = kind === 'ic' ? 'Noted: this assignment is entered in IC.' : 'Noted: feedback made for this assignment.';
+    ui.open = null; ui.busy = null;
+  } catch (error) { ui.error = error.message; ui.busy = null; }
+  renderWork();
 }
 
 async function copyText(textValue, status) {
@@ -322,61 +332,68 @@ async function copyText(textValue, status) {
   catch { status.textContent = ' Couldn’t copy; select the text below instead.'; }
 }
 
+const markDate = mark => mark ? when(mark.at) : '';
+
+function marksLine(form) {
+  const sheet = work.marks[form.form_id];
+  if (!sheet?.configured) return null;
+  const parts = [sheet.entered_at ? `✓ Entered in IC ${markDate(sheet.entered_at)}` : '',
+    sheet.feedback_at ? `✓ Feedback made ${markDate(sheet.feedback_at)}` : ''].filter(Boolean);
+  return parts.length ? el('p', {class: 'marks', text: parts.join(' · ')}) : null;
+}
+
 function icPanel(form, lesson, scores) {
   const section = work.section;
   const cls = CLASSES.find(([k]) => k === work.cls)[1];
   const ui = work.ui[form.form_id] || {};
-  const ledger = ui.ledger;
+  const sheet = work.marks[form.form_id];
+  const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
   const closed = closedFor(form);
   const inSection = r => section === 'all' || r.section === section;
   const all = [
     ...form.students.filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
-      .filter(x => x.s && !x.s.problem).map(x => ({...x, file: x.s.file_id, show: shown(x.s, closed)})),
+      .filter(x => x.s && !x.s.problem).map(x => ({...x, show: shown(x.s, closed)})),
     ...(closed ? [...form.missing, ...form.late.filter(r => r.matched)].filter(inSection)
       .map(r => ({r, s: null, zero: true, show: shown(null, true)})) : []),
   ].filter(x => x.show.some(v => v !== ''))
     .sort((a, b) => (a.r.section + a.r.last + a.r.first).localeCompare(b.r.section + b.r.last + b.r.first));
+  // New since you last entered this assignment: turned in after that, or a 0
+  // that appeared because the two weeks closed after it.
   for (const x of all) {
-    const before = ledger?.entered?.[studentKey(x.r)];
-    x.before = before;
-    x.state = !before ? 'new' : (before.notes === x.show[0] && before.revision === x.show[1] ? 'same' : 'changed');
+    x.fresh = !entered || (x.zero ? new Date(form.window.at) > entered : new Date(x.r.submitted_at) > entered);
   }
-  const rows = all.filter(x => x.state !== 'same');
-  const same = all.filter(x => x.state === 'same');
+  const fresh = all.filter(x => x.fresh);
   const dash = v => v === '' ? '— (leave blank)' : v;
-  const lines = rows.map(({r, show, before, zero}) => `${r.last}, ${r.first} — ${r.section} — Notes ${dash(show[0])} — Revision ${dash(show[1])}${zero ? ' (nothing turned in on time)' : ''}${before ? ` (was Notes ${before.notes || 'blank'}, Revision ${before.revision || 'blank'})` : ''}`);
-  const forClaude = [
+  const claudeText = list => [
     'Please enter these completion scores in Infinite Campus. I am signed in and have the grade book open in this Chrome window.',
     `Class: ${cls}${section === 'all' ? '' : ' ' + section} · ${work.week} · Assignment: ${form.label}${lesson.topic ? ` (${lesson.topic})` : ''}`,
     'Each score is out of 10. "Notes" goes in this assignment\'s notes/content score and "Revision" in its revision score.',
     'Before you save, show me each student, assignment and score you are about to enter, and wait for my OK.',
-    'Do not change any other grade. Where a line says "was …", IC should show that old score: replace it with the new one. If a student or the assignment is not there, or IC shows any other existing score, stop and ask me. "N/A" means leave it blank.',
+    'Do not change any other grade. If a student already has a different score for this assignment, it is an update from a resubmission: show me the old and new score and replace it only after I say OK. If a student or the assignment is not there, stop and ask me. "— (leave blank)" means leave it blank.',
     'After saving, reload the page and read the saved scores back to me.',
-    '', 'Last, First — Section — Notes /10 — Revision /10', ...lines].join('\n');
+    '', 'Last, First — Section — Notes /10 — Revision /10',
+    ...list.map(({r, show, zero}) => `${r.last}, ${r.first} — ${r.section} — Notes ${dash(show[0])} — Revision ${dash(show[1])}${zero ? ' (nothing turned in on time)' : ''}`)].join('\n');
   const status = el('span', {class: 'muted'});
   const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Enter these scores in Infinite Campus'}));
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
   if (ui.error) panel.append(note(ui.error));
-  if (ui.saved) panel.append(note(ui.saved, 'info'));
-  if (ledger && !ledger.configured) panel.append(note(ledger.setup, 'info'));
-  if (ledger?.problem) panel.append(note(ledger.problem));
-  if (!rows.length) {
-    panel.append(note(all.length ? 'Nothing new: every score here is already in the Scores entered sheet.' : 'No scores to enter yet.', 'info'));
-  } else {
-    panel.append(
-      el('p', {}, el('strong', {text: 'Open Infinite Campus first'}), ` and go to this assignment in your grade book. ${ledger?.configured ? 'These are the new and changed scores since you last recorded them. ' : ''}Type them in yourself, or copy them for the Claude extension and it will enter them while you watch, asking you before it saves.`),
-      el('div', {class: 'action-row'},
-        el('button', {type: 'button', class: 'primary', onclick: () => copyText(forClaude, status)}, 'Copy for Claude'),
-        ledger?.configured ? el('button', {type: 'button', onclick: () => recordRows(form, 'ic', rows.filter(x => !x.zero).map(x => x.file), rows.filter(x => x.zero).map(x => studentKey(x.r)))}, 'I entered these in IC') : null,
-        status),
-      el('div', {class: 'table-wrap'}, el('table', {},
-        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
-        el('tbody', {}, rows.map(({r, show, state, before, zero}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
-          el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
-          el('td', {}, state === 'changed' ? el('span', {class: 'badge', text: `was ${before.notes || '—'} / ${before.revision || '—'}`}) : el('span', {class: 'badge', text: zero ? 'nothing on time' : 'new'}))))))),
-      el('details', {}, el('summary', {text: 'Show the text for Claude'}), el('pre', {class: 'for-claude', text: forClaude})));
-  }
-  if (same.length) panel.append(el('p', {class: 'muted', text: `Already entered and unchanged: ${same.length}.`}));
+  if (sheet && !sheet.configured) panel.append(note(sheet.setup, 'info'));
+  if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
+  panel.append(el('p', {}, el('strong', {text: 'Open Infinite Campus first'}), entered
+    ? ` and go to this assignment. You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'} Type them in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.`
+    : ' and go to this assignment in your grade book. Type the scores in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.'));
+  panel.append(el('div', {class: 'action-row'},
+    fresh.length ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(claudeText(fresh), status)},
+      entered ? `Copy for Claude (${fresh.length} new since)` : 'Copy for Claude') : null,
+    entered ? el('button', {type: 'button', onclick: () => copyText(claudeText(all), status)}, 'Copy all for Claude') : null,
+    sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')}, 'I entered these in IC') : null,
+    status));
+  panel.append(el('div', {class: 'table-wrap'}, el('table', {},
+    el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
+    el('tbody', {}, all.map(({r, show, zero, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
+      el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
+      el('td', {}, zero ? el('span', {class: 'badge', text: 'nothing on time'}) : null,
+        entered && isNew ? el('span', {class: 'badge warn', text: `new since ${markDate(sheet.entered_at)}`}) : null)))))));
   panel.append(el('p', {class: 'muted', text: closed
     ? 'The two weeks are over, so students with nothing on time (including late work) are listed as 0. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.'
     : 'The two weeks are still open, so empty scores stay blank and students with nothing turned in aren’t listed yet. Low scores are worth a look in the deck before you enter them.'}));
@@ -389,23 +406,23 @@ function feedbackPanel(form) {
   const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use Teacher Claude)'}));
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
   if (ui.error) panel.append(note(ui.error));
-  if (ui.saved) panel.append(note(ui.saved, 'info'));
   if (!data) return panel;
   if (!data.sheet?.configured) panel.append(note(data.sheet?.setup || '', 'info'));
   if (data.problem) panel.append(note(data.problem));
-  const counts = [data.done_before ? `${data.done_before} already had feedback` : '', data.no_revision ? `${data.no_revision} have no revised answers yet` : '']
-    .filter(Boolean).join(' · ');
+  const since = data.sheet?.feedback_at ? markDate(data.sheet.feedback_at) : '';
+  const counts = [data.done_before ? `${data.done_before} turned in before the last feedback (${since})` : '',
+    data.no_revision ? `${data.no_revision} have no revised answers yet` : ''].filter(Boolean).join(' · ');
   if (!data.students.length) {
     panel.append(note('Nobody new has revised answers to give feedback on.' + (counts ? ` (${counts}.)` : ''), 'info'));
     return panel;
   }
   const status = el('span', {class: 'muted'});
   panel.append(
-    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into Teacher Claude, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
+    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${since ? ` turned in since ${since}` : ''}${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into Teacher Claude, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
     el('ul', {class: 'files'}, data.students.map(s => el('li', {text: `${s.name} — ${s.section} — revised ${s.draft_done} of ${s.draft_required}`}))),
     el('div', {class: 'action-row'},
       data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for Teacher Claude') : null,
-      data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordRows(form, 'feedback', data.students.map(s => s.file_id))}, 'Mark feedback done') : null,
+      data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'feedback')}, 'Mark feedback done') : null,
       data.prompt_url ? link('Edit the prompt in the Agenda ↗', data.prompt_url) : null, status),
     data.prompt ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'for-claude', text: data.prompt})) : null);
   return panel;
@@ -478,6 +495,9 @@ function renderForm(form, lesson) {
   if (form.window) {
     box.append(el('p', {class: 'muted', text: `Open until ${form.window.label} — two weeks after the first turn-in (${form.window.opened}). Anything later is Late and isn’t graded.`}));
   }
+  const marks = marksLine(form);
+  if (marks) box.append(marks);
+  if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
   const scores = work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress;
@@ -569,7 +589,7 @@ function renderRosterCheck(check) {
     el('p', {class: 'muted', text: [`Students: ${sections}.`, updated].filter(Boolean).join(' ')}));
   if (check.stale) box.append(note(`The Rosters sheet hasn’t changed in over ${check.stale_days} days. Check that your roster job is still running.`));
   if (!flags.length) {
-    box.append(el('p', {class: 'ok', text: '✓ Everyone who turned in work this week is on this class’s roster.'}));
+    box.append(el('p', {class: 'ok', text: '✓ Nothing to check: everyone who turned in work in the last week is on this class’s roster.'}));
     return box;
   }
   const say = {

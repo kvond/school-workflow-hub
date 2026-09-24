@@ -57,15 +57,17 @@ counts when the student wrote something new in it; the printed prompt copied
 back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
 ready to enter in IC** lists the scores for typing into Infinite Campus, or
 copies them with instructions for the Claude extension to enter while the
-teacher watches. The page itself never writes to IC. When the teacher has made
-a Google Sheet whose name starts with `Scores entered` in the turn-in root, **I entered these in
-IC** adds a row per score, and the next list shows only new or changed scores
-(a resubmission with revisions updates the same grade). **Start feedback (use
-Teacher Claude)** copies the teacher's current Prompt 2 from the Agenda's
-Feedback Prompts tab with this round's students — revised answers done and no
-feedback yet, named by first name and last initial — for the teacher's own
-Claude to write one Google Doc with two pages per student. **Mark feedback
-done** records them in the same sheet. Each assignment stays open for two weeks
+teacher watches. The page itself never writes to IC. The dashboard keeps its own notes in a Google Sheet whose name starts with
+`Scores entered`, in the turn-in root; the teacher never needs to open it.
+**I entered these in IC** and **Mark feedback done** each add one row for the
+class and assignment, and each assignment card then shows "✓ Entered in IC
+<date> · ✓ Feedback made <date>". The IC list marks students who turned in
+something new since that date (a resubmission updates the same grade), and
+**Start feedback (use Teacher Claude)** copies the teacher's current Prompt 2
+from the Agenda's Feedback Prompts tab with the students who have revised
+answers turned in since the last feedback (first name and last initial), for
+her own Claude to write one Google Doc with two pages per student, saved in the
+week's 📥 folder. Each assignment stays open for two weeks
 from its first turn-in; later work is Late and isn't scored. While it is open,
 an empty score (no work yet, or no revised answers yet) stays blank; once the
 two weeks close it is 0, and those zeros are listed for IC too.
