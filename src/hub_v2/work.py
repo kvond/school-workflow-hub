@@ -14,10 +14,20 @@ work is their latest usable Form upload (not trashed, not named for a different
 week), else their latest usable folder file; everything else stays visible as
 an earlier version. Nothing is dropped: a file that can't be matched to the
 roster or to an assignment is still listed.
+
+Each assignment (Form) stays open for two weeks from the first turn-in by
+anyone: until the end of that day two weeks later, school time. Anything
+turned in after that is marked Late, listed on its own and left off the grade
+sheet's graded rows.
+
+Every load also runs a roster check: work from someone who is on another
+class's roster, or on no roster at all, is flagged, and the Rosters sheet's
+last update is shown.
 """
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
 
 from . import google, roster
 from .agenda import norm
@@ -28,6 +38,8 @@ STUDENT_WORK = ("application/vnd.google-apps.presentation", "application/vnd.goo
                 "application/vnd.ms-powerpoint", "image/jpeg", "image/png", "image/heic")
 NOT_STUDENT_WORK = re.compile(r"growth report|feedback|class summary|template|answer key", re.I)
 MAX_FOLDERS = 60
+LATE_AFTER_DAYS = 14
+ROSTER_STALE_DAYS = 7
 
 
 def week_number(label):
@@ -56,7 +68,7 @@ def submissions(responses):
                 value = str(value.get("value", "")).strip()
                 if value and len(value) <= 120:
                     typed.append(value)
-        found.append({"source": "form", "email": str(response.get("respondentEmail") or "").lower(),
+        found.append({"source": "form", "event": True, "email": str(response.get("respondentEmail") or "").lower(),
                       "key": response.get("responseId", ""),
                       "submitted_at": response.get("lastSubmittedTime") or response.get("createTime") or "",
                       "files": files, "typed": typed[:4]})
@@ -65,8 +77,11 @@ def submissions(responses):
 
 def folder_submission(item):
     created = item.get("createdTime", "")
-    return {"source": "folder", "email": "", "key": item["id"],
-            "submitted_at": name_time(item.get("name"), created) or created,
+    stamped = name_time(item.get("name"), created)
+    # Only a turn-in time written into the name is a real turn-in event; a
+    # file's creation time may be when the student made their copy.
+    return {"source": "folder", "event": bool(stamped), "email": "", "key": item["id"],
+            "submitted_at": stamped or created,
             "files": [{"id": item["id"], "name": item.get("name", ""), "mime": item.get("mimeType", "")}],
             "typed": []}
 
@@ -99,12 +114,19 @@ def _usable(submission):
         not f.get("trashed") and not f.get("other_week") for f in submission["files"])
 
 
-def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missing=True):
-    """([one row per student], [roster students with nothing yet])."""
+def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missing=True, cutoff=None):
+    """([one row per student], [roster students with nothing yet]).
+
+    With a cutoff, work turned in after it is late: a student's current work is
+    their latest on-time version, and a row is late only when all of it is."""
     for submission in found:
+        moment = when(submission["submitted_at"])
+        submission["late"] = bool(cutoff and moment and moment > cutoff)
         for f in submission["files"]:
             f["other_week"] = named_week(f.get("name"), lesson_week)
             f["from_folder"] = submission["source"] == "folder"
+            f["from_shared"] = bool(submission.get("shared"))
+            f["late"] = submission["late"]
     groups = {}
     for submission in found:
         student, how = identify(submission, students, domains, prefix)
@@ -114,8 +136,8 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
         entry["items"].append(submission)
     rows = []
     for entry in groups.values():
-        items = sorted(entry["items"], key=lambda s: (_usable(s), s["source"] == "form", s["submitted_at"]),
-                       reverse=True)
+        items = sorted(entry["items"], key=lambda s: (not s["late"], _usable(s), s["source"] == "form",
+                                                      s["submitted_at"]), reverse=True)
         student, current = entry["student"], items[0]
         rows.append({"matched": bool(student),
                      "last": student["last"] if student else "",
@@ -124,8 +146,9 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
                      "matched_by": entry["how"], "email": current["email"],
                      "typed": [] if student else current["typed"],
                      "source": current["source"], "submitted_at": current["submitted_at"],
-                     "files": current["files"],
-                     "earlier": [{"submitted_at": s["submitted_at"], "source": s["source"], "files": s["files"]}
+                     "files": current["files"], "late": current["late"],
+                     "earlier": [{"submitted_at": s["submitted_at"], "source": s["source"], "files": s["files"],
+                                  "late": s["late"]}
                                  for s in sorted(items[1:], key=lambda s: s["submitted_at"], reverse=True)]})
     rows.sort(key=lambda r: (not r["matched"], r["section"], roster.plain(r["last"]),
                              roster.plain(r["first"]), r["email"], r["files"][0]["name"] if r["files"] else ""))
@@ -235,18 +258,67 @@ def name_time(name, created):
     match = re.search(r"[—-]\s*(\d{2})-(\d{2})\s+(\d{2})\.(\d{2})\s*[—-]", str(name or ""))
     if not match or not re.match(r"\d{4}", str(created or "")):
         return None
-    from datetime import datetime, timedelta
     year = int(created[:4])
     month, day, hour, minute = (int(g) for g in match.groups())
     try:
         local = datetime(year, month, day, hour, minute)
     except ValueError:
         return None
-    # US Eastern: daylight time from the 2nd Sunday of March to the 1st Sunday of November.
+    return (local + timedelta(hours=eastern_offset(local))).strftime("%Y-%m-%dT%H:%M:00Z")
+
+
+def eastern_offset(local):
+    """Hours behind UTC for a US Eastern local time: daylight time runs from
+    the 2nd Sunday of March to the 1st Sunday of November."""
+    year = local.year
     march = datetime(year, 3, 8) + timedelta(days=(6 - datetime(year, 3, 8).weekday()) % 7)
     november = datetime(year, 11, 1) + timedelta(days=(6 - datetime(year, 11, 1).weekday()) % 7)
-    offset = 4 if march <= local < november else 5
-    return (local + timedelta(hours=offset)).strftime("%Y-%m-%dT%H:%M:00Z")
+    return 4 if march <= local < november else 5
+
+
+def when(value):
+    """A Google timestamp ('2026-09-22T14:00:00.123Z') as an aware datetime, or None."""
+    match = re.match(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$",
+                     str(value or "").strip())
+    if not match:
+        return None
+    base, fraction, zone = match.groups()
+    try:
+        return datetime.fromisoformat("%s.%s%s" % (base, (fraction or "0").ljust(6, "0")[:6],
+                                                   "+00:00" if zone == "Z" else zone))
+    except ValueError:
+        return None
+
+
+def school_day(moment):
+    """The US Eastern calendar date of an aware UTC datetime."""
+    naive = moment.astimezone(timezone.utc).replace(tzinfo=None)
+    local = naive - timedelta(hours=4)
+    if eastern_offset(local) == 5:
+        local = naive - timedelta(hours=5)
+    return local.date()
+
+
+def _day_label(day):
+    return "%s %d" % (day.strftime("%a %b"), day.day)
+
+
+def window(found):
+    """({opened, at, label} | None): an assignment stays open until the end of
+    the day two weeks after the first turn-in by anyone, school time."""
+    times = [t for t in (when(s["submitted_at"]) for s in found if s.get("event", True)) if t]
+    if not times:
+        return None
+    first = school_day(min(times))
+    last = first + timedelta(days=LATE_AFTER_DAYS)
+    local = datetime(last.year, last.month, last.day, 23, 59, 59)
+    at = (local + timedelta(hours=eastern_offset(local))).replace(tzinfo=timezone.utc)
+    return {"opened": _day_label(first), "at": at, "label": _day_label(last) + ", 11:59 PM"}
+
+
+def week_monday(agenda, week_label):
+    week = next((w for w in getattr(agenda, "weeks", []) if norm(w["label"]) == norm(week_label)), None)
+    return date.fromisoformat(week["monday"]) if week else None
 
 
 def deck_stem(name):
@@ -380,6 +452,88 @@ def pair_decks(forms, decks):
             form["signature"].add(deck)
 
 
+SHARED_KEY = re.compile(r"^\s*(.+?)\s*·\s*wk\s*0*(\d+)\b", re.I)
+SHARED_CACHE_SECONDS = 60
+_shared_cache = {}
+
+
+def shared_submissions(token, config, class_name, number):
+    """([submission], note): responses to the earlier shared turn-in Form that
+    name this course and week in their assignment field
+    ('🔬 Forensics · Wk 03 — …'). Their files count here wherever a script
+    later moved them, and their respondent email identifies the student."""
+    form_id = str(config.get("HUB_TURNIN_FORM_ID", "") or "").strip()
+    if not form_id or number is None:
+        return [], None
+    import time
+    cached = _shared_cache.get(form_id)
+    if cached and time.time() - cached[0] < SHARED_CACHE_SECONDS:
+        responses = cached[1]
+    else:
+        try:
+            responses = google.form_responses(token, form_id)
+        except google.GoogleError as error:
+            return [], "The earlier shared turn-in Form couldn't be read (%s), so its uploads may be missing." % error
+        _shared_cache[form_id] = (time.time(), responses)
+    found = []
+    for submission in submissions(responses):
+        for text in submission["typed"]:
+            match = SHARED_KEY.match(text)
+            if match and norm(match.group(1)) == norm(class_name) and int(match.group(2)) == number:
+                submission["shared"] = True
+                submission["typed"] = [t for t in submission["typed"] if t != text]
+                if submission["files"]:
+                    found.append(submission)
+                break
+    return found, None
+
+
+def roster_check(token, config, by_class, class_key, lessons, other_rows, domains=(), prefix="s."):
+    """The roster pass run with every load. It flags work from someone who is
+    on another class's roster (turned in to the wrong class?) or on no roster
+    (new, left, or a visitor), anyone listed twice, and says how many students
+    each section has and when the Rosters sheet last changed."""
+    students = by_class.get(class_key, [])
+    sections = {name: 0 for name in roster.SECTIONS[class_key]}
+    listed = {}
+    for student in students:
+        sections[student["section"]] = sections.get(student["section"], 0) + 1
+        listed.setdefault((roster.plain(student["last"]), roster.plain(student["first"])), []).append(student)
+    flags = [{"kind": "twice", "who": "%s, %s" % (same[0]["last"], same[0]["first"]),
+              "section": " and ".join(sorted({s["section"] for s in same})), "assignment": "", "file": "", "url": ""}
+             for same in listed.values() if len(same) > 1]
+    places = [(form["label"], row) for lesson in lessons for form in lesson["forms"]
+              for row in form["students"] + form["late"]] + [("Not sorted", row) for row in other_rows]
+    for label, row in places:
+        if row["matched"]:
+            continue
+        probe = {"email": row["email"], "files": row["files"], "typed": row["typed"]}
+        elsewhere = next((student for key, others in by_class.items() if key != class_key
+                          for student in [identify(probe, others, domains, prefix)[0]] if student), None)
+        first = row["files"][0] if row["files"] else {}
+        if elsewhere:
+            row["roster_note"] = "On the %s roster" % elsewhere["section"]
+            who = "%s, %s" % (elsewhere["last"], elsewhere["first"])
+        else:
+            row["roster_note"] = "Not on any class roster"
+            who = row["email"] or first.get("name", "") or "Unknown"
+        flags.append({"kind": "other_class" if elsewhere else "no_roster", "who": who,
+                      "section": elsewhere["section"] if elsewhere else "", "assignment": label,
+                      "file": first.get("name", ""), "url": first.get("url", "")})
+    updated, stale = None, False
+    sheet_id = str(config.get("HUB_ROSTER_SPREADSHEET_ID", "") or "")
+    if sheet_id:
+        try:
+            modified = when(google.drive_file(token, sheet_id, "id,modifiedTime").get("modifiedTime"))
+        except google.GoogleError:
+            modified = None
+        if modified:
+            updated = modified.strftime("%Y-%m-%dT%H:%M:%SZ")
+            stale = datetime.now(timezone.utc) - modified > timedelta(days=ROSTER_STALE_DAYS)
+    return {"sections": sections, "flags": flags, "updated_at": updated, "stale": stale,
+            "stale_days": ROSTER_STALE_DAYS}
+
+
 def lesson_work(token, config, agenda, class_key, week_label):
     by_class, problems = roster.load(token, config)
     students = by_class.get(class_key, [])
@@ -392,12 +546,18 @@ def lesson_work(token, config, agenda, class_key, week_label):
     if not lessons:
         problems.append("No %s row labelled '%s' was found in the Agenda." % (class_name, week_label))
         return {"class_key": class_key, "week": week_label, "lessons": [], "other_files": [],
+                "roster_check": None,
                 "folders": [], "folder_files": 0, "folder_note": None,
                 "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students), "problems": problems}
 
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
     response_ids = [f["id"] for form in forms for s in form["found"] for f in s["files"]]
     known = _metadata(token, response_ids)
+    # The earlier shared Form's uploads for this course and week. Their folders
+    # are never read as lesson folders: that Form's folder holds every week.
+    shared, shared_note = shared_submissions(token, config, class_name, number)
+    shared_ids = [f["id"] for s in shared for f in s["files"] if f["id"] not in set(response_ids)]
+    shared = [s for s in shared if any(f["id"] in shared_ids for f in s["files"])]
     # Folders holding the Form's uploads count only when they are Form upload
     # folders or named for this lesson's week — never the class folder itself,
     # even when uploads were moved loose into it or into the Form's folder.
@@ -426,6 +586,10 @@ def lesson_work(token, config, agenda, class_key, week_label):
     names.update({fid: name for fid, name in roots.items() if name})
     names.update({fid: info.get("name", "") for fid, info in upload_folders.items()})
     known = {**{i["id"]: i for i in items}, **known}
+    known.update(_metadata(token, [fid for fid in shared_ids if fid not in known]))
+    for fid in shared_ids:
+        if fid not in parents and known.get(fid, {}).get("parents"):
+            parents[fid] = known[fid]["parents"][0]
 
     # Which folders hold each Form's uploads: its titled folder, and wherever its
     # responses were saved (plus the Form folder around that question folder).
@@ -446,26 +610,28 @@ def lesson_work(token, config, agenda, class_key, week_label):
 
     # Settle each roster section's first/last column order from the school
     # usernames in this lesson's submissions (only where it was assumed).
-    usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] if s["email"]}
+    usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] + shared
+                 if s["email"]}
     usernames |= {roster.username_key(u, prefix) for i in items
                   for u in [roster.file_username(i.get("name"), prefix)] if u}
     roster.orient(students, usernames - {""})
 
-    referenced = set(response_ids)
+    referenced = set(response_ids) | set(shared_ids)
     readable = [form for form in forms if form["form_id"]]
     pending, other = [], []
-    for entry in items:
-        if (entry["id"] in referenced or entry.get("mimeType") not in STUDENT_WORK
-                or NOT_STUDENT_WORK.search(entry.get("name", ""))):
-            continue
-        chain = set(_ancestors(entry["id"], parents))
+    loose = [(entry["id"], folder_submission(entry)) for entry in items
+             if entry["id"] not in referenced and entry.get("mimeType") in STUDENT_WORK
+             and not NOT_STUDENT_WORK.search(entry.get("name", ""))]
+    loose += [(s["files"][0]["id"], s) for s in shared]
+    for file_id, submission in loose:
+        chain = set(_ancestors(file_id, parents))
         owners = [form for form in forms if form["folders"] & chain]
         if len(owners) == 1:
-            owners[0]["found"].append(folder_submission(entry))
+            owners[0]["found"].append(submission)
         elif len(readable) == 1:
-            readable[0]["found"].append(folder_submission(entry))
+            readable[0]["found"].append(submission)
         else:
-            pending.append(entry)
+            pending.append(submission)
 
     if pending:
         # Several Forms and files in shared folders: sort by the deck each file
@@ -482,41 +648,65 @@ def lesson_work(token, config, agenda, class_key, week_label):
                         for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
             decks = [deck_stem(info.get("name", "")) for info in _metadata(token, deck_ids).values()]
             pair_decks(lesson_forms, [d for d in decks if len(d) >= 8])
-        for entry in pending:
-            stem = deck_stem(entry.get("name"))
+        for submission in pending:
+            first = submission["files"][0]
+            stem = deck_stem(known.get(first["id"], {}).get("name") or first["name"])
             scores = sorted(((_matches(stem, form["signature"]), i) for i, form in enumerate(forms)), reverse=True)
             if scores and scores[0][0] and (len(scores) == 1 or scores[0][0] > scores[1][0]):
-                forms[scores[0][1]]["found"].append(folder_submission(entry))
+                forms[scores[0][1]]["found"].append(submission)
             else:
-                other.append(folder_submission(entry))
+                other.append(submission)
 
+    # Each Form's two weeks start at its first turn-in; files not sorted to a
+    # Form use the week's earliest-opened one.
+    windows = [window(form["found"]) for form in forms]
+    opened = [w for w in windows if w]
+    earliest = min(opened, key=lambda w: w["at"]) if opened else None
     describe_files(token, other, known)
-    other_rows, _ = group(other, students, domains, prefix, number, with_missing=False)
+    other_rows, _ = group(other, students, domains, prefix, number, with_missing=False,
+                          cutoff=earliest["at"] if earliest else None)
     unsorted = {(r["section"], roster.plain(r["last"]), roster.plain(r["first"])) for r in other_rows if r["matched"]}
     result, index = [], 0
     for lesson in lessons:
         out_forms = []
-        for form in forms[index:index + len(lesson["forms"])]:
+        for form, open_for in zip(forms[index:index + len(lesson["forms"])],
+                                  windows[index:index + len(lesson["forms"])]):
             describe_files(token, form["found"], known)
-            rows, missing = group(form["found"], students, domains, prefix, number)
+            rows, missing = group(form["found"], students, domains, prefix, number,
+                                  cutoff=open_for["at"] if open_for else None)
             for m in missing:
                 m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
-                              "students": rows, "missing": missing})
+                              "shared_files": sum(1 for s in form["found"] if s.get("shared")),
+                              "students": [r for r in rows if not r["late"]],
+                              "late": [r for r in rows if r["late"]], "missing": missing,
+                              "window": {"opened": open_for["opened"], "label": open_for["label"],
+                                         "at": open_for["at"].strftime("%Y-%m-%dT%H:%M:%SZ")}
+                              if open_for else None})
         index += len(lesson["forms"])
         result.append({"row": lesson["row"], "topic": lesson["topic"], "edit_url": lesson["edit_url"],
                        "forms": out_forms,
                        "problem": None if lesson["forms"] else
                        "This lesson has no Form link in its 'Turn it in' column."})
+    if shared_note:
+        problems.append(shared_note)
+    # Folders renamed with '_' in front were emptied by Tidy; still read, but
+    # only listed if something has landed in them since.
+    holding = set(parents.values())
     folder_list = [{"name": name or names.get(fid, "") or "Form upload folder",
                     "url": "https://drive.google.com/drive/folders/" + fid}
-                   for fid, name in roots.items() if not _ancestors(fid, parents) or not
-                   set(_ancestors(fid, parents)) & set(roots)]
+                   for fid, name in roots.items() if (not _ancestors(fid, parents) or not
+                   set(_ancestors(fid, parents)) & set(roots))
+                   and not (str(name).startswith("_") and fid not in holding)]
+    check = roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
     return {"class_key": class_key, "week": week_label, "lessons": result, "other_files": other_rows,
+            "roster_check": check,
             "folders": folder_list,
             "folder_files": sum(1 for i in items if i.get("mimeType") != google.FOLDER),
             "folder_note": folder_note,
+            "shared_form": {"configured": bool(config.get("HUB_TURNIN_FORM_ID")), "submissions": len(shared),
+                            "problem": shared_note},
             "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students),
             "problems": problems}

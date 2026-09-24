@@ -1,6 +1,7 @@
 // Teaching Hub v2: lesson plans from the Agenda, and student work found from
-// each lesson's Form responses and turn-in folder. Read-only; the grade sheet
-// downloads to you.
+// each lesson's Form responses and turn-in folder, with completion scores
+// counted from each deck's coded boxes. The grade sheet downloads to you;
+// scores go into Infinite Campus by you or the Claude extension, never by this page.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
@@ -135,7 +136,7 @@ function renderPlans(data) {
 }
 
 // ---------- Student work ----------
-const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0};
+const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}};
 
 function fillSelect(select, options, value) {
   select.replaceChildren(...options.map(([v, label]) => el('option', {value: v, text: label})));
@@ -175,6 +176,8 @@ async function loadWork(fresh = false) {
     const data = await getJSON(`api/work?class=${work.cls}&week=${encodeURIComponent(work.week)}${fresh ? '&fresh=1' : ''}`);
     if (seq !== work.seq) return;
     work.data = data;
+    work.scores = {};
+    work.ui = {};
     renderWork();
     setStatus('work-status', `Read ${when(new Date().toISOString())}.`);
   } catch (error) {
@@ -187,7 +190,9 @@ function fileList(files) {
   return el('ul', {class: 'files'}, files.map(f => el('li', {},
     link(f.name, f.url),
     f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
+    f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
     f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
+    f.late ? el('span', {class: 'badge warn', title: 'Turned in more than two weeks after this week — not graded', text: 'Late'}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
 }
@@ -195,14 +200,196 @@ function fileList(files) {
 function sheetNotes(row) {
   return [row.source === 'folder' ? 'From turn-in folder' : '',
     ...row.files.filter(f => f.other_week).map(f => `Named Week ${f.other_week}`),
+    row.earlier.some(e => e.late) && !row.late ? 'A later late version was not graded' : '',
     row.earlier.length ? `${row.earlier.length} earlier file(s)` : ''].filter(Boolean).join('; ');
 }
 
-function studentRow(row) {
+// ---------- Completion scores (Notes and Revision, out of 10) ----------
+const DECKS = ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
+const scoreFile = row => row.files.find(f => DECKS.includes(f.mime)) || row.files[0];
+const fmt = value => value == null ? 'N/A' : String(value);
+const STATUS = {blank: 'blank', copied: 'looks copied from the slide', 'not found': 'its code isn’t in this copy'};
+
+function scoreCells(row, scores) {
+  if (!scores) return [];
+  const result = scores[scoreFile(row)?.id];
+  if (!row.files.length) return [el('td', {text: '—'}), el('td', {text: '—'})];
+  if (!result) return [el('td', {class: 'muted', text: '…'}), el('td', {class: 'muted', text: '…'})];
+  if (result.problem) return [el('td', {colspan: 2}, el('small', {class: 'muted', text: result.problem}))];
+  const c = result.counts;
+  const todo = result.items.filter(i => i.status !== 'done' && i.category !== 'OPTIONAL');
+  const detail = el('details', {class: 'earlier'},
+    el('summary', {text: `Notes ${c.NOTES.done}/${c.NOTES.required} · Bank ${c.BANK.done}/${c.BANK.required} · Draft ${c.DRAFT.done}/${c.DRAFT.required}`}),
+    todo.length
+      ? el('ul', {class: 'files'}, todo.map(i => el('li', {}, `${i.category} ${i.id}${i.slide ? ` (slide ${i.slide})` : ''} — ${STATUS[i.status] || i.status}`)))
+      : el('p', {class: 'muted', text: 'Every coded box has writing.'}));
+  return [el('td', {}, el('strong', {text: fmt(result.notes_score)}), detail),
+    el('td', {}, el('strong', {text: fmt(result.revision_score)}))];
+}
+
+async function scoreForm(form) {
+  const rows = form.students.filter(r => r.files.length);
+  const scores = work.scores[form.form_id] = work.scores[form.form_id] || {};
+  const queue = rows.filter(r => !scores[scoreFile(r).id]);
+  const seq = work.seq;
+  let done = rows.length - queue.length;
+  work.ui[form.form_id] = {...work.ui[form.form_id], progress: `Scoring ${done} of ${rows.length}…`};
+  renderWork();
+  const worker = async () => {
+    while (queue.length && seq === work.seq) {
+      const id = scoreFile(queue.shift()).id;
+      try {
+        scores[id] = await getJSON(`api/score?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}&file=${encodeURIComponent(id)}`);
+      } catch (error) { scores[id] = {problem: error.message}; }
+      if (seq !== work.seq) return;
+      done += 1;
+      work.ui[form.form_id].progress = `Scoring ${done} of ${rows.length}…`;
+      renderWork();
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  if (seq !== work.seq) return;
+  work.ui[form.form_id].progress = '';
+  renderWork();
+}
+
+function uncodedReport(scores) {
+  const slides = {};
+  for (const result of Object.values(scores)) {
+    for (const slide of new Set((result.uncoded || []).map(u => u.slide))) slides[slide] = (slides[slide] || 0) + 1;
+  }
+  const list = Object.entries(slides).sort((a, b) => a[0] - b[0]);
+  if (!list.length) return null;
+  return note(`Writing in boxes with no code (not scored): ${list.map(([slide, n]) => `slide ${slide} (${n} student${n > 1 ? 's' : ''})`).join(', ')}. Run your embed-coding program on this deck before you hand it out next time.`, 'info');
+}
+
+const plain = v => String(v || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const studentKey = r => [r.section, r.last, r.first].map(plain).join('|');
+
+async function postJSON(url, body) {
+  const response = await fetch(url, {method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  let data = null;
+  try { data = await response.json(); } catch { /* not JSON */ }
+  if (!response.ok) throw new Error(data?.error || `The server returned an error (${response.status}).`);
+  return data;
+}
+
+async function openPanel(form, which) {
+  const ui = work.ui[form.form_id] = {...work.ui[form.form_id]};
+  if (ui.open === which) { ui.open = null; renderWork(); return; }
+  ui.open = which; ui.error = null; ui.busy = which === 'ic' ? 'Checking the Scores entered sheet…' : 'Finding students with revised answers…';
+  renderWork();
+  const q = `class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`;
+  try {
+    if (which === 'ic') ui.ledger = await getJSON(`api/ledger?${q}`);
+    else ui.feedback = await getJSON(`api/feedback?${q}`);
+  } catch (error) { ui.error = error.message; }
+  ui.busy = null;
+  renderWork();
+}
+
+async function recordRows(form, kind, files) {
+  const ui = work.ui[form.form_id];
+  ui.busy = 'Adding them to the Scores entered sheet…'; ui.error = null; renderWork();
+  try {
+    const done = await postJSON('api/record', {class: work.cls, week: work.week, form: form.form_id, kind, files});
+    ui.saved = `Added ${done.recorded} row(s) to Scores entered.`;
+    ui.open = null;
+    await openPanel(form, kind === 'ic' ? 'ic' : 'feedback');
+  } catch (error) { ui.error = error.message; ui.busy = null; renderWork(); }
+}
+
+async function copyText(textValue, status) {
+  try { await navigator.clipboard.writeText(textValue); status.textContent = ' Copied.'; }
+  catch { status.textContent = ' Couldn’t copy; select the text below instead.'; }
+}
+
+function icPanel(form, lesson, scores) {
+  const section = work.section;
+  const cls = CLASSES.find(([k]) => k === work.cls)[1];
+  const ui = work.ui[form.form_id] || {};
+  const ledger = ui.ledger;
+  const all = form.students.filter(r => r.matched && (section === 'all' || r.section === section))
+    .map(r => ({r, s: scores[scoreFile(r)?.id]})).filter(x => x.s && !x.s.problem)
+    .sort((a, b) => (a.r.section + a.r.last + a.r.first).localeCompare(b.r.section + b.r.last + b.r.first));
+  for (const x of all) {
+    const before = ledger?.entered?.[studentKey(x.r)];
+    x.before = before;
+    x.state = !before ? 'new' : (before.notes === fmt(x.s.notes_score) && before.revision === fmt(x.s.revision_score) ? 'same' : 'changed');
+  }
+  const rows = all.filter(x => x.state !== 'same');
+  const same = all.filter(x => x.state === 'same');
+  const lines = rows.map(({r, s, before}) => `${r.last}, ${r.first} — ${r.section} — Notes ${fmt(s.notes_score)} — Revision ${fmt(s.revision_score)}${before ? ` (was Notes ${before.notes}, Revision ${before.revision})` : ''}`);
+  const forClaude = [
+    'Please enter these completion scores in Infinite Campus. I am signed in and have the grade book open in this Chrome window.',
+    `Class: ${cls}${section === 'all' ? '' : ' ' + section} · ${work.week} · Assignment: ${form.label}${lesson.topic ? ` (${lesson.topic})` : ''}`,
+    'Each score is out of 10. "Notes" goes in this assignment\'s notes/content score and "Revision" in its revision score.',
+    'Before you save, show me each student, assignment and score you are about to enter, and wait for my OK.',
+    'Do not change any other grade. Where a line says "was …", IC should show that old score: replace it with the new one. If a student or the assignment is not there, or IC shows any other existing score, stop and ask me. "N/A" means leave it blank.',
+    'After saving, reload the page and read the saved scores back to me.',
+    '', 'Last, First — Section — Notes /10 — Revision /10', ...lines].join('\n');
+  const status = el('span', {class: 'muted'});
+  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Enter these scores in Infinite Campus'}));
+  if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
+  if (ui.error) panel.append(note(ui.error));
+  if (ui.saved) panel.append(note(ui.saved, 'info'));
+  if (ledger && !ledger.configured) panel.append(note(ledger.setup, 'info'));
+  if (ledger?.problem) panel.append(note(ledger.problem));
+  if (!rows.length) {
+    panel.append(note(all.length ? 'Nothing new: every score here is already in the Scores entered sheet.' : 'No scores to enter yet.', 'info'));
+  } else {
+    panel.append(
+      el('p', {}, el('strong', {text: 'Open Infinite Campus first'}), ` and go to this assignment in your grade book. ${ledger?.configured ? 'These are the new and changed scores since you last recorded them. ' : ''}Type them in yourself, or copy them for the Claude extension and it will enter them while you watch, asking you before it saves.`),
+      el('div', {class: 'action-row'},
+        el('button', {type: 'button', class: 'primary', onclick: () => copyText(forClaude, status)}, 'Copy for Claude'),
+        ledger?.configured ? el('button', {type: 'button', onclick: () => recordRows(form, 'ic', rows.map(x => scoreFile(x.r).id))}, 'I entered these in IC') : null,
+        status),
+      el('div', {class: 'table-wrap'}, el('table', {},
+        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
+        el('tbody', {}, rows.map(({r, s, state, before}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
+          el('td', {text: fmt(s.notes_score)}), el('td', {text: fmt(s.revision_score)}),
+          el('td', {}, state === 'changed' ? el('span', {class: 'badge', text: `was ${before.notes} / ${before.revision}`}) : el('span', {class: 'badge', text: 'new'}))))))),
+      el('details', {}, el('summary', {text: 'Show the text for Claude'}), el('pre', {class: 'for-claude', text: forClaude})));
+  }
+  if (same.length) panel.append(el('p', {class: 'muted', text: `Already entered and unchanged: ${same.length}.`}));
+  panel.append(el('p', {class: 'muted', text: 'Not listed: late work, students with nothing turned in, work not matched to the roster, and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.'}));
+  return panel;
+}
+
+function feedbackPanel(form) {
+  const ui = work.ui[form.form_id] || {};
+  const data = ui.feedback;
+  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use Teacher Claude)'}));
+  if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
+  if (ui.error) panel.append(note(ui.error));
+  if (ui.saved) panel.append(note(ui.saved, 'info'));
+  if (!data) return panel;
+  if (!data.sheet?.configured) panel.append(note(data.sheet?.setup || '', 'info'));
+  if (data.problem) panel.append(note(data.problem));
+  const counts = [data.done_before ? `${data.done_before} already had feedback` : '', data.no_revision ? `${data.no_revision} have no revised answers yet` : '']
+    .filter(Boolean).join(' · ');
+  if (!data.students.length) {
+    panel.append(note('Nobody new has revised answers to give feedback on.' + (counts ? ` (${counts}.)` : ''), 'info'));
+    return panel;
+  }
+  const status = el('span', {class: 'muted'});
+  panel.append(
+    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into Teacher Claude, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
+    el('ul', {class: 'files'}, data.students.map(s => el('li', {text: `${s.name} — ${s.section} — revised ${s.draft_done} of ${s.draft_required}`}))),
+    el('div', {class: 'action-row'},
+      data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for Teacher Claude') : null,
+      data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordRows(form, 'feedback', data.students.map(s => s.file_id))}, 'Mark feedback done') : null,
+      data.prompt_url ? link('Edit the prompt in the Agenda ↗', data.prompt_url) : null, status),
+    data.prompt ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'for-claude', text: data.prompt})) : null);
+  return panel;
+}
+
+function studentRow(row, scores) {
   const who = row.matched
     ? el('td', {}, el('strong', {text: `${row.last}, ${row.first}`}),
       row.matched_by && row.matched_by !== 'email' ? el('small', {class: 'muted', text: ` matched by ${row.matched_by}`}) : null)
-    : el('td', {}, el('span', {class: 'badge warn', text: 'Not on roster'}), ' ', row.email || 'No email collected',
+    : el('td', {}, el('span', {class: 'badge warn', text: row.roster_note || 'Not on roster'}), ' ', row.email || 'No email collected',
       row.typed.length ? el('small', {class: 'muted', text: ' · typed: ' + row.typed.join(' / ')}) : null);
   const earlier = row.earlier.length
     ? el('details', {class: 'earlier'}, el('summary', {text: `${row.earlier.length} earlier`}),
@@ -210,7 +397,7 @@ function studentRow(row) {
     : null;
   return el('tr', {class: row.matched ? '' : 'unmatched'}, who, el('td', {text: row.section || '—'}),
     el('td', {text: when(row.submitted_at)}),
-    el('td', {}, fileList(row.files), earlier));
+    el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores));
 }
 
 function csvCell(value) {
@@ -222,12 +409,18 @@ function csvCell(value) {
 function downloadSheet(form, lesson) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
+  const scores = work.scores[form.form_id] || {};
+  const scored = r => {
+    const s = scores[scoreFile(r)?.id];
+    return s && !s.problem ? [fmt(s.notes_score), fmt(s.revision_score)] : ['', ''];
+  };
   const rows = [
-    ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', when(r.submitted_at), '', r.files[0]?.url || '', sheetNotes(r)]),
-    ...form.missing.filter(inSection).map(m => [m.last, m.first, m.section, 'No', '', '', '', m.unsorted ? 'Has a file in "Not sorted" — check it' : '']),
+    ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', when(r.submitted_at), ...scored(r), r.files[0]?.url || '', sheetNotes(r)]),
+    ...form.late.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Late', when(r.submitted_at), '', '', r.files[0]?.url || '', `Turned in after ${form.window?.label || 'the two-week window'} — not graded`]),
+    ...form.missing.filter(inSection).map(m => [m.last, m.first, m.section, 'No', '', '', '', '', m.unsorted ? 'Has a file in "Not sorted" — check it' : '']),
   ].sort((a, b) => (a[2] + a[0] + a[1]).localeCompare(b[2] + b[0] + b[1]));
-  const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', when(r.submitted_at), '', r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || r.files[0]?.name || 'unknown')]);
-  const lines = [['Last name', 'First name', 'Section', 'Turned in', 'Turned in at', 'Score', 'Work link', 'Notes'], ...rows, ...unmatched];
+  const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', when(r.submitted_at), ...scored(r), r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || r.files[0]?.name || 'unknown')]);
+  const lines = [['Last name', 'First name', 'Section', 'Turned in', 'Turned in at', 'Notes /10', 'Revision /10', 'Work link', 'Notes'], ...rows, ...unmatched];
   const blob = new Blob(['﻿' + lines.map(line => line.map(csvCell).join(',')).join('\r\n')], {type: 'text/csv;charset=utf-8'});
   const name = [CLASSES.find(([k]) => k === work.cls)[1], work.week, form.label, section === 'all' ? 'all sections' : section]
     .join(' - ').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 120) + '.csv';
@@ -246,18 +439,52 @@ function renderForm(form, lesson) {
   const matched = form.students.filter(r => r.matched && inSection(r));
   const unmatched = form.students.filter(r => !r.matched);
   const missing = form.missing.filter(inSection);
+  const late = (form.late || []).filter(r => !r.matched || inSection(r));
+  const lateMatched = late.filter(r => r.matched).length;
   box.append(el('p', {class: 'summary'},
-    el('strong', {text: `${matched.length} of ${matched.length + missing.length}`}), ' turned in',
+    el('strong', {text: `${matched.length} of ${matched.length + lateMatched + missing.length}`}),
+    form.window ? ' turned in on time' : ' turned in',
+    late.length ? el('span', {class: 'badge warn', text: `${late.length} late — not graded`}) : null,
     unmatched.length ? el('span', {class: 'badge warn', text: `${unmatched.length} not matched to the roster`}) : null,
     form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
-    el('button', {type: 'button', class: 'primary', onclick: () => downloadSheet(form, lesson)}, 'Download grade sheet (CSV)')));
+    form.shared_files ? el('span', {class: 'badge', text: `includes ${form.shared_files} from the earlier shared Form`}) : null));
+  if (form.window) {
+    box.append(el('p', {class: 'muted', text: `Open until ${form.window.label} — two weeks after the first turn-in (${form.window.opened}). Anything later is Late and isn’t graded.`}));
+  }
+  const scores = work.scores[form.form_id];
+  const ui = work.ui[form.form_id] || {};
+  const scoredAll = scores && !ui.progress;
+  box.append(el('div', {class: 'action-row'},
+    el('button', {type: 'button', class: 'primary', onclick: () => downloadSheet(form, lesson)}, 'Download grade sheet (CSV)'),
+    form.students.length ? el('button', {type: 'button', disabled: Boolean(ui.progress), onclick: () => scoreForm(form)},
+      scores ? 'Score again' : 'Score completion') : null,
+    scoredAll ? el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
+      ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC') : null,
+    scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
+      ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use Teacher Claude)') : null,
+    ui.progress ? el('span', {class: 'muted', text: ui.progress}) : null));
+  if (scores && !ui.progress) {
+    const failed = Object.values(scores).filter(s => s.problem).length;
+    if (failed) box.append(note(`${failed} deck(s) couldn’t be scored — see the note in their row.`, 'info'));
+    const report = uncodedReport(scores);
+    if (report) box.append(report);
+    if (ui.open === 'ic') box.append(icPanel(form, lesson, scores));
+    if (ui.open === 'feedback') box.append(feedbackPanel(form));
+  }
   const shown = [...matched, ...unmatched];
   if (shown.length) {
     box.append(el('div', {class: 'table-wrap'}, el('table', {},
-      el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
-      el('tbody', {}, shown.map(studentRow)))));
+      el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work', ...(scores ? ['Notes /10', 'Revision /10'] : [])].map(h => el('th', {text: h})))),
+      el('tbody', {}, shown.map(r => studentRow(r, scores))))));
   } else {
-    box.append(note('No responses yet.', 'info'));
+    box.append(note(late.length ? 'No on-time responses.' : 'No responses yet.', 'info'));
+  }
+  if (late.length) {
+    box.append(el('div', {class: 'late'}, el('h4', {text: `Late — not graded (${late.length})`}),
+      el('p', {class: 'muted', text: `Turned in after ${form.window?.label}. Tidy moves these into the week’s “⏰ Late — not graded” folder.`}),
+      el('div', {class: 'table-wrap'}, el('table', {},
+        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
+        el('tbody', {}, late.map(r => studentRow(r)))))));
   }
   if (missing.length) {
     box.append(el('div', {class: 'missing'}, el('h4', {text: `Not turned in yet (${missing.length})`}),
@@ -277,6 +504,7 @@ function renderWork() {
       data.folders.flatMap((f, i) => [i ? ', ' : '', link(f.name + ' ↗', f.url)]), '.'));
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
+  if (data.roster_check) parts.push(renderRosterCheck(data.roster_check));
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week}), link('Edit in the Agenda ↗', lesson.edit_url, 'edit')));
     if (lesson.problem) parts.push(note(lesson.problem));
@@ -289,9 +517,98 @@ function renderWork() {
       note('These files are in the lesson’s turn-in folders, but their names don’t say which assignment they are. Open each one to check.', 'info'),
       el('div', {class: 'table-wrap'}, el('table', {},
         el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
-        el('tbody', {}, other.map(studentRow))))));
+        el('tbody', {}, other.map(r => studentRow(r)))))));
   }
   $('work-body').replaceChildren(...parts);
+}
+
+function renderRosterCheck(check) {
+  const sections = Object.entries(check.sections).map(([name, n]) => `${name} ${n}`).join(' · ');
+  const updated = check.updated_at ? `Rosters sheet last changed ${when(check.updated_at)}.` : '';
+  const flags = check.flags;
+  const box = el('section', {class: 'roster-check'},
+    el('h3', {text: 'Roster check'}),
+    el('p', {class: 'muted', text: [`Students: ${sections}.`, updated].filter(Boolean).join(' ')}));
+  if (check.stale) box.append(note(`The Rosters sheet hasn’t changed in over ${check.stale_days} days. Check that your roster job is still running.`));
+  if (!flags.length) {
+    box.append(el('p', {class: 'ok', text: '✓ Everyone who turned in work this week is on this class’s roster.'}));
+    return box;
+  }
+  const say = {
+    other_class: f => [el('strong', {text: f.who}), ` is on the ${f.section} roster but turned in to this class`, f.assignment ? ` (${f.assignment})` : '', '. Wrong class?'],
+    no_roster: f => [el('strong', {text: f.who}), ' isn’t on any class roster', f.assignment ? ` (${f.assignment})` : '', '. New, left, or a visitor?'],
+    twice: f => [el('strong', {text: f.who}), ` is listed twice (${f.section}).`],
+  };
+  box.append(el('ul', {class: 'flags'}, flags.map(f => el('li', {}, ...say[f.kind](f),
+    f.url ? [' ', link('Open ↗', f.url)] : []))));
+  return box;
+}
+
+// ---------- Tidy: one 📥 folder per course per week ----------
+function renderTidy(box, p) {
+  const parts = [el('h3', {text: `Tidy ${p.week} folders`})];
+  if (!p.moves.length && !p.create && !p.empty_after.length) {
+    parts.push(note(p.keep ? `Already tidy: everything for ${p.week} is in ${p.keep.name}.` : 'Nothing to tidy.', 'info'));
+    if (p.problem && p.problem.indexOf("can't move files") < 0) parts.push(note(p.problem));
+    box.replaceChildren(...parts);
+    return;
+  }
+  parts.push(el('p', {}, p.keep ? ['Keep ', link(p.keep.name + ' ↗', p.keep.url), ' as this week’s one folder.']
+    : `Create “${p.create}” as this week’s one folder.`));
+  const item = m => el('li', {}, (m.folder ? '📁 ' : '') + m.name,
+    m.from_name ? el('small', {class: 'muted', text: ' — from ' + m.from_name}) : null);
+  const toWeek = p.moves.filter(m => m.to !== 'late'), toLate = p.moves.filter(m => m.to === 'late');
+  if (toWeek.length) {
+    parts.push(el('p', {class: 'label', text: `Move into it (${toWeek.length})`}), el('ul', {class: 'files'}, toWeek.map(item)));
+  }
+  if (toLate.length) {
+    parts.push(el('p', {class: 'label', text: `Move into “${p.create_late || p.late_folder?.name}” inside it (${toLate.length}) — turned in after their assignment’s two weeks`}),
+      el('ul', {class: 'files'}, toLate.map(item)));
+  }
+  if (p.empty_after.length) {
+    parts.push(el('p', {class: 'muted', text: (p.can_trash
+      ? 'Then these emptied extra folders go to the Drive trash (you can restore them): '
+      : 'Then these emptied extra folders get “_” in front of their names so you know to skip them: ')
+      + p.empty_after.map(e => e.name).join(', ')}));
+  }
+  if (p.problem) parts.push(note(p.problem));
+  if (p.can_move) {
+    parts.push(el('div', {class: 'action-row'},
+      el('button', {type: 'button', class: 'primary', onclick: () => applyTidy(box, p)}, 'Move them'),
+      el('button', {type: 'button', onclick: () => box.replaceChildren()}, 'Cancel')));
+  }
+  box.replaceChildren(...parts);
+}
+
+async function previewTidy() {
+  const box = $('tidy-box');
+  box.replaceChildren(el('p', {class: 'muted', text: 'Checking this week’s folders… nothing moves until you confirm.'}));
+  try {
+    renderTidy(box, await getJSON(`api/tidy?class=${work.cls}&week=${encodeURIComponent(work.week)}`));
+  } catch (error) { box.replaceChildren(note(error.message)); }
+}
+
+async function applyTidy(box, p) {
+  box.replaceChildren(el('p', {class: 'muted', text: 'Moving…'}));
+  try {
+    const response = await fetch('api/tidy', {method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({class: work.cls, week: work.week, plan_id: p.plan_id})});
+    let body = null;
+    try { body = await response.json(); } catch { /* not JSON */ }
+    if (!response.ok) throw new Error(body?.error || `The server returned an error (${response.status}).`);
+    const parts = [el('h3', {text: `Tidy ${p.week} folders`}),
+      note(body.moves.length ? `Moved ${body.moved} of ${body.moves.length} item(s).` : 'Nothing needed moving.', 'info')];
+    if (body.failed.length) parts.push(note(`${body.failed.length} couldn’t be moved: ` + body.failed.map(f => `${f.name} (${f.why})`).join('; ')));
+    if (body.trashed.length) parts.push(el('p', {class: 'muted', text: `Sent ${body.trashed.length} empty extra folder(s) to the Drive trash; you can restore them from there.`}));
+    if (body.marked.length) parts.push(el('p', {class: 'muted', text: `Put “_” in front of ${body.marked.length} empty extra folder(s): ` + body.marked.map(e => e.name).join(', ')}));
+    if (body.left_empty.length) {
+      parts.push(el('p', {class: 'muted', text: 'These extra folders couldn’t be trashed or renamed. You can delete them:'}),
+        el('ul', {}, body.left_empty.map(e => el('li', {}, link(e.name + ' ↗', e.url)))));
+    }
+    box.replaceChildren(...parts);
+    await loadWork(true);
+  } catch (error) { box.replaceChildren(note(error.message)); }
 }
 
 // ---------- Page wiring ----------
@@ -312,11 +629,12 @@ $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7))
 $('today').addEventListener('click', () => loadPlans(todayISO()));
 $('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
-$('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; openWork(); });
-$('work-week').addEventListener('change', e => { work.week = e.target.value; loadWork(); });
+$('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
+$('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); renderWork(); });
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); } catch (error) { setStatus('work-status', error.message, true); }
 });
+$('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
 window.addEventListener('hashchange', showTab);
 showTab();

@@ -1,8 +1,11 @@
-"""Google access for v2: confirm the signed-in teacher, then read as the
+"""Google access for v2: confirm the signed-in teacher, then act as the
 dashboard's service account.
 
-Everything here is read-only and every call has a short timeout. Errors carry a
-short sentence a teacher can act on, never a token or a response body.
+Everything reads, except move_item, rename_item, trash_item and create_folder
+(the Tidy button) and append_rows (the teacher's own "Scores entered" sheet),
+which use a separate write token. Every call has a short
+timeout. Errors carry a short sentence a teacher can act on, never a token or a
+response body.
 """
 import os
 import threading
@@ -35,7 +38,8 @@ class SignInRequired(Exception):
 
 
 _local = threading.local()
-_token = {"value": None, "expires": 0.0}
+WRITE_SCOPES = SCOPES + ("https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets")
+_tokens = {False: {"value": None, "expires": 0.0}, True: {"value": None, "expires": 0.0}}
 _token_lock = threading.Lock()
 
 
@@ -80,16 +84,18 @@ def verify_teacher(assertion, config=None):
     return email
 
 
-def service_token(config=None):
+def service_token(config=None, write=False):
     """A short-lived token for the dashboard's own service account.
 
     Cloud Run's metadata token ignores requested scopes, so the scoped token is
-    minted by the account impersonating itself (no key file involved).
+    minted by the account impersonating itself (no key file involved). Only the
+    Tidy button asks for the write token; everything else reads.
     """
     config = os.environ if config is None else config
+    cache = _tokens[bool(write)]
     with _token_lock:
-        if _token["value"] and _token["expires"] > time.time() + 60:
-            return _token["value"]
+        if cache["value"] and cache["expires"] > time.time() + 60:
+            return cache["value"]
         expected = config.get("HUB_READER_SERVICE_ACCOUNT", "")
         try:
             from google.auth import compute_engine, impersonated_credentials
@@ -100,12 +106,12 @@ def service_token(config=None):
                 raise ValueError("unexpected runtime identity")
             scoped = impersonated_credentials.Credentials(
                 source_credentials=runtime, target_principal=expected,
-                target_scopes=list(SCOPES), lifetime=900)
+                target_scopes=list(WRITE_SCOPES if write else SCOPES), lifetime=900)
             scoped.refresh(request)
         except Exception:
             raise GoogleError("The dashboard couldn't get its Google access token. "
                               "Check the service account setting in Cloud Run.") from None
-        _token["value"], _token["expires"] = scoped.token, time.time() + 840
+        cache["value"], cache["expires"] = scoped.token, time.time() + 840
         return scoped.token
 
 
@@ -114,10 +120,10 @@ def service_account(config=None):
     return config.get("HUB_READER_SERVICE_ACCOUNT", "")
 
 
-def get_json(url, token, params=None, timeout=20):
+def get_json(url, token, params=None, timeout=20, method="GET", body=None):
     try:
-        response = _session().get(url, params=params, timeout=(5, timeout), allow_redirects=False,
-                                  headers={"Authorization": "Bearer " + token})
+        response = _session().request(method, url, params=params, json=body, timeout=(5, timeout),
+                                      allow_redirects=False, headers={"Authorization": "Bearer " + token})
     except Exception:
         raise GoogleError("Google didn't answer in time. Try again.") from None
     if response.status_code == 200:
@@ -178,9 +184,69 @@ def form_responses(token, form_id):
     return responses
 
 
-def drive_file(token, file_id):
+def drive_file(token, file_id, fields=FILE_FIELDS):
     return get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
-                    {"fields": FILE_FIELDS, "supportsAllDrives": "true"}, timeout=10)
+                    {"fields": fields, "supportsAllDrives": "true"}, timeout=10)
+
+
+PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+MAX_DECK_BYTES = 60_000_000
+
+
+def deck_bytes(token, file_id, mime):
+    """A Google Slides deck exported as .pptx, or an uploaded .pptx, as bytes."""
+    if mime == "application/vnd.google-apps.presentation":
+        url, params = ("https://www.googleapis.com/drive/v3/files/%s/export" % quote(file_id),
+                       {"mimeType": PPTX})
+    elif mime == PPTX:
+        url, params = ("https://www.googleapis.com/drive/v3/files/" + quote(file_id),
+                       {"alt": "media", "supportsAllDrives": "true"})
+    else:
+        raise GoogleError("Only Google Slides and PowerPoint files can be scored.")
+    try:
+        response = _session().get(url, params=params, timeout=(5, 60), stream=True, allow_redirects=False,
+                                  headers={"Authorization": "Bearer " + token})
+    except Exception:
+        raise GoogleError("Google didn't answer in time. Try again.") from None
+    with response:
+        if response.status_code != 200:
+            raise GoogleError(_status_message(response.status_code), response.status_code)
+        chunks, total = [], 0
+        try:
+            for chunk in response.iter_content(1 << 20):
+                total += len(chunk)
+                if total > MAX_DECK_BYTES:
+                    raise GoogleError("This deck is too large to read.")
+                chunks.append(chunk)
+        except GoogleError:
+            raise
+        except Exception:
+            raise GoogleError("Google didn't answer in time. Try again.") from None
+    return b"".join(chunks)
+
+
+def move_item(token, item_id, new_parent, old_parents):
+    """Move a file or folder into new_parent; returns its parents afterwards."""
+    return get_json("https://www.googleapis.com/drive/v3/files/" + quote(item_id), token, {
+        "addParents": new_parent, "removeParents": ",".join(p for p in old_parents if p != new_parent),
+        "fields": "id,parents", "supportsAllDrives": "true"}, method="PATCH", body={})
+
+
+def create_folder(token, name, parent):
+    return get_json("https://www.googleapis.com/drive/v3/files", token,
+                    {"fields": "id,name,parents", "supportsAllDrives": "true"}, method="POST",
+                    body={"name": name, "mimeType": FOLDER, "parents": [parent]})
+
+
+def rename_item(token, item_id, name):
+    return get_json("https://www.googleapis.com/drive/v3/files/" + quote(item_id), token,
+                    {"fields": "id,name", "supportsAllDrives": "true"}, method="PATCH", body={"name": name})
+
+
+def trash_item(token, item_id):
+    return get_json("https://www.googleapis.com/drive/v3/files/" + quote(item_id), token,
+                    {"fields": "id,trashed", "supportsAllDrives": "true"}, method="PATCH",
+                    body={"trashed": True})
 
 
 def folders_named(token, name):
@@ -191,6 +257,33 @@ def folders_named(token, name):
         "fields": "files(id,name,parents)", "pageSize": 20,
         "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
     return page.get("files", []) or []
+
+
+SHEET = "application/vnd.google-apps.spreadsheet"
+
+
+def files_named_in(token, name, mime, parent):
+    """Files with exactly this name and type directly inside a folder."""
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    page = get_json("https://www.googleapis.com/drive/v3/files", token, {
+        "q": "name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false"
+             % (escaped, mime, parent.replace("'", "")),
+        "fields": "files(id,name,modifiedTime)", "pageSize": 5,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
+    return page.get("files", []) or []
+
+
+def sheet_values(token, spreadsheet_id, cell_range):
+    data = get_json("https://sheets.googleapis.com/v4/spreadsheets/%s/values/%s"
+                    % (quote(spreadsheet_id), quote(cell_range, safe="")), token, timeout=20)
+    return data.get("values", []) or []
+
+
+def append_rows(token, spreadsheet_id, cell_range, rows):
+    return get_json("https://sheets.googleapis.com/v4/spreadsheets/%s/values/%s:append"
+                    % (quote(spreadsheet_id), quote(cell_range, safe="")), token,
+                    {"valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS"}, method="POST",
+                    body={"values": rows})
 
 
 def folder_children(token, folder_id):

@@ -25,7 +25,7 @@ deferred. Save and Run remain disabled; publishing this code does not deploy it.
 
 ## Teaching Hub v2 (`/v2/`)
 
-`src/hub_v2/` is a small, read-only replacement for Pages 01 and 02, served at
+`src/hub_v2/` is a small replacement for Pages 01 and 02, served at
 `/v2/` by the same Cloud Run service, sign-in and settings. **Lesson plans**
 reads each class's weekly Agenda tab by header name and week label.
 **Student work** reads the Form(s) linked in the lesson's "Turn it in" cell and
@@ -39,6 +39,41 @@ current file is shown (Form uploads first; trashed files and files named for
 another week are never picked) with the rest as history, alongside who hasn't
 turned in and a grade sheet CSV. A problem
 with one tab, cell or Form is shown on that card; it never blanks the page.
+
+Each assignment (Form) stays open until the end of the day two weeks after its
+first turn-in by anyone (school time). Later work is marked **Late**, listed on
+its own and marked "Late — not graded" on the grade sheet. Every load also runs a **roster check**:
+work from someone on another class's roster or on no roster is flagged, and the
+Rosters sheet's last change is shown.
+
+**Score completion** (per assignment) exports each student's current on-time
+deck from Drive and compares it, box by box, with the copy linked in the
+lesson's Agenda row. The required items are the codes in the deck's
+`[[MARKER-INVENTORY:…]]` header: Notes = 10 × (completed NOTES + BANK) ÷
+required, Revision = 10 × completed DRAFT ÷ required, following the teacher's
+Prompt 1. It counts; it never judges quality, and no model is called. A box
+counts when the student wrote something new in it; the printed prompt copied
+back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
+ready to enter in IC** lists the scores for typing into Infinite Campus, or
+copies them with instructions for the Claude extension to enter while the
+teacher watches. The page itself never writes to IC. When the teacher has made
+a Google Sheet named `Scores entered` in the turn-in root, **I entered these in
+IC** adds a row per score, and the next list shows only new or changed scores
+(a resubmission with revisions updates the same grade). **Start feedback (use
+Teacher Claude)** copies the teacher's current Prompt 2 from the Agenda's
+Feedback Prompts tab with this round's students — revised answers done and no
+feedback yet, named by first name and last initial — for the teacher's own
+Claude to write one Google Doc with two pages per student. **Mark feedback
+done** records them in the same sheet. Each assignment stays open for two weeks
+from its first turn-in; later work is Late and isn't scored.
+
+**Tidy this week's folders** is v2's one write. It previews, then on the
+teacher's confirmation moves a week's extra folders' contents, loose Form
+folders and the earlier shared Form's uploads into that week's one `📥` folder,
+and late work into its `⏰ Late — not graded` folder. Emptied extra folders go
+to the Drive trash when Drive allows it, otherwise they get `_` in front of their
+names. It needs the service account shared as an Editor on the turn-in root, and
+only runs from the dashboard page (same-origin POST, signed-in teacher).
 
 ## Validation
 
