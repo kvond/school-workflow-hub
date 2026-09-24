@@ -108,6 +108,14 @@ class AgendaTests(unittest.TestCase):
         self.assertIsNone(day["week"])
         self.assertIn("isn't in any week", day["problems"][0])
 
+    def test_a_second_deck_column_is_read_as_a_lesson_material(self):
+        cells = grid({1: ["Wk", "Topic", "🎞 2nd deck", "📤 Turn it in"],
+                      2: ["Wk 03", "Two assignments", "https://docs.google.com/presentation/d/FICTIONALSECONDDECK12345/edit?slide=id.g1", ""]})
+        layout, problem = agenda.parse_class_tab(cells)
+        lesson = agenda.build_lesson(cells, layout, 2, "")
+        self.assertEqual([(m["label"], m["url"]) for m in lesson["materials"]],
+                         [("2nd deck", "https://docs.google.com/presentation/d/FICTIONALSECONDDECK12345/edit?slide=id.g1")])
+
     def test_week_options(self):
         options = fixture().week_options("forensics")
         self.assertEqual([(o["label"], o["topic"], o["forms"]) for o in options],
