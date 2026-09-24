@@ -1199,6 +1199,29 @@ class RealDeckShapeTests(unittest.TestCase):
         self.assertEqual(completion.original_title("Copy of Observation Skills - Sam Lee"), "Observation Skills")
         self.assertEqual(completion.original_title("Deck"), "")
 
+    def test_a_deck_shared_only_by_link_is_found_beside_the_linked_deck(self):
+        completion._templates.clear()
+        completion._results.clear()
+        completion._folders.clear()
+        decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(),
+                 "STUDENTDECK123": bank_deck(A2="one step in a food chain")}
+        row = {"matched": True, "last": "Ennis", "first": "Tre", "section": "A2 Forensics", "earlier": [], "late": False,
+               "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES,
+                          "name": "s.tre.ennis — 09-16 11.29 — Copy of Bank_Deck_markered - Tre Ennis"}]}
+        found = {"lessons": [{"forms": [{"form_id": ScoreFileTests.FORM, "students": [row], "late": []}]}]}
+        lesson_folder = [{"id": "FICTIONALDECK1234567890", "name": "Linked deck", "mimeType": completion.SLIDES},
+                         {"id": "ORIGINALDECK123456789", "name": "Bank_Deck_markered", "mimeType": completion.SLIDES},
+                         {"id": "NOTES", "name": "Bank_Deck_markered", "mimeType": "application/vnd.google-apps.document"}]
+        with patch.object(google, "drive_file", side_effect=lambda t, fid, fields=None: {
+                    "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "t", "parents": ["LESSONFOLDER"]}), \
+                patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]), \
+                patch.object(google, "files_named", return_value=[]), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: lesson_folder if fid == "LESSONFOLDER" else []):
+            result = completion.score_file("token", fixture(), "forensics", "Wk 04", ScoreFileTests.FORM,
+                                           "STUDENTDECK123", found)
+        self.assertIsNone(result["problem"])
+        self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})
+
     def test_the_handed_out_deck_is_found_by_name_when_the_agenda_links_another(self):
         completion._templates.clear()
         completion._results.clear()

@@ -506,6 +506,25 @@ def _template(token, deck_id):
     return meta, _templates[key]
 
 
+_folders = {}
+FOLDER_CACHE_SECONDS = 600
+
+
+def _siblings(token, folder_id):
+    """The Slides decks in a lesson folder, re-listed at most every ten minutes."""
+    import time
+    from . import google
+    cached = _folders.get(folder_id)
+    if cached and time.time() - cached[0] < FOLDER_CACHE_SECONDS:
+        return cached[1]
+    try:
+        decks = [f for f in google.folder_children(token, folder_id) if f.get("mimeType") == SLIDES][:60]
+    except google.GoogleError:
+        decks = []
+    _remember(_folders, folder_id, (time.time(), decks), 50)
+    return decks
+
+
 def original_title(name):
     """The deck a student's copy was made from: 's.x — 09-16 12.41 — Copy of Deck - Ana Rivera.pptx' → 'Deck'."""
     text = re.sub(r"^\s*s\.[a-z0-9.\-]+\s+[—-]\s+\d{2}-\d{2}\s+\d{2}\.\d{2}\s+[—-]\s*", "", str(name or ""), flags=re.I)
@@ -559,12 +578,22 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     best = pick_template(deck, [t[2] for t in templates])
     if coverage(deck, best) < 0.8:
         # The Agenda row links another assignment's deck: look for the
-        # original this copy was made from, by its name.
+        # original this copy was made from, by its name — anywhere the
+        # dashboard can search, then in the folder beside each linked deck
+        # (a deck shared by link can be opened but not searched for).
         title = original_title(upload.get("name") or meta.get("name", ""))
-        for found in (google.files_named(token, title, SLIDES) if title else [])[:5]:
-            if found["id"] != file_id and not any(t[0] == found["id"] for t in templates):
+        found = []
+        if title:
+            try:
+                found += google.files_named(token, title, SLIDES)[:5]
+            except google.GoogleError:
+                pass
+            for parent in {p for t in list(templates) for p in (t[1].get("parents") or [])[:1]}:
+                found += [f for f in _siblings(token, parent) if f["name"].strip() == title]
+        for item in found:
+            if item["id"] != file_id and not any(t[0] == item["id"] for t in templates):
                 try:
-                    templates.append((found["id"],) + _template(token, found["id"]))
+                    templates.append((item["id"],) + _template(token, item["id"]))
                 except (google.GoogleError, Unreadable):
                     continue
         best = pick_template(deck, [t[2] for t in templates])
