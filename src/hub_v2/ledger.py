@@ -23,6 +23,18 @@ def score_text(value):
     return "N/A" if value is None else "%g" % value
 
 
+def shown_scores(score, closed):
+    """(Notes, Revision) as they go into IC. While an assignment's two weeks
+    are open an empty result stays blank; once they close it is 0. No work
+    turned in on time (score None) is blank, then 0."""
+    if score is None:
+        return ("0", "0") if closed else ("", "")
+    out = []
+    for value in (score.get("notes_score"), score.get("revision_score")):
+        out.append("" if value == 0 and not closed else score_text(value))
+    return tuple(out)
+
+
 def student_key(section, last, first):
     return "|".join(roster.plain(v) for v in (section, last, first))
 
