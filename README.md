@@ -63,10 +63,10 @@ teacher watches. The page itself never writes to IC. The dashboard keeps its own
 class and assignment, and each assignment card then shows "✓ Entered in IC
 <date> · ✓ Feedback made <date>". The IC list marks students who turned in
 something new since that date (a resubmission updates the same grade), and
-**Start feedback (use Teacher Claude)** copies the teacher's current Prompt 2
+**Start feedback (use ChatGPT)** copies the teacher's current Prompt 2
 from the Agenda's Feedback Prompts tab with the students who have revised
 answers turned in since the last feedback (first name and last initial), for
-her own Claude to write one Google Doc with two pages per student, saved in the
+her own ChatGPT to write one Google Doc with two pages per student, saved in the
 week's 📥 folder. Each assignment stays open for two weeks
 from its first turn-in; later work is Late and isn't scored. While it is open,
 an empty score (no work yet, or no revised answers yet) stays blank; once the
