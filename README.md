@@ -40,6 +40,17 @@ another week are never picked) with the rest as history, alongside who hasn't
 turned in and a grade sheet CSV. A problem
 with one tab, cell or Form is shown on that card; it never blanks the page.
 
+**Editing a lesson from the dashboard.** On Lesson plans, **Edit here** opens a
+lesson's plain-text cells (topic, each day's plan and note, to-do, lab / prep)
+and **Save to Agenda** writes the changed ones to that row of the class tab.
+Edits made in the Agenda show on the dashboard at the next read, so it works both
+ways. The server re-reads the Agenda first: if the row moved, or a cell changed
+there since the page loaded, nothing is written and the page shows the Agenda's
+new text (saving again then replaces it). Cells with links or formulas (decks,
+Forms, folders) are only edited in the Agenda. Text is written as plain text,
+so bold or italics inside an edited cell are not kept, and each written cell is
+read back. The dashboard's account must be an Editor on the Agenda spreadsheet.
+
 Each assignment (Form) stays open until the end of the day two weeks after its
 first turn-in by anyone (school time). Later work is marked **Late**, listed on
 its own and marked "Late — not graded" on the grade sheet. Every load also runs a **roster check**:

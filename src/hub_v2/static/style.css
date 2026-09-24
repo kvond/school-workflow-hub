@@ -111,6 +111,14 @@ tr.unmatched td { background: var(--warn-bg); }
 .for-claude { white-space: pre-wrap; font-size: 12px; background: var(--surface); border: 1px solid var(--line);
   border-radius: 8px; padding: 10px; max-height: 260px; overflow: auto; }
 button[disabled] { opacity: 0.6; cursor: default; }
+.lesson-edit { display: flex; flex-direction: column; gap: 4px; }
+.lesson-edit h3 { margin: 0 0 4px; }
+.lesson-edit .field { font-size: 13px; font-weight: 600; color: var(--muted); margin-top: 8px; }
+.lesson-edit input, .lesson-edit textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.lesson-edit textarea { resize: vertical; }
+.lesson-edit :disabled { opacity: 0.6; background: var(--bg); }
+.lesson-edit .note q { font-style: italic; }
 .answers-slide { margin: 16px 0 4px; font-size: 14px; }
 .answers td { min-width: 180px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answers td:first-child { min-width: 150px; white-space: normal; }

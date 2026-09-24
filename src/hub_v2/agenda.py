@@ -2,7 +2,9 @@
 
 Columns are found by their header text, rows by their week label, and tabs by
 name. Whatever can be read is shown: a missing tab, header or cell becomes a
-note on that class, never a failed page. Nothing is written back.
+note on that class, never a failed page. The plain-text cells of a lesson
+(topic, each day's plan and note, to-do, lab / prep) can be edited from the
+dashboard; see agenda_edit.py. Cells with links or formulas are only read.
 """
 import re
 from datetime import date, datetime, timedelta
@@ -142,6 +144,29 @@ def parse_class_tab(cells):
             "rows": [(r, label) for r, label in rows if label]}, None
 
 
+def field_columns(layout):
+    """{field: column} for a lesson's text cells: 'topic', 'todo', 'prep',
+    'plan:Mon', 'note:Mon', … — only those this tab has a column for."""
+    cols = layout["columns"]
+    out = {key: cols[key] for key in ("topic", "todo", "prep") if cols.get(key)}
+    for day, c in layout["plans"].items():
+        out["plan:" + day] = c["plan"]
+        if c.get("note"):
+            out["note:" + day] = c["note"]
+    return out
+
+
+def plain(cell):
+    """Whether a cell is plain text that can be replaced without losing
+    anything: no formula and no link (a URL typed as text is fine)."""
+    if not cell:
+        return True
+    if (cell.get("userEnteredValue") or {}).get("formulaValue") or cell.get("hyperlink"):
+        return False
+    return not any(((run.get("format") or {}).get("link") or {}).get("uri")
+                   for run in cell.get("textFormatRuns") or [])
+
+
 def build_lesson(cells, layout, row, edit_url):
     cols = layout["columns"]
 
@@ -163,8 +188,10 @@ def build_lesson(cells, layout, row, edit_url):
     for url, label in links(cell("activity")):
         if url not in {m["url"] for m in materials}:
             materials.append({"label": label or "Activity", "url": url})
+    # Which text cells the dashboard may save: True, or False for a cell with a link or formula.
+    editable = {key: plain(cells.get((row, c))) for key, c in field_columns(layout).items()}
     return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
-            "dates": text(cell("dates")).strip(), "plans": plans,
+            "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url")),
             "edit_url": edit_url}
