@@ -78,8 +78,8 @@ def build(context, students, prompt):
         "“How my thinking changed”. If you can't open a link, tell me which ones and I'll upload those decks.",
         "- Students are named by first name and last initial only. Use exactly that name as the heading of their "
         "feedback and don't add or guess any other name.",
-        "- Completion scores are already recorded, so write only the feedback for the student (Part 2 of the "
-        "instructions below). Write it for the student to read.",
+        "- Completion scores are already recorded, so don't score completion; write the feedback for the student "
+        "by the instructions below. Write it for the student to read.",
         "",
         "MAKE ONE GOOGLE DOC FOR PRINTING",
         "- Name it “Feedback — %(class)s %(week)s — %(assignment)s — %(date)s”." % context,
