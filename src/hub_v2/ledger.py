@@ -2,8 +2,9 @@
 Infinite Campus and who has had feedback, so the next list shows only what is
 new or changed (a resubmission with revisions updates the same grade).
 
-She makes a Google Sheet named "Scores entered" inside the turn-in root, which
-is shared with the dashboard's account as an Editor. The dashboard adds rows to
+She makes a Google Sheet whose name starts with "Scores entered" (for example
+"Scores entered (school workflow-hub)") inside the turn-in root, which is
+shared with the dashboard's account as an Editor. The dashboard adds rows to
 its first tab when she clicks "I entered these" or "Mark feedback done"; it
 never edits or deletes a row, so the sheet is also her history.
 """
@@ -30,7 +31,10 @@ def find(token, config):
     root = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "") or "")
     if not root:
         return None
-    found = google.files_named_in(token, NAME, google.SHEET, root)
+    found = [f for f in google.files_named_in(token, NAME, google.SHEET, root, prefix=True)
+             if f.get("name", "").strip().lower().startswith(NAME.lower())]
+    # The exact name first, then the oldest, so a later copy never takes over.
+    found.sort(key=lambda f: (f["name"].strip().lower() != NAME.lower(), f.get("createdTime", "")))
     return found[0] if found else None
 
 
@@ -44,7 +48,7 @@ def read(token, config, form_id):
     """What the sheet says about one assignment: the latest entered scores per
     student, and who has had feedback."""
     out = {"configured": False, "url": None, "entered": {}, "feedback": {}, "problem": None,
-           "setup": "To track what you've entered, make a Google Sheet named “%s” inside "
+           "setup": "To track what you've entered, make a Google Sheet whose name starts with “%s” inside "
                     "00 REAL ALL TURN IN (it needs the dashboard's account as an Editor there)." % NAME}
     try:
         sheet = find(token, config)
@@ -83,7 +87,8 @@ def record(token, write_token, config, kind, context, entries):
         raise ValueError("kind")
     sheet = find(token, config)
     if not sheet:
-        raise google.GoogleError("Make a Google Sheet named “%s” inside 00 REAL ALL TURN IN first." % NAME)
+        raise google.GoogleError("Make a Google Sheet whose name starts with “%s” inside "
+                                 "00 REAL ALL TURN IN first." % NAME)
     tab = _first_tab(token, sheet["id"])
     if not tab:
         raise google.GoogleError("The “%s” sheet has no tab to write to." % NAME)

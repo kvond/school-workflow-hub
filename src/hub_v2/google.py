@@ -262,13 +262,14 @@ def folders_named(token, name):
 SHEET = "application/vnd.google-apps.spreadsheet"
 
 
-def files_named_in(token, name, mime, parent):
-    """Files with exactly this name and type directly inside a folder."""
+def files_named_in(token, name, mime, parent, prefix=False):
+    """Files of this type directly inside a folder, named exactly this (or,
+    with prefix, whose name starts with it)."""
     escaped = name.replace("\\", "\\\\").replace("'", "\\'")
     page = get_json("https://www.googleapis.com/drive/v3/files", token, {
-        "q": "name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false"
-             % (escaped, mime, parent.replace("'", "")),
-        "fields": "files(id,name,modifiedTime)", "pageSize": 5,
+        "q": "name %s '%s' and mimeType = '%s' and '%s' in parents and trashed = false"
+             % ("contains" if prefix else "=", escaped, mime, parent.replace("'", "")),
+        "fields": "files(id,name,modifiedTime,createdTime)", "pageSize": 20,
         "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
     return page.get("files", []) or []
 

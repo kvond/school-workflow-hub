@@ -57,7 +57,7 @@ back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
 ready to enter in IC** lists the scores for typing into Infinite Campus, or
 copies them with instructions for the Claude extension to enter while the
 teacher watches. The page itself never writes to IC. When the teacher has made
-a Google Sheet named `Scores entered` in the turn-in root, **I entered these in
+a Google Sheet whose name starts with `Scores entered` in the turn-in root, **I entered these in
 IC** adds a row per score, and the next list shows only new or changed scores
 (a resubmission with revisions updates the same grade). **Start feedback (use
 Teacher Claude)** copies the teacher's current Prompt 2 from the Agenda's

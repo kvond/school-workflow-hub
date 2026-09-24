@@ -1024,7 +1024,7 @@ class LedgerAndFeedbackTests(unittest.TestCase):
                  "A2 Forensics", "Rivera", "Ana", "8", "10", "F2", ""],
                 ["2026-10-01 10:00", "Entered in IC", "🔬 Forensics", "Wk 04", "Other", "OTHERFORMID12345",
                  "A2 Forensics", "Okafor", "Chidi", "9", "9", "F3", ""]]
-        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID"}]), \
+        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID", "name": "Scores entered (school workflow-hub)"}]), \
                 patch.object(google, "sheet_tabs", return_value=("Scores entered", {"Sheet1": 0})), \
                 patch.object(google, "sheet_values", return_value=rows):
             out = ledger.read("token", self.CONFIG, self.FORM)
@@ -1033,6 +1033,16 @@ class LedgerAndFeedbackTests(unittest.TestCase):
                          (True, "8", "10"))
         self.assertIn(key, out["feedback"])
         self.assertEqual(len(out["entered"]), 1)
+
+    def test_the_sheet_may_have_more_after_its_name(self):
+        sheets = [{"id": "LATERCOPY", "name": "Scores entered (copy)", "createdTime": "2026-10-01T00:00:00Z"},
+                  {"id": "HERS", "name": "Scores entered (school workflow-hub)", "createdTime": "2026-09-24T12:00:00Z"},
+                  {"id": "OTHER", "name": "Old scores entered", "createdTime": "2026-09-01T00:00:00Z"}]
+        with patch.object(google, "files_named_in", return_value=sheets) as search:
+            self.assertEqual(ledger.find("token", self.CONFIG)["id"], "HERS")
+        self.assertEqual(search.call_args.kwargs, {"prefix": True})
+        with patch.object(google, "files_named_in", return_value=sheets + [{"id": "EXACT", "name": "Scores entered"}]):
+            self.assertEqual(ledger.find("token", self.CONFIG)["id"], "EXACT")
 
     def test_no_sheet_yet_says_how_to_make_one(self):
         with patch.object(google, "files_named_in", return_value=[]):
@@ -1044,7 +1054,7 @@ class LedgerAndFeedbackTests(unittest.TestCase):
         entry = {"section": "A2 Forensics", "last": "Rivera", "first": "Ana", "notes": "8", "revision": "10",
                  "file_id": "F2", "file_updated": "2026-10-01T00:00:00Z"}
         context = {"class": "🔬 Forensics", "week": "Wk 04", "assignment": "Reasoning", "form_id": self.FORM}
-        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID"}]), \
+        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID", "name": "Scores entered (school workflow-hub)"}]), \
                 patch.object(google, "sheet_tabs", return_value=("Scores entered", {"Sheet1": 0})), \
                 patch.object(google, "sheet_values", return_value=[]), \
                 patch.object(google, "append_rows") as append:
