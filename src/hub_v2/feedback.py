@@ -1,11 +1,12 @@
-"""Start feedback (use Teacher Claude): the prompt to paste into the teacher's
-own Claude, so feedback costs nothing per run here and no model is called.
+"""Start feedback (use ChatGPT): the prompt to paste into the teacher's own
+ChatGPT, so feedback costs nothing per run here and no model is called. (Entering
+scores in IC stays with the Claude extension, which works in her browser.)
 
 The instructions are the teacher's current Prompt 2 from the Agenda's
 "Feedback Prompts" tab, the same every time. What changes is the list: the
 students whose latest on-time deck has at least one revised answer and who
 haven't had feedback for this assignment yet (from the "Scores entered" sheet).
-Students are named by first name and last initial only. Teacher Claude writes
+Students are named by first name and last initial only. ChatGPT writes
 one Google Doc with exactly two pages per student, so a double-sided print
 never puts one student's feedback on the back of another's.
 """
@@ -67,7 +68,7 @@ def short_names(students):
 
 
 def build(context, students, prompt):
-    """The text to paste into Teacher Claude."""
+    """The text to paste into ChatGPT."""
     names = short_names(students)
     lines = [
         "Start feedback — %(class)s · %(week)s · %(assignment)s" % context,
@@ -75,7 +76,7 @@ def build(context, students, prompt):
         "HOW TO WORK THIS TIME",
         "- Open each student's deck from the links below with your Google Drive access. “Latest” is the deck "
         "to give feedback on; “Earlier” (when listed) is an earlier submission to compare it with for "
-        "“How my thinking changed”.",
+        "“How my thinking changed”. If you can't open a link, tell me which ones and I'll upload those decks.",
         "- Students are named by first name and last initial only. Use exactly that name as the heading of their "
         "feedback and don't add or guess any other name.",
         "- Completion scores are already recorded, so write only the feedback for the student (Part 2 of the "

@@ -1122,6 +1122,7 @@ class LedgerAndFeedbackTests(unittest.TestCase):
         self.assertIn("1. Ana R. — A2 Forensics — Latest: https://docs.example/latest (Oct 01) — "
                       "Earlier: https://docs.example/first (Sep 22) — Revised answers done: 1 of 2", text_out)
         self.assertIn("exactly two pages", text_out)
+        self.assertIn("If you can't open a link, tell me which ones and I'll upload those decks.", text_out)
         self.assertIn("Save it in my Google Drive", text_out)  # no week folder known
         context["folder"] = {"name": "📥 Wk 04 — Fictional", "url": "https://drive.google.com/drive/folders/FICTIONALWK04"}
         self.assertIn("Save it in this week's turn-in folder, “📥 Wk 04 — Fictional”: "
