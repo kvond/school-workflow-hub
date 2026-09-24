@@ -2,8 +2,11 @@
 // each lesson's Form responses and turn-in folder, with completion scores
 // counted from each deck's coded boxes. The grade sheet downloads to you;
 // scores go into Infinite Campus by you or the Claude extension, never by this page.
+// Biology answers are copied into the teacher's research sheet once an assignment closes.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
+const SCAN_CLASSES = ['biology', 'anatomy'];  // with an "Answers by question" view
+const RESEARCH_CLASSES = ['biology'];         // whose final answers go to the research sheet
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const FULL_DAY = {Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday'};
 const TZ = 'America/New_York';
@@ -270,6 +273,89 @@ async function scoreForm(form) {
   if (seq !== work.seq) return;
   work.ui[form.form_id].progress = '';
   renderWork();
+  if (RESEARCH_CLASSES.includes(work.cls) && closedFor(form)) saveAnswers(form, seq);
+}
+
+// ---------- The research sheet (Biology) ----------
+// Once an assignment's two weeks close, its answers are final: the server adds
+// any not already in the sheet, so opening the week again adds nothing twice.
+async function saveAnswers(form, seq) {
+  const ui = work.ui[form.form_id] = work.ui[form.form_id] || {};
+  ui.research = {saving: true};
+  renderWork();
+  try {
+    const done = await postJSON('api/answers', {class: work.cls, week: work.week, form: form.form_id});
+    if (seq === work.seq) ui.research = done;
+  } catch (error) {
+    if (seq === work.seq) ui.research = {error: error.message};
+  }
+  if (seq === work.seq) renderWork();
+}
+
+function researchLine(form) {
+  if (!RESEARCH_CLASSES.includes(work.cls) || !form.window) return null;
+  if (!closedFor(form)) {
+    return el('p', {class: 'muted', text: `Answers go to the research sheet when the two weeks close (${form.window.label}).`});
+  }
+  const r = work.ui[form.form_id]?.research;
+  if (!r) return null;
+  if (r.saving) return el('p', {class: 'muted', text: 'Saving answers to the research sheet…'});
+  if (r.error) return note(`The answers couldn’t be saved to the research sheet: ${r.error}`);
+  if (r.configured === false) return note(r.setup, 'info');
+  return el('p', {class: 'muted'}, r.saved
+    ? `Research sheet: added ${r.saved} answer${r.saved === 1 ? '' : 's'}. `
+    : 'Research sheet: every answer is already saved. ', r.url ? link('Open it ↗', r.url) : null);
+}
+
+// ---------- Answers by question (Biology and A&P) ----------
+const KIND = {NOTES: 'Notes', DRAFT: 'Revised', BANK: 'Concept Bank', OPTIONAL: 'Optional'};
+const KIND_ORDER = ['NOTES', 'DRAFT', 'BANK', 'OPTIONAL'];
+
+function answerCell(item) {
+  if (!item || item.status === 'not found') return el('td', {class: 'muted', text: 'code missing'});
+  if (item.status === 'blank' || !item.answer) return el('td', {class: 'muted', text: '—'});
+  return el('td', {}, item.answer,
+    item.status === 'copied' ? el('span', {class: 'badge warn', text: 'copied from the slide'}) : null);
+}
+
+function answersPanel(form, scores) {
+  const section = work.section;
+  const inSection = r => section === 'all' || r.section === section;
+  const students = form.students.filter(r => r.matched && inSection(r))
+    .map(r => ({r, s: scores[scoreFile(r)?.id]})).filter(x => x.s && !x.s.problem && x.s.items);
+  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Answers by question'}));
+  if (!students.length) { panel.append(note('No scored decks to show yet.', 'info')); return panel; }
+  // Every coded box, grouped by the slide of the handed-out deck it sits on.
+  const boxes = new Map();
+  for (const {s} of students) {
+    for (const item of s.items) {
+      const key = `${item.category}|${item.id}`;
+      const box = boxes.get(key) || {category: item.category, id: item.id, at: null, question: ''};
+      if (box.at == null && item.at != null) Object.assign(box, {at: item.at, question: item.question || ''});
+      boxes.set(key, box);
+    }
+  }
+  const slides = new Map();
+  for (const box of boxes.values()) {
+    const where = box.at ?? Infinity;
+    if (!slides.has(where)) slides.set(where, {at: where, question: box.question, boxes: []});
+    slides.get(where).boxes.push(box);
+  }
+  panel.append(el('p', {class: 'muted', text: `What ${students.length} student${students.length === 1 ? '' : 's'} wrote in each coded box of their on-time deck${section === 'all' ? '' : ` (${section})`}. Late work and decks that couldn’t be scored aren’t included.`}));
+  for (const slide of [...slides.values()].sort((a, b) => (a.at === b.at ? 0 : a.at < b.at ? -1 : 1))) {
+    slide.boxes.sort((a, b) => KIND_ORDER.indexOf(a.category) - KIND_ORDER.indexOf(b.category) || a.id.localeCompare(b.id));
+    panel.append(el('h5', {class: 'answers-slide', text: slide.at === Infinity
+      ? 'Codes no student’s copy has'
+      : `Slide ${slide.at}${slide.question ? ' · ' + slide.question : ''}`}));
+    panel.append(el('div', {class: 'table-wrap'}, el('table', {class: 'answers'},
+      el('thead', {}, el('tr', {}, el('th', {text: 'Student'}),
+        slide.boxes.map(b => el('th', {text: `${KIND[b.category] || b.category} · ${b.id}`})))),
+      el('tbody', {}, students.map(({r, s}) => el('tr', {},
+        el('td', {}, el('strong', {text: `${r.last}, ${r.first}`}),
+          section === 'all' ? el('small', {class: 'muted', text: ' · ' + r.section}) : null),
+        slide.boxes.map(b => answerCell(s.items.find(i => i.category === b.category && i.id === b.id)))))))));
+  }
+  return panel;
 }
 
 function uncodedReport(scores) {
@@ -295,7 +381,7 @@ async function postJSON(url, body) {
 async function openPanel(form, which) {
   const ui = work.ui[form.form_id] = {...work.ui[form.form_id]};
   if (ui.open === which) { ui.open = null; renderWork(); return; }
-  ui.open = which; ui.error = null; ui.busy = which === 'ic' ? null : 'Finding students with revised answers…';
+  ui.open = which; ui.error = null; ui.busy = which === 'feedback' ? 'Finding students with revised answers…' : null;
   renderWork();
   if (which !== 'feedback') return;
   try {
@@ -403,7 +489,7 @@ function icPanel(form, lesson, scores) {
 function feedbackPanel(form) {
   const ui = work.ui[form.form_id] || {};
   const data = ui.feedback;
-  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use ChatGPT)'}));
+  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use Teacher Claude)'}));
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
   if (ui.error) panel.append(note(ui.error));
   if (!data) return panel;
@@ -418,10 +504,10 @@ function feedbackPanel(form) {
   }
   const status = el('span', {class: 'muted'});
   panel.append(
-    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${since ? ` turned in since ${since}` : ''}${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into ChatGPT, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
+    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${since ? ` turned in since ${since}` : ''}${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into Teacher Claude, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
     el('ul', {class: 'files'}, data.students.map(s => el('li', {text: `${s.name} — ${s.section} — revised ${s.draft_done} of ${s.draft_required}`}))),
     el('div', {class: 'action-row'},
-      data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for ChatGPT') : null,
+      data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for Teacher Claude') : null,
       data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'feedback')}, 'Mark feedback done') : null,
       data.prompt_url ? link('Edit the prompt in the Agenda ↗', data.prompt_url) : null, status),
     data.prompt ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'for-claude', text: data.prompt})) : null);
@@ -497,6 +583,8 @@ function renderForm(form, lesson) {
   }
   const marks = marksLine(form);
   if (marks) box.append(marks);
+  const research = researchLine(form);
+  if (research) box.append(research);
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
   const scores = work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
@@ -508,7 +596,9 @@ function renderForm(form, lesson) {
     scoredAll ? el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
       ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC') : null,
     scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
-      ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use ChatGPT)') : null,
+      ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use Teacher Claude)') : null,
+    scoredAll && SCAN_CLASSES.includes(work.cls) ? el('button', {type: 'button', onclick: () => openPanel(form, 'answers')},
+      ui.open === 'answers' ? 'Hide answers' : 'Answers by question') : null,
     ui.progress ? el('span', {class: 'muted', text: ui.progress}) : null));
   if (scores) {
     box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
@@ -528,6 +618,7 @@ function renderForm(form, lesson) {
     }
     if (ui.open === 'ic') box.append(icPanel(form, lesson, scores));
     if (ui.open === 'feedback') box.append(feedbackPanel(form));
+    if (ui.open === 'answers') box.append(answersPanel(form, scores));
   }
   const listed = [...matched, ...unmatched];
   if (listed.length) {

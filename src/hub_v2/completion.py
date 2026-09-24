@@ -32,6 +32,7 @@ COUNT = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=(\d+)\b")
 MAX_SLIDE_BYTES = 5_000_000
 MAX_SLIDES = 200
 COPY_WORDS = 6
+MAX_ANSWER = 4000
 
 
 class Unreadable(Exception):
@@ -84,8 +85,10 @@ def _text(body):
 def _walk(node, units, transform, prefix=""):
     for child in node:
         if child.tag == P + "sp":
+            ph = child.find(P + "nvSpPr/" + P + "nvPr/" + P + "ph")
             units.append({"key": prefix + _name(child, P + "nvSpPr"), "text": _text(child.find(P + "txBody")),
-                          "box": _box(child.find(P + "spPr/" + A + "xfrm"), transform)})
+                          "box": _box(child.find(P + "spPr/" + A + "xfrm"), transform),
+                          "title": ph is not None and ph.get("type") in ("title", "ctrTitle")})
         elif child.tag == P + "grpSp":
             xfrm = child.find(P + "grpSpPr/" + A + "xfrm")
             _walk(child, units, _affine(xfrm, transform, group=True),
@@ -219,24 +222,32 @@ def _plain(text):
     return MARKER.sub(" ", INVENTORY.sub(" ", text or "")).strip()
 
 
+TOKEN = re.compile(r"\w+|[^\w\s]")
+
+
 def _tokens(text):
-    return re.findall(r"\w+|[^\w\s]", _plain(text).lower())
+    return TOKEN.findall(_plain(text).lower())
 
 
-def added(before, after):
+def added(before, after, exact=False):
     """What the student typed into a box: the stretch of the box from the
     first to the last word that wasn't in the copy they were given ('' when
-    nothing is new)."""
+    nothing is new). Lowercased word by word for counting, or with exact=True
+    cut from the box as the student wrote it, capitals and punctuation kept."""
     old, new = _tokens(before), _tokens(after)
     if old == new:
         return ""
     spans = [(j1, j2) for tag, _, _, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False)
              .get_opcodes() if tag in ("insert", "replace")]
     words = [w for j1, j2 in spans for w in new[j1:j2]]
+    plain = _plain(after)
     if not words and new and len(old) <= 6:
-        return "chose " + " ".join(new)  # e.g. kept one of "↑ ↓ ?"
+        return "chose " + (" ".join(plain.split()) if exact else " ".join(new))  # e.g. kept one of "↑ ↓ ?"
     if not any(re.search(r"\w", w) for w in words):
         return ""
+    found = list(TOKEN.finditer(plain))
+    if exact and len(found) == len(new):
+        return " ".join(plain[found[spans[0][0]].start():found[spans[-1][1] - 1].end()].split())
     return " ".join(new[spans[0][0]:spans[-1][1]])
 
 
@@ -283,11 +294,11 @@ def _align(student, template):
 
 
 def _written(student_slide, template_slide, size=(12192000, 6858000)):
-    """[(unit, added words)] for boxes the student wrote in on this slide. A
-    card dragged to a new place counts as 'moved: …' (credited only where it
-    lands on a code)."""
+    """([(unit, added words)] for boxes the student wrote in on this slide,
+    {box key: those words as the student wrote them}). A card dragged to a new
+    place counts as 'moved: …' (credited only where it lands on a code)."""
     base = {u["key"]: u for u in template_slide["units"]} if template_slide else {}
-    out = []
+    out, exact = [], {}
     for unit in student_slide["units"]:
         before = base.get(unit["key"])
         if before is None and template_slide:
@@ -303,7 +314,9 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
                 words = "moved: " + " ".join(_plain(unit["text"]).split())[:40]
         if words:
             out.append((unit, words))
-    return out
+            if not words.startswith("moved: "):
+                exact[unit["key"]] = added(before["text"] if before else "", unit["text"], exact=True)
+    return out, exact
 
 
 def _assign(slide_markers, written, template_slide, size):
@@ -390,6 +403,16 @@ def _assign(slide_markers, written, template_slide, size):
     return result, uncoded, "order on the slide"
 
 
+def slide_title(slide):
+    """A slide's title: its title box, else the first line of its topmost text."""
+    units = [u for u in slide["units"] if _plain(u["text"])]
+    title = next((u for u in units if u.get("title")), None)
+    if title is None:
+        boxed = [u for u in units if u["box"]]
+        title = min(boxed, key=lambda u: (u["box"][1], u["box"][0])) if boxed else (units[0] if units else None)
+    return " ".join(_plain(title["text"]).split("\n")[0].split())[:150] if title else ""
+
+
 def coding_issues(deck):
     """Codes on the deck's list that no box carries, and box codes missing from the list."""
     code, required, basis, _ = inventory(deck)
@@ -419,8 +442,11 @@ def assess(student, template):
         match = pairs.get(slide["number"])
         if template and match is None:
             continue  # nothing to compare this slide with
-        written = _written(slide, match, student["size"]) if template else [
-            (u, _plain(u["text"])) for u in slide["units"] if MARKER.search(u["text"]) and _plain(u["text"])]
+        if template:
+            written, exact = _written(slide, match, student["size"])
+        else:
+            written = [(u, _plain(u["text"])) for u in slide["units"] if MARKER.search(u["text"]) and _plain(u["text"])]
+            exact = {u["key"]: " ".join(words.split()) for u, words in written}
         assigned, loose, basis_here = _assign(mine, written, match, student["size"])
         if mine and written:
             how.add(basis_here)
@@ -438,13 +464,17 @@ def assess(student, template):
                 status = "done"
             prior = found.get(key)
             if not prior or (prior["status"] != "done" and status == "done"):
+                answer = " ".join(exact.get(u["key"], w) for u, w in items)
+                where = match or slide  # named and ordered by the handed-out deck's slide
                 found[key] = {"category": key[0], "id": key[1], "slide": slide["number"], "status": status,
-                              "excerpt": words[:80]}
+                              "excerpt": words[:80], "answer": answer[:MAX_ANSWER],
+                              "at": where["number"], "question": slide_title(where)}
     items = []
     for category in CATEGORIES:
         for qid in required[category]:
             items.append(found.get((category, qid)) or {"category": category, "id": qid, "slide": None,
-                                                        "status": "not found", "excerpt": ""})
+                                                        "status": "not found", "excerpt": "", "answer": "",
+                                                        "at": None, "question": ""})
     counts = {c: {"done": sum(1 for i in items if i["category"] == c and i["status"] == "done"),
                   "required": len(required[c])} for c in CATEGORIES}
     scored_items = [i for i in items if i["category"] != "OPTIONAL"]

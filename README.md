@@ -63,16 +63,31 @@ teacher watches. The page itself never writes to IC. The dashboard keeps its own
 class and assignment, and each assignment card then shows "✓ Entered in IC
 <date> · ✓ Feedback made <date>". The IC list marks students who turned in
 something new since that date (a resubmission updates the same grade), and
-**Start feedback (use ChatGPT)** copies the teacher's current Prompt 2
+**Start feedback (use Teacher Claude)** copies the teacher's current Prompt 2
 from the Agenda's Feedback Prompts tab with the students who have revised
 answers turned in since the last feedback (first name and last initial), for
-her own ChatGPT to write one Google Doc with two pages per student, saved in the
+her own Claude to write one Google Doc with two pages per student, saved in the
 week's 📥 folder. Each assignment stays open for two weeks
 from its first turn-in; later work is Late and isn't scored. While it is open,
 an empty score (no work yet, or no revised answers yet) stays blank; once the
 two weeks close it is 0, and those zeros are listed for IC too.
 
-**Tidy this week's folders** is v2's one write. It previews, then on the
+**Answers by question** (Biology and A&P) shows what each student wrote in
+each coded box of their on-time deck, one table per slide of the handed-out
+deck, with first and revised answers side by side and blank or
+copied-from-the-slide answers marked. It reads the same decks the scores come
+from; no model is called.
+
+**The Biology research sheet.** Once a Biology assignment's two weeks close,
+opening it on the dashboard adds its on-time answers to a Google Sheet named
+exactly `Student answers — Biology` at the top of the turn-in root, which the
+teacher makes once, blank: one row per student per coded box (section, week,
+lesson, slide and its title, code, the answer as written, status, turn-in and
+deck times, deck link, and a row key). A box already in the sheet is never added
+again, rows are never edited or deleted, and answers are written as plain text.
+Copies made for coding have other names and are never written to.
+
+**Tidy this week's folders** is v2's one write that moves or renames anything. It previews, then on the
 teacher's confirmation moves a week's extra folders' contents, loose Form
 folders and the earlier shared Form's uploads into that week's one `📥` folder,
 and late work into its `⏰ Late — not graded` folder. Emptied extra folders go
