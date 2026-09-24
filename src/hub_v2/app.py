@@ -11,7 +11,7 @@ import os
 import re
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -149,12 +149,22 @@ def _form_args(values):
     return class_key, week, form_id
 
 
-def _form_rows(token, config, agenda, class_key, week, form_id):
-    """(context, [(row, score)]) for the roster-matched, on-time students of one Form."""
+def _form_context(token, config, agenda, class_key, week, form_id):
+    """(context, form, found) for one Form on the page."""
     found = lesson_work(token, config, agenda, class_key, week, fresh=False)
     form = next((f for lesson in found["lessons"] for f in lesson["forms"] if f["form_id"] == form_id), None)
     if not form:
         raise ValueError("form")
+    context = {"class": agenda.classes[class_key]["name"], "week": week, "assignment": form["label"],
+               "form_id": form_id, "date": ledger.eastern_now()[:10],
+               # Feedback is saved in the week's one 📥 turn-in folder, beside the work.
+               "folder": next((f for f in found.get("folders", []) if f["name"].startswith("📥")), None)}
+    return context, form, found
+
+
+def _form_rows(token, config, agenda, class_key, week, form_id):
+    """(context, [(row, score)]) for the roster-matched, on-time students of one Form."""
+    context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
     rows = [r for r in form["students"] if r["matched"] and r["files"]]
 
     def one(row):
@@ -162,19 +172,14 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
         return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)
     with ThreadPoolExecutor(max_workers=4) as pool:
         scores = list(pool.map(one, rows))
-    window = form.get("window")
-    closed = bool(window and work.when(window["at"]) and work.when(window["at"]) < datetime.now(timezone.utc))
-    no_work = list(form["missing"]) + [r for r in form["late"] if r["matched"]]
-    context = {"class": agenda.classes[class_key]["name"], "week": week, "assignment": form["label"],
-               "form_id": form_id, "date": ledger.eastern_now()[:10], "closed": closed, "no_work": no_work,
-               # Feedback is saved in the week's one 📥 turn-in folder, beside the work.
-               "folder": next((f for f in found.get("folders", []) if f["name"].startswith("📥")), None)}
     return context, list(zip(rows, scores))
 
 
 def feedback_list(token, config, agenda, class_key, week, form_id):
+    """Students with revised answers who turned in since the last feedback for this assignment."""
     context, scored = _form_rows(token, config, agenda, class_key, week, form_id)
     sheet = ledger.read(token, config, form_id)
+    last = work.when(sheet["feedback_at"]["at"]) if sheet.get("feedback_at") else None
     students, done_before, no_revision = [], 0, 0
     for row, score in scored:
         if score.get("problem"):
@@ -182,14 +187,14 @@ def feedback_list(token, config, agenda, class_key, week, form_id):
         if not score["counts"]["DRAFT"]["done"]:
             no_revision += 1
             continue
-        if ledger.student_key(row["section"], row["last"], row["first"]) in sheet["feedback"]:
+        turned_in = work.when(row["submitted_at"])
+        if last and turned_in and turned_in <= last:
             done_before += 1
             continue
         latest = next(f for f in row["files"] if f["id"] == score["file_id"])
         students.append({"first": row["first"], "last": row["last"], "section": row["section"],
                          "file_id": score["file_id"], "url": latest.get("url", ""),
-                         "when": work.school_day(work.when(row["submitted_at"])).strftime("%b %d")
-                         if work.when(row["submitted_at"]) else "",
+                         "when": work.school_day(turned_in).strftime("%b %d") if turned_in else "",
                          "earlier": [{"url": e["files"][0].get("url", ""),
                                       "when": work.school_day(work.when(e["submitted_at"])).strftime("%b %d")
                                       if work.when(e["submitted_at"]) else ""}
@@ -206,41 +211,22 @@ def feedback_list(token, config, agenda, class_key, week, form_id):
 
 
 def record_post(environ, respond, config):
-    """Add rows to the teacher's "Scores entered" sheet for scores she entered
-    in IC or feedback she made. The server recomputes every value it writes."""
+    """Note in the "Scores entered" sheet that this assignment was entered in
+    IC, or had its feedback made: one row for the class and assignment."""
     refused = _same_origin_json(environ, respond, config)
     if refused:
         return refused
     try:
-        payload = _json_body(environ, 20000)
+        payload = _json_body(environ, 2000)
         class_key, week, form_id = _form_args(payload)
         kind = str(payload.get("kind", ""))
-        files, zeros = payload.get("files") or [], payload.get("zeros") or []
-        if (kind not in ledger.KINDS or not isinstance(files, list) or not isinstance(zeros, list)
-                or not 1 <= len(files) + len(zeros) <= 300 or (zeros and kind != "ic")):
+        if kind not in ledger.KINDS:
             raise ValueError()
-        wanted, zero_keys = {str(f) for f in files}, {str(z) for z in zeros}
         token = google.service_token(config)
         agenda = load_agenda(token, config)
-        context, scored = _form_rows(token, config, agenda, class_key, week, form_id)
-        closed = context["closed"]
-        entries = []
-        for row, score in scored:
-            if score.get("file_id") in wanted and not score.get("problem"):
-                notes, revision = ledger.shown_scores(score, closed)
-                entries.append({"section": row["section"], "last": row["last"], "first": row["first"],
-                                "notes": notes, "revision": revision, "file_id": score["file_id"],
-                                "file_updated": score.get("file_updated", "")})
-        # Zeros only for roster students with no on-time work, once the two weeks are over.
-        if zero_keys and closed:
-            for student in context["no_work"]:
-                if ledger.student_key(student["section"], student["last"], student["first"]) in zero_keys:
-                    entries.append({"section": student["section"], "last": student["last"], "first": student["first"],
-                                    "notes": "0", "revision": "0", "file_id": "", "file_updated": ""})
-        if not entries:
-            raise ValueError()
-        added = ledger.record(token, google.service_token(config, write=True), config, kind, context, entries)
-        return respond("200 OK", {"recorded": added})
+        context, _, _ = _form_context(token, config, agenda, class_key, week, form_id)
+        ledger.record(token, google.service_token(config, write=True), config, kind, context)
+        return respond("200 OK", {"recorded": 1, "sheet": ledger.read(token, config, form_id)})
     except (ValueError, KeyError, TypeError, AttributeError):
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
     except google.GoogleError as error:
