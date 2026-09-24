@@ -166,7 +166,9 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
     closed = bool(window and work.when(window["at"]) and work.when(window["at"]) < datetime.now(timezone.utc))
     no_work = list(form["missing"]) + [r for r in form["late"] if r["matched"]]
     context = {"class": agenda.classes[class_key]["name"], "week": week, "assignment": form["label"],
-               "form_id": form_id, "date": ledger.eastern_now()[:10], "closed": closed, "no_work": no_work}
+               "form_id": form_id, "date": ledger.eastern_now()[:10], "closed": closed, "no_work": no_work,
+               # Feedback is saved in the week's one 📥 turn-in folder, beside the work.
+               "folder": next((f for f in found.get("folders", []) if f["name"].startswith("📥")), None)}
     return context, list(zip(rows, scores))
 
 

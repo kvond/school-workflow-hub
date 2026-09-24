@@ -83,6 +83,10 @@ def build(context, students, prompt):
         "",
         "MAKE ONE GOOGLE DOC FOR PRINTING",
         "- Name it “Feedback — %(class)s %(week)s — %(assignment)s — %(date)s”." % context,
+        ("- Save it in this week's turn-in folder, “%s”: %s. If you can't create or save a Google Doc there, "
+         "give me the finished document as a .docx file and I'll put it in that folder myself."
+         % (context["folder"]["name"], context["folder"]["url"])) if context.get("folder") else
+        "- Save it in my Google Drive and tell me where it is.",
         "- Give every student exactly two pages, in the order listed: start each student at the top of a new page "
         "with their name as the heading, and keep their feedback to two pages at most.",
         "- If a student's feedback fits on one page, add a page break after it so their second page is blank. "
