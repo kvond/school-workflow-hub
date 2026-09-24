@@ -177,25 +177,38 @@ def markers(deck):
     return found
 
 
+def _parse_header(header):
+    """{category: [ids]} from a code list, or None when its lists don't match its own counts."""
+    lists = {c: [] for c in CATEGORIES}
+    for category, values in ID_LIST.findall(header):
+        lists[category] = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
+    counts = {("BANK" if k == "BANK_TERMS" else k): int(v) for k, v in COUNT.findall(header)}
+    if any(lists.values()) and all(counts.get(c, len(lists[c])) == len(lists[c]) for c in CATEGORIES):
+        return lists
+    return None
+
+
 def inventory(deck):
-    """(lesson code, {category: [ids]}, basis, note): the deck's own header, else a census of its codes."""
-    header = next((u["text"] for s in deck["slides"] for u in s["units"] if INVENTORY.search(u["text"])), "")
+    """(lesson code, {category: [ids]}, basis, note): the deck's own code list
+    (its [[MARKER-INVENTORY:...]] slide), else every code in the deck."""
     codes = markers(deck)
     census = {c: [] for c in CATEGORIES}
     for m in codes:
         if m["id"] not in census[m["category"]]:
             census[m["category"]].append(m["id"])
     code = codes[0]["code"] if codes else ""
-    if header:
-        lists = {c: [] for c in CATEGORIES}
-        for category, values in ID_LIST.findall(header):
-            lists[category] = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
-        counts = {("BANK" if k == "BANK_TERMS" else k): int(v) for k, v in COUNT.findall(header)}
-        code = INVENTORY.search(header).group(1)
-        if all(counts.get(c, len(lists[c])) == len(lists[c]) for c in CATEGORIES) and any(lists.values()):
+    slide = next((s for s in deck["slides"] if any(INVENTORY.search(u["text"]) for u in s["units"])), None)
+    if not slide:
+        return code, census, "census", None if codes else "This deck has no codes."
+    code = next(INVENTORY.search(u["text"]).group(1) for u in slide["units"] if INVENTORY.search(u["text"]))
+    # The list may be split across several boxes on its slide: try reading
+    # order first, then the order the boxes were made in.
+    by_position = sorted(slide["units"], key=lambda u: (u["box"][1], u["box"][0]) if u["box"] else (0, 0))
+    for units in (by_position, slide["units"]):
+        lists = _parse_header("\n".join(u["text"] for u in units if u["text"]))
+        if lists:
             return code, lists, "header", None
-        return code, census, "census", "The deck's code list doesn't match its own counts, so every code in it was used."
-    return code, census, "census", None if codes else "This deck has no codes."
+    return code, census, "census", "The deck's code list doesn't match its own counts, so every code in it was used."
 
 
 # ---------- comparing a student's deck with the copy they were given ----------
@@ -336,6 +349,23 @@ def _assign(slide_markers, written, template_slide, size):
             if label.startswith(term) or re.match(r"\W*" + re.escape(term) + r"\b", label):
                 result[("BANK", m["id"])].append(item)
                 remaining.remove(item)
+    bank = [m for m in slide_markers if m["category"] == "BANK"]
+    if bank and remaining:
+        # An answer box without the term in it belongs to the nearest term label.
+        labels = {}
+        for m in bank:
+            pattern = re.compile(r"\W*" + re.escape(m["id"].lower()) + r"\b")
+            labels[m["id"]] = next((u for u in template_units if u["box"] and pattern.match(u["text"].lower())), None)
+        placed_labels = [(m, labels[m["id"]]) for m in bank if labels[m["id"]]]
+        only_bank = len(bank) == len(slide_markers)
+        for item in list(remaining):
+            if not item[0]["box"] or not placed_labels:
+                continue
+            c = _center(item[0]["box"])
+            m, label = min(placed_labels, key=lambda ml: _distance(c, ml[1]["box"]))
+            if only_bank or _distance(c, label["box"]) <= 0.08 * max(size):
+                result[("BANK", m["id"])].append(item)
+                remaining.remove(item)
     drafts = [m for m in slide_markers if m["category"] == "DRAFT"]
     notes = [m for m in slide_markers if m["category"] in ("NOTES", "OPTIONAL")]
     ordered = sorted(remaining, key=lambda item: (_center(item[0]["box"])[1], _center(item[0]["box"])[0])
@@ -354,6 +384,17 @@ def _assign(slide_markers, written, template_slide, size):
     for m, item in zip(notes + drafts, ordered):
         result[(m["category"], m["id"])].append(item)
     return result, uncoded, "order on the slide"
+
+
+def coding_issues(deck):
+    """Codes on the deck's list that no box carries, and box codes missing from the list."""
+    code, required, basis, _ = inventory(deck)
+    if basis != "header":
+        return {"missing": [], "extra": []}
+    present = {(m["category"], m["id"]) for m in markers(deck)}
+    listed = {(c, qid) for c in CATEGORIES for qid in required[c]}
+    return {"missing": sorted("%s %s" % key for key in listed - present),
+            "extra": sorted("%s %s" % key for key in present - listed)}
 
 
 def score(done, required):
@@ -380,7 +421,8 @@ def assess(student, template):
         if mine and written:
             how.add(basis_here)
         for unit, words in loose:
-            uncoded.append({"slide": slide["number"], "excerpt": words[:80]})
+            if not words.startswith("moved: "):  # a dragged card isn't writing
+                uncoded.append({"slide": slide["number"], "excerpt": words[:80]})
         printed = template_text.get(match["number"], "") if match else ""
         for key, items in assigned.items():
             words = " ".join(w for _, w in items)
@@ -401,7 +443,12 @@ def assess(student, template):
                                                         "status": "not found", "excerpt": ""})
     counts = {c: {"done": sum(1 for i in items if i["category"] == c and i["status"] == "done"),
                   "required": len(required[c])} for c in CATEGORIES}
-    return {"code": code, "inventory": basis, "note": note,
+    scored_items = [i for i in items if i["category"] != "OPTIONAL"]
+    missing_codes = sum(1 for i in scored_items if i["status"] == "not found")
+    if scored_items and missing_codes * 10 >= len(scored_items) * 3:
+        note = ("This copy is missing %d of its %d codes, so it may have been copied from an older version of "
+                "the deck. Check it by hand." % (missing_codes, len(scored_items)))
+    return {"code": code, "inventory": basis, "note": note, "coding": coding_issues(template or student),
             "notes_score": score(counts["NOTES"]["done"] + counts["BANK"]["done"],
                                  counts["NOTES"]["required"] + counts["BANK"]["required"]),
             "revision_score": score(counts["DRAFT"]["done"], counts["DRAFT"]["required"]),
@@ -409,17 +456,24 @@ def assess(student, template):
             "compared": bool(template)}
 
 
-def pick_template(student, templates):
-    """The distributed copy with the same lesson code and the most slides in common."""
-    code = inventory(student)[0]
+def coverage(student, template):
+    """The share of the student's codes that the template also carries."""
     mine = {k for s in student["slides"] for k in _signature(s)}
-    best, best_overlap = None, 0
+    if not mine or template is None:
+        return 0.0
+    return len(mine & {k for s in template["slides"] for k in _signature(s)}) / len(mine)
+
+
+def pick_template(student, templates):
+    """The distributed copy with the same lesson code and the most codes in common."""
+    code = inventory(student)[0]
+    best, best_share = None, 0.0
     for template in templates:
-        overlap = len(mine & {k for s in template["slides"] for k in _signature(s)})
         if code and inventory(template)[0] != code:
             continue
-        if overlap > best_overlap:
-            best, best_overlap = template, overlap
+        share = coverage(student, template)
+        if share > best_share:
+            best, best_share = template, share
     return best
 
 
@@ -450,6 +504,16 @@ def _template(token, deck_id):
     if key not in _templates:
         _remember(_templates, key, _read(token, deck_id, meta), MAX_CACHED_TEMPLATES)
     return meta, _templates[key]
+
+
+def original_title(name):
+    """The deck a student's copy was made from: 's.x — 09-16 12.41 — Copy of Deck - Ana Rivera.pptx' → 'Deck'."""
+    text = re.sub(r"^\s*s\.[a-z0-9.\-]+\s+[—-]\s+\d{2}-\d{2}\s+\d{2}\.\d{2}\s+[—-]\s*", "", str(name or ""), flags=re.I)
+    text = re.sub(r"\.(pptx?|key)$", "", text.strip(), flags=re.I)
+    if " - " in text:
+        text = text.rsplit(" - ", 1)[0]
+    text = re.sub(r"^(?:\s*copy of\s+)+", "", text, flags=re.I).strip()
+    return text if len(text) >= 6 else ""
 
 
 def lesson_decks(agenda, class_key, week_label, form_id):
@@ -493,6 +557,17 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     except (google.GoogleError, Unreadable) as error:
         return {**out, "problem": "Couldn't read this deck (%s). Open it yourself." % error}
     best = pick_template(deck, [t[2] for t in templates])
+    if coverage(deck, best) < 0.8:
+        # The Agenda row links another assignment's deck: look for the
+        # original this copy was made from, by its name.
+        title = original_title(upload.get("name") or meta.get("name", ""))
+        for found in (google.files_named(token, title, SLIDES) if title else [])[:5]:
+            if found["id"] != file_id and not any(t[0] == found["id"] for t in templates):
+                try:
+                    templates.append((found["id"],) + _template(token, found["id"]))
+                except (google.GoogleError, Unreadable):
+                    continue
+        best = pick_template(deck, [t[2] for t in templates])
     chosen = next((t for t in templates if t[2] is best), None)
     if chosen is None:
         return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "

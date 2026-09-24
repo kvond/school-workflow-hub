@@ -262,6 +262,16 @@ def folders_named(token, name):
 SHEET = "application/vnd.google-apps.spreadsheet"
 
 
+def files_named(token, name, mime):
+    """Files of this type with exactly this name that the dashboard can see."""
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    page = get_json("https://www.googleapis.com/drive/v3/files", token, {
+        "q": "name = '%s' and mimeType = '%s' and trashed = false" % (escaped, mime),
+        "fields": "files(id,name,modifiedTime)", "pageSize": 10,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
+    return page.get("files", []) or []
+
+
 def files_named_in(token, name, mime, parent, prefix=False):
     """Files of this type directly inside a folder, named exactly this (or,
     with prefix, whose name starts with it)."""

@@ -473,6 +473,8 @@ def shared_submissions(token, config, class_name, number):
         try:
             responses = google.form_responses(token, form_id)
         except google.GoogleError as error:
+            if error.status == 404:
+                return [], None  # the Form was deleted; its script had already filed its uploads
             return [], "The earlier shared turn-in Form couldn't be read (%s), so its uploads may be missing." % error
         _shared_cache[form_id] = (time.time(), responses)
     found = []

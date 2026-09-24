@@ -965,6 +965,10 @@ class CompletionTests(unittest.TestCase):
         code, required, basis, _ = completion.inventory(deck)
         self.assertEqual((code, basis, required["NOTES"], required["DRAFT"]), ("C01", "census", ["A"], ["A"]))
 
+    def test_scores_are_a_share_of_this_decks_boxes_on_a_ten_point_scale(self):
+        self.assertEqual([completion.score(20, 27), completion.score(1, 2), completion.score(13, 13),
+                          completion.score(0, 5), completion.score(0, 0)], [7.4, 5.0, 10.0, 0.0, None])
+
     def test_added_words(self):
         self.assertEqual(completion.added("[ Type name here ]", "Oak tree"), "oak tree")
         self.assertEqual(completion.added("Producers Count: [ Enter # ]", "Producers Count: 12"), "12")
@@ -1097,33 +1101,118 @@ class LedgerAndFeedbackTests(unittest.TestCase):
 
 
 class RecordEndpointTests(unittest.TestCase):
+    def post(self, origin, body, closed=False):
+        environ = {"PATH_INFO": "/v2/api/record", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
+        seen = {}
+        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+        row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics",
+               "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES}], "earlier": []}
+        scored = [(row, {"file_id": "STUDENTDECK123", "notes_score": 8.0, "revision_score": 0.0,
+                         "file_updated": "t", "problem": None})]
+        context = {"class": "c", "week": "w", "assignment": "a", "form_id": "f", "date": "d", "closed": closed,
+                   "no_work": [{"last": "Lee", "first": "Sam", "section": "A3 Forensics"}]}
+        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "_form_rows", return_value=(context, scored)), \
+                patch.object(ledger, "record", return_value=1) as record:
+            b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+        return seen["status"], record
+
+    def body(self, **extra):
+        return json.dumps({"class": "forensics", "week": "Wk 04", "form": "FICTIONALFORMID1234567890abc",
+                           "kind": "ic", **extra}).encode()
+
     def test_recording_needs_the_dashboard_page_and_recomputes_scores(self):
-        body = json.dumps({"class": "forensics", "week": "Wk 04", "form": "FICTIONALFORMID1234567890abc",
-                           "kind": "ic", "files": ["STUDENTDECK123"]}).encode()
-
-        def post(origin):
-            environ = {"PATH_INFO": "/v2/api/record", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
-                       "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
-                       "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
-            seen = {}
-            config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
-            row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics",
-                   "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES}], "earlier": []}
-            scored = [(row, {"file_id": "STUDENTDECK123", "notes_score": 8.0, "revision_score": None,
-                             "file_updated": "t", "problem": None})]
-            with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
-                    patch.object(google, "service_token", return_value="token"), \
-                    patch.object(app, "load_agenda", return_value=fixture()), \
-                    patch.object(app, "_form_rows", return_value=({"class": "c", "week": "w", "assignment": "a",
-                                                                  "form_id": "f", "date": "d"}, scored)), \
-                    patch.object(ledger, "record", return_value=1) as record:
-                b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
-            return seen["status"], record
-
-        status, record = post("https://elsewhere.example")
+        status, record = self.post("https://elsewhere.example", self.body(files=["STUDENTDECK123"]))
         self.assertEqual(status, "403 Forbidden")
         record.assert_not_called()
-        status, record = post("https://hub.fictional.example")
+        status, record = self.post("https://hub.fictional.example", self.body(files=["STUDENTDECK123"]))
         self.assertEqual(status, "200 OK")
         entries = record.call_args.args[5]
-        self.assertEqual((entries[0]["notes"], entries[0]["revision"]), ("8", "N/A"))
+        self.assertEqual((entries[0]["notes"], entries[0]["revision"]), ("8", ""))  # no revision yet: blank
+
+    def test_zeros_are_recorded_only_after_the_two_weeks(self):
+        key = ledger.student_key("A3 Forensics", "Lee", "Sam")
+        status, record = self.post("https://hub.fictional.example", self.body(zeros=[key]), closed=False)
+        self.assertEqual(status, "400 Bad Request")  # still open: nothing to record
+        record.assert_not_called()
+        status, record = self.post("https://hub.fictional.example", self.body(files=["STUDENTDECK123"], zeros=[key]),
+                                   closed=True)
+        entries = record.call_args.args[5]
+        self.assertEqual([(e["last"], e["notes"], e["revision"]) for e in entries],
+                         [("Rivera", "8", "0"), ("Lee", "0", "0")])
+
+    def test_shown_scores(self):
+        self.assertEqual(ledger.shown_scores(None, False), ("", ""))
+        self.assertEqual(ledger.shown_scores(None, True), ("0", "0"))
+        self.assertEqual(ledger.shown_scores({"notes_score": 6.5, "revision_score": 0.0}, False), ("6.5", ""))
+        self.assertEqual(ledger.shown_scores({"notes_score": 6.5, "revision_score": None}, True), ("6.5", "N/A"))
+
+
+def bank_deck(**changes):
+    """A fictional Biology-style deck: the code list split over several boxes,
+    a Concept Bank whose codes sit together in a corner, and drag cards."""
+    text = lambda name, default: changes.get(name, default)
+    return pptx([
+        [("TITLE", "Biology 09 — response manifest", (0, 0, 900, 30)),
+         ("HEAD", "[[MARKER-INVENTORY:C09]]\nVERSION=C09-r1\nNOTES=1  DRAFT=0  OPTIONAL=0  BANK_TERMS=2", (0, 40, 900, 60)),
+         ("LISTS", "NOTES_IDS=\nSQUID-CLASSIFY\nDRAFT_IDS=\n\nOPTIONAL_IDS=\n\nBANK_IDS=\nProducer\nTrophic level\n"
+                   "CHECKPOINTS=UNVERIFIED; do not infer due dates.", (0, 110, 900, 300))],
+        [("Q", "Name the type of symbiosis.", (20, 20, 800, 60)),
+         ("A", text("A", ""), (20, 100, 800, 200)),
+         ("M", "[[NOTES:C09:The bobtail squid]]", (20, 110, 150, 10))],
+        [("L1", "Producer  ", (20, 20, 200, 40)), ("A1", text("A1", ""), (240, 20, 500, 40)),
+         ("L2", "Trophic level  ", (20, 100, 200, 40)), ("A2", text("A2", ""), (240, 100, 500, 40)),
+         ("M1", "[[BANK:C09:Producer]]", (900, 540, 90, 10)), ("M2", "[[BANK:C09:Trophic level]]", (900, 552, 90, 10))],
+        [("CARD", "Hawk", changes.get("CARD", (20, 400, 80, 30)))],
+    ])
+
+
+class RealDeckShapeTests(unittest.TestCase):
+    def assess(self, **changes):
+        return completion.assess(completion.read_deck(bank_deck(**changes)), completion.read_deck(bank_deck()))
+
+    def test_a_code_list_split_over_several_boxes_is_read(self):
+        code, required, basis, note = completion.inventory(completion.read_deck(bank_deck()))
+        self.assertEqual((code, basis), ("C09", "header"))
+        self.assertEqual((required["NOTES"], required["BANK"]), (["SQUID-CLASSIFY"], ["Producer", "Trophic level"]))
+
+    def test_concept_bank_answers_go_to_the_term_beside_them(self):
+        result = self.assess(A2="one step in a food chain")
+        status = {i["id"]: i["status"] for i in result["items"] if i["category"] == "BANK"}
+        self.assertEqual(status, {"Producer": "blank", "Trophic level": "done"})
+
+    def test_a_dragged_card_is_not_uncoded_writing(self):
+        result = self.assess(CARD=(600, 100, 80, 30))
+        self.assertEqual(result["uncoded"], [])
+
+    def test_codes_that_dont_match_the_code_list_are_named(self):
+        result = self.assess()
+        self.assertEqual(result["coding"], {"missing": ["NOTES SQUID-CLASSIFY"], "extra": ["NOTES The bobtail squid"]})
+
+    def test_original_title(self):
+        self.assertEqual(completion.original_title("s.ana.rivera — 09-16 12.41 — Copy of ▶ LIVE — Week 03 — Observation - Ana Rivera.pptx"),
+                         "▶ LIVE — Week 03 — Observation")
+        self.assertEqual(completion.original_title("Copy of Observation Skills - Sam Lee"), "Observation Skills")
+        self.assertEqual(completion.original_title("Deck"), "")
+
+    def test_the_handed_out_deck_is_found_by_name_when_the_agenda_links_another(self):
+        completion._templates.clear()
+        completion._results.clear()
+        decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(),
+                 "STUDENTDECK123": bank_deck(A2="one step in a food chain")}
+        row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics", "earlier": [], "late": False,
+               "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES, "name": "Copy of Bank Deck - Ana Rivera"}]}
+        found = {"lessons": [{"forms": [{"form_id": ScoreFileTests.FORM, "students": [row], "late": []}]}]}
+        with patch.object(google, "drive_file", side_effect=lambda t, fid, fields=None: {
+                    "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "t"}), \
+                patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]), \
+                patch.object(google, "files_named", return_value=[{"id": "ORIGINALDECK123456789"}]) as search:
+            result = completion.score_file("token", fixture(), "forensics", "Wk 04", ScoreFileTests.FORM,
+                                           "STUDENTDECK123", found)
+        search.assert_called_once_with("token", "Bank Deck", completion.SLIDES)
+        self.assertIsNone(result["problem"])
+        self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})
