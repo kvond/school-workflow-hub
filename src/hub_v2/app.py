@@ -1,9 +1,10 @@
 """v2 dashboard: lesson plans and found student work, served at /v2/.
 
 Runs inside the existing Cloud Run service behind the same Cloud IAP sign-in,
-and uses the same settings and service account as v1. Read-only: it reads the
-Agenda, the roster workbook, Form responses and Drive file details, and writes
-nothing anywhere.
+and uses the same settings and service account as v1. It reads the Agenda, the
+roster workbook, Form responses and Drive file details. Its one write is the
+Tidy button, which moves a previewed set of files and folders into a week's one
+📥 folder when the teacher confirms.
 """
 import json
 import os
@@ -14,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from . import agenda as agenda_module
-from . import google, work
+from . import google, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -85,6 +86,12 @@ def api(sub, query, config):
         return {"class_key": class_key, "weeks": agenda.week_options(class_key),
                 "current": current["label"] if current else None,
                 "sections": list(work.roster.SECTIONS[class_key]), "agenda": sheet}
+    if sub == "api/tidy":
+        class_key = _class_key(_one(query, "class"))
+        week = _one(query, "week")
+        if not 1 <= len(week) <= 100:
+            raise ValueError("week")
+        return tidy.plan(token, config, agenda, class_key, week)
     if sub == "api/work":
         class_key = _class_key(_one(query, "class"))
         week = _one(query, "week")
@@ -106,6 +113,8 @@ def application(environ, start_response, config=None):
                                                    ("Content-Length", str(len(body)))] + list(extra))
         return [b"" if method == "HEAD" else body]
 
+    if method == "POST" and path == "/v2/api/tidy":
+        return tidy_post(environ, respond, config)
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "This page only reads."},
                        extra=[("Allow", "GET, HEAD")])
@@ -137,3 +146,37 @@ def application(environ, start_response, config=None):
     if body is None:
         return respond("404 Not Found", {"error": "Not found."})
     return respond("200 OK", body)
+
+
+def tidy_post(environ, respond, config):
+    """Move a previewed Tidy plan. Signed-in teacher, same-origin JSON only."""
+    try:
+        google.verify_teacher(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), config)
+    except google.SignInRequired:
+        return respond("401 Unauthorized", {"error": "Please sign in again: reload this page."})
+    origins = {v.strip() for v in config.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+               if v.strip().startswith("https://")}
+    if (environ.get("HTTP_ORIGIN") not in origins
+            or environ.get("CONTENT_TYPE", "").split(";")[0].strip() != "application/json"):
+        return respond("403 Forbidden", {"error": "Tidy can only be run from the dashboard page."})
+    try:
+        length = int(environ.get("CONTENT_LENGTH") or 0)
+        if not 1 <= length <= 2000:
+            raise ValueError()
+        payload = json.loads(environ["wsgi.input"].read(length))
+        class_key = _class_key(payload.get("class"))
+        week, plan_id = str(payload.get("week", "")), str(payload.get("plan_id", ""))
+        if not 1 <= len(week) <= 100 or not 1 <= len(plan_id) <= 64:
+            raise ValueError()
+        token = google.service_token(config)
+        write_token = google.service_token(config, write=True)
+        agenda = load_agenda(token, config)
+        return respond("200 OK", tidy.apply(token, write_token, config, agenda, class_key, week, plan_id))
+    except tidy.Changed:
+        return respond("409 Conflict", {"error": "Something changed since the preview. Review it again."})
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return respond("400 Bad Request", {"error": "That request wasn't understood."})
+    except google.GoogleError as error:
+        return respond("502 Bad Gateway", {"error": str(error)})
+    except Exception:
+        return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing more was moved."})

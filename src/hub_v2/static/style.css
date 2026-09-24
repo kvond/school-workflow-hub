@@ -96,6 +96,16 @@ tr.unmatched td { background: var(--warn-bg); }
 .files { margin: 0; padding-left: 18px; }
 .earlier summary { cursor: pointer; font-size: 13px; color: var(--muted); }
 .missing ul { columns: 3 220px; margin: 0; padding-left: 18px; }
+.tidy-box:not(:empty) { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px; margin: 0 0 12px; }
+.action-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.roster-check { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 14px 16px; margin: 0 0 16px; }
+.roster-check h3 { margin: 0 0 4px; font-size: 16px; }
+.roster-check .flags { margin: 8px 0 0; padding-left: 18px; }
+.roster-check .flags li { margin: 4px 0; }
+.late { margin-top: 12px; }
+.late h4 { margin: 0 0 4px; }
 
 @media (max-width: 640px) {
   .top { flex-wrap: wrap; gap: 8px 16px; padding: 10px 16px; position: static; }

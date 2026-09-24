@@ -25,7 +25,7 @@ deferred. Save and Run remain disabled; publishing this code does not deploy it.
 
 ## Teaching Hub v2 (`/v2/`)
 
-`src/hub_v2/` is a small, read-only replacement for Pages 01 and 02, served at
+`src/hub_v2/` is a small replacement for Pages 01 and 02, served at
 `/v2/` by the same Cloud Run service, sign-in and settings. **Lesson plans**
 reads each class's weekly Agenda tab by header name and week label.
 **Student work** reads the Form(s) linked in the lesson's "Turn it in" cell and
@@ -39,6 +39,20 @@ current file is shown (Form uploads first; trashed files and files named for
 another week are never picked) with the rest as history, alongside who hasn't
 turned in and a grade sheet CSV. A problem
 with one tab, cell or Form is shown on that card; it never blanks the page.
+
+A week's work counts until the end of the Friday two weeks after that week
+(school time). Later work is marked **Late**, listed on its own and marked
+"Late — not graded" on the grade sheet. Every load also runs a **roster check**:
+work from someone on another class's roster or on no roster is flagged, and the
+Rosters sheet's last change is shown.
+
+**Tidy this week's folders** is v2's one write. It previews, then on the
+teacher's confirmation moves a week's extra folders' contents, loose Form
+folders and the earlier shared Form's uploads into that week's one `📥` folder,
+and late work into its `⏰ Late — not graded` folder. Emptied extra folders go
+to the Drive trash when Drive allows it, otherwise they get `_` in front of their
+names. It needs the service account shared as an Editor on the turn-in root, and
+only runs from the dashboard page (same-origin POST, signed-in teacher).
 
 ## Validation
 

@@ -2,10 +2,10 @@
 import io
 import json
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, app, google, roster, work
+from hub_v2 import agenda, app, google, roster, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -187,6 +187,42 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(rows[0]["earlier"][0]["files"][0]["id"], "FILEOLD")
         self.assertEqual(rows[2]["email"], "visitor@school.example")
         self.assertEqual([m["last"] for m in missing], ["Okafor"])
+
+    def test_work_after_the_two_week_window_is_late_and_not_graded(self):
+        closes = work.late_after(fixture(), "Wk 04")  # Monday Sep 21 -> Friday Sep 25 + 14 days
+        self.assertEqual((closes["label"], closes["at"].isoformat()), ("Fri Oct 9, 11:59 PM", "2026-10-10T03:59:59+00:00"))
+        found = work.submissions([
+            response("s.ana.rivera@school.example", "2026-09-22T14:00:00.123Z", ("ONTIME", "Deck - Ana Rivera")),
+            response("s.ana.rivera@school.example", "2026-10-12T14:00:00Z", ("REDO", "Deck - Ana Rivera")),
+            response("s.chidi.okafor@school.example", "2026-10-10T04:00:00Z", ("LATE", "Deck - Chidi Okafor")),
+        ])
+        rows, missing = work.group(found, self.students, {"school.example"}, cutoff=closes["at"])
+        chidi, ana = rows  # listed by last name
+        self.assertEqual((ana["late"], ana["files"][0]["id"], ana["earlier"][0]["late"]), (False, "ONTIME", True))
+        self.assertEqual((chidi["late"], chidi["files"][0]["late"]), (True, True))
+        self.assertEqual([m["last"] for m in missing], ["Lee"])  # late Chidi turned something in
+
+    def test_roster_check_flags_work_from_another_class_or_no_roster(self):
+        biology, _ = roster.parse_tab(grid({1: ["Last Name", "First Name"], 2: ["Riggs", "Kay"]}),
+                                      "biology", "A4 Biology")
+        config = {"HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+        responses = [response("s.ana.rivera@school.example", "2026-09-22T14:00:00Z", ("F1", "Deck")),
+                     response("s.kay.riggs@school.example", "2026-09-22T14:00:00Z", ("F2", "Deck")),
+                     response("s.new.student@school.example", "2026-09-22T14:00:00Z", ("F3", "Deck"))]
+        config["HUB_SCHOOL_EMAIL_DOMAINS"] = "school.example"
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students, "biology": biology}, [])), \
+                patch.object(google, "form_responses", side_effect=lambda t, form_id: responses
+                             if form_id == "FICTIONALFORMID1234567890abc" else []), \
+                patch.object(google, "drive_file", return_value={"name": "Deck", "trashed": False,
+                             "mimeType": "application/vnd.google-apps.presentation"}):
+            result = work.lesson_work("token", config, fixture(), "forensics", "Wk 04")
+        check = result["roster_check"]
+        self.assertEqual(check["sections"], {"A2 Forensics": 2, "A3 Forensics": 1})
+        self.assertEqual([(f["kind"], f["who"], f["section"]) for f in check["flags"]],
+                         [("other_class", "Riggs, Kay", "A4 Biology"),
+                          ("no_roster", "s.new.student@school.example", "")])
+        notes = [r.get("roster_note") for r in result["lessons"][0]["forms"][0]["students"] if not r["matched"]]
+        self.assertEqual(notes, ["On the A4 Biology roster", "Not on any class roster"])
 
     def test_lesson_work_reports_a_form_it_cannot_read(self):
         def responses(token, form_id):
@@ -445,6 +481,30 @@ class FolderTests(unittest.TestCase):
         self.assertEqual(work.lesson_folder_name("Wk 04", "📤 Eyewitness Testimony — Turn in"),
                          "📥 Wk 04 — Eyewitness Testimony")
 
+    def test_a_stray_moved_into_a_lessons_form_folder_counts_for_that_lesson(self):
+        folder = "application/vnd.google-apps.folder"
+
+        def item(ident, name, mime=SLIDES):
+            return {"id": ident, "name": name, "mimeType": mime, "createdTime": "2026-09-23T12:00:00Z"}
+        # Like Samajah's "Samjay and Maxo": no deck name, so the teacher drags it
+        # into the Reasoning Form's folder inside the week folder.
+        tree = {"ROOT": [item("CLASSF", "🔬 Forensics", folder)],
+                "CLASSF": [item("WK04", "📥 Wk 04 — Two assignments", folder)],
+                "WK04": [item("RFORM", "Forensics — Week 04 — Reasoning — Turn In (File responses)", folder),
+                         item("OFORM", "Forensics — Week 04 — Observation — Turn In (File responses)", folder)],
+                "RFORM": [item("STRAY", "s.sam.lee — 09-16 11.38 — Samjay and Maxo - Sam Lee")]}
+        names = {"FICTIONALFORMID1234567890abc": "Forensics — Week 04 — Reasoning — Turn In",
+                 "FICTIONALFORMID0987654321xyz": "Forensics — Week 04 — Observation — Turn In"}
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
+                patch.object(google, "form_responses", return_value=[]), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)), \
+                patch.object(google, "drive_file", side_effect=lambda t, fid: {"name": names.get(fid, fid), "mimeType": SLIDES}):
+            result = work.lesson_work("token", self.config, fixture(), "forensics", "Wk 04")
+        reasoning, observation = result["lessons"][0]["forms"]
+        self.assertEqual([(r["last"], r["files"][0]["id"]) for r in reasoning["students"]], [("Lee", "STRAY")])
+        self.assertEqual((observation["students"], result["other_files"]), ([], []))
+
     def test_shared_folder_files_are_sorted_by_the_deck_they_were_copied_from(self):
         folder = "application/vnd.google-apps.folder"
 
@@ -557,3 +617,230 @@ class AppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeDrive:
+    """A tiny Drive: items with one parent each; moves really move."""
+    FOLDER = "application/vnd.google-apps.folder"
+
+    def __init__(self, editor=True, owner=False):
+        self.items, self.editor, self.owner, self.trashed = {}, editor, owner, set()
+
+    def add(self, ident, name, parent, folder=False, created="2026-09-20T12:00:00Z"):
+        self.items[ident] = {"id": ident, "name": name, "parents": [parent] if parent else [],
+                             "mimeType": self.FOLDER if folder else SLIDES, "createdTime": created}
+
+    def children(self, token, fid):
+        return [dict(i) for i in self.items.values() if i["parents"][:1] == [fid] and i["id"] not in self.trashed]
+
+    def file(self, token, fid, fields=None):
+        if fid not in self.items:
+            raise google.GoogleError("missing", 404)
+        return {**self.items[fid], "capabilities": {"canAddChildren": self.editor, "canRename": self.editor,
+                                                    "canMoveItemWithinDrive": self.editor, "canTrash": self.owner}}
+
+    def named(self, token, name):
+        return [dict(i) for i in self.items.values() if i["name"] == name and i["mimeType"] == self.FOLDER]
+
+    def move(self, token, fid, new_parent, old_parents):
+        if not self.editor:
+            raise google.GoogleError("denied", 403)
+        self.items[fid]["parents"] = [new_parent]
+        return {"id": fid, "parents": [new_parent]}
+
+    def trash(self, token, fid):
+        if not self.owner:
+            raise google.GoogleError("only the owner can trash", 403)
+        self.trashed.add(fid)
+        return {"id": fid, "trashed": True}
+
+    def rename(self, token, fid, name):
+        if not self.editor:
+            raise google.GoogleError("denied", 403)
+        self.items[fid]["name"] = name
+        return {"id": fid, "name": name}
+
+    def create(self, token, name, parent):
+        ident = "NEWFOLDER%d" % sum(1 for i in self.items if i.startswith("NEWFOLDER"))
+        self.add(ident, name, parent, folder=True)
+        return {"id": ident}
+
+    def patches(self, responses):
+        return [patch.object(google, "folder_children", side_effect=self.children),
+                patch.object(google, "drive_file", side_effect=self.file),
+                patch.object(google, "folders_named", side_effect=self.named),
+                patch.object(google, "move_item", side_effect=self.move),
+                patch.object(google, "trash_item", side_effect=self.trash),
+                patch.object(google, "rename_item", side_effect=self.rename),
+                patch.object(work.roster, "load", return_value=({"forensics": roster.parse_tab(
+                    ROSTER, "forensics", "A2 Forensics")[0]}, [])),
+                patch.object(google, "create_folder", side_effect=self.create),
+                patch.object(google, "form_responses", side_effect=lambda t, form_id: responses.get(form_id, []))]
+
+
+class TidyTests(unittest.TestCase):
+    def setUp(self):
+        work._shared_cache.clear()
+        self.config = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_TURNIN_FORM_ID": "SHAREDFORMID",
+                       "HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+        self.agenda = fixture()
+        self.agenda.classes["forensics"]["cells"][5, 20] = cell("Turn it in", hyperlink=DIRECT)
+
+    def drive(self, editor=True):
+        d = FakeDrive(editor)
+        d.add("CLASSF", "🔬 Forensics", "ROOT", folder=True)
+        d.add("KEEP", "📥 Wk 04 — Fictional topic", "CLASSF", folder=True, created="2026-09-18T12:00:00Z")
+        d.add("FORMF", "Fictional Form — Turn In (File responses)", "KEEP", folder=True)
+        d.add("Q", "Upload your deck (File responses)", "FORMF", folder=True)
+        d.add("R1", "Copy of deck - Ana Rivera", "Q")
+        d.add("DUP", "📥 Wk 04 — Fictional", "CLASSF", folder=True, created="2026-09-24T12:00:00Z")
+        d.add("D1", "s.sam.lee — 09-24 09.00 — deck - Sam Lee", "DUP")
+        d.add("D2", "some subfolder", "DUP", folder=True)
+        d.add("LOOSEF", "Forensics — Wk 04 — Other — Turn In (File responses)", "CLASSF", folder=True)
+        d.add("WK03", "📥 Wk 03 — Earlier", "CLASSF", folder=True)
+        d.add("X1", "week 3 deck - Sam Lee", "WK03")
+        d.add("SHAREDF", "Turn in (File responses)", "MYDRIVE", folder=True)
+        d.add("S1", "deck - Chidi Okafor", "SHAREDF")
+        d.add("S3", "old deck - Sam Lee", "SHAREDF")
+        d.add("FICTIONALFORMID1234567890abc", "Fictional Form — Turn In", "KEEP")
+        responses = {
+            "FICTIONALFORMID1234567890abc": [response("s.ana.rivera@school.example", "2026-09-22T12:00:00Z", ("R1", "deck"))],
+            "SHAREDFORMID": [
+                response("s.chidi.okafor@school.example", "2026-09-22T12:00:00Z", ("S1", "deck"),
+                         typed=("🔬 Forensics · Wk 04 — Fictional topic",)),
+                response("s.sam.lee@school.example", "2026-09-15T12:00:00Z", ("S3", "deck"),
+                         typed=("🔬 Forensics · Wk 03 — Earlier",))]}
+        return d, responses
+
+    def run_plan(self, d, responses):
+        patches = d.patches(responses)
+        for p in patches:
+            p.start()
+        try:
+            return tidy.plan("token", self.config, self.agenda, "forensics", "Wk 04")
+        finally:
+            for p in patches:
+                p.stop()
+
+    def test_plan_lists_only_this_weeks_strays_and_keeps_the_form_folder_week(self):
+        d, responses = self.drive()
+        p = self.run_plan(d, responses)
+        self.assertEqual(p["keep"]["id"], "KEEP")
+        self.assertEqual(sorted(m["id"] for m in p["moves"]), ["D1", "D2", "LOOSEF", "S1"])
+        self.assertEqual([e["id"] for e in p["empty_after"]], ["DUP"])
+        self.assertTrue(p["can_move"])
+        self.assertEqual(d.items["D1"]["parents"], ["DUP"])  # a preview moves nothing
+
+    def test_apply_moves_exactly_the_plan_and_marks_emptied_folders_with_an_underscore(self):
+        d, responses = self.drive()
+        p = self.run_plan(d, responses)
+        patches = d.patches(responses)
+        for x in patches:
+            x.start()
+        try:
+            work._shared_cache.clear()
+            result = tidy.apply("token", "write", self.config, self.agenda, "forensics", "Wk 04", p["plan_id"])
+        finally:
+            for x in patches:
+                x.stop()
+        self.assertEqual(result["moved"], 4)
+        self.assertEqual({i for i in ("D1", "D2", "LOOSEF", "S1") if d.items[i]["parents"] == ["KEEP"]},
+                         {"D1", "D2", "LOOSEF", "S1"})
+        self.assertEqual((d.items["X1"]["parents"], d.items["S3"]["parents"]), (["WK03"], ["SHAREDF"]))
+        # The dashboard can't trash her folder, so it gets '_' in front instead.
+        self.assertEqual(([e["id"] for e in result["marked"]], result["trashed"], result["left_empty"]),
+                         (["DUP"], [], []))
+        self.assertEqual(d.items["DUP"]["name"], "_📥 Wk 04 — Fictional")
+        # A second preview finds nothing left to do.
+        work._shared_cache.clear()
+        again = self.run_plan(d, responses)
+        self.assertEqual((again["moves"], again["empty_after"]), ([], []))
+
+    def test_emptied_folders_go_to_the_trash_when_drive_allows_it(self):
+        d, responses = self.drive()
+        d.owner = True
+        p = self.run_plan(d, responses)
+        patches = d.patches(responses)
+        for x in patches:
+            x.start()
+        try:
+            work._shared_cache.clear()
+            result = tidy.apply("token", "write", self.config, self.agenda, "forensics", "Wk 04", p["plan_id"])
+        finally:
+            for x in patches:
+                x.stop()
+        self.assertEqual(([e["id"] for e in result["trashed"]], result["marked"]), (["DUP"], []))
+        self.assertIn("DUP", d.trashed)
+
+    def test_late_work_moves_into_the_weeks_late_folder(self):
+        d, responses = self.drive()
+        d.add("R2", "s.sam.lee — 10-12 09.00 — deck - Sam Lee", "Q")
+        responses["FICTIONALFORMID1234567890abc"].append(
+            response("s.sam.lee@school.example", "2026-10-12T13:00:00Z", ("R2", "deck")))
+        after = datetime(2026, 10, 12, 18, tzinfo=timezone.utc)
+        patches = d.patches(responses)
+        for x in patches:
+            x.start()
+        try:
+            p = tidy.plan("token", self.config, self.agenda, "forensics", "Wk 04", now=after)
+            work._shared_cache.clear()
+            result = tidy.apply("token", "write", self.config, self.agenda, "forensics", "Wk 04", p["plan_id"],
+                                now=after)
+        finally:
+            for x in patches:
+                x.stop()
+        self.assertEqual(p["create_late"], tidy.LATE_FOLDER)
+        self.assertEqual([m["id"] for m in p["moves"] if m["to"] == "late"], ["R2"])
+        late = [i for i in d.items.values() if i["name"] == tidy.LATE_FOLDER]
+        self.assertEqual([i["parents"] for i in late], [["KEEP"]])
+        self.assertEqual(d.items["R2"]["parents"], [late[0]["id"]])
+        self.assertEqual(d.items["R1"]["parents"], ["Q"])  # on-time work stays with its Form
+        self.assertEqual(result["failed"], [])
+
+    def test_stale_preview_is_refused_and_nothing_moves(self):
+        d, responses = self.drive()
+        p = self.run_plan(d, responses)
+        d.add("D9", "another stray", "DUP")
+        patches = d.patches(responses)
+        for x in patches:
+            x.start()
+        try:
+            with self.assertRaises(tidy.Changed):
+                tidy.apply("token", "write", self.config, self.agenda, "forensics", "Wk 04", p["plan_id"])
+        finally:
+            for x in patches:
+                x.stop()
+        self.assertEqual(d.items["D1"]["parents"], ["DUP"])
+
+    def test_without_editor_access_the_plan_says_who_to_share_with(self):
+        d, responses = self.drive(editor=False)
+        p = self.run_plan(d, responses)
+        self.assertFalse(p["can_move"])
+        self.assertIn("share '00 REAL ALL TURN IN' with reader@fictional.example as an Editor", p["problem"])
+
+
+class TidyEndpointTests(unittest.TestCase):
+    def post(self, origin, body=b'{"class": "forensics", "week": "Wk 04", "plan_id": "abc"}'):
+        environ = {"PATH_INFO": "/v2/api/tidy", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body)}
+        if origin:
+            environ["HTTP_ORIGIN"] = origin
+        seen = {}
+        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(tidy, "apply", return_value={"moved": 0}) as applied:
+            out = b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+        return seen["status"], out, applied
+
+    def test_only_the_dashboard_page_can_run_tidy(self):
+        status, _, applied = self.post(None)
+        self.assertEqual(status, "403 Forbidden")
+        applied.assert_not_called()
+        status, _, applied = self.post("https://elsewhere.example")
+        self.assertEqual(status, "403 Forbidden")
+        status, _, applied = self.post("https://hub.fictional.example")
+        self.assertEqual(status, "200 OK")
+        applied.assert_called_once()

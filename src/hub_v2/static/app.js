@@ -189,6 +189,7 @@ function fileList(files) {
     f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
     f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
     f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
+    f.late ? el('span', {class: 'badge warn', title: 'Turned in more than two weeks after this week — not graded', text: 'Late'}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
 }
@@ -196,6 +197,7 @@ function fileList(files) {
 function sheetNotes(row) {
   return [row.source === 'folder' ? 'From turn-in folder' : '',
     ...row.files.filter(f => f.other_week).map(f => `Named Week ${f.other_week}`),
+    row.earlier.some(e => e.late) && !row.late ? 'A later late version was not graded' : '',
     row.earlier.length ? `${row.earlier.length} earlier file(s)` : ''].filter(Boolean).join('; ');
 }
 
@@ -203,7 +205,7 @@ function studentRow(row) {
   const who = row.matched
     ? el('td', {}, el('strong', {text: `${row.last}, ${row.first}`}),
       row.matched_by && row.matched_by !== 'email' ? el('small', {class: 'muted', text: ` matched by ${row.matched_by}`}) : null)
-    : el('td', {}, el('span', {class: 'badge warn', text: 'Not on roster'}), ' ', row.email || 'No email collected',
+    : el('td', {}, el('span', {class: 'badge warn', text: row.roster_note || 'Not on roster'}), ' ', row.email || 'No email collected',
       row.typed.length ? el('small', {class: 'muted', text: ' · typed: ' + row.typed.join(' / ')}) : null);
   const earlier = row.earlier.length
     ? el('details', {class: 'earlier'}, el('summary', {text: `${row.earlier.length} earlier`}),
@@ -225,6 +227,7 @@ function downloadSheet(form, lesson) {
   const inSection = r => section === 'all' || r.section === section;
   const rows = [
     ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', when(r.submitted_at), '', r.files[0]?.url || '', sheetNotes(r)]),
+    ...form.late.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Late', when(r.submitted_at), '', r.files[0]?.url || '', `Turned in after ${work.data.late_after?.label || 'the two-week window'} — not graded`]),
     ...form.missing.filter(inSection).map(m => [m.last, m.first, m.section, 'No', '', '', '', m.unsorted ? 'Has a file in "Not sorted" — check it' : '']),
   ].sort((a, b) => (a[2] + a[0] + a[1]).localeCompare(b[2] + b[0] + b[1]));
   const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', when(r.submitted_at), '', r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || r.files[0]?.name || 'unknown')]);
@@ -247,8 +250,12 @@ function renderForm(form, lesson) {
   const matched = form.students.filter(r => r.matched && inSection(r));
   const unmatched = form.students.filter(r => !r.matched);
   const missing = form.missing.filter(inSection);
+  const late = (form.late || []).filter(r => !r.matched || inSection(r));
+  const lateMatched = late.filter(r => r.matched).length;
   box.append(el('p', {class: 'summary'},
-    el('strong', {text: `${matched.length} of ${matched.length + missing.length}`}), ' turned in',
+    el('strong', {text: `${matched.length} of ${matched.length + lateMatched + missing.length}`}),
+    work.data.late_after ? ' turned in on time' : ' turned in',
+    late.length ? el('span', {class: 'badge warn', text: `${late.length} late — not graded`}) : null,
     unmatched.length ? el('span', {class: 'badge warn', text: `${unmatched.length} not matched to the roster`}) : null,
     form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
     form.shared_files ? el('span', {class: 'badge', text: `includes ${form.shared_files} from the earlier shared Form`}) : null,
@@ -259,7 +266,14 @@ function renderForm(form, lesson) {
       el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
       el('tbody', {}, shown.map(studentRow)))));
   } else {
-    box.append(note('No responses yet.', 'info'));
+    box.append(note(late.length ? 'No on-time responses.' : 'No responses yet.', 'info'));
+  }
+  if (late.length) {
+    box.append(el('div', {class: 'late'}, el('h4', {text: `Late — not graded (${late.length})`}),
+      el('p', {class: 'muted', text: `Turned in after ${work.data.late_after?.label}. Tidy moves these into the week’s “⏰ Late — not graded” folder.`}),
+      el('div', {class: 'table-wrap'}, el('table', {},
+        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
+        el('tbody', {}, late.map(studentRow))))));
   }
   if (missing.length) {
     box.append(el('div', {class: 'missing'}, el('h4', {text: `Not turned in yet (${missing.length})`}),
@@ -279,6 +293,10 @@ function renderWork() {
       data.folders.flatMap((f, i) => [i ? ', ' : '', link(f.name + ' ↗', f.url)]), '.'));
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
+  if (data.late_after) {
+    parts.push(el('p', {class: 'muted', text: `${data.week} work counts until ${data.late_after.label}. Anything turned in later is marked Late and isn’t graded.`}));
+  }
+  if (data.roster_check) parts.push(renderRosterCheck(data.roster_check));
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week}), link('Edit in the Agenda ↗', lesson.edit_url, 'edit')));
     if (lesson.problem) parts.push(note(lesson.problem));
@@ -294,6 +312,95 @@ function renderWork() {
         el('tbody', {}, other.map(studentRow))))));
   }
   $('work-body').replaceChildren(...parts);
+}
+
+function renderRosterCheck(check) {
+  const sections = Object.entries(check.sections).map(([name, n]) => `${name} ${n}`).join(' · ');
+  const updated = check.updated_at ? `Rosters sheet last changed ${when(check.updated_at)}.` : '';
+  const flags = check.flags;
+  const box = el('section', {class: 'roster-check'},
+    el('h3', {text: 'Roster check'}),
+    el('p', {class: 'muted', text: [`Students: ${sections}.`, updated].filter(Boolean).join(' ')}));
+  if (check.stale) box.append(note(`The Rosters sheet hasn’t changed in over ${check.stale_days} days. Check that your roster job is still running.`));
+  if (!flags.length) {
+    box.append(el('p', {class: 'ok', text: '✓ Everyone who turned in work this week is on this class’s roster.'}));
+    return box;
+  }
+  const say = {
+    other_class: f => [el('strong', {text: f.who}), ` is on the ${f.section} roster but turned in to this class`, f.assignment ? ` (${f.assignment})` : '', '. Wrong class?'],
+    no_roster: f => [el('strong', {text: f.who}), ' isn’t on any class roster', f.assignment ? ` (${f.assignment})` : '', '. New, left, or a visitor?'],
+    twice: f => [el('strong', {text: f.who}), ` is listed twice (${f.section}).`],
+  };
+  box.append(el('ul', {class: 'flags'}, flags.map(f => el('li', {}, ...say[f.kind](f),
+    f.url ? [' ', link('Open ↗', f.url)] : []))));
+  return box;
+}
+
+// ---------- Tidy: one 📥 folder per course per week ----------
+function renderTidy(box, p) {
+  const parts = [el('h3', {text: `Tidy ${p.week} folders`})];
+  if (!p.moves.length && !p.create && !p.empty_after.length) {
+    parts.push(note(p.keep ? `Already tidy: everything for ${p.week} is in ${p.keep.name}.` : 'Nothing to tidy.', 'info'));
+    if (p.problem && p.problem.indexOf("can't move files") < 0) parts.push(note(p.problem));
+    box.replaceChildren(...parts);
+    return;
+  }
+  parts.push(el('p', {}, p.keep ? ['Keep ', link(p.keep.name + ' ↗', p.keep.url), ' as this week’s one folder.']
+    : `Create “${p.create}” as this week’s one folder.`));
+  const item = m => el('li', {}, (m.folder ? '📁 ' : '') + m.name,
+    m.from_name ? el('small', {class: 'muted', text: ' — from ' + m.from_name}) : null);
+  const toWeek = p.moves.filter(m => m.to !== 'late'), toLate = p.moves.filter(m => m.to === 'late');
+  if (toWeek.length) {
+    parts.push(el('p', {class: 'label', text: `Move into it (${toWeek.length})`}), el('ul', {class: 'files'}, toWeek.map(item)));
+  }
+  if (toLate.length) {
+    parts.push(el('p', {class: 'label', text: `Move into “${p.create_late || p.late_folder?.name}” inside it (${toLate.length}) — turned in after ${p.late_after}`}),
+      el('ul', {class: 'files'}, toLate.map(item)));
+  }
+  if (p.empty_after.length) {
+    parts.push(el('p', {class: 'muted', text: (p.can_trash
+      ? 'Then these emptied extra folders go to the Drive trash (you can restore them): '
+      : 'Then these emptied extra folders get “_” in front of their names so you know to skip them: ')
+      + p.empty_after.map(e => e.name).join(', ')}));
+  }
+  if (p.problem) parts.push(note(p.problem));
+  if (p.can_move) {
+    parts.push(el('div', {class: 'action-row'},
+      el('button', {type: 'button', class: 'primary', onclick: () => applyTidy(box, p)}, 'Move them'),
+      el('button', {type: 'button', onclick: () => box.replaceChildren()}, 'Cancel')));
+  }
+  box.replaceChildren(...parts);
+}
+
+async function previewTidy() {
+  const box = $('tidy-box');
+  box.replaceChildren(el('p', {class: 'muted', text: 'Checking this week’s folders… nothing moves until you confirm.'}));
+  try {
+    renderTidy(box, await getJSON(`api/tidy?class=${work.cls}&week=${encodeURIComponent(work.week)}`));
+  } catch (error) { box.replaceChildren(note(error.message)); }
+}
+
+async function applyTidy(box, p) {
+  box.replaceChildren(el('p', {class: 'muted', text: 'Moving…'}));
+  try {
+    const response = await fetch('api/tidy', {method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({class: work.cls, week: work.week, plan_id: p.plan_id})});
+    let body = null;
+    try { body = await response.json(); } catch { /* not JSON */ }
+    if (!response.ok) throw new Error(body?.error || `The server returned an error (${response.status}).`);
+    const parts = [el('h3', {text: `Tidy ${p.week} folders`}),
+      note(body.moves.length ? `Moved ${body.moved} of ${body.moves.length} item(s).` : 'Nothing needed moving.', 'info')];
+    if (body.failed.length) parts.push(note(`${body.failed.length} couldn’t be moved: ` + body.failed.map(f => `${f.name} (${f.why})`).join('; ')));
+    if (body.trashed.length) parts.push(el('p', {class: 'muted', text: `Sent ${body.trashed.length} empty extra folder(s) to the Drive trash; you can restore them from there.`}));
+    if (body.marked.length) parts.push(el('p', {class: 'muted', text: `Put “_” in front of ${body.marked.length} empty extra folder(s): ` + body.marked.map(e => e.name).join(', ')}));
+    if (body.left_empty.length) {
+      parts.push(el('p', {class: 'muted', text: 'These extra folders couldn’t be trashed or renamed. You can delete them:'}),
+        el('ul', {}, body.left_empty.map(e => el('li', {}, link(e.name + ' ↗', e.url)))));
+    }
+    box.replaceChildren(...parts);
+    await loadWork(true);
+  } catch (error) { box.replaceChildren(note(error.message)); }
 }
 
 // ---------- Page wiring ----------
@@ -314,11 +421,12 @@ $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7))
 $('today').addEventListener('click', () => loadPlans(todayISO()));
 $('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
-$('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; openWork(); });
-$('work-week').addEventListener('change', e => { work.week = e.target.value; loadWork(); });
+$('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
+$('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); renderWork(); });
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); } catch (error) { setStatus('work-status', error.message, true); }
 });
+$('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
 window.addEventListener('hashchange', showTab);
 showTab();
