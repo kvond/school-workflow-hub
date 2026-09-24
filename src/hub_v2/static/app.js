@@ -403,7 +403,7 @@ function icPanel(form, lesson, scores) {
 function feedbackPanel(form) {
   const ui = work.ui[form.form_id] || {};
   const data = ui.feedback;
-  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use ChatGPT)'}));
+  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use Teacher Claude)'}));
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
   if (ui.error) panel.append(note(ui.error));
   if (!data) return panel;
@@ -418,10 +418,10 @@ function feedbackPanel(form) {
   }
   const status = el('span', {class: 'muted'});
   panel.append(
-    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${since ? ` turned in since ${since}` : ''}${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into ChatGPT, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
+    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${since ? ` turned in since ${since}` : ''}${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into Teacher Claude, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
     el('ul', {class: 'files'}, data.students.map(s => el('li', {text: `${s.name} — ${s.section} — revised ${s.draft_done} of ${s.draft_required}`}))),
     el('div', {class: 'action-row'},
-      data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for ChatGPT') : null,
+      data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for Teacher Claude') : null,
       data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'feedback')}, 'Mark feedback done') : null,
       data.prompt_url ? link('Edit the prompt in the Agenda ↗', data.prompt_url) : null, status),
     data.prompt ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'for-claude', text: data.prompt})) : null);
@@ -508,7 +508,7 @@ function renderForm(form, lesson) {
     scoredAll ? el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
       ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC') : null,
     scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
-      ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use ChatGPT)') : null,
+      ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use Teacher Claude)') : null,
     ui.progress ? el('span', {class: 'muted', text: ui.progress}) : null));
   if (scores) {
     box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
