@@ -11,7 +11,7 @@ import os
 import re
 import threading
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -162,8 +162,11 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
         return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)
     with ThreadPoolExecutor(max_workers=4) as pool:
         scores = list(pool.map(one, rows))
+    window = form.get("window")
+    closed = bool(window and work.when(window["at"]) and work.when(window["at"]) < datetime.now(timezone.utc))
+    no_work = list(form["missing"]) + [r for r in form["late"] if r["matched"]]
     context = {"class": agenda.classes[class_key]["name"], "week": week, "assignment": form["label"],
-               "form_id": form_id, "date": ledger.eastern_now()[:10]}
+               "form_id": form_id, "date": ledger.eastern_now()[:10], "closed": closed, "no_work": no_work}
     return context, list(zip(rows, scores))
 
 
@@ -210,18 +213,28 @@ def record_post(environ, respond, config):
         payload = _json_body(environ, 20000)
         class_key, week, form_id = _form_args(payload)
         kind = str(payload.get("kind", ""))
-        files = payload.get("files")
-        if kind not in ledger.KINDS or not isinstance(files, list) or not 1 <= len(files) <= 200:
+        files, zeros = payload.get("files") or [], payload.get("zeros") or []
+        if (kind not in ledger.KINDS or not isinstance(files, list) or not isinstance(zeros, list)
+                or not 1 <= len(files) + len(zeros) <= 300 or (zeros and kind != "ic")):
             raise ValueError()
-        wanted = {str(f) for f in files}
+        wanted, zero_keys = {str(f) for f in files}, {str(z) for z in zeros}
         token = google.service_token(config)
         agenda = load_agenda(token, config)
         context, scored = _form_rows(token, config, agenda, class_key, week, form_id)
-        entries = [{"section": row["section"], "last": row["last"], "first": row["first"],
-                    "notes": ledger.score_text(score.get("notes_score")),
-                    "revision": ledger.score_text(score.get("revision_score")),
-                    "file_id": score["file_id"], "file_updated": score.get("file_updated", "")}
-                   for row, score in scored if score.get("file_id") in wanted and not score.get("problem")]
+        closed = context["closed"]
+        entries = []
+        for row, score in scored:
+            if score.get("file_id") in wanted and not score.get("problem"):
+                notes, revision = ledger.shown_scores(score, closed)
+                entries.append({"section": row["section"], "last": row["last"], "first": row["first"],
+                                "notes": notes, "revision": revision, "file_id": score["file_id"],
+                                "file_updated": score.get("file_updated", "")})
+        # Zeros only for roster students with no on-time work, once the two weeks are over.
+        if zero_keys and closed:
+            for student in context["no_work"]:
+                if ledger.student_key(student["section"], student["last"], student["first"]) in zero_keys:
+                    entries.append({"section": student["section"], "last": student["last"], "first": student["first"],
+                                    "notes": "0", "revision": "0", "file_id": "", "file_updated": ""})
         if not entries:
             raise ValueError()
         added = ledger.record(token, google.service_token(config, write=True), config, kind, context, entries)

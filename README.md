@@ -46,7 +46,8 @@ its own and marked "Late — not graded" on the grade sheet. Every load also run
 work from someone on another class's roster or on no roster is flagged, and the
 Rosters sheet's last change is shown.
 
-**Score completion** (per assignment) exports each student's current on-time
+Completion scoring runs by itself when Student work opens (results are cached
+per deck version; **Score again** re-runs it). It exports each student's current on-time
 deck from Drive and compares it, box by box, with the copy linked in the
 lesson's Agenda row. The required items are the codes in the deck's
 `[[MARKER-INVENTORY:…]]` header: Notes = 10 × (completed NOTES + BANK) ÷
@@ -65,7 +66,9 @@ Feedback Prompts tab with this round's students — revised answers done and no
 feedback yet, named by first name and last initial — for the teacher's own
 Claude to write one Google Doc with two pages per student. **Mark feedback
 done** records them in the same sheet. Each assignment stays open for two weeks
-from its first turn-in; later work is Late and isn't scored.
+from its first turn-in; later work is Late and isn't scored. While it is open,
+an empty score (no work yet, or no revised answers yet) stays blank; once the
+two weeks close it is 0, and those zeros are listed for IC too.
 
 **Tidy this week's folders** is v2's one write. It previews, then on the
 teacher's confirmation moves a week's extra folders' contents, loose Form
