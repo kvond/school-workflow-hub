@@ -1,8 +1,9 @@
 """Google access for v2: confirm the signed-in teacher, then act as the
 dashboard's service account.
 
-Everything reads, except move_item, rename_item, trash_item and create_folder, which only
-the Tidy button uses with its separate write token. Every call has a short
+Everything reads, except move_item, rename_item, trash_item and create_folder
+(the Tidy button) and append_rows (the teacher's own "Scores entered" sheet),
+which use a separate write token. Every call has a short
 timeout. Errors carry a short sentence a teacher can act on, never a token or a
 response body.
 """
@@ -37,7 +38,7 @@ class SignInRequired(Exception):
 
 
 _local = threading.local()
-WRITE_SCOPES = SCOPES + ("https://www.googleapis.com/auth/drive",)
+WRITE_SCOPES = SCOPES + ("https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets")
 _tokens = {False: {"value": None, "expires": 0.0}, True: {"value": None, "expires": 0.0}}
 _token_lock = threading.Lock()
 
@@ -256,6 +257,33 @@ def folders_named(token, name):
         "fields": "files(id,name,parents)", "pageSize": 20,
         "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
     return page.get("files", []) or []
+
+
+SHEET = "application/vnd.google-apps.spreadsheet"
+
+
+def files_named_in(token, name, mime, parent):
+    """Files with exactly this name and type directly inside a folder."""
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    page = get_json("https://www.googleapis.com/drive/v3/files", token, {
+        "q": "name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false"
+             % (escaped, mime, parent.replace("'", "")),
+        "fields": "files(id,name,modifiedTime)", "pageSize": 5,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
+    return page.get("files", []) or []
+
+
+def sheet_values(token, spreadsheet_id, cell_range):
+    data = get_json("https://sheets.googleapis.com/v4/spreadsheets/%s/values/%s"
+                    % (quote(spreadsheet_id), quote(cell_range, safe="")), token, timeout=20)
+    return data.get("values", []) or []
+
+
+def append_rows(token, spreadsheet_id, cell_range, rows):
+    return get_json("https://sheets.googleapis.com/v4/spreadsheets/%s/values/%s:append"
+                    % (quote(spreadsheet_id), quote(cell_range, safe="")), token,
+                    {"valueInputOption": "RAW", "insertDataOption": "INSERT_ROWS"}, method="POST",
+                    body={"values": rows})
 
 
 def folder_children(token, folder_id):

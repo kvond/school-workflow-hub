@@ -6,7 +6,7 @@ import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, app, completion, google, roster, tidy, work
+from hub_v2 import agenda, app, completion, feedback, google, ledger, roster, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -189,19 +189,22 @@ class WorkTests(unittest.TestCase):
         self.assertEqual(rows[2]["email"], "visitor@school.example")
         self.assertEqual([m["last"] for m in missing], ["Okafor"])
 
-    def test_work_after_the_two_week_window_is_late_and_not_graded(self):
-        closes = work.late_after(fixture(), "Wk 04")  # Monday Sep 21 -> Friday Sep 25 + 14 days
-        self.assertEqual((closes["label"], closes["at"].isoformat()), ("Fri Oct 9, 11:59 PM", "2026-10-10T03:59:59+00:00"))
+    def test_work_after_two_weeks_from_the_first_turn_in_is_late_and_not_graded(self):
         found = work.submissions([
-            response("s.ana.rivera@school.example", "2026-09-22T14:00:00.123Z", ("ONTIME", "Deck - Ana Rivera")),
+            response("s.ana.rivera@school.example", "2026-09-25T14:00:00.123Z", ("ONTIME", "Deck - Ana Rivera")),
             response("s.ana.rivera@school.example", "2026-10-12T14:00:00Z", ("REDO", "Deck - Ana Rivera")),
             response("s.chidi.okafor@school.example", "2026-10-10T04:00:00Z", ("LATE", "Deck - Chidi Okafor")),
         ])
+        # A copy's creation time isn't a turn-in, so it can't open the window early.
+        found.append(work.folder_submission({"id": "COPY", "name": "Deck - Sam Lee", "createdTime": "2026-09-01T12:00:00Z"}))
+        closes = work.window(found)  # first turn-in Fri Sep 25 -> open through Fri Oct 9
+        self.assertEqual((closes["opened"], closes["label"], closes["at"].isoformat()),
+                         ("Fri Sep 25", "Fri Oct 9, 11:59 PM", "2026-10-10T03:59:59+00:00"))
         rows, missing = work.group(found, self.students, {"school.example"}, cutoff=closes["at"])
-        chidi, ana = rows  # listed by last name
+        chidi, ana, sam = rows  # listed by section, then last name
         self.assertEqual((ana["late"], ana["files"][0]["id"], ana["earlier"][0]["late"]), (False, "ONTIME", True))
         self.assertEqual((chidi["late"], chidi["files"][0]["late"]), (True, True))
-        self.assertEqual([m["last"] for m in missing], ["Lee"])  # late Chidi turned something in
+        self.assertEqual(missing, [])
 
     def test_roster_check_flags_work_from_another_class_or_no_roster(self):
         biology, _ = roster.parse_tab(grid({1: ["Last Name", "First Name"], 2: ["Riggs", "Kay"]}),
@@ -1005,3 +1008,112 @@ class ScoreFileTests(unittest.TestCase):
             self.run_score(file_id="SOMEOTHERFILE99")
         with self.assertRaises(ValueError):
             self.run_score(late=True)
+
+
+class LedgerAndFeedbackTests(unittest.TestCase):
+    CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+    FORM = "FICTIONALFORMID1234567890abc"
+
+    def test_latest_row_per_student_wins_and_other_forms_are_ignored(self):
+        rows = [ledger.HEADER,
+                ["2026-09-24 10:00", "Entered in IC", "🔬 Forensics", "Wk 04", "Reasoning", self.FORM,
+                 "A2 Forensics", "Rivera", "Ana", "6", "0", "F1", ""],
+                ["2026-10-01 10:00", "Entered in IC", "🔬 Forensics", "Wk 04", "Reasoning", self.FORM,
+                 "A2 Forensics", "Rivera", "Ana", "8", "10", "F2", ""],
+                ["2026-10-01 10:05", "Feedback made", "🔬 Forensics", "Wk 04", "Reasoning", self.FORM,
+                 "A2 Forensics", "Rivera", "Ana", "8", "10", "F2", ""],
+                ["2026-10-01 10:00", "Entered in IC", "🔬 Forensics", "Wk 04", "Other", "OTHERFORMID12345",
+                 "A2 Forensics", "Okafor", "Chidi", "9", "9", "F3", ""]]
+        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID"}]), \
+                patch.object(google, "sheet_tabs", return_value=("Scores entered", {"Sheet1": 0})), \
+                patch.object(google, "sheet_values", return_value=rows):
+            out = ledger.read("token", self.CONFIG, self.FORM)
+        key = ledger.student_key("A2 Forensics", "Rivera", "Ana")
+        self.assertEqual((out["configured"], out["entered"][key]["notes"], out["entered"][key]["revision"]),
+                         (True, "8", "10"))
+        self.assertIn(key, out["feedback"])
+        self.assertEqual(len(out["entered"]), 1)
+
+    def test_no_sheet_yet_says_how_to_make_one(self):
+        with patch.object(google, "files_named_in", return_value=[]):
+            out = ledger.read("token", self.CONFIG, self.FORM)
+        self.assertFalse(out["configured"])
+        self.assertIn("Scores entered", out["setup"])
+
+    def test_record_writes_a_header_once_and_one_row_per_entry(self):
+        entry = {"section": "A2 Forensics", "last": "Rivera", "first": "Ana", "notes": "8", "revision": "10",
+                 "file_id": "F2", "file_updated": "2026-10-01T00:00:00Z"}
+        context = {"class": "🔬 Forensics", "week": "Wk 04", "assignment": "Reasoning", "form_id": self.FORM}
+        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID"}]), \
+                patch.object(google, "sheet_tabs", return_value=("Scores entered", {"Sheet1": 0})), \
+                patch.object(google, "sheet_values", return_value=[]), \
+                patch.object(google, "append_rows") as append:
+            ledger.record("token", "write", self.CONFIG, "ic", context, [entry])
+        written = append.call_args.args[3]
+        self.assertEqual(written[0], ledger.HEADER)
+        self.assertEqual(written[1][1:], ["Entered in IC", "🔬 Forensics", "Wk 04", "Reasoning", self.FORM,
+                                          "A2 Forensics", "Rivera", "Ana", "8", "10", "F2", "2026-10-01T00:00:00Z"])
+        self.assertEqual(append.call_args.args[0], "write")  # only the write token writes
+
+    def test_score_text_matches_the_page(self):
+        self.assertEqual([ledger.score_text(v) for v in (None, 8.0, 6.5, 10.0)], ["N/A", "8", "6.5", "10"])
+
+    def test_short_names_add_letters_only_where_two_would_match(self):
+        students = [{"first": "Ana", "last": "Rivera"}, {"first": "Ana", "last": "Rios"},
+                    {"first": "Chidi (CJ)", "last": "Okafor"}]
+        names = feedback.short_names(students)
+        self.assertEqual([names[id(s)] for s in students], ["Ana Riv.", "Ana Rio.", "Chidi O."])
+
+    def test_the_prompt_lists_this_rounds_students_with_links_and_two_pages_each(self):
+        students = [{"first": "Ana", "last": "Rivera", "section": "A2 Forensics", "url": "https://docs.example/latest",
+                     "when": "Oct 01", "earlier": [{"url": "https://docs.example/first", "when": "Sep 22"}],
+                     "draft_done": 1, "draft_required": 2}]
+        context = {"class": "🔬 Forensics", "week": "Wk 04", "assignment": "Reasoning", "date": "2026-10-02"}
+        text_out = feedback.build(context, students, "Prompt 2 — feedback for students\\nPART 2 ...")
+        self.assertIn("1. Ana R. — A2 Forensics — Latest: https://docs.example/latest (Oct 01) — "
+                      "Earlier: https://docs.example/first (Sep 22) — Revised answers done: 1 of 2", text_out)
+        self.assertIn("exactly two pages", text_out)
+        self.assertNotIn("Rivera", text_out)
+        self.assertTrue(text_out.rstrip().endswith("PART 2 ..."))
+
+    def test_the_feedback_prompt_is_read_from_the_agenda(self):
+        cells = {(7, 1): cell("Feedback — Prompt 2"), (7, 2): cell("Prompt 2 — feedback for students\\n" + "x" * 300)}
+        feedback._cache.clear()
+        with patch.object(google, "sheet_tabs", return_value=("Agenda", {"Feedback Prompts": 42})), \
+                patch.object(google, "sheet_grid", return_value={"Feedback Prompts": cells}):
+            prompt, where = feedback.load_prompt("token", fixture())
+        self.assertTrue(prompt.startswith("Prompt 2"))
+        self.assertTrue(where.endswith("gid=42&range=B7"))
+
+
+class RecordEndpointTests(unittest.TestCase):
+    def test_recording_needs_the_dashboard_page_and_recomputes_scores(self):
+        body = json.dumps({"class": "forensics", "week": "Wk 04", "form": "FICTIONALFORMID1234567890abc",
+                           "kind": "ic", "files": ["STUDENTDECK123"]}).encode()
+
+        def post(origin):
+            environ = {"PATH_INFO": "/v2/api/record", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                       "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                       "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
+            seen = {}
+            config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+            row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics",
+                   "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES}], "earlier": []}
+            scored = [(row, {"file_id": "STUDENTDECK123", "notes_score": 8.0, "revision_score": None,
+                             "file_updated": "t", "problem": None})]
+            with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                    patch.object(google, "service_token", return_value="token"), \
+                    patch.object(app, "load_agenda", return_value=fixture()), \
+                    patch.object(app, "_form_rows", return_value=({"class": "c", "week": "w", "assignment": "a",
+                                                                  "form_id": "f", "date": "d"}, scored)), \
+                    patch.object(ledger, "record", return_value=1) as record:
+                b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+            return seen["status"], record
+
+        status, record = post("https://elsewhere.example")
+        self.assertEqual(status, "403 Forbidden")
+        record.assert_not_called()
+        status, record = post("https://hub.fictional.example")
+        self.assertEqual(status, "200 OK")
+        entries = record.call_args.args[5]
+        self.assertEqual((entries[0]["notes"], entries[0]["revision"]), ("8", "N/A"))

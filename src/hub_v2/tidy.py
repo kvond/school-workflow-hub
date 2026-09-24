@@ -12,7 +12,7 @@ teacher knows there is nothing in it.
 """
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import google, work
 from .agenda import norm
@@ -67,7 +67,7 @@ def plan(token, config, agenda, class_key, week_label, now=None):
     number = work.week_number(week_label)
     account = google.service_account(config)
     out = {"class_key": class_key, "week": week_label, "keep": None, "create": None,
-           "late_folder": None, "create_late": None, "late_after": None,
+           "late_folder": None, "create_late": None,
            "moves": [], "empty_after": [], "can_move": False, "can_trash": False,
            "problem": None, "plan_id": ""}
     root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
@@ -123,13 +123,12 @@ def plan(token, config, agenda, class_key, week_label, now=None):
         topic = next((l["topic"] for l in agenda.lessons(class_key, week_label) if l["topic"]), "")
         out["create"] = "%s %s%s" % (ICON, week_label, " — " + topic if topic else "")
 
-    # Work turned in more than two weeks late goes to the week's Late folder.
-    closes = work.late_after(agenda, week_label)
+    # Work turned in after an assignment's two weeks goes to the week's Late
+    # folder. No assignment can have closed before two weeks past the week's Monday.
+    monday = work.week_monday(agenda, week_label)
     late_ids = set()
-    if closes:
-        out["late_after"] = closes["label"]
-        if (now or datetime.now(timezone.utc)) > closes["at"]:
-            late_ids = _late_files(token, config, agenda, class_key, week_label)
+    if monday and (now or datetime.now(timezone.utc)).date() > monday + timedelta(days=work.LATE_AFTER_DAYS):
+        late_ids = _late_files(token, config, agenda, class_key, week_label)
     late_folder = None
     if keep:
         late_folder = next((f for f in google.folder_children(token, keep["id"])
@@ -244,9 +243,17 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
         keep_id = google.create_folder(write_token, current["create"], course["id"])["id"]
     late_id = current["late_folder"]["id"] if current["late_folder"] else None
     if current["create_late"]:
-        late_id = google.create_folder(write_token, current["create_late"], keep_id)["id"]
+        try:
+            late_id = google.create_folder(write_token, current["create_late"], keep_id)["id"]
+        except google.GoogleError:
+            late_id = None  # its late files stay put and are listed below
     moved, failed = 0, []
     for m in sorted(current["moves"], key=lambda m: m["to"] == "late"):
+        if m["to"] == "late" and not late_id:
+            failed.append({"name": m["name"], "why": "Drive wouldn't let the dashboard make the Late folder. Make a "
+                           "folder named “%s” inside this week's 📥 folder, then click Tidy again."
+                           % LATE_FOLDER})
+            continue
         target = late_id if m["to"] == "late" else keep_id
         try:
             after = google.move_item(write_token, m["id"], target, [m["from_id"]] if m["from_id"] else [])

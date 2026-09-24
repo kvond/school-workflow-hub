@@ -16,7 +16,9 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 from . import agenda as agenda_module
-from . import completion, google, tidy, work
+from concurrent.futures import ThreadPoolExecutor
+
+from . import completion, feedback, google, ledger, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -124,7 +126,137 @@ def api(sub, query, config):
             raise ValueError("score")
         found = lesson_work(token, config, agenda, class_key, week, fresh=False)
         return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+    if sub in ("api/ledger", "api/feedback"):
+        class_key, week, form_id = _form_args(query)
+        if sub == "api/ledger":
+            return ledger.read(token, config, form_id)
+        return feedback_list(token, config, agenda, class_key, week, form_id)
     return None
+
+
+def _form_args(values):
+    """(class key, week label, Form ID) from a query string or a JSON body."""
+    def get(name):
+        value = values.get(name)
+        if isinstance(value, list):
+            if len(value) != 1:
+                raise ValueError(name)
+            value = value[0]
+        return value if isinstance(value, str) else ""
+    class_key, week, form_id = _class_key(get("class")), get("week"), get("form")
+    if not 1 <= len(week) <= 100 or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", form_id):
+        raise ValueError("form")
+    return class_key, week, form_id
+
+
+def _form_rows(token, config, agenda, class_key, week, form_id):
+    """(context, [(row, score)]) for the roster-matched, on-time students of one Form."""
+    found = lesson_work(token, config, agenda, class_key, week, fresh=False)
+    form = next((f for lesson in found["lessons"] for f in lesson["forms"] if f["form_id"] == form_id), None)
+    if not form:
+        raise ValueError("form")
+    rows = [r for r in form["students"] if r["matched"] and r["files"]]
+
+    def one(row):
+        upload = next((f for f in row["files"] if f.get("mime") in (completion.SLIDES, google.PPTX)), row["files"][0])
+        return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        scores = list(pool.map(one, rows))
+    context = {"class": agenda.classes[class_key]["name"], "week": week, "assignment": form["label"],
+               "form_id": form_id, "date": ledger.eastern_now()[:10]}
+    return context, list(zip(rows, scores))
+
+
+def feedback_list(token, config, agenda, class_key, week, form_id):
+    context, scored = _form_rows(token, config, agenda, class_key, week, form_id)
+    sheet = ledger.read(token, config, form_id)
+    students, done_before, no_revision = [], 0, 0
+    for row, score in scored:
+        if score.get("problem"):
+            continue
+        if not score["counts"]["DRAFT"]["done"]:
+            no_revision += 1
+            continue
+        if ledger.student_key(row["section"], row["last"], row["first"]) in sheet["feedback"]:
+            done_before += 1
+            continue
+        latest = next(f for f in row["files"] if f["id"] == score["file_id"])
+        students.append({"first": row["first"], "last": row["last"], "section": row["section"],
+                         "file_id": score["file_id"], "url": latest.get("url", ""),
+                         "when": work.school_day(work.when(row["submitted_at"])).strftime("%b %d")
+                         if work.when(row["submitted_at"]) else "",
+                         "earlier": [{"url": e["files"][0].get("url", ""),
+                                      "when": work.school_day(work.when(e["submitted_at"])).strftime("%b %d")
+                                      if work.when(e["submitted_at"]) else ""}
+                                     for e in row["earlier"] if e["files"] and not e.get("late")],
+                         "draft_done": score["counts"]["DRAFT"]["done"],
+                         "draft_required": score["counts"]["DRAFT"]["required"]})
+    prompt, where = feedback.load_prompt(token, agenda)  # (text, cell link) or (None, why not)
+    names = feedback.short_names(students)
+    return {"students": [{"name": names[id(s)], "section": s["section"], "file_id": s["file_id"],
+                          "draft_done": s["draft_done"], "draft_required": s["draft_required"]} for s in students],
+            "prompt": feedback.build(context, students, prompt) if prompt and students else None,
+            "problem": None if prompt else where, "prompt_url": where if prompt else None,
+            "done_before": done_before, "no_revision": no_revision, "sheet": sheet}
+
+
+def record_post(environ, respond, config):
+    """Add rows to the teacher's "Scores entered" sheet for scores she entered
+    in IC or feedback she made. The server recomputes every value it writes."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = _json_body(environ, 20000)
+        class_key, week, form_id = _form_args(payload)
+        kind = str(payload.get("kind", ""))
+        files = payload.get("files")
+        if kind not in ledger.KINDS or not isinstance(files, list) or not 1 <= len(files) <= 200:
+            raise ValueError()
+        wanted = {str(f) for f in files}
+        token = google.service_token(config)
+        agenda = load_agenda(token, config)
+        context, scored = _form_rows(token, config, agenda, class_key, week, form_id)
+        entries = [{"section": row["section"], "last": row["last"], "first": row["first"],
+                    "notes": ledger.score_text(score.get("notes_score")),
+                    "revision": ledger.score_text(score.get("revision_score")),
+                    "file_id": score["file_id"], "file_updated": score.get("file_updated", "")}
+                   for row, score in scored if score.get("file_id") in wanted and not score.get("problem")]
+        if not entries:
+            raise ValueError()
+        added = ledger.record(token, google.service_token(config, write=True), config, kind, context, entries)
+        return respond("200 OK", {"recorded": added})
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return respond("400 Bad Request", {"error": "That request wasn't understood."})
+    except google.GoogleError as error:
+        return respond("502 Bad Gateway", {"error": str(error)})
+    except Exception:
+        return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing was recorded."})
+
+
+def _same_origin_json(environ, respond, config):
+    """A response refusing the request, or None when it is the signed-in
+    teacher posting JSON from the dashboard page itself."""
+    try:
+        google.verify_teacher(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), config)
+    except google.SignInRequired:
+        return respond("401 Unauthorized", {"error": "Please sign in again: reload this page."})
+    origins = {v.strip() for v in config.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+               if v.strip().startswith("https://")}
+    if (environ.get("HTTP_ORIGIN") not in origins
+            or environ.get("CONTENT_TYPE", "").split(";")[0].strip() != "application/json"):
+        return respond("403 Forbidden", {"error": "This can only be done from the dashboard page."})
+    return None
+
+
+def _json_body(environ, limit):
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    if not 1 <= length <= limit:
+        raise ValueError()
+    payload = json.loads(environ["wsgi.input"].read(length))
+    if not isinstance(payload, dict):
+        raise ValueError()
+    return payload
 
 
 def application(environ, start_response, config=None):
@@ -141,6 +273,8 @@ def application(environ, start_response, config=None):
 
     if method == "POST" and path == "/v2/api/tidy":
         return tidy_post(environ, respond, config)
+    if method == "POST" and path == "/v2/api/record":
+        return record_post(environ, respond, config)
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "This page only reads."},
                        extra=[("Allow", "GET, HEAD")])
@@ -176,20 +310,11 @@ def application(environ, start_response, config=None):
 
 def tidy_post(environ, respond, config):
     """Move a previewed Tidy plan. Signed-in teacher, same-origin JSON only."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
     try:
-        google.verify_teacher(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), config)
-    except google.SignInRequired:
-        return respond("401 Unauthorized", {"error": "Please sign in again: reload this page."})
-    origins = {v.strip() for v in config.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
-               if v.strip().startswith("https://")}
-    if (environ.get("HTTP_ORIGIN") not in origins
-            or environ.get("CONTENT_TYPE", "").split(";")[0].strip() != "application/json"):
-        return respond("403 Forbidden", {"error": "Tidy can only be run from the dashboard page."})
-    try:
-        length = int(environ.get("CONTENT_LENGTH") or 0)
-        if not 1 <= length <= 2000:
-            raise ValueError()
-        payload = json.loads(environ["wsgi.input"].read(length))
+        payload = _json_body(environ, 2000)
         class_key = _class_key(payload.get("class"))
         week, plan_id = str(payload.get("week", "")), str(payload.get("plan_id", ""))
         if not 1 <= len(week) <= 100 or not 1 <= len(plan_id) <= 64:

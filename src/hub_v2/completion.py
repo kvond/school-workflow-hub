@@ -485,6 +485,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
             continue
     try:
         meta = google.drive_file(token, file_id)
+        out["file_updated"] = meta.get("modifiedTime", "")
         cached = _results.get((file_id, meta.get("modifiedTime", "")))
         if cached and any((t[0], t[1].get("modifiedTime", "")) == cached["template"] for t in templates):
             return {**out, **cached["result"]}
