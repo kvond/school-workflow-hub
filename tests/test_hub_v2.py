@@ -353,6 +353,67 @@ class FolderTests(unittest.TestCase):
         self.assertEqual([f["name"] for f in result["folders"]],
                          ["Biology — Cycle 04 — Old title — Turn In (File responses)"])
 
+    def _shared_run(self, shared_responses=None, shared_error=None):
+        work._shared_cache.clear()
+        folder = "application/vnd.google-apps.folder"
+
+        def item(ident, name, mime=SLIDES):
+            return {"id": ident, "name": name, "mimeType": mime, "createdTime": "2026-09-22T12:00:00Z"}
+        tree = {"ROOT": [item("CLASSF", "🔬 Forensics", folder)],
+                "CLASSF": [item("WK04", "📥 Wk 04 — Fictional topic", folder)],
+                # The old router moved SH2 here; SH1 is still in the shared Form's own folder.
+                "WK04": [item("SH2", "s.chidi.okafor — 09-22 10.00 — Copy of Week 04 deck - Chidi Okafor")]}
+        meta = {"SH1": {"name": "Copy of Week 04 deck - Ana Rivera", "mimeType": SLIDES, "parents": ["SHAREDFOLDER"]},
+                "SH2": {"name": "s.chidi.okafor — 09-22 10.00 — Copy of Week 04 deck - Chidi Okafor",
+                        "mimeType": SLIDES, "parents": ["WK04"]},
+                "SHAREDFOLDER": {"name": "Turn in (File responses)", "parents": ["MYDRIVE"]}}
+        shared = shared_responses if shared_responses is not None else [
+            response("s.ana.rivera@school.example", "2026-09-22T13:00:00Z", ("SH1", "deck"),
+                     typed=("🔬 Forensics · Wk 04 — Fictional topic",)),
+            response("s.chidi.okafor@school.example", "2026-09-22T14:00:00Z", ("SH2", "deck"),
+                     typed=("🔬 Forensics · Wk 04 — Fictional topic",)),
+            response("s.sam.lee@school.example", "2026-09-15T14:00:00Z", ("SH3", "deck"),
+                     typed=("🔬 Forensics · Wk 03 — Earlier",)),
+            response("s.sam.lee@school.example", "2026-09-22T14:00:00Z", ("SH4", "deck"),
+                     typed=("🌿 Biology · Wk 04 — Energy Flow",))]
+
+        def form_responses(token, form_id):
+            if form_id == "SHAREDFORMID":
+                if shared_error:
+                    raise google.GoogleError("denied", 403)
+                return shared
+            return []
+        one_form = fixture()
+        one_form.classes["forensics"]["cells"][5, 20] = cell("Turn it in", hyperlink=DIRECT)
+        config = {**self.config, "HUB_TURNIN_FORM_ID": "SHAREDFORMID"}
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
+                patch.object(google, "form_responses", side_effect=form_responses), \
+                patch.object(google, "folder_children", side_effect=lambda t, fid: tree.get(fid, [])), \
+                patch.object(google, "folders_named", side_effect=lambda t, name: named(tree, name)), \
+                patch.object(google, "drive_file", side_effect=lambda t, fid: meta.get(fid, {"name": fid, "mimeType": SLIDES})):
+            return work.lesson_work("token", config, one_form, "forensics", "Wk 04")
+
+    def test_earlier_shared_form_uploads_are_collected_wherever_they_were_moved(self):
+        result = self._shared_run()
+        form = result["lessons"][0]["forms"][0]
+        rows = {r["last"]: r for r in form["students"]}
+        self.assertEqual(set(rows), {"Rivera", "Okafor"})  # Wk 03 and Biology responses are left out
+        self.assertEqual((rows["Rivera"]["files"][0]["id"], rows["Rivera"]["matched_by"]), ("SH1", "email"))
+        # Moved into the week folder by the old script, but listed once, by email.
+        okafor_ids = [f["id"] for f in rows["Okafor"]["files"]] + [f["id"] for e in rows["Okafor"]["earlier"] for f in e["files"]]
+        self.assertEqual((okafor_ids, rows["Okafor"]["matched_by"]), (["SH2"], "email"))
+        self.assertTrue(rows["Rivera"]["files"][0]["from_shared"])
+        self.assertEqual(form["shared_files"], 2)
+        self.assertEqual(result["shared_form"]["submissions"], 2)
+        # The shared Form's own upload folder (every week's files) is never read as a lesson folder.
+        self.assertNotIn("SHAREDFOLDER", json.dumps(result["folders"]))
+
+    def test_unreadable_shared_form_is_reported_and_the_rest_still_works(self):
+        result = self._shared_run(shared_error=True)
+        self.assertIn("earlier shared turn-in Form couldn't be read", " ".join(result["problems"]))
+        rows = result["lessons"][0]["forms"][0]["students"]
+        self.assertEqual([(r["last"], r["source"]) for r in rows], [("Okafor", "folder")])
+
     def test_section_and_lesson_folders_are_read_and_matched_to_their_assignment(self):
         folder = "application/vnd.google-apps.folder"
 

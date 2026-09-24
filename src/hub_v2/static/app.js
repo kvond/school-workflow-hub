@@ -187,6 +187,7 @@ function fileList(files) {
   return el('ul', {class: 'files'}, files.map(f => el('li', {},
     link(f.name, f.url),
     f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
+    f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
     f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
@@ -250,6 +251,7 @@ function renderForm(form, lesson) {
     el('strong', {text: `${matched.length} of ${matched.length + missing.length}`}), ' turned in',
     unmatched.length ? el('span', {class: 'badge warn', text: `${unmatched.length} not matched to the roster`}) : null,
     form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
+    form.shared_files ? el('span', {class: 'badge', text: `includes ${form.shared_files} from the earlier shared Form`}) : null,
     el('button', {type: 'button', class: 'primary', onclick: () => downloadSheet(form, lesson)}, 'Download grade sheet (CSV)')));
   const shown = [...matched, ...unmatched];
   if (shown.length) {

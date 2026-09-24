@@ -105,6 +105,7 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
         for f in submission["files"]:
             f["other_week"] = named_week(f.get("name"), lesson_week)
             f["from_folder"] = submission["source"] == "folder"
+            f["from_shared"] = bool(submission.get("shared"))
     groups = {}
     for submission in found:
         student, how = identify(submission, students, domains, prefix)
@@ -380,6 +381,42 @@ def pair_decks(forms, decks):
             form["signature"].add(deck)
 
 
+SHARED_KEY = re.compile(r"^\s*(.+?)\s*·\s*wk\s*0*(\d+)\b", re.I)
+SHARED_CACHE_SECONDS = 60
+_shared_cache = {}
+
+
+def shared_submissions(token, config, class_name, number):
+    """([submission], note): responses to the earlier shared turn-in Form that
+    name this course and week in their assignment field
+    ('🔬 Forensics · Wk 03 — …'). Their files count here wherever a script
+    later moved them, and their respondent email identifies the student."""
+    form_id = str(config.get("HUB_TURNIN_FORM_ID", "") or "").strip()
+    if not form_id or number is None:
+        return [], None
+    import time
+    cached = _shared_cache.get(form_id)
+    if cached and time.time() - cached[0] < SHARED_CACHE_SECONDS:
+        responses = cached[1]
+    else:
+        try:
+            responses = google.form_responses(token, form_id)
+        except google.GoogleError as error:
+            return [], "The earlier shared turn-in Form couldn't be read (%s), so its uploads may be missing." % error
+        _shared_cache[form_id] = (time.time(), responses)
+    found = []
+    for submission in submissions(responses):
+        for text in submission["typed"]:
+            match = SHARED_KEY.match(text)
+            if match and norm(match.group(1)) == norm(class_name) and int(match.group(2)) == number:
+                submission["shared"] = True
+                submission["typed"] = [t for t in submission["typed"] if t != text]
+                if submission["files"]:
+                    found.append(submission)
+                break
+    return found, None
+
+
 def lesson_work(token, config, agenda, class_key, week_label):
     by_class, problems = roster.load(token, config)
     students = by_class.get(class_key, [])
@@ -398,6 +435,11 @@ def lesson_work(token, config, agenda, class_key, week_label):
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
     response_ids = [f["id"] for form in forms for s in form["found"] for f in s["files"]]
     known = _metadata(token, response_ids)
+    # The earlier shared Form's uploads for this course and week. Their folders
+    # are never read as lesson folders: that Form's folder holds every week.
+    shared, shared_note = shared_submissions(token, config, class_name, number)
+    shared_ids = [f["id"] for s in shared for f in s["files"] if f["id"] not in set(response_ids)]
+    shared = [s for s in shared if any(f["id"] in shared_ids for f in s["files"])]
     # Folders holding the Form's uploads count only when they are Form upload
     # folders or named for this lesson's week — never the class folder itself,
     # even when uploads were moved loose into it or into the Form's folder.
@@ -426,6 +468,10 @@ def lesson_work(token, config, agenda, class_key, week_label):
     names.update({fid: name for fid, name in roots.items() if name})
     names.update({fid: info.get("name", "") for fid, info in upload_folders.items()})
     known = {**{i["id"]: i for i in items}, **known}
+    known.update(_metadata(token, [fid for fid in shared_ids if fid not in known]))
+    for fid in shared_ids:
+        if fid not in parents and known.get(fid, {}).get("parents"):
+            parents[fid] = known[fid]["parents"][0]
 
     # Which folders hold each Form's uploads: its titled folder, and wherever its
     # responses were saved (plus the Form folder around that question folder).
@@ -446,26 +492,28 @@ def lesson_work(token, config, agenda, class_key, week_label):
 
     # Settle each roster section's first/last column order from the school
     # usernames in this lesson's submissions (only where it was assumed).
-    usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] if s["email"]}
+    usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] + shared
+                 if s["email"]}
     usernames |= {roster.username_key(u, prefix) for i in items
                   for u in [roster.file_username(i.get("name"), prefix)] if u}
     roster.orient(students, usernames - {""})
 
-    referenced = set(response_ids)
+    referenced = set(response_ids) | set(shared_ids)
     readable = [form for form in forms if form["form_id"]]
     pending, other = [], []
-    for entry in items:
-        if (entry["id"] in referenced or entry.get("mimeType") not in STUDENT_WORK
-                or NOT_STUDENT_WORK.search(entry.get("name", ""))):
-            continue
-        chain = set(_ancestors(entry["id"], parents))
+    loose = [(entry["id"], folder_submission(entry)) for entry in items
+             if entry["id"] not in referenced and entry.get("mimeType") in STUDENT_WORK
+             and not NOT_STUDENT_WORK.search(entry.get("name", ""))]
+    loose += [(s["files"][0]["id"], s) for s in shared]
+    for file_id, submission in loose:
+        chain = set(_ancestors(file_id, parents))
         owners = [form for form in forms if form["folders"] & chain]
         if len(owners) == 1:
-            owners[0]["found"].append(folder_submission(entry))
+            owners[0]["found"].append(submission)
         elif len(readable) == 1:
-            readable[0]["found"].append(folder_submission(entry))
+            readable[0]["found"].append(submission)
         else:
-            pending.append(entry)
+            pending.append(submission)
 
     if pending:
         # Several Forms and files in shared folders: sort by the deck each file
@@ -482,13 +530,14 @@ def lesson_work(token, config, agenda, class_key, week_label):
                         for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
             decks = [deck_stem(info.get("name", "")) for info in _metadata(token, deck_ids).values()]
             pair_decks(lesson_forms, [d for d in decks if len(d) >= 8])
-        for entry in pending:
-            stem = deck_stem(entry.get("name"))
+        for submission in pending:
+            first = submission["files"][0]
+            stem = deck_stem(known.get(first["id"], {}).get("name") or first["name"])
             scores = sorted(((_matches(stem, form["signature"]), i) for i, form in enumerate(forms)), reverse=True)
             if scores and scores[0][0] and (len(scores) == 1 or scores[0][0] > scores[1][0]):
-                forms[scores[0][1]]["found"].append(folder_submission(entry))
+                forms[scores[0][1]]["found"].append(submission)
             else:
-                other.append(folder_submission(entry))
+                other.append(submission)
 
     describe_files(token, other, known)
     other_rows, _ = group(other, students, domains, prefix, number, with_missing=False)
@@ -504,12 +553,15 @@ def lesson_work(token, config, agenda, class_key, week_label):
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
+                              "shared_files": sum(1 for s in form["found"] if s.get("shared")),
                               "students": rows, "missing": missing})
         index += len(lesson["forms"])
         result.append({"row": lesson["row"], "topic": lesson["topic"], "edit_url": lesson["edit_url"],
                        "forms": out_forms,
                        "problem": None if lesson["forms"] else
                        "This lesson has no Form link in its 'Turn it in' column."})
+    if shared_note:
+        problems.append(shared_note)
     folder_list = [{"name": name or names.get(fid, "") or "Form upload folder",
                     "url": "https://drive.google.com/drive/folders/" + fid}
                    for fid, name in roots.items() if not _ancestors(fid, parents) or not
@@ -518,5 +570,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
             "folders": folder_list,
             "folder_files": sum(1 for i in items if i.get("mimeType") != google.FOLDER),
             "folder_note": folder_note,
+            "shared_form": {"configured": bool(config.get("HUB_TURNIN_FORM_ID")), "submissions": len(shared),
+                            "problem": shared_note},
             "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students),
             "problems": problems}
