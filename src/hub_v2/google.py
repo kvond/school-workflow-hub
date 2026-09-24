@@ -297,6 +297,13 @@ def append_rows(token, spreadsheet_id, cell_range, rows):
                     body={"values": rows})
 
 
+def update_cells(token, spreadsheet_id, updates):
+    """Write [(A1 range, text)] as plain text: nothing typed runs as a formula."""
+    return get_json("https://sheets.googleapis.com/v4/spreadsheets/%s/values:batchUpdate" % quote(spreadsheet_id),
+                    token, method="POST", body={"valueInputOption": "RAW", "data": [
+                        {"range": cell_range, "values": [[value]]} for cell_range, value in updates]})
+
+
 def folder_children(token, folder_id):
     """Every item directly inside a Drive folder, trashed items excluded."""
     items, cursor = [], None

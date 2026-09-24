@@ -62,7 +62,7 @@ function showAgendaLink(agenda) {
 }
 
 // ---------- Lesson plans ----------
-const plans = {date: todayISO(), seq: 0, started: false};
+const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null};
 
 function renderDays(date) {
   const monday = mondayOf(date);
@@ -122,17 +122,102 @@ function renderLesson(cls, lesson, weekday) {
   box.append(el('details', {class: 'week'}, el('summary', {text: 'Whole week'}),
     lesson.plans.map(p => el('div', {class: 'week-day'}, el('strong', {text: p.day}),
       el('p', {class: 'plan', text: p.plan || '—'}), p.note ? el('p', {class: 'teacher-note', text: p.note}) : null))));
-  box.append(link('Edit this row in the Agenda ↗', lesson.edit_url, 'edit'));
+  box.append(el('div', {class: 'action-row'},
+    Object.keys(lesson.editable || {}).length
+      ? el('button', {type: 'button', onclick: () => startEdit(cls, lesson)}, 'Edit here') : null,
+    link('Edit this row in the Agenda ↗', lesson.edit_url, 'edit')));
   return box;
 }
 
+// ---------- Editing a lesson and saving it to the Agenda ----------
+// Only the lesson's plain-text cells are edited here; cells with links or
+// formulas stay in the Agenda. The server writes a field only if the Agenda
+// still says what this page started from.
+function lessonValues(lesson) {
+  const values = {topic: lesson.topic, todo: lesson.todo, prep: lesson.prep};
+  for (const p of lesson.plans) { values['plan:' + p.day] = p.plan; values['note:' + p.day] = p.note; }
+  return Object.fromEntries(Object.keys(lesson.editable || {}).map(key => [key, values[key] ?? '']));
+}
+
+const fieldLabel = key => ({topic: 'Topic', todo: 'To-do', prep: 'Lab / prep'})[key]
+  || `${FULL_DAY[key.split(':')[1]]} ${key.startsWith('plan:') ? 'plan' : 'note'}`;
+
+function startEdit(cls, lesson) {
+  const base = lessonValues(lesson);
+  plans.editing = {key: `${cls.key}|${lesson.row}`, cls: cls.key, week: lesson.week, row: lesson.row,
+                   base, draft: {...base}, current: null, error: null, busy: false};
+  renderPlans(plans.data);
+}
+
+function lessonEditor(cls, lesson) {
+  const edit = plans.editing;
+  const form = el('form', {class: 'lesson-edit', onsubmit: event => { event.preventDefault(); saveLesson(); }},
+    el('h3', {text: `Edit ${lesson.topic || 'this lesson'}`}));
+  if (edit.error) form.append(note(edit.error));
+  for (const key of Object.keys(edit.base)) {
+    const locked = lesson.editable[key] === false;
+    const id = `edit-${cls.key}-${lesson.row}-${key.replace(':', '-')}`;
+    const input = key === 'topic'
+      ? el('input', {id, type: 'text', disabled: locked || edit.busy})
+      : el('textarea', {id, rows: key.startsWith('plan:') ? 4 : 2, disabled: locked || edit.busy});
+    input.value = edit.draft[key];
+    input.addEventListener('input', () => { edit.draft[key] = input.value; });
+    form.append(...[el('label', {class: 'field', for: id, text: fieldLabel(key)}), input,
+      locked ? el('small', {class: 'muted', text: 'This cell has a link or formula, so edit it in the Agenda.'}) : null,
+      edit.current && key in edit.current
+        ? el('p', {class: 'note warn'}, 'The Agenda now says: ', el('q', {text: edit.current[key] || '(empty)'})) : null,
+    ].filter(Boolean));
+  }
+  form.append(el('div', {class: 'action-row'},
+    el('button', {type: 'submit', class: 'primary', disabled: edit.busy}, edit.busy ? 'Saving…' : 'Save to Agenda'),
+    el('button', {type: 'button', disabled: edit.busy, onclick: () => { plans.editing = null; renderPlans(plans.data); }}, 'Cancel'),
+    link('Open this row in the Agenda ↗', lesson.edit_url, 'edit')));
+  return form;
+}
+
+async function saveLesson() {
+  const edit = plans.editing;
+  const changes = {};
+  for (const [key, value] of Object.entries(edit.draft)) {
+    if (value !== edit.base[key]) changes[key] = {from: edit.base[key], to: value};
+  }
+  if (!Object.keys(changes).length) { plans.editing = null; renderPlans(plans.data); return; }
+  edit.busy = true; edit.error = null;
+  renderPlans(plans.data);
+  try {
+    const done = await postJSON('api/agenda', {class: edit.cls, week: edit.week, row: edit.row, changes});
+    if (plans.editing === edit) plans.editing = null;
+    await loadPlans(plans.date, true);
+    setStatus('plans-status', done.unconfirmed.length
+      ? `Saved, but the Agenda didn’t read back as expected for: ${done.unconfirmed.map(fieldLabel).join(', ')}. Check the Agenda.`
+      : 'Saved to the Agenda.', Boolean(done.unconfirmed.length));
+  } catch (error) {
+    edit.busy = false;
+    const current = error.status === 409 ? error.body?.current || {} : {};
+    if (Object.keys(current).length) {
+      // Saving again replaces what the Agenda says now with what's typed here.
+      edit.current = current;
+      Object.assign(edit.base, current);
+      edit.error = 'Part of this lesson changed in the Agenda since you opened it; its new text is under each field. '
+        + 'Save again to replace it with what you typed here, or Cancel to keep the Agenda’s.';
+    } else {
+      edit.error = error.message;
+    }
+    if (plans.editing === edit) renderPlans(plans.data);
+  }
+}
+
 function renderPlans(data) {
+  plans.data = data;
+  const editing = plans.editing;
+  if (editing && !data.classes.some(cls => cls.lessons.some(l => `${cls.key}|${l.row}` === editing.key))) plans.editing = null;
   $('week-label').textContent = data.week ? `${data.week.label} · ${weekRange(data.week.monday)}` : 'No Agenda week for this date';
   $('week-closures').textContent = data.week?.closures || '';
   const cards = data.classes.map(cls => {
     const card = el('article', {class: 'card ' + cls.key}, el('h2', {text: cls.name}));
     if (cls.problem) card.append(note(cls.problem));
-    cls.lessons.forEach(lesson => card.append(renderLesson(cls, lesson, data.weekday)));
+    cls.lessons.forEach(lesson => card.append(plans.editing?.key === `${cls.key}|${lesson.row}`
+      ? lessonEditor(cls, lesson) : renderLesson(cls, lesson, data.weekday)));
     return card;
   });
   $('cards').replaceChildren(...data.problems.map(p => note(p)), ...cards);
@@ -374,7 +459,11 @@ async function postJSON(url, body) {
     headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   let data = null;
   try { data = await response.json(); } catch { /* not JSON */ }
-  if (!response.ok) throw new Error(data?.error || `The server returned an error (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(data?.error || `The server returned an error (${response.status}).`);
+    error.status = response.status; error.body = data;
+    throw error;
+  }
   return data;
 }
 

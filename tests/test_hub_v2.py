@@ -6,7 +6,7 @@ import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, answers, app, completion, feedback, google, ledger, roster, tidy, work
+from hub_v2 import agenda, agenda_edit, answers, app, completion, feedback, google, ledger, roster, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -115,6 +115,17 @@ class AgendaTests(unittest.TestCase):
         lesson = agenda.build_lesson(cells, layout, 2, "")
         self.assertEqual([(m["label"], m["url"]) for m in lesson["materials"]],
                          [("2nd deck", "https://docs.google.com/presentation/d/FICTIONALSECONDDECK12345/edit?slide=id.g1")])
+
+    def test_plain_text_cells_are_editable_and_cells_with_links_or_formulas_are_not(self):
+        lesson = fixture().day(date(2026, 9, 23))["classes"][0]["lessons"][0]
+        self.assertEqual(sorted(lesson["editable"]), sorted(
+            ["topic", "todo", "prep", "plan:Mon", "note:Mon", "plan:Wed", "note:Wed", "plan:Fri", "note:Fri"]))
+        self.assertTrue(all(lesson["editable"].values()))
+        self.assertFalse(agenda.plain(cell("Deck", hyperlink=DECK)))
+        self.assertFalse(agenda.plain(cell("Deck", textFormatRuns=[{"startIndex": 0, "format": {"link": {"uri": DECK}}}])))
+        self.assertFalse(agenda.plain(cell("4", userEnteredValue={"formulaValue": "=2+2"})))
+        self.assertTrue(agenda.plain(cell("See " + DECK)))  # a URL typed as text is kept as typed
+        self.assertTrue(agenda.plain(None))
 
     def test_week_options(self):
         options = fixture().week_options("forensics")
@@ -1194,6 +1205,97 @@ class RecordEndpointTests(unittest.TestCase):
         self.assertEqual(record.call_args.args[3], "ic")
         status, record = self.post("https://hub.fictional.example", body.replace(b'"ic"', b'"grades"'))
         self.assertEqual(status, "400 Bad Request")
+
+
+class AgendaEditTests(unittest.TestCase):
+    CONFIG = {"HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+    # The fictional Biology tab: Wk, Dates, Topic, then Mon/Wed/Fri plan and note, To-do, Lab / prep.
+
+    def save(self, changes, week="Wk 04", row=5, agenda_=None, readback=None, write_error=None):
+        agenda_ = agenda_ or fixture()
+        after = readback if readback is not None else {
+            (5, 3): cell("Fictional topic"), (5, 6): cell("New Wed plan\nSecond line"), (5, 10): cell("Copy handouts")}
+        with patch.object(google, "update_cells", side_effect=write_error) as write, \
+                patch.object(google, "sheet_grid", return_value={"🌿 Biology": after}) as read:
+            result = agenda_edit.save("token", "write", self.CONFIG, agenda_, "biology", week, row, changes)
+        return result, write, read
+
+    def test_only_changed_plain_cells_are_written_as_text_and_read_back(self):
+        result, write, read = self.save({
+            "plan:Wed": {"from": "Wed plan text", "to": "New Wed plan  \r\nSecond line"},
+            "todo": {"from": "Copy handouts", "to": "Copy handouts"}})
+        self.assertEqual(write.call_args.args[0], "write")  # only the write token writes
+        self.assertEqual(write.call_args.args[2], [("'🌿 Biology'!F5", "New Wed plan\nSecond line")])
+        self.assertEqual(read.call_args.args[2], ["'🌿 Biology'!F5"])
+        self.assertEqual(result, {"saved": ["plan:Wed"], "unconfirmed": []})
+
+    def test_a_cell_changed_in_the_agenda_meanwhile_is_returned_and_nothing_is_written(self):
+        with self.assertRaises(agenda_edit.Changed) as caught:
+            self.save({"plan:Wed": {"from": "What the page showed", "to": "Mine"},
+                       "topic": {"from": "Fictional topic", "to": "New topic"}})
+        self.assertEqual(caught.exception.current, {"plan:Wed": "Wed plan text"})
+
+    def test_a_row_that_moved_is_refused(self):
+        with self.assertRaises(agenda_edit.Changed):
+            self.save({"topic": {"from": "Earlier topic", "to": "New"}}, week="Wk 04", row=4)
+
+    def test_cells_with_links_and_columns_not_offered_are_never_written(self):
+        linked = fixture()
+        linked.classes["biology"]["cells"][(5, 10)] = cell("Copy handouts", hyperlink=DECK)
+        for changes, agenda_ in (({"todo": {"from": "Copy handouts", "to": "x"}}, linked),
+                                 ({"turnin": {"from": "", "to": "x"}}, None), ({}, None)):
+            with self.assertRaises(ValueError):
+                self.save(changes, agenda_=agenda_)
+
+    def test_a_save_that_doesnt_read_back_is_reported(self):
+        result, _, _ = self.save({"topic": {"from": "Fictional topic", "to": "New topic"}},
+                                 readback={(5, 3): cell("Fictional topic")})
+        self.assertEqual(result, {"saved": [], "unconfirmed": ["topic"]})
+
+    def test_without_editor_access_the_error_says_who_to_share_with(self):
+        with self.assertRaises(google.GoogleError) as caught:
+            self.save({"topic": {"from": "Fictional topic", "to": "New"}},
+                      write_error=google.GoogleError("no", 403))
+        self.assertIn("reader@fictional.example as an Editor", str(caught.exception))
+
+    def test_cells_are_written_as_plain_text(self):
+        with patch.object(google, "get_json") as call_google:
+            google.update_cells("write", "SHEETID", [("'Tab'!A1", "=1+1")])
+        self.assertEqual(call_google.call_args.kwargs["body"]["valueInputOption"], "RAW")
+        self.assertEqual(call_google.call_args.kwargs["method"], "POST")
+
+
+class AgendaEndpointTests(unittest.TestCase):
+    def post(self, origin, payload, outcome=None):
+        body = json.dumps(payload).encode()
+        environ = {"PATH_INFO": "/v2/api/agenda", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
+        seen = {}
+        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(agenda_edit, "save", side_effect=outcome,
+                             return_value={"saved": ["topic"], "unconfirmed": []}) as save:
+            out = b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+        return seen["status"], json.loads(out or b"{}"), save
+
+    def test_saving_a_lesson_needs_the_dashboard_page_and_reports_a_changed_cell(self):
+        payload = {"class": "biology", "week": "Wk 04", "row": 5,
+                   "changes": {"topic": {"from": "Fictional topic", "to": "New topic"}}}
+        status, _, save = self.post("https://elsewhere.example", payload)
+        self.assertEqual(status, "403 Forbidden")
+        save.assert_not_called()
+        status, body, save = self.post("https://hub.fictional.example", payload)
+        self.assertEqual((status, body["saved"]), ("200 OK", ["topic"]))
+        self.assertEqual(save.call_args.args[4:], ("biology", "Wk 04", 5, payload["changes"]))
+        status, body, _ = self.post("https://hub.fictional.example", payload,
+                                    outcome=agenda_edit.Changed({"topic": "Theirs"}, "changed"))
+        self.assertEqual((status, body["current"]), ("409 Conflict", {"topic": "Theirs"}))
+        for bad in ({**payload, "row": "5"}, {**payload, "row": True}, {**payload, "changes": {"topic": {"to": "x"}}}):
+            status, _, _ = self.post("https://hub.fictional.example", bad)
+            self.assertEqual(status, "400 Bad Request")
 
 
 class ResearchSheetTests(unittest.TestCase):
