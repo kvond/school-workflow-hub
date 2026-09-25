@@ -438,12 +438,34 @@ export function printFeedbackPacket(rows,history=[]){
  return withReport.length;
 }
 
+// Page 3: one link per lesson and class section with saved, matched work. Each
+// opens that lesson's class growth summary on its own page (September 23,
+// 2026). Older section-only summaries remain listed below the links.
+export function summaryLinks(data){
+ const groups=new Map();
+ for(const r of data?.submissions||[]){
+  if(!r.included_in_counts||r.discovery_only||!r.section_id||!r.assignment_key)continue;
+  const key=[r.class_key,r.section_id,r.assignment_key].join('\u0000');
+  const g=groups.get(key)||{class_key:r.class_key,section_id:r.section_id,section_name:r.section_name,assignment_key:r.assignment_key,assignment_title:r.assignment_title,students:new Set()};
+  g.students.add(r.count_key||r.record_id);groups.set(key,g);
+ }
+ return [...groups.values()].map(g=>({...g,students:g.students.size,
+  saved:(data.summaries||[]).find(s=>s.class_key===g.class_key&&s.section_id===g.section_id&&s.assignment_key===g.assignment_key)||null,
+  href:'class-summary.html?'+new URLSearchParams({class:g.class_key,section:g.section_id,assignment:g.assignment_key})}))
+  .sort((a,b)=>a.class_key.localeCompare(b.class_key)||String(a.section_name).localeCompare(String(b.section_name))||String(a.assignment_title).localeCompare(String(b.assignment_title)));
+}
 export function renderSummaries(root,state){
  root.replaceChildren();if(state.status!=='loaded'){renderReadState(root,state,state.status==='loading'?'Loading class summaries…':'Refresh to load class summaries.');return;}
- const summaries=state.data.summaries;
- if(!summaries.length){line(root,'No reviewed class summaries have been recorded.');return;}
- // Exactly one card per explicit class/section. No score averages or repeated panels.
- for(const summary of [...summaries].sort((a,b)=>a.class_key.localeCompare(b.class_key)||a.section_name.localeCompare(b.section_name))){
-  const card=node(root,'section');card.className='surface';card.append(node(root,'h2',`${courses[summary.class_key]} · ${summary.section_name}`));line(card,summary.summary,'class-summary-text');line(card,summary.coverage||'Coverage has not been specified.','hint');line(card,`${summary.submitted_students} matched students · checked ${time(summary.checked_at)}`,'hint');root.append(card);
+ const links=summaryLinks(state.data);
+ const list=node(root,'section');list.className='surface';list.append(node(root,'h2','Class growth summaries'));
+ if(!links.length)line(list,'No lesson has saved, matched work yet.');
+ for(const item of links){const entry=node(root,'div');entry.className='summary-link';
+  entry.append(node(root,'strong',`${courses[item.class_key]||item.class_key} · ${item.section_name||item.section_id} · ${item.assignment_title||item.assignment_key}`));
+  line(entry,`${item.students} ${item.students===1?'student':'students'} with saved work · `+(item.saved?'written sections saved '+time(item.saved.checked_at):'written sections not yet written'),'hint');
+  const a=node(root,'a','Open class summary ↗');a.href=item.href;a.target='_blank';a.rel='noopener';a.className='source-link';entry.append(a);list.append(entry);}
+ root.append(list);
+ // Section-only summaries saved before lesson summaries existed.
+ for(const summary of [...(state.data.summaries||[])].filter(s=>!s.assignment_key).sort((a,b)=>a.class_key.localeCompare(b.class_key)||a.section_name.localeCompare(b.section_name))){
+  const card=node(root,'section');card.className='surface';card.append(node(root,'h2',`${courses[summary.class_key]} · ${summary.section_name} (earlier section summary)`));line(card,summary.summary,'class-summary-text');line(card,summary.coverage||'Coverage has not been specified.','hint');line(card,`${summary.submitted_students} matched students · checked ${time(summary.checked_at)}`,'hint');root.append(card);
  }
 }

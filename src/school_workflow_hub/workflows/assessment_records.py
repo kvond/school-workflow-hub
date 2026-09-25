@@ -446,17 +446,29 @@ def aligned_cells(headers, row, *, numeric=()):
     return {"values": cells}
 
 
+SUMMARY_KEYS = {"class_key", "section_id", "section_name", "summary", "coverage"}
+# A lesson summary (September 23, 2026) names its assignment and carries the
+# longer class growth summary; a section-only summary keeps the old limit.
+SUMMARY_LIMIT, LESSON_SUMMARY_LIMIT = 1600, 12000
+
+
 def summary_row(summary, *, now):
-    if not isinstance(summary, dict) or set(summary) != {"class_key", "section_id",
-                                                         "section_name", "summary",
-                                                         "coverage"}:
+    if not isinstance(summary, dict) or set(summary) not in (SUMMARY_KEYS, SUMMARY_KEYS | {"assignment_key"}):
         raise ValueError("invalid_class_summary")
     if summary["class_key"] not in CLASSES:
         raise ValueError("invalid_class_summary")
+    lesson = "assignment_key" in summary
+    if lesson and not (isinstance(summary["assignment_key"], str)
+                       and re.fullmatch(r"[A-Za-z0-9:_.-]{1,80}", summary["assignment_key"])):
+        raise ValueError("invalid_class_summary")
     _text(summary["section_id"], 40, required=True)
     _text(summary["section_name"], 120, required=True)
-    _text(summary["summary"], 1600, required=True, multiline=True)
+    _text(summary["summary"], LESSON_SUMMARY_LIMIT if lesson else SUMMARY_LIMIT,
+          required=True, multiline=True)
     _text(summary["coverage"], 400, required=True)
-    return {"class_key": summary["class_key"], "section_id": summary["section_id"],
-            "section_name": summary["section_name"], "summary": summary["summary"],
-            "coverage": summary["coverage"], "checked_at": now}
+    row = {"class_key": summary["class_key"], "section_id": summary["section_id"],
+           "section_name": summary["section_name"], "summary": summary["summary"],
+           "coverage": summary["coverage"], "checked_at": now}
+    if lesson:
+        row["assignment_key"] = summary["assignment_key"]
+    return row

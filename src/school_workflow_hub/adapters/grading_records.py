@@ -219,11 +219,17 @@ def project(tables):
         if answer["record_id"] not in records:
             raise ConnectionError("grading_answer_unresolved")
         records[answer["record_id"]]["answers"].append(answer)
-    summaries = _unique(tables["Class summaries"], lambda r: (r["class_key"], r["section_id"]))
-    for (course, section), row in summaries.items():
-        if course not in CLASSES or not section or not row["summary"] or len(row["summary"]) > 1600:
+    # One summary per section, or (since September 23, 2026) one per lesson and
+    # section when the optional assignment_key column is filled.
+    summaries = _unique(tables["Class summaries"],
+                        lambda r: (r["class_key"], r["section_id"], r.get("assignment_key", "")))
+    for (course, section, lesson), row in summaries.items():
+        row["assignment_key"] = lesson
+        if (course not in CLASSES or not section or not row["summary"]
+                or len(row["summary"]) > (12000 if lesson else 1600)):
             raise ConnectionError("grading_summary_invalid")
-        eligible = [r for r in records.values() if r["class_key"] == course and r["section_id"] == section and r["included_in_counts"]]
+        eligible = [r for r in records.values() if r["class_key"] == course and r["section_id"] == section
+                    and r["included_in_counts"] and (not lesson or r["assignment_key"] == lesson)]
         row["submitted_students"] = len({r["count_key"] for r in eligible})
         row["submission_records"] = len(eligible)
     return {"schema_version": SCHEMA, "provenance": "source_read",

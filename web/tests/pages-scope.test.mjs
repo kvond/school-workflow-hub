@@ -124,7 +124,8 @@ await settle();assert.ok(lessonSelect.children.some(o=>o.value===emptyClassKey),
 assert.equal(discoveryCalls.length,beforeEmptyClass,'metadata discovery does not read submissions');
 choose(lessonSelect,emptyClassKey);await settle();assert.equal(discoveryCalls.length,beforeEmptyClass+1);assert.equal(JSON.parse(discoveryCalls.at(-1).options.body).assignment_key,emptyClassKey);
 choose(classSelect,'biology');assert.equal(sectionSelect.value,'c');assert.equal(lessonSelect.value,'all');assert.match(table().allText,/unmatched 5, Fictional/);
-const cards=summary.all.filter(e=>e.tagName==='section'&&e.className==='surface');assert.equal(cards.length,4);
+// Page 3 now opens with one list of class growth summary links before the older section summaries.
+const cards=summary.all.filter(e=>e.tagName==='section'&&e.className==='surface');assert.equal(cards.length,5);assert.match(summary.allText,/Class growth summaries/);
 location.hash='#summary';window.dispatchEvent(new Event('hashchange'));assert.equal(summary.hidden,false);assert.equal(feedback.hidden,true);
 failNext=true;summary.all.find(e=>e.tagName==='button'&&e.textContent==='Refresh summaries').dispatchEvent(new Event('click'));await settle();
 assert.match(summary.allText,/Diagnostic: grading_records_unavailable/);assert.equal(table(),undefined);
