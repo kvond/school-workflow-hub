@@ -12,6 +12,7 @@ from pathlib import Path
 ASSET_ROOT = Path(__file__).resolve().parents[2] / "web"
 ASSETS = {
     "index.html": "text/html; charset=utf-8",
+    "class-summary.html": "text/html; charset=utf-8",
     "styles.css": "text/css; charset=utf-8",
     **{name: "text/javascript; charset=utf-8" for name in (
         "app.mjs", "pages.mjs", "contract.mjs", "workspace-contract.mjs",
@@ -19,7 +20,7 @@ ASSETS = {
         "review-view.mjs", "agenda-connection.mjs", "agenda-editor.mjs", "teaching-results.mjs", "learning-progress.mjs",
         "browser-runs.mjs", "grading-records.mjs", "grade-posting.mjs", "browser-companion.mjs",
         "control-panel.mjs", "submission-monitor.mjs", "assessment-review.mjs",
-        "ic-grade-sheet.mjs",
+        "ic-grade-sheet.mjs", "class-summary.mjs",
     )},
     **{name: "application/json; charset=utf-8" for name in (
         "operations.preview.json", "workspace.preview.json",
@@ -203,6 +204,37 @@ def application(environ, start_response, *, teaching_provider=None):
             return respond("503 Service Unavailable", {"error": "assessment_state_unavailable"})
         except Exception:
             return respond("503 Service Unavailable", {"error": "assessment_save_unavailable"})
+
+    if path == "/api/class-summary-draft":
+        # One teacher-started model call per click; returns a draft only.
+        from .adapters import class_summary_writer
+        from .adapters.hosted_agenda import ConnectionError
+        import re as _re
+        try:
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "save_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 2000:
+                raise ValueError("invalid_summary_request")
+            payload = json.loads(environ["wsgi.input"].read(length))
+            return respond("200 OK", class_summary_writer.draft(
+                environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), payload, os.environ))
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable", {"error": str(error)})
+        except (ValueError, KeyError, TypeError, OverflowError) as error:
+            code = str(error)
+            if not _re.fullmatch(r"[a-z0-9_]{1,64}", code):
+                code = "invalid_summary_request"
+            return respond("400 Bad Request", {"error": code})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "summary_draft_unavailable"})
 
     if path == "/api/assessment-run":
         from .adapters import assessment_provider

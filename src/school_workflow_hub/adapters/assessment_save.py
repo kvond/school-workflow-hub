@@ -408,13 +408,19 @@ def _save_summary(assertion, payload, config):
     except SheetsReadError:
         raise ConnectionError("assessment_workbook_unavailable") from None
     table = workbook["Class summaries"]
+    lesson = row.get("assignment_key", "")
+    if lesson and "assignment_key" not in table["headers"]:
+        # A lesson summary must never overwrite the section's summary row.
+        raise ConnectionError("summary_lesson_column_required")
     match = next((position for position, existing in table["rows"]
                   if existing.get("class_key") == row["class_key"]
-                  and existing.get("section_id") == row["section_id"]), None)
+                  and existing.get("section_id") == row["section_id"]
+                  and existing.get("assignment_key", "") == lesson), None)
     store = CloudState(configured_store(config))
     task = store.create_task({"workflow": "assessment-summary",
                               "class_key": row["class_key"],
-                              "assignment_key": "section-" + row["section_id"]})
+                              "assignment_key": "section-" + row["section_id"]
+                              + ("-" + lesson if lesson else "")})
     claim = store.claim(task, owner="summary-" + uuid.uuid4().hex, request_id=request_id,
                         input_hash=content_hash(row["summary"] + row["coverage"]),
                         ttl_seconds=300)
@@ -429,7 +435,8 @@ def _save_summary(assertion, payload, config):
     records = read_records(assertion, config)
     saved = next((s for s in records["summaries"]
                   if s["class_key"] == row["class_key"]
-                  and s["section_id"] == row["section_id"]), None)
+                  and s["section_id"] == row["section_id"]
+                  and s.get("assignment_key", "") == lesson), None)
     if saved is None or saved["summary"] != row["summary"] or saved["coverage"] != row["coverage"]:
         raise ConnectionError("assessment_readback_failed")
     if not claim.completed:

@@ -178,32 +178,33 @@ shows this lesson's aspects; all other aspects stay in stored history. One
 point is a starting point, not a trend. No composite score, ordinal average,
 invented history or line across different aspects, stages or rubric versions.
 
-## Teacher summary
+## Teacher summary (class growth summary, teacher decision September 23, 2026)
 
-Page 3 displays **document links, not summary paragraphs**. Each entry identifies
-the verified class/section and lesson plus a saved/updated date. The summary
-itself is a real document in the approved private folder associated with the
-lesson's student work. Verify inherited permissions before placing classwide
-student information there. Keep each class section separate, preserve document
-identity and history on updates, verify the save, and store its actual link.
-An authenticated dashboard view/download can serve the saved document when the
-school device cannot open Drive directly; do not manufacture a URL or broaden
-sharing as a workaround.
+Page 3 lists one link per lesson and class section that has saved, matched
+work. Each link opens that lesson's **class growth summary on its own page**,
+two printable pages in the layout of the teacher's sample. Earlier
+section-only summaries stay listed below the links.
 
-The document identifies the assignment/checkpoint, honest received/expected
-coverage where verified, useful findings about current understanding and
-explanation, unresolved evidence that limits conclusions, and grounded teaching
-follow-up. A retained worksheet name is not proof of active enrollment; exclude
-unresolved identities and example artifacts from learner counts. Count a learner
-once per assignment and retain earlier submissions as history.
+Built from saved records, with no model call: the at-a-glance counts
+(students with saved work, complete, incomplete, completion unknown), the
+current understanding table (students at each of the four levels for each
+critical aspect), **Check these yourself** (holds, teacher-only evidence notes,
+blank revisions), and **Every student, one row each** (completion, level per
+aspect, note). Expected enrollment is not verified on this page, so missing
+work is not counted there.
 
-Do not place graphs, per-student answer tables, long quote lists or detailed
-grading exceptions on Page 3. Keep exact evidence, per-question distributions,
-teacher checks and supported history graphs in the document or linked private
-evidence. Recurring means more than one student's evidence, and a partial sample
-stays explicitly partial. Exclude homework, BANK and DRAFT that are not yet due
-from missing/incomplete counts or current completion penalties. Proposed scores,
-saved assessments and grades with destination readback remain separate statuses.
+Written by the model: **An idea worth chasing**, **Recurring ideas in
+students' words** and **A possible next instructional contrast** (Why this
+contrast / Compare / Ask, plus a caution), and any extra teacher checks. The
+page's **Write class summary** button sends the lesson's saved answers for one
+section (first name and initial, completion, critical aspect, rating, answer
+type, exact words; never teacher-only notes and never the decks) with the live
+Agenda Prompt 3 to the configured model: one call per click. The result is a
+draft the teacher reads and edits; **Save summary** stores it through the
+existing summary save path, keyed by class, section and lesson
+(`assignment_key` column in the Class summaries tab, text up to 12,000
+characters). Rewriting asks first and keeps the saved text until the new one is
+saved.
 
 ## Per-submission readiness
 

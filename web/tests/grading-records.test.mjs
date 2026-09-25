@@ -69,8 +69,10 @@ test('duplicate summary scope and unsupported provenance fail',()=>{
 });
 test('exactly one concise card per class with no grade composite',()=>{
  const target=root();renderSummaries(target,{status:'loaded',data:fixture()});
- assert.equal(target.children.length,2);assert.ok(target.children.every(n=>n.tagName==='section'));
+ // One links section (one lesson with matched work), then the two older section-only summaries.
+ assert.equal(target.children.length,3);assert.ok(target.children.every(n=>n.tagName==='section'));
  assert.equal(target.children[0].children.filter(n=>n.tagName==='h2').length,1);
+ assert.match(target.allText,/Open class summary/);assert.match(target.allText,/Fictional One/);
  assert.match(target.allText,/Connect the claim/);assert.doesNotMatch(target.allText,/6.25|average|proficiency spread/i);
 });
 test('held or superseded scores never display zero; actual zero remains valid',()=>{
