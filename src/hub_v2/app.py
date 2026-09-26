@@ -330,6 +330,41 @@ def agenda_post(environ, respond, config):
                        {"error": "Something went wrong on the server. Reload to see what the Agenda says now."})
 
 
+def move_post(environ, respond, config):
+    """Move a lesson to another week, trading places with the lesson there.
+    Signed-in teacher, same-origin JSON only."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = _json_body(environ, 2000)
+        class_key, week, row, to_week = (_class_key(payload.get("class")), payload.get("week"),
+                                         payload.get("row"), payload.get("to_week"))
+        if (not all(isinstance(w, str) and 1 <= len(w) <= 100 for w in (week, to_week))
+                or not isinstance(row, int) or isinstance(row, bool) or not 1 <= row <= agenda_module.LAST_ROW):
+            raise ValueError()
+        token = google.service_token(config)
+        agenda = load_agenda(token, config, fresh=True)
+        result = agenda_edit.move(token, google.service_token(config, write=True), config, agenda, class_key,
+                                  week, row, to_week)
+        with _cache_lock:  # the next read shows the move
+            _cache["agenda"] = None
+            _work_cache.clear()
+        return respond("200 OK", result)
+    except agenda_edit.Changed as changed:
+        return respond("409 Conflict", {"error": str(changed), "current": changed.current})
+    except ValueError as error:
+        told = str(error) if "Agenda" in str(error) else "That request wasn't understood."
+        return respond("400 Bad Request", {"error": told})
+    except (KeyError, TypeError, AttributeError):
+        return respond("400 Bad Request", {"error": "That request wasn't understood."})
+    except google.GoogleError as error:
+        return respond("502 Bad Gateway", {"error": str(error)})
+    except Exception:
+        return respond("500 Internal Server Error",
+                       {"error": "Something went wrong on the server. Reload to see what the Agenda says now."})
+
+
 def _same_origin_json(environ, respond, config):
     """A response refusing the request, or None when it is the signed-in
     teacher posting JSON from the dashboard page itself."""
@@ -377,6 +412,8 @@ def application(environ, start_response, config=None):
         return sweep_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda":
         return agenda_post(environ, respond, config)
+    if method == "POST" and path == "/v2/api/agenda/move":
+        return move_post(environ, respond, config)
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "This page only reads."},
                        extra=[("Allow", "GET, HEAD")])

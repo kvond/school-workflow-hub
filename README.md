@@ -51,6 +51,15 @@ Forms, folders) are only edited in the Agenda. Text is written as plain text,
 so bold or italics inside an edited cell are not kept, and each written cell is
 read back. The dashboard's account must be an Editor on the Agenda spreadsheet.
 
+**Moving a lesson.** In the editor, **Move this lesson to another week** trades
+two lessons' weeks: only their Wk and Dates cells change (Dates stay with the
+calendar; formula Dates update themselves), so plans, notes, deck links and the
+Turn-in Form travel with each row. A moved lesson keeps finding its work: its
+weeks are its Agenda week and the week its own decks are named for (so student
+copies named for the old week aren't flagged), and its 📥 folder is found by its
+title under the old number. A folder named for another lesson is never taken
+for its week number alone.
+
 Each assignment (Form) stays open until the end of the day two weeks after its
 first turn-in by anyone (school time). Later work is marked **Late**, listed on
 its own and marked "Late — not graded" on the grade sheet. Every load also runs a **roster check**:

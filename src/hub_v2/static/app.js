@@ -62,7 +62,7 @@ function showAgendaLink(agenda) {
 }
 
 // ---------- Lesson plans ----------
-const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null};
+const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null, weeks: {}, weeksLoading: {}};
 
 function renderDays(date) {
   const monday = mondayOf(date);
@@ -164,7 +164,62 @@ function lessonEditor(cls, lesson) {
     el('button', {type: 'submit', class: 'primary', disabled: edit.busy}, edit.busy ? 'Saving…' : 'Save to Agenda'),
     el('button', {type: 'button', disabled: edit.busy, onclick: () => { plans.editing = null; renderPlans(plans.data); }}, 'Cancel'),
     link('Open this row in the Agenda ↗', lesson.edit_url, 'edit')));
+  form.append(moveSection(cls, lesson));
   return form;
+}
+
+// ---------- Moving a lesson to another week ----------
+// The lessons trade weeks in the Agenda: only their Wk and Dates cells change,
+// so plans, notes, deck links and Forms travel with each row.
+async function loadClassWeeks(key) {
+  if (plans.weeks[key] || plans.weeksLoading[key]) return;
+  plans.weeksLoading[key] = true;
+  try { plans.weeks[key] = (await getJSON(`api/weeks?class=${key}&today=${todayISO()}`)).weeks; }
+  catch { plans.weeks[key] = []; }
+  plans.weeksLoading[key] = false;
+  if (plans.editing?.cls === key) renderPlans(plans.data);
+}
+
+function moveSection(cls, lesson) {
+  const edit = plans.editing;
+  const weeks = plans.weeks[cls.key];
+  const box = el('div', {class: 'move-lesson'}, el('p', {class: 'label', text: 'Move this lesson to another week'}));
+  if (!weeks) { loadClassWeeks(cls.key); box.append(el('p', {class: 'muted', text: 'Reading the weeks…'})); return box; }
+  const others = weeks.filter(w => w.label !== lesson.week);
+  if (!others.length) { box.append(el('p', {class: 'muted', text: 'No other weeks were found for this class.'})); return box; }
+  const short = t => (t || 'nothing planned yet').length > 60 ? t.slice(0, 57) + '…' : (t || 'nothing planned yet');
+  const select = el('select', {'aria-label': 'Week to move this lesson to', disabled: edit.busy},
+    others.map(w => el('option', {value: w.label, text: `${w.label} · ${short(w.topic)}`})));
+  const here = weeks.findIndex(w => w.label === lesson.week);
+  const next = weeks[here + 1] || weeks[here - 1];
+  if (next && next.label !== lesson.week) select.value = next.label;
+  box.append(el('div', {class: 'action-row'}, select,
+      el('button', {type: 'button', disabled: edit.busy, onclick: () => moveLesson(cls, lesson, select.value)}, 'Move')),
+    el('p', {class: 'muted', text: 'The two lessons trade weeks: this one takes the week you pick, and the lesson there takes this one’s. Plans, notes, deck links and the Turn-in Form move with each lesson.'}));
+  return box;
+}
+
+async function moveLesson(cls, lesson, toWeek) {
+  const target = (plans.weeks[cls.key] || []).find(w => w.label === toWeek);
+  const other = target?.topic ? `“${target.topic}” will move to ${lesson.week}.` : `Nothing is planned in ${toWeek} yet, so only this lesson moves.`;
+  if (!window.confirm(`Move “${lesson.topic || 'this lesson'}” to ${toWeek}? ${other}\n\nTitles that say a week number (Schoology, decks, Forms) don’t change.`)) return;
+  const edit = plans.editing;
+  edit.busy = true; edit.error = null;
+  renderPlans(plans.data);
+  try {
+    const done = await postJSON('api/agenda/move', {class: cls.key, week: lesson.week, row: lesson.row, to_week: toWeek});
+    if (plans.editing === edit) plans.editing = null;
+    plans.weeks[cls.key] = null;
+    await loadPlans(plans.date, true);
+    const said = [`Moved “${done.moved.topic || 'the lesson'}” to ${done.moved.to}`];
+    if (done.swapped.length) said.push(`“${done.swapped.join('”, “')}” moved to ${done.moved.from}`);
+    if (done.dates_left) said.push(`its Dates cell still shows ${done.moved.from}’s dates, so fix that in the Agenda`);
+    if (done.unconfirmed.length) said.push('some cells didn’t read back as expected, so check the Agenda');
+    setStatus('plans-status', said.join('; ') + '.', Boolean(done.unconfirmed.length));
+  } catch (error) {
+    edit.busy = false; edit.error = error.message;
+    if (plans.editing === edit) renderPlans(plans.data);
+  }
 }
 
 async function saveLesson() {
@@ -1059,7 +1114,14 @@ function routineStatus(key, data) {
 
 function renderRoutine(data) {
   const body = $('routine-body');
-  const scheduled = el('section', {class: 'routine'}, el('h2', {text: 'Done for you, on schedule'}),
+  // Folded by default so the teacher's own tasks come first; the heading warns
+  // when the Monday run is missing or more than a week old.
+  const run = data?.monday_run;
+  const late = data && (!run || run.problem || (Date.now() - new Date(run.at)) / DAY > 8);
+  const scheduled = el('details', {class: 'routine routine-scheduled', open: store.get('routine-scheduled-open') === '1',
+    ontoggle: e => store.set('routine-scheduled-open', e.target.open ? '1' : '0')},
+    el('summary', {}, el('h2', {text: 'Done for you, on schedule'}),
+      late ? el('span', {class: 'badge warn', text: run?.problem ? 'Can’t check the Monday run' : 'Monday run: not in the last week'}) : null),
     ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
       el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
       el('p', {text: t.what}),
@@ -1078,7 +1140,7 @@ function renderRoutine(data) {
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
       el('li', {}, 'Feedback, Growth record and Class growth summary Docs: in each week’s 📥 folder.'),
       el('li', {}, '“Monday run — date” Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(scheduled, mine, sheets);
+  body.replaceChildren(mine, scheduled, sheets);
 }
 
 async function loadRoutine() {
