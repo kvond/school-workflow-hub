@@ -70,9 +70,6 @@ h4 { font-size: 14px; margin: 12px 0 6px; }
 .links { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
 .chip { display: inline-block; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
   text-decoration: none; font-size: 14px; }
-.forms { margin: 12px 0; }
-.form-row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 4px 0; }
-.see-work { font-size: 14px; font-weight: 600; }
 details.week { margin: 10px 0; }
 details.week summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 .week-day { margin: 8px 0; }
@@ -149,7 +146,7 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .signatures p { margin: 22px 0 0; }
 
 @media print {
-  .top, .controls, .days, .see-work, .edit, button { display: none !important; }
+  .top, .controls, .days, .edit, button { display: none !important; }
   .sheets-head, #work-status, .bar { display: none !important; }
   .sheet-page { border: none; padding: 0; margin: 0; break-after: page; }
   body { background: #fff; color: #000; }

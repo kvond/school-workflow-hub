@@ -112,20 +112,12 @@ function renderLesson(cls, lesson, weekday) {
   if (lesson.materials.length) {
     box.append(el('div', {class: 'links'}, lesson.materials.map(m => link(m.label + ' ↗', m.url, 'chip'))));
   }
-  if (lesson.forms.length) {
-    box.append(el('div', {class: 'forms'}, el('p', {class: 'label', text: 'Turn-in Forms'}),
-      lesson.forms.map(form => el('div', {class: 'form-row'},
-        link(form.label + ' ↗', form.url),
-        form.form_id ? el('a', {class: 'see-work', href: `#work/${cls.key}/${encodeURIComponent(lesson.week)}`}, 'See student work →') : null,
-        form.problem ? note(form.problem) : null))));
-  }
   box.append(el('details', {class: 'week'}, el('summary', {text: 'Whole week'}),
     lesson.plans.map(p => el('div', {class: 'week-day'}, el('strong', {text: p.day}),
       el('p', {class: 'plan', text: p.plan || '—'}), p.note ? el('p', {class: 'teacher-note', text: p.note}) : null))));
-  box.append(el('div', {class: 'action-row'},
-    Object.keys(lesson.editable || {}).length
-      ? el('button', {type: 'button', onclick: () => startEdit(cls, lesson)}, 'Edit here') : null,
-    link('Edit this row in the Agenda ↗', lesson.edit_url, 'edit')));
+  if (Object.keys(lesson.editable || {}).length) {
+    box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => startEdit(cls, lesson)}, 'Edit here')));
+  }
   return box;
 }
 
