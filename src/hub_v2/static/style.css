@@ -106,6 +106,9 @@ tr.unmatched td { background: var(--warn-bg); }
 .roster-check .flags li { margin: 4px 0; }
 .late { margin-top: 12px; }
 .marks { margin: 4px 0 8px; font-weight: 600; color: var(--accent); }
+.ic-status { margin: 4px 0 8px; font-weight: 600; }
+.ic-status.due { display: inline-block; padding: 4px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-ink); }
+.ic-status.final { color: var(--accent); }
 .ic-panel { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 12px 0; background: var(--bg); }
 .ic-panel h4 { margin: 0 0 6px; }
 .for-claude { white-space: pre-wrap; font-size: 12px; background: var(--surface); border: 1px solid var(--line);

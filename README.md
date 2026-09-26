@@ -68,7 +68,11 @@ counts when the student wrote something new in it; the printed prompt copied
 back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
 ready to enter in IC** lists the scores for typing into Infinite Campus, or
 copies them with instructions for the Claude extension to enter while the
-teacher watches. The page itself never writes to IC. The dashboard keeps its own notes in a Google Sheet whose name starts with
+teacher watches. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
+open (enter the listed scores; nobody with nothing yet gets a 0), closed and
+waiting for final scores (enter every score, 0s included, then click **I entered
+these in IC**), or final scores entered (the note is dated after the close, and
+late work isn't graded, so there's nothing more to enter). The dashboard keeps its own notes in a Google Sheet whose name starts with
 `Scores entered`, in the turn-in root; the teacher never needs to open it.
 **I entered these in IC** and **Mark feedback done** each add one row for the
 class and assignment, and each assignment card then shows "✓ Entered in IC

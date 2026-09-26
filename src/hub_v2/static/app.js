@@ -525,6 +525,24 @@ async function copyText(textValue, status) {
 
 const markDate = mark => mark ? when(mark.at) : '';
 
+// Where an assignment stands for Infinite Campus. While its two weeks are
+// open, the listed scores go in and anyone with nothing yet stays blank. Once
+// they close, the final scores go in with every 0. After final scores are
+// entered (the "I entered these in IC" note is dated after the close), late
+// work isn't graded, so there's nothing more to enter.
+function icStatus(form) {
+  if (!form.window) return null;
+  const sheet = work.marks[form.form_id];
+  const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
+  if (!closedFor(form)) {
+    return {kind: 'open', text: `IC: open until ${form.window.label}. Enter the scores listed; anyone with nothing yet stays blank until it closes.`};
+  }
+  if (entered && entered >= new Date(form.window.at)) {
+    return {kind: 'final', text: `IC: final scores entered ${markDate(sheet.entered_at)}. Late work isn’t graded, so there’s nothing more to enter.`};
+  }
+  return {kind: 'due', text: `IC: closed ${form.window.label}. Final scores are due: enter every score, including the 0s, then click “I entered these in IC”.`};
+}
+
 function marksLine(form) {
   const sheet = work.marks[form.form_id];
   if (!sheet?.configured) return null;
@@ -558,6 +576,7 @@ function icPanel(form, lesson, scores) {
   const claudeText = list => [
     'Please enter these completion scores in Infinite Campus. I am signed in and have the grade book open in this Chrome window.',
     `Class: ${cls}${section === 'all' ? '' : ' ' + section} · ${work.week} · Assignment: ${form.label}${lesson.topic ? ` (${lesson.topic})` : ''}`,
+    ...(icStatus(form) ? [icStatus(form).text] : []),
     'Each score is out of 10. "Notes" goes in this assignment\'s notes/content score and "Revision" in its revision score.',
     'Before you save, show me each student, assignment and score you are about to enter, and wait for my OK.',
     'Do not change any other grade. If a student already has a different score for this assignment, it is an update from a resubmission: show me the old and new score and replace it only after I say OK. If a student or the assignment is not there, stop and ask me. "— (leave blank)" means leave it blank.',
@@ -569,6 +588,8 @@ function icPanel(form, lesson, scores) {
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
   if (ui.error) panel.append(note(ui.error));
   if (sheet && !sheet.configured) panel.append(note(sheet.setup, 'info'));
+  const standing = icStatus(form);
+  if (standing) panel.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
   panel.append(el('p', {}, el('strong', {text: 'Open Infinite Campus first'}), entered
     ? ` and go to this assignment. You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'} Type them in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.`
@@ -688,6 +709,8 @@ function renderForm(form, lesson) {
   }
   const marks = marksLine(form);
   if (marks) box.append(marks);
+  const standing = icStatus(form);
+  if (standing) box.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   const research = researchLine(form);
   if (research) box.append(research);
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
