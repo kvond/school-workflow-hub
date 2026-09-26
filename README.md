@@ -68,7 +68,12 @@ counts when the student wrote something new in it; the printed prompt copied
 back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
 ready to enter in IC** lists the scores for typing into Infinite Campus, or
 copies them with instructions for the Claude extension to enter while the
-teacher watches. The page itself never writes to IC. The dashboard keeps its own notes in a Google Sheet whose name starts with
+teacher watches. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
+open (enter every score listed, 0s included; a 0 is replaced when the student
+turns work in), closed and
+waiting for final scores (enter every score, 0s included, then click **I entered
+these in IC**), or final scores entered (the note is dated after the close, and
+late work isn't graded, so there's nothing more to enter). The dashboard keeps its own notes in a Google Sheet whose name starts with
 `Scores entered`, in the turn-in root; the teacher never needs to open it.
 **I entered these in IC** and **Mark feedback done** each add one row for the
 class and assignment, and each assignment card then shows "✓ Entered in IC
@@ -80,8 +85,9 @@ answers turned in since the last feedback (first name and last initial), for
 her own Claude to write one Google Doc with two pages per student, saved in the
 week's 📥 folder. Each assignment stays open for two weeks
 from its first turn-in; later work is Late and isn't scored. While it is open,
-an empty score (no work yet, or no revised answers yet) stays blank; once the
-two weeks close it is 0, and those zeros are listed for IC too.
+every empty score is 0 from the first turn-in on (nothing turned in yet, or no
+revised answers yet), and each 0 is replaced when the student turns work in
+before the two weeks close; those zeros are listed for IC too.
 
 **Answers by question** (Biology and A&P) shows what each student wrote in
 each coded box of their on-time deck, one table per slide of the handed-out
