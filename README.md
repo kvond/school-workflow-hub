@@ -108,6 +108,14 @@ checks in the background for closed Biology assignments with no rows yet and
 adds them (weeks not yet started, and Forms already in the sheet, are skipped
 without reading Drive).
 
+**Missing-work sheets** (Student work) reads every week of the chosen class and
+section and prints one page per student with missing work: each assignment
+whose two weeks have begun that they haven't turned in on time (still open,
+with its closing date and an "I will turn it in by" line, or closed and staying
+0), how they usually turn work in (on-time count and the typical number of days
+after the two weeks start), a short plan, how to turn work in, and student and
+parent/guardian signature lines. It uses only the dashboard's own records.
+
 **Routine** lists what runs on its own (school Claude's Monday grades-and-roster
 run, the daily research-sheet check, scoring on open), what each needs to be
 open, the teacher's own daily/weekly/monthly tasks (with **Copy for Todoist**),
