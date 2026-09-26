@@ -52,10 +52,20 @@ def week_number(label):
     return int(match.group(1)) if match else None
 
 
+def _weeks(value):
+    """A week number, or a set of them, as a set without None."""
+    found = set(value) if isinstance(value, (set, frozenset, list, tuple)) else {value}
+    found.discard(None)
+    return found
+
+
 def named_week(file_name, lesson_week):
-    """The week a file's name says it's for, when that differs from the lesson's."""
+    """The week a file's name says it's for, when that is none of the lesson's
+    weeks: its Agenda week, or the week its own deck is named for (a lesson
+    moved to another week keeps its deck's name)."""
+    allowed = _weeks(lesson_week)
     weeks = [int(n) for n in re.findall(r"\b(?:week|wk)\s*0*(\d{1,2})\b", str(file_name or ""), re.I)]
-    if lesson_week is None or not weeks or lesson_week in weeks:
+    if not allowed or not weeks or allowed & set(weeks):
         return None
     return weeks[0]
 
@@ -172,9 +182,9 @@ def folder_week(name):
     return int(match.group(1)) if match else None
 
 
-def _upload_folder(name, number):
+def _upload_folder(name, numbers):
     name = str(name or "")
-    return name.endswith("(File responses)") or (number is not None and folder_week(name) == number)
+    return name.endswith("(File responses)") or folder_week(name) in _weeks(numbers)
 
 
 def assignment_title(label):
@@ -194,14 +204,16 @@ def _lesson_folder_title(name):
 
 
 def lesson_folders(token, config, class_name, week_label, form_names, response_folders,
-                   sections=(), titles=()):
+                   sections=(), titles=(), other_titles=()):
     """(roots, note): the lesson's turn-in folders inside 00 ALL TURN IN / <class>.
 
-    A folder belongs to the lesson when its name carries the lesson's week
-    number, or it is one of the lesson's Forms' own '(File responses)' upload
-    folders (found by the Form's title, or by where its responses were saved).
-    Inside each section folder ('A2 Forensics'), a lesson folder belongs to the
-    lesson by its week number or by its assignment title.
+    A folder belongs to the lesson when its name carries the lesson's Agenda
+    week number, or its title is the lesson's assignment title (so a lesson
+    moved to another week keeps its folder under its old number), or it
+    is one of the lesson's Forms' own '(File responses)' upload folders (found
+    by the Form's title, or by where its responses were saved). A folder whose
+    title names another lesson of the class is never taken for its week number
+    alone. The same holds inside each section folder ('A2 Forensics').
     """
     root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
     roots = {folder_id: "" for folder_id in response_folders}
@@ -210,6 +222,17 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
     number = week_number(week_label)
     wanted = {name + " (File responses)" for name in form_names if name}
     wanted_titles = {norm(assignment_title(t)) for t in titles if t}
+    own = {t for t in wanted_titles if len(t) >= 6}
+    others = {t for t in (norm(assignment_title(t)) for t in other_titles if t) if len(t) >= 6} - wanted_titles
+
+    def titled(name, titles_set):
+        title = _lesson_folder_title(name)
+        return any(title.startswith(t) for t in titles_set)
+
+    def ours(name):
+        if titled(name, own):
+            return True
+        return number is not None and folder_week(name) == number and not titled(name, others)
     section_names = {norm(s) for s in sections}
     try:
         classes = [f for f in google.folder_children(token, root)
@@ -218,13 +241,12 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
             return roots, "No single '%s' folder in the turn-in root, so only Form uploads were read." % class_name
         children = [f for f in google.folder_children(token, classes[0]["id"]) if f.get("mimeType") == google.FOLDER]
         for f in children:
-            if (number is not None and folder_week(f["name"]) == number) or f["name"] in wanted:
+            if f["name"] in wanted or (norm(f["name"]) not in section_names and ours(f["name"])):
                 roots[f["id"]] = f["name"]
         for section in [f for f in children if norm(f["name"]) in section_names]:
             for f in google.folder_children(token, section["id"]):
                 if f.get("mimeType") == google.FOLDER and (
-                        (number is not None and folder_week(f["name"]) == number)
-                        or _lesson_folder_title(f["name"]) in wanted_titles):
+                        ours(f["name"]) or _lesson_folder_title(f["name"]) in wanted_titles):
                     roots[f["id"]] = f["name"]
         # A Form's upload folder may also sit inside another week's folder.
         inside = {classes[0]["id"]} | {f["id"] for f in children}
@@ -567,6 +589,15 @@ def lesson_work(token, config, agenda, class_key, week_label):
                 "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students), "problems": problems}
 
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
+    # A lesson moved to another week keeps its deck's name ("… Week 04 …"), so
+    # its weeks are its Agenda week and the week its own decks are named for.
+    deck_ids = {m.group(1) for lesson in lessons for material in lesson["materials"]
+                for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
+    numbers = _weeks(number) | {folder_week(info.get("name", "")) for info in _metadata(token, deck_ids).values()}
+    numbers.discard(None)
+    layout = agenda.classes[class_key]["layout"] or {"rows": []}
+    other_titles = [f["label"] for label in {lbl for _, lbl in layout["rows"] if norm(lbl) != norm(week_label)}
+                    for lesson in agenda.lessons(class_key, label) for f in lesson["forms"]]
     response_ids = [f["id"] for form in forms for s in form["found"] for f in s["files"]]
     known = _metadata(token, response_ids)
     # The earlier shared Form's uploads for this course and week. Their folders
@@ -579,7 +610,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
     # even when uploads were moved loose into it or into the Form's folder.
     holders = {fid: info for fid, info in _metadata(
         token, [p for info in known.values() for p in info.get("parents") or []]).items()
-        if _upload_folder(info.get("name"), number)}
+        if _upload_folder(info.get("name"), numbers)}
     outer_ids = {p for info in holders.values() if info.get("name", "").endswith("(File responses)")
                  for p in info.get("parents") or []} - set(holders)
     outer = {fid: info for fid, info in _metadata(token, outer_ids).items()
@@ -589,7 +620,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
 
     roots, folder_note = lesson_folders(token, config, class_name, week_label,
                                         [f["name"] for f in forms], response_folders,
-                                        roster.SECTIONS[class_key], [f["label"] for f in forms])
+                                        roster.SECTIONS[class_key], [f["label"] for f in forms],
+                                        other_titles)
     try:
         items, parents = list_tree(token, roots)
     except google.GoogleError as error:
@@ -679,7 +711,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
     opened = [w for w in windows if w]
     earliest = min(opened, key=lambda w: w["at"]) if opened else None
     describe_files(token, other, known)
-    other_rows, _ = group(other, students, domains, prefix, number, with_missing=False,
+    other_rows, _ = group(other, students, domains, prefix, numbers, with_missing=False,
                           cutoff=earliest["at"] if earliest else None)
     unsorted = {(r["section"], roster.plain(r["last"]), roster.plain(r["first"])) for r in other_rows if r["matched"]}
     result, index = [], 0
@@ -688,7 +720,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
         for form, open_for in zip(forms[index:index + len(lesson["forms"])],
                                   windows[index:index + len(lesson["forms"])]):
             describe_files(token, form["found"], known)
-            rows, missing = group(form["found"], students, domains, prefix, number,
+            rows, missing = group(form["found"], students, domains, prefix, numbers,
                                   cutoff=open_for["at"] if open_for else None)
             for m in missing:
                 m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted

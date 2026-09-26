@@ -591,7 +591,27 @@ class FolderTests(unittest.TestCase):
         self.assertEqual(work.deck_stem("s.a.b — 09-16 11.29 — Copy of ▶ LIVE — Week 04 — Eyewitness (VT) - Ana B.pptx"),
                          "week04eyewitnessvt")
 
+    def test_a_moved_lesson_keeps_its_own_folder_and_never_takes_the_other_lessons(self):
+        # Eyewitness (was Wk 04, deck named Week 04) and Evidence (was Wk 05) traded weeks.
+        children = {"ROOT": [{"id": "FOR", "name": "Forensics", "mimeType": google.FOLDER}],
+                    "FOR": [{"id": "EYE", "name": "📥 Wk 04 — Eyewitness Testimony — 2026-09-23", "mimeType": google.FOLDER},
+                            {"id": "EVI", "name": "📥 Wk 05 — Types of Evidence", "mimeType": google.FOLDER},
+                            {"id": "OLD", "name": "📥 Wk 04", "mimeType": google.FOLDER}]}
+        config = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT"}
+        eyewitness, evidence = ["📤 Eyewitness Testimony — Turn in"], ["📤 Types of Evidence — Turn in"]
+        with patch.object(google, "folder_children", side_effect=lambda t, fid: children.get(fid, [])), \
+                patch.object(google, "folders_named", return_value=[]):
+            moved_later, _ = work.lesson_folders("t", config, "Forensics", "Wk 05", [], set(), (), eyewitness,
+                                                 evidence)
+            moved_earlier, _ = work.lesson_folders("t", config, "Forensics", "Wk 04", [], set(), (), evidence,
+                                                   eyewitness)
+        self.assertEqual(set(moved_later), {"EYE"})  # its own folder, found by its title under the old number
+        self.assertEqual(set(moved_earlier), {"EVI", "OLD"})  # the untitled Wk 04 folder, never Eyewitness's
+
     def test_named_week(self):
+        # A moved lesson accepts files named for its Agenda week or its deck's week.
+        self.assertIsNone(work.named_week("Copy of ▶ LIVE — Week 04 — Eyewitness", {5, 4}))
+        self.assertEqual(work.named_week("Copy of ▶ LIVE — Week 03 — Sheppard", {5, 4}), 3)
         self.assertEqual(work.named_week("Copy of ▶ LIVE — Week 01 — Sheppard", 4), 1)
         self.assertIsNone(work.named_week("Copy of ▶ LIVE — Week 04 — Eyewitness", 4))
         self.assertIsNone(work.named_week("My deck", 4))
@@ -1344,6 +1364,84 @@ class SweepEndpointTests(unittest.TestCase):
         status, sweep = self.post("https://hub.fictional.example", {"class": "forensics"})
         self.assertEqual(status, "400 Bad Request")
         sweep.assert_not_called()
+
+
+class MoveLessonTests(unittest.TestCase):
+    CONFIG = {"HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+    # The fictional Biology tab: row 4 is Wk 03 ("Earlier topic"), row 5 is Wk 04 ("Fictional topic").
+
+    def move(self, to_week, agenda_=None, week="Wk 04", row=5, readback=None):
+        agenda_ = agenda_ or fixture()
+        def grid_back(token, sid, ranges):
+            if readback is not None:
+                return {"🌿 Biology": readback}
+            written = {}
+            for (where, value) in write.call_args.args[2]:
+                col = ord(where.split("!")[1][0]) - 64
+                written[(int(where.split("!")[1][1:]), col)] = cell(value)
+            return {"🌿 Biology": written}
+        with patch.object(google, "update_cells") as write, patch.object(google, "sheet_grid", side_effect=grid_back):
+            result = agenda_edit.move("token", "write", self.CONFIG, agenda_, "biology", week, row, to_week)
+        return result, write
+
+    def test_two_lessons_trade_weeks_and_their_dates_stay_with_the_calendar(self):
+        result, write = self.move("Wk 03")
+        self.assertEqual(write.call_args.args[0], "write")
+        self.assertEqual(write.call_args.args[2], [("'🌿 Biology'!A5", "Wk 03"), ("'🌿 Biology'!A4", "Wk 04"),
+                                                   ("'🌿 Biology'!B5", ""), ("'🌿 Biology'!B4", "Sep 21 – Sep 25")])
+        self.assertEqual(result["moved"], {"from": "Wk 04", "to": "Wk 03", "topic": "Fictional topic"})
+        self.assertEqual((result["swapped"], result["unconfirmed"]), (["Earlier topic"], []))
+
+    def test_a_lesson_moves_into_an_empty_week_and_its_dates_are_left_for_the_teacher(self):
+        agenda_ = fixture()
+        agenda_.weeks.append({"label": "Wk 06", "monday": "2026-10-05", "closures": ""})
+        result, write = self.move("Wk 06", agenda_)
+        self.assertEqual(write.call_args.args[2], [("'🌿 Biology'!A5", "Wk 06")])
+        self.assertTrue(result["dates_left"])
+        self.assertEqual(result["swapped"], [])
+
+    def test_a_row_that_moved_a_week_not_in_the_agenda_and_formula_week_cells_are_refused(self):
+        with self.assertRaises(agenda_edit.Changed):
+            self.move("Wk 03", week="Wk 03")  # row 5 no longer holds Wk 03
+        with self.assertRaises(ValueError):
+            self.move("Wk 09")
+        with self.assertRaises(ValueError):
+            self.move("Wk 04")  # already there
+        formula = fixture()
+        formula.classes["biology"]["cells"][(4, 1)] = cell("Wk 03", userEnteredValue={"formulaValue": "=Weeks!C3"})
+        with self.assertRaises(ValueError):
+            self.move("Wk 03", formula)
+
+    def test_a_move_that_doesnt_read_back_is_reported(self):
+        result, _ = self.move("Wk 03", readback={(5, 1): cell("Wk 04")})
+        self.assertIn(5, result["unconfirmed"])
+
+
+class MoveEndpointTests(unittest.TestCase):
+    def post(self, origin, payload):
+        body = json.dumps(payload).encode()
+        environ = {"PATH_INFO": "/v2/api/agenda/move", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
+        seen = {}
+        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(agenda_edit, "move", return_value={"moved": {}, "swapped": []}) as move:
+            b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+        return seen["status"], move
+
+    def test_moving_a_lesson_needs_the_dashboard_page(self):
+        payload = {"class": "biology", "week": "Wk 04", "row": 5, "to_week": "Wk 03"}
+        status, move = self.post("https://elsewhere.example", payload)
+        self.assertEqual(status, "403 Forbidden")
+        move.assert_not_called()
+        status, move = self.post("https://hub.fictional.example", payload)
+        self.assertEqual((status, move.call_args.args[4:]), ("200 OK", ("biology", "Wk 04", 5, "Wk 03")))
+        for bad in ({**payload, "row": "5"}, {**payload, "to_week": ""}, {**payload, "class": "chemistry"}):
+            status, _ = self.post("https://hub.fictional.example", bad)
+            self.assertEqual(status, "400 Bad Request")
 
 
 class AgendaEndpointTests(unittest.TestCase):
