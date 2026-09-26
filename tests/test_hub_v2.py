@@ -128,6 +128,21 @@ class AgendaTests(unittest.TestCase):
         self.assertTrue(agenda.plain(cell("See " + DECK)))  # a URL typed as text is kept as typed
         self.assertTrue(agenda.plain(None))
 
+    def test_a_second_turn_in_column_named_above_the_header_row_is_read(self):
+        cells = grid({2: ["Notes above", "", "", "", "2nd turn it in"],
+                      3: ["Wk", "Topic", "📤 Turn it in", "_turnInURL", ""],
+                      4: ["Wk 05", "Two assignments", cell("Evidence", hyperlink=DIRECT), "",
+                          cell("Second", hyperlink=SECOND)],
+                      5: ["Wk 06", "Short link", cell("Main", hyperlink=DIRECT), "",
+                          cell("Quick", hyperlink="https://forms.gle/fictional123")]})
+        layout, problem = agenda.parse_class_tab(cells)
+        self.assertIsNone(problem)
+        two = agenda.build_lesson(cells, layout, 4, "")["forms"]
+        self.assertEqual([(f["form_id"], f["label"]) for f in two],
+                         [("FICTIONALFORMID1234567890abc", "Evidence"), ("FICTIONALFORMID0987654321xyz", "Second")])
+        short = agenda.build_lesson(cells, layout, 5, "")["forms"]
+        self.assertIn("forms.gle", short[1]["problem"])  # shown on Student work so the link gets replaced
+
     def test_week_options(self):
         options = fixture().week_options("forensics")
         self.assertEqual([(o["label"], o["topic"], o["forms"]) for o in options],
