@@ -55,7 +55,7 @@ def _utc(stamp):
 
 def read(token, config, form_id):
     """When this assignment's scores were last entered in IC and its feedback last made."""
-    out = {"configured": False, "url": None, "entered_at": None, "feedback_at": None, "problem": None,
+    out = {"configured": False, "url": None, "name": None, "entered_at": None, "feedback_at": None, "problem": None,
            "setup": "To keep track of what you've entered, make a Google Sheet whose name starts with "
                     "“%s” inside 00 REAL ALL TURN IN." % NAME}
     try:
@@ -63,6 +63,7 @@ def read(token, config, form_id):
         if not sheet:
             return out
         out["configured"], out["url"] = True, "https://docs.google.com/spreadsheets/d/%s/edit" % sheet["id"]
+        out["name"] = sheet.get("name") or NAME
         tab = _first_tab(token, sheet["id"])
         rows = google.sheet_values(token, sheet["id"], "%s!A1:F%d" % (tab, MAX_ROWS)) if tab else []
     except google.GoogleError as error:

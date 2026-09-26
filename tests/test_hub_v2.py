@@ -1092,6 +1092,7 @@ class LedgerAndFeedbackTests(unittest.TestCase):
                 x.stop()
         self.assertEqual(out["entered_at"], {"label": "2026-10-01 10:00", "at": "2026-10-01T14:00:00Z"})
         self.assertEqual(out["feedback_at"]["at"], "2026-10-01T14:05:00Z")
+        self.assertEqual(out["name"], "Scores entered (school workflow-hub)")  # the page names the sheet
 
     def test_no_sheet_yet_says_how_to_make_one(self):
         with patch.object(google, "files_named_in", return_value=[]):

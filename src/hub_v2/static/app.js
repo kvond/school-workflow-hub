@@ -511,7 +511,9 @@ async function recordMark(form, kind) {
   try {
     const done = await postJSON('api/record', {class: work.cls, week: work.week, form: form.form_id, kind});
     work.marks[form.form_id] = done.sheet;
-    ui.saved = kind === 'ic' ? 'Noted: this assignment is entered in IC.' : 'Noted: feedback made for this assignment.';
+    const where = done.sheet?.name || 'Scores entered';
+    ui.saved = kind === 'ic' ? `Added to “${where}”: this assignment is entered in IC.`
+      : `Added to “${where}”: feedback made for this assignment.`;
     ui.open = null; ui.busy = null;
   } catch (error) { ui.error = error.message; ui.busy = null; }
   renderWork();
@@ -596,8 +598,13 @@ function icPanel(form, lesson, scores) {
     fresh.length ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(claudeText(fresh), status)},
       entered ? `Copy for Claude (${fresh.length} new since)` : 'Copy for Claude') : null,
     entered ? el('button', {type: 'button', onclick: () => copyText(claudeText(all), status)}, 'Copy all for Claude') : null,
-    sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')}, 'I entered these in IC') : null,
+    sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')},
+      'I entered these in IC (click adds to Scores entered)') : null,
     status));
+  if (sheet?.configured) {
+    panel.append(el('p', {class: 'muted'}, 'Click “I entered these in IC” only after the scores are in IC. It adds a dated row to ',
+      link(`“${sheet.name || 'Scores entered'}”`, sheet.url), '. From then on, only work turned in later is marked new; once the two weeks have closed, it marks this assignment’s final scores done, and nothing more is entered for it.'));
+  }
   panel.append(el('div', {class: 'table-wrap'}, el('table', {},
     el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
     el('tbody', {}, all.map(({r, show, zero, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
@@ -632,8 +639,11 @@ function feedbackPanel(form) {
     el('ul', {class: 'files'}, data.students.map(s => el('li', {text: `${s.name} — ${s.section} — revised ${s.draft_done} of ${s.draft_required}`}))),
     el('div', {class: 'action-row'},
       data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for Teacher Claude') : null,
-      data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'feedback')}, 'Mark feedback done') : null,
+      data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'feedback')},
+        'Mark feedback done (click adds to Scores entered)') : null,
       data.prompt_url ? link('Edit the prompt in the Agenda ↗', data.prompt_url) : null, status),
+    data.sheet?.configured ? el('p', {class: 'muted'}, 'Click “Mark feedback done” right after the feedback Doc is made. It adds a dated row to ',
+      link(`“${data.sheet.name || 'Scores entered'}”`, data.sheet.url), '. Next time, only students who turn in something new after that are listed, so nobody’s feedback is printed twice.') : null,
     data.prompt ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'for-claude', text: data.prompt})) : null);
   return panel;
 }
