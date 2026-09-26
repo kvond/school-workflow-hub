@@ -6,14 +6,17 @@ the turn-in root (00 REAL ALL TURN IN), which the teacher makes once, blank;
 the dashboard's account can edit files there but can't own new ones. When
 an assignment's two weeks have closed, its on-time answers are final, and
 opening it on the dashboard adds one row per student per coded box to the
-sheet's first tab. Each row carries a key, so a box already in the sheet is
+sheet's first tab. The dashboard also checks by itself, once a day when it's
+opened, for closed assignments not yet in the sheet (sweep), so no week has to
+be opened by hand. Each row carries a key, so a box already in the sheet is
 never added twice; rows are never edited or deleted, and a student who
 changes their deck afterwards doesn't change what was saved. Answers are
 written as plain text, so nothing a student typed runs as a formula.
 """
 import re
 import threading
-from datetime import timedelta, timezone
+import time
+from datetime import date, timedelta, timezone
 
 from . import google, ledger, work
 
@@ -23,7 +26,9 @@ HEADER = ["Saved at", "Class", "Section", "Week", "Lesson", "Assignment", "Stude
 STATUS = {"done": "answered", "blank": "blank", "copied": "copied from the slide", "not found": "code missing"}
 MAX_ROWS = 200000
 MAX_CELL = 45000  # a Sheets cell holds 50,000 characters
+SWEEP_SECONDS = 25  # then the page asks again, well inside the server's request limit
 _lock = threading.Lock()
+_sweeping = threading.Lock()
 
 
 def _plain_name(name):
@@ -99,29 +104,26 @@ def closed(form, now=None):
     return bool(closes and closes <= (now or work._now()))
 
 
-def save(token, write_token, config, class_key, context, lesson, form, scored, now=None):
-    """Add this assignment's final answers to the class's research sheet."""
-    if class_key not in SHEETS:
-        raise ValueError("class")
-    if not closed(form, now):
-        return {"saved": 0, "already": 0, "waiting": (form.get("window") or {}).get("label") or ""}
-    sheet = find(token, config, class_key)
-    if not sheet:
-        return {"configured": False, "setup": setup_note(class_key)}
-    url = "https://docs.google.com/spreadsheets/d/%s/edit" % sheet["id"]
-    candidates = rows_for(context, lesson, scored)
+def _saved(token, sheet, class_key):
+    """(tab range name, heading row, the row keys already in the sheet)."""
+    _, tabs = google.sheet_tabs(token, sheet["id"])
+    title = next(iter(tabs), None)
+    if not title:
+        raise google.GoogleError("The “%s” sheet has no tab to write to." % SHEETS[class_key])
+    tab = "'%s'" % title.replace("'", "''")
+    first = (google.sheet_values(token, sheet["id"], tab + "!1:1") or [[]])[0]
+    # Find the keys by their heading, in case a column was added in front.
+    key = _column(first.index("Row key") if "Row key" in first else HEADER.index("Row key"))
+    keys = {r[0] for r in google.sheet_values(
+        token, sheet["id"], "%s!%s2:%s%d" % (tab, key, key, MAX_ROWS)) if r}
+    return tab, first, keys
+
+
+def _add(token, write_token, config, class_key, sheet, candidates):
+    """Append the candidate rows the sheet doesn't have yet: (added, already)."""
     with _lock:
-        _, tabs = google.sheet_tabs(token, sheet["id"])
-        title = next(iter(tabs), None)
-        if not title:
-            raise google.GoogleError("The “%s” sheet has no tab to write to." % SHEETS[class_key])
-        tab = "'%s'" % title.replace("'", "''")
-        first = (google.sheet_values(token, sheet["id"], tab + "!1:1") or [[]])[0]
-        # Find the keys by their heading, in case a column was added in front.
-        key = _column(first.index("Row key") if "Row key" in first else HEADER.index("Row key"))
-        saved = {r[0] for r in google.sheet_values(
-            token, sheet["id"], "%s!%s2:%s%d" % (tab, key, key, MAX_ROWS)) if r}
-        new = [values for key, values in candidates if key not in saved]
+        tab, first, keys = _saved(token, sheet, class_key)
+        new = [values for key, values in candidates if key not in keys]
         if new or not first:
             try:
                 google.append_rows(write_token, sheet["id"], tab + "!A1", ([] if first else [HEADER]) + new)
@@ -131,4 +133,67 @@ def save(token, write_token, config, class_key, context, lesson, form, scored, n
                         "The dashboard can't add rows to “%s”. Share it (or 00 REAL ALL TURN IN) with %s as an "
                         "Editor." % (SHEETS[class_key], google.service_account(config)), error.status) from None
                 raise
-    return {"configured": True, "url": url, "saved": len(new), "already": len(candidates) - len(new)}
+    return len(new), len(candidates) - len(new)
+
+
+def save(token, write_token, config, class_key, context, lesson, form, scored, now=None):
+    """Add this assignment's final answers to the class's research sheet."""
+    if class_key not in SHEETS:
+        raise ValueError("class")
+    if not closed(form, now):
+        return {"saved": 0, "already": 0, "waiting": (form.get("window") or {}).get("label") or ""}
+    sheet = find(token, config, class_key)
+    if not sheet:
+        return {"configured": False, "setup": setup_note(class_key)}
+    added, already = _add(token, write_token, config, class_key, sheet, rows_for(context, lesson, scored))
+    return {"configured": True, "url": "https://docs.google.com/spreadsheets/d/%s/edit" % sheet["id"],
+            "saved": added, "already": already}
+
+
+def sweep(token, write_token, config, agenda, class_key, load_work, score_rows, now=None, clock=time.monotonic):
+    """Add every closed assignment of this class that has no rows in the sheet yet.
+
+    Weeks that haven't started, and weeks whose Forms all have rows already,
+    are skipped without reading Drive. load_work(week) is the Student work
+    result for a week, score_rows(week, form, found) its scored students.
+    Stops after SWEEP_SECONDS with more=True, so the page asks again."""
+    if class_key not in SHEETS:
+        raise ValueError("class")
+    sheet = find(token, config, class_key)
+    if not sheet:
+        return {"configured": False, "setup": setup_note(class_key)}
+    if not _sweeping.acquire(blocking=False):
+        return {"configured": True, "busy": True, "saved": 0, "more": True}
+    try:
+        now = now or work._now()
+        today = work.school_day(now)
+        _, _, keys = _saved(token, sheet, class_key)
+        done = {key.split("|", 1)[0] for key in keys}  # Forms with rows already
+        start, added, forms, more, seen = clock(), 0, [], False, set()
+        for option in agenda.week_options(class_key):
+            if not option["forms"] or not option.get("monday") or date.fromisoformat(option["monday"]) > today:
+                continue
+            ids = {f["form_id"] for lesson in agenda.lessons(class_key, option["label"])
+                   for f in lesson["forms"] if f["form_id"]} - done - seen
+            if not ids:
+                continue
+            if clock() - start > SWEEP_SECONDS:
+                more = True
+                break
+            found = load_work(option["label"])
+            for lesson in found.get("lessons", []):
+                for form in lesson["forms"]:
+                    if form.get("form_id") not in ids or not closed(form, now):
+                        continue
+                    seen.add(form["form_id"])  # a Form listed in two weeks is saved once
+                    context = {"class": agenda.classes[class_key]["name"], "week": option["label"],
+                               "assignment": form["label"], "form_id": form["form_id"]}
+                    candidates = rows_for(context, lesson.get("topic", ""), score_rows(option["label"], form, found))
+                    new, _ = _add(token, write_token, config, class_key, sheet, candidates)
+                    if new:
+                        added += new
+                        forms.append({"week": option["label"], "assignment": form["label"], "saved": new})
+        return {"configured": True, "url": "https://docs.google.com/spreadsheets/d/%s/edit" % sheet["id"],
+                "saved": added, "forms": forms, "more": more}
+    finally:
+        _sweeping.release()

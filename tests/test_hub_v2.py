@@ -2,6 +2,7 @@
 import io
 import json
 import unittest
+import unittest.mock
 import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
@@ -1265,6 +1266,32 @@ class AgendaEditTests(unittest.TestCase):
         self.assertEqual(call_google.call_args.kwargs["method"], "POST")
 
 
+class SweepEndpointTests(unittest.TestCase):
+    def post(self, origin, payload):
+        body = json.dumps(payload).encode()
+        environ = {"PATH_INFO": "/v2/api/answers/sweep", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
+        seen = {}
+        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
+        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(answers, "sweep", return_value={"configured": True, "saved": 0, "more": False}) as sweep:
+            b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
+        return seen["status"], sweep
+
+    def test_the_sweep_needs_the_dashboard_page_and_a_research_class(self):
+        status, sweep = self.post("https://elsewhere.example", {"class": "biology"})
+        self.assertEqual(status, "403 Forbidden")
+        sweep.assert_not_called()
+        status, sweep = self.post("https://hub.fictional.example", {"class": "biology"})
+        self.assertEqual((status, sweep.call_args.args[4]), ("200 OK", "biology"))
+        status, sweep = self.post("https://hub.fictional.example", {"class": "forensics"})
+        self.assertEqual(status, "400 Bad Request")
+        sweep.assert_not_called()
+
+
 class AgendaEndpointTests(unittest.TestCase):
     def post(self, origin, payload, outcome=None):
         body = json.dumps(payload).encode()
@@ -1375,6 +1402,52 @@ class ResearchSheetTests(unittest.TestCase):
         with patch.object(google, "get_json") as call_google:
             google.append_rows("write", "SHEETID", "'Answers'!A1", [["=1+1"]])
         self.assertEqual(call_google.call_args.args[2]["valueInputOption"], "RAW")
+
+    def run_sweep(self, keys, now, form_window=None, clock=None):
+        form = {"form_id": self.FORM, "label": "Turn in", "window": form_window or self.CLOSED["window"]}
+        found = {"lessons": [{"topic": "Fictional topic", "forms": [form]}]}
+        load = unittest.mock.Mock(return_value=found)
+        score = unittest.mock.Mock(return_value=self.scored())
+        header = [answers.HEADER] if keys else []
+        values = lambda token, sid, cell_range: header if cell_range.endswith("!1:1") else keys
+        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID", "name": "Student answers — Biology"}]), \
+                patch.object(google, "sheet_tabs", return_value=("Student answers", {"Answers": 0})), \
+                patch.object(google, "sheet_values", side_effect=values), \
+                patch.object(google, "append_rows") as append:
+            out = answers.sweep("token", "write", self.CONFIG, fixture(), "biology", load, score, now=now,
+                                **({"clock": clock} if clock else {}))
+        return out, load, score, append
+
+    def test_the_daily_sweep_adds_closed_assignments_without_opening_each_week(self):
+        out, load, score, append = self.run_sweep([], self.NOW.replace(month=10, day=10))
+        load.assert_called_once_with("Wk 04")  # Wk 03 has no Form, so Drive isn't read for it
+        self.assertEqual(score.call_args.args[0], "Wk 04")
+        written = append.call_args.args[3]
+        self.assertEqual(written[0], answers.HEADER)
+        self.assertEqual(dict(zip(answers.HEADER, written[1]))["Week"], "Wk 04")
+        self.assertEqual((out["saved"], out["more"]), (2, False))
+        self.assertEqual(out["forms"], [{"week": "Wk 04", "assignment": "Turn in", "saved": 2}])
+        # Next day: this Form already has rows, so nothing is read or written.
+        keys = [[r[-1]] for r in written[1:]]
+        out, load, _, append = self.run_sweep(keys, self.NOW.replace(month=10, day=11))
+        load.assert_not_called()
+        append.assert_not_called()
+        self.assertEqual(out["saved"], 0)
+
+    def test_the_sweep_skips_weeks_not_started_and_waits_for_open_assignments(self):
+        _, load, _, append = self.run_sweep([], datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc))
+        load.assert_not_called()  # Wk 04 starts Monday Sep 21
+        open_window = {"at": "2026-10-09T03:59:00Z", "label": "Thu Oct 8, 11:59 PM"}
+        out, load, score, append = self.run_sweep([], self.NOW, form_window=open_window)
+        load.assert_called_once_with("Wk 04")
+        score.assert_not_called()
+        self.assertEqual(out["saved"], 0)
+
+    def test_the_sweep_stops_at_its_time_limit_and_asks_to_be_called_again(self):
+        ticks = iter([0, answers.SWEEP_SECONDS + 1])
+        out, load, _, _ = self.run_sweep([], self.NOW.replace(month=10, day=10), clock=lambda: next(ticks))
+        self.assertTrue(out["more"])
+        load.assert_not_called()
 
     def test_only_biology_has_a_research_sheet(self):
         with self.assertRaises(ValueError):
