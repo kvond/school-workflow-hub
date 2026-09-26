@@ -264,6 +264,31 @@ def answers_post(environ, respond, config):
         return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing was saved."})
 
 
+def sweep_post(environ, respond, config):
+    """Add every closed assignment's answers to the class's research sheet, so
+    no week has to be opened by hand. The page asks once a day; more=True
+    means it stopped at its time limit and should ask again."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        class_key = _class_key(_json_body(environ, 200).get("class"))
+        if class_key not in answers.SHEETS:
+            raise ValueError()
+        token = google.service_token(config)
+        agenda = load_agenda(token, config)
+        return respond("200 OK", answers.sweep(
+            token, google.service_token(config, write=True), config, agenda, class_key,
+            lambda week: lesson_work(token, config, agenda, class_key, week, fresh=False),
+            lambda week, form, found: _score_rows(token, agenda, class_key, week, form["form_id"], form, found)))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return respond("400 Bad Request", {"error": "That request wasn't understood."})
+    except google.GoogleError as error:
+        return respond("502 Bad Gateway", {"error": str(error)})
+    except Exception:
+        return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing more was saved."})
+
+
 def agenda_post(environ, respond, config):
     """Save a lesson's edited plain-text cells to the Agenda. Signed-in teacher,
     same-origin JSON only; a cell changed in the Agenda meanwhile is a 409."""
@@ -346,6 +371,8 @@ def application(environ, start_response, config=None):
         return record_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/answers":
         return answers_post(environ, respond, config)
+    if method == "POST" and path == "/v2/api/answers/sweep":
+        return sweep_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda":
         return agenda_post(environ, respond, config)
     if method not in ("GET", "HEAD"):

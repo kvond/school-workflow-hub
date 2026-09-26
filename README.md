@@ -97,6 +97,10 @@ lesson, slide and its title, code, the answer as written, status, turn-in and
 deck times, deck link, and a row key). A box already in the sheet is never added
 again, rows are never edited or deleted, and answers are written as plain text.
 Copies made for coding have other names and are never written to.
+Nobody has to open each week: once a day, when the dashboard is opened, it
+checks in the background for closed Biology assignments with no rows yet and
+adds them (weeks not yet started, and Forms already in the sheet, are skipped
+without reading Drive).
 
 **Tidy this week's folders** is v2's one write that moves or renames anything. It previews, then on the
 teacher's confirmation moves a week's extra folders' contents, loose Form

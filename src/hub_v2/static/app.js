@@ -377,6 +377,22 @@ async function saveAnswers(form, seq) {
   if (seq === work.seq) renderWork();
 }
 
+// Once a day, in the background, the dashboard adds any closed assignment's
+// answers the research sheet doesn't have yet, so no week has to be opened.
+async function sweepResearch() {
+  const today = todayISO();
+  if (store.get('research-sweep') === today) return;
+  for (const cls of RESEARCH_CLASSES) {
+    for (let round = 0; round < 8; round++) {
+      let done;
+      try { done = await postJSON('api/answers/sweep', {class: cls}); } catch { return; }  // try again next load
+      if (!done.more) break;
+      if (done.busy) await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+  }
+  store.set('research-sweep', today);
+}
+
 function researchLine(form) {
   if (!RESEARCH_CLASSES.includes(work.cls) || !form.window) return null;
   if (!closedFor(form)) {
@@ -876,3 +892,4 @@ $('reload-work').addEventListener('click', async () => {
 $('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
 window.addEventListener('hashchange', showTab);
 showTab();
+sweepResearch();
