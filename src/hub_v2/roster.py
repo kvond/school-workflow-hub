@@ -66,6 +66,8 @@ def parse_tab(cells, class_key, section, layouts=None):
         if {plain(a), plain(b)} == {"last name", "first name"}:
             order, basis = ("last_first" if plain(a) == "last name" else "first_last"), "header"
             continue
+        if a and not b and "," not in a and not students:
+            continue  # a title above the list, not a student
         if a and not b and "," in a:
             (last, first), how = [part.strip() for part in a.split(",", 1)], "comma"
         elif order == "first_last":

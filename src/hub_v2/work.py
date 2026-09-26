@@ -36,7 +36,11 @@ STUDENT_WORK = ("application/vnd.google-apps.presentation", "application/vnd.goo
                 "application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "application/vnd.ms-powerpoint", "image/jpeg", "image/png", "image/heic")
-NOT_STUDENT_WORK = re.compile(r"growth report|feedback|class summary|template|answer key", re.I)
+# Documents the teacher's system makes and keeps beside the work (feedback,
+# growth records, class growth summaries, summary ratings, Monday run logs) are
+# never student work.
+NOT_STUDENT_WORK = re.compile(r"growth (?:report|record)|feedback|class (?:growth )?summary|teaching summary|"
+                              r"summary ratings|monday run|template|answer key", re.I)
 MAX_FOLDERS = 60
 LATE_AFTER_DAYS = 14
 ROSTER_STALE_DAYS = 7

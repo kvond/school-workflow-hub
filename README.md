@@ -108,6 +108,24 @@ checks in the background for closed Biology assignments with no rows yet and
 adds them (weeks not yet started, and Forms already in the sheet, are skipped
 without reading Drive).
 
+**Missing-work sheets** (Student work) reads every week of the chosen class and
+section and prints one page per student with missing work: each assignment
+whose two weeks have begun that they haven't turned in on time (still open,
+with its closing date and an "I will turn it in by" line, or closed and staying
+0), how they usually turn work in (on-time count and the typical number of days
+after the two weeks start), a short plan, how to turn work in, and student and
+parent/guardian signature lines. It uses only the dashboard's own records.
+
+**Routine** lists what runs on its own (school Claude's Monday grades-and-roster
+run, the daily research-sheet check, scoring on open), what each needs to be
+open, the teacher's own daily/weekly/monthly tasks (with **Copy for Todoist**),
+and live status read from Drive: the newest "Monday run — date" Doc (flagged
+when more than a week old) and the last row of the Scores entered and research
+sheets. Documents the system makes and keeps beside the work (feedback, growth
+records, class growth summaries, summary ratings, Monday run logs) are never
+read as student work, and a one-cell title above a roster list isn't reported
+as an unreadable row.
+
 **Tidy this week's folders** is v2's one write that moves or renames anything. It previews, then on the
 teacher's confirmation moves a week's extra folders' contents, loose Form
 folders and the earlier shared Form's uploads into that week's one `📥` folder,

@@ -244,6 +244,7 @@ async function loadWeeks(fresh = false) {
 }
 
 async function openWork([cls, week] = []) {
+  closeSheets();
   if (CLASSES.some(([key]) => key === cls)) work.cls = cls;
   if (week) work.week = week;
   $('work-class').value = work.cls;
@@ -255,6 +256,7 @@ async function openWork([cls, week] = []) {
 }
 
 async function loadWork(fresh = false) {
+  closeSheets();
   if (!work.week) { setStatus('work-status', 'No weeks were found for this class in the Agenda.', true); return; }
   history.replaceState(null, '', `#work/${work.cls}/${encodeURIComponent(work.week)}`);
   const seq = ++work.seq;
@@ -897,14 +899,219 @@ async function applyTidy(box, p) {
 }
 
 // ---------- Page wiring ----------
+// ---------- Missing-work sheets (a contract for students and families) ----------
+// One printable page per student with missing work in this class (and section):
+// every assignment whose two weeks have begun that they haven't turned in on
+// time, whether it can still replace its 0, how they usually turn work in, and a
+// short plan with signature lines. Built only from the dashboard's own records.
+const sheets = {seq: 0};
+const DAY = 86400000;
+const shortDate = d => d.toLocaleDateString('en-US', {timeZone: TZ, weekday: 'short', month: 'short', day: 'numeric'});
+
+function studentHistory(weekResults, section) {
+  const people = new Map();
+  const seen = new Set();
+  const person = r => {
+    const key = `${r.section}|${r.last}|${r.first}`;
+    if (!people.has(key)) people.set(key, {last: r.last, first: r.first, section: r.section, missing: [], onTime: [], total: 0});
+    return people.get(key);
+  };
+  for (const {week, data} of weekResults) {
+    for (const lesson of data.lessons) {
+      for (const form of lesson.forms) {
+        if (!form.window || seen.has(form.form_id)) continue;  // not begun, or already counted from another week
+        seen.add(form.form_id);
+        const close = new Date(form.window.at);
+        const opened = new Date(close.getTime() - 15 * DAY + 60000);  // the start of the first turn-in day
+        const item = {week, title: lesson.topic || form.label, close, open: close > new Date()};
+        const inSection = r => section === 'all' || r.section === section;
+        for (const r of form.students.filter(r => r.matched && inSection(r))) {
+          const p = person(r); p.total += 1;
+          p.onTime.push(Math.max(0, Math.floor((new Date(r.submitted_at) - opened) / DAY)));
+        }
+        for (const r of [...form.missing, ...form.late.filter(r => r.matched)].filter(inSection)) {
+          const p = person(r); p.total += 1;
+          p.missing.push({...item, late: Boolean(r.submitted_at)});
+        }
+      }
+    }
+  }
+  return [...people.values()].filter(p => p.missing.length)
+    .sort((a, b) => (a.section + a.last + a.first).localeCompare(b.section + b.last + b.first));
+}
+
+function habitLine(p) {
+  const n = p.onTime.length;
+  if (!n) return p.total === 1 ? 'You haven’t turned in this assignment yet.'
+    : `So far this year you haven’t turned in any of your ${p.total} assignments on time.`;
+  const days = [...p.onTime].sort((a, b) => a - b)[Math.floor((n - 1) / 2)];
+  const when = days === 0 ? 'on the day the two weeks start' : `about ${days} day${days === 1 ? '' : 's'} after the two weeks start`;
+  return `So far you’ve turned in ${n} of ${p.total} assignments on time. When you turn work in, it’s usually ${when}.`;
+}
+
+function sheetFor(p, cls) {
+  const open = p.missing.filter(m => m.open).sort((a, b) => a.close - b.close);
+  const closed = p.missing.filter(m => !m.open).sort((a, b) => a.close - b.close);
+  return el('article', {class: 'sheet-page'},
+    el('p', {class: 'sheet-top'}, `${cls} · ${p.section}`, el('span', {text: shortDate(new Date())})),
+    el('h2', {text: `Missing work — ${p.first.replace(/\s*\(.*\)\s*/, ' ').trim()} ${p.last}`}),
+    el('p', {}, `Each missing assignment counts as 0. If you turn it in before its two weeks close, your score replaces the 0. After that it stays 0.`),
+    open.length ? el('h3', {text: `Still open — turn these in (${open.length})`}) : null,
+    open.length ? el('table', {class: 'sheet-table'},
+      el('thead', {}, el('tr', {}, ['Assignment', 'Closes', 'I will turn it in by'].map(h => el('th', {text: h})))),
+      el('tbody', {}, open.map(m => el('tr', {}, el('td', {text: `${m.week} · ${m.title}`}),
+        el('td', {text: `${shortDate(m.close)}, 11:59 PM`}), el('td', {class: 'blank-line'}))))) : null,
+    closed.length ? el('h3', {text: `Closed — these stay 0 (${closed.length})`}) : null,
+    closed.length ? el('ul', {}, closed.map(m => el('li', {text: `${m.week} · ${m.title} (closed ${shortDate(m.close)})${m.late ? ' — turned in after it closed' : ''}`}))) : null,
+    el('h3', {text: 'How you turn work in'}),
+    el('p', {text: habitLine(p)}),
+    el('h3', {text: 'My plan'}),
+    el('p', {class: 'write-line', text: 'One step I will take:'}),
+    el('p', {class: 'write-line', text: 'When I will do my homework:'}),
+    el('p', {class: 'write-line', text: 'Help I need, or something I want my teacher to know:'}),
+    el('p', {class: 'sheet-rule'}, 'To turn work in: finish it in your own copy, then use the lesson’s Turn-in Form. Changed it after turning it in? Turn it in again with the same Form. Your receipt email is your record.'),
+    el('div', {class: 'signatures'},
+      el('p', {text: 'Student signature ______________________  Date ________'}),
+      el('p', {text: 'Parent or guardian signature ______________________  Date ________'})));
+}
+
+function closeSheets() {
+  sheets.seq += 1;
+  $('sheets-box').hidden = true;
+  $('sheets-box').replaceChildren();
+  $('work-body').hidden = false;
+}
+
+async function missingWorkSheets() {
+  const seq = ++sheets.seq;
+  const cls = CLASSES.find(([k]) => k === work.cls)[1];
+  const section = work.section;
+  const box = $('sheets-box');
+  box.hidden = false; $('work-body').hidden = true; $('tidy-box').replaceChildren();
+  const head = el('div', {class: 'sheets-head'}, el('p', {class: 'muted', text: 'Reading every week of this class…'}),
+    el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: closeSheets}, 'Back to student work')));
+  box.replaceChildren(head);
+  try {
+    const weeks = (await getJSON(`api/weeks?class=${work.cls}&today=${todayISO()}`)).weeks
+      .filter(w => w.forms && w.monday && w.monday <= todayISO());
+    const results = [];
+    for (const [i, w] of weeks.entries()) {
+      if (seq !== sheets.seq) return;
+      head.firstChild.textContent = `Reading ${w.label} (${i + 1} of ${weeks.length})…`;
+      results.push({week: w.label, data: await getJSON(`api/work?class=${work.cls}&week=${encodeURIComponent(w.label)}`)});
+    }
+    if (seq !== sheets.seq) return;
+    const people = studentHistory(results, section);
+    head.firstChild.textContent = people.length
+      ? `${people.length} student${people.length === 1 ? '' : 's'} in ${cls}${section === 'all' ? '' : ' ' + section} with missing work, one page each. Print from here; each student starts on a new page.`
+      : `Nobody in ${cls}${section === 'all' ? '' : ' ' + section} has missing work.`;
+    if (people.length) head.lastChild.prepend(el('button', {type: 'button', class: 'primary', onclick: () => window.print()}, 'Print'));
+    box.append(...people.map(p => sheetFor(p, cls)));
+  } catch (error) {
+    if (seq === sheets.seq) head.firstChild.replaceWith(note(error.message));
+  }
+}
+
+// ---------- Routine: what runs on its own, and what you do ----------
+// Keep this list and the Todoist list the same: "Copy for Todoist" copies it.
+const ROUTINE = {
+  scheduled: [
+    {who: 'School Claude', when: 'Every Monday, 7:30 AM', key: 'monday_run',
+     what: 'Monday grades and roster: checks each Infinite Campus roster against your roster sheet, enters scores in IC (0s from the first turn-in; final scores once the two weeks close), clicks “I entered these in IC”, and leaves a “Monday run — date” Doc at the top of 00 REAL ALL TURN IN. Nothing is saved until you reply OK.',
+     needs: 'Chrome open on your computer, the computer awake, and you signed in to Infinite Campus and the Teaching Hub.'},
+    {who: 'Teaching Hub', when: 'Once a day, when the dashboard is opened', key: 'research',
+     what: 'Adds the answers from Biology assignments whose two weeks have closed to “Student answers — Biology”.',
+     needs: 'The dashboard opened once that day, on any tab and in any browser. The Monday run counts.'},
+    {who: 'Teaching Hub', when: 'Whenever a week is opened on Student work',
+     what: 'Scores every deck, finds missing and late work, and shows each assignment’s IC status.',
+     needs: 'Nothing but opening it.'},
+  ],
+  mine: [
+    {when: 'Every Monday, 7:15 AM', todoist: 'every monday at 7:15am', what: 'Sign in to Infinite Campus and the Teaching Hub in Chrome, and leave Chrome open.', note: 'The Monday run can’t sign in for you.'},
+    {when: 'Every Monday, 8:00 AM', todoist: 'every monday at 8am', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
+    {when: 'Every Thursday', todoist: 'every thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', note: 'Without those links the Hub can’t find or score the work.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'On Student work, click “Tidy this week’s folders” for each class.'},
+    {when: 'First Monday of the month', todoist: 'every first monday', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.'},
+    {when: 'When you change a prompt in the Agenda', todoist: 'every last friday', what: 'Ask Claude Code to copy the changed prompt to GitHub.'},
+    {when: 'Every August', todoist: 'every august 1', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.'},
+  ],
+};
+
+const routine = {seq: 0};
+
+function todoistText() {
+  return ['Add these to my Todoist project "Teaching Hub". Use each "when" as the due date and each "note" as the description.', '',
+    ...ROUTINE.mine.map(t => `- ${t.what} | when: ${t.todoist}${t.note ? ` | note: ${t.note}` : ''}`)].join('\n');
+}
+
+function routineStatus(key, data) {
+  const found = data?.[key];
+  if (found?.problem) return note(found.problem);
+  if (key === 'monday_run') {
+    if (!found) return el('p', {class: 'muted', text: 'No “Monday run” Doc yet, so it hasn’t run (or hasn’t been set up).'});
+    const days = (Date.now() - new Date(found.at)) / 86400000;
+    return el('p', {class: days > 8 ? 'note warn' : 'muted'}, `Last run: ${when(found.at)}. `, link(found.name + ' ↗', found.url),
+      days > 8 ? ' That’s more than a week ago: check that school Claude’s Monday schedule is still set.' : '');
+  }
+  if (key === 'research') {
+    const checked = store.get('research-sweep');
+    if (!found) return note('No “Student answers — Biology” sheet was found at the top of 00 REAL ALL TURN IN.', 'info');
+    return el('p', {class: 'muted'}, found.last ? `Answers last added ${found.last}. ` : 'No answers added yet. ',
+      checked ? `Checked in this browser on ${checked}. ` : '', link('Open the sheet ↗', found.url));
+  }
+  return null;
+}
+
+function renderRoutine(data) {
+  const body = $('routine-body');
+  const scheduled = el('section', {class: 'routine'}, el('h2', {text: 'Done for you, on schedule'}),
+    ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
+      el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
+      el('p', {text: t.what}),
+      el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
+      t.key ? routineStatus(t.key, data) : null)));
+  const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
+    el('div', {class: 'table-wrap'}, el('table', {},
+      el('thead', {}, el('tr', {}, ['When', 'What', 'Why it matters'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {text: t.when}), el('td', {text: t.what}),
+        el('td', {class: 'muted', text: t.note || ''})))))));
+  const sheet = data?.scores_entered;
+  const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
+    el('ul', {class: 'files'},
+      el('li', {}, sheet && !sheet.problem
+        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — the dashboard adds a row when “I entered these in IC” or “Mark feedback done” is clicked${sheet.last ? `; last row ${sheet.last}` : ''}.`]
+        : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
+      el('li', {}, 'Feedback, Growth record and Class growth summary Docs: in each week’s 📥 folder.'),
+      el('li', {}, '“Monday run — date” Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
+  body.replaceChildren(scheduled, mine, sheets);
+}
+
+async function loadRoutine() {
+  const seq = ++routine.seq;
+  renderRoutine(null);
+  setStatus('routine-status', 'Checking what has run…');
+  try {
+    const data = await getJSON('api/routine');
+    if (seq !== routine.seq) return;
+    renderRoutine(data);
+    setStatus('routine-status', '');
+  } catch (error) {
+    if (seq === routine.seq) setStatus('routine-status', error.message, true);
+  }
+}
+
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  const current = tab === 'work' ? 'work' : 'plans';
-  for (const name of ['plans', 'work']) $('page-' + name).hidden = name !== current;
+  const current = ['work', 'routine'].includes(tab) ? tab : 'plans';
+  for (const name of ['plans', 'work', 'routine']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
+  else if (current === 'routine') loadRoutine();
   else if (!plans.started) loadPlans(plans.date);
 }
 
@@ -916,11 +1123,17 @@ $('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
 $('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
-$('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); renderWork(); });
+$('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
+$('reload-routine').addEventListener('click', loadRoutine);
+$('copy-todoist').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(todoistText()); setStatus('routine-status', 'Copied. Paste it into ChatGPT to add these to Todoist.'); }
+  catch { setStatus('routine-status', 'Couldn’t copy in this browser.', true); }
+});
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); } catch (error) { setStatus('work-status', error.message, true); }
 });
 $('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
+$('missing-sheets').addEventListener('click', missingWorkSheets);
 window.addEventListener('hashchange', showTab);
 showTab();
 sweepResearch();

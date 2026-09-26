@@ -7,7 +7,7 @@ import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, agenda_edit, answers, app, completion, feedback, google, ledger, roster, tidy, work
+from hub_v2 import agenda, agenda_edit, answers, app, completion, feedback, google, ledger, roster, routine, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -148,6 +148,22 @@ class RosterTests(unittest.TestCase):
 
     def setUp(self):
         roster._ORIENTATION.clear()
+
+    def test_a_title_above_the_list_is_not_a_student_or_a_warning(self):
+        cells = grid({1: ["0422-2 Biology · Roster 2026–27"], 2: [""], 3: ["Last Name", "First Name"],
+                      4: ["Rivera", "Ana"], 5: ["Jane Doe"]})
+        students, skipped = roster.parse_tab(cells, "biology", "A4 Biology")
+        self.assertEqual([(s["last"], s["first"]) for s in students], [("Rivera", "Ana")])
+        self.assertEqual(skipped, 1)  # a one-cell row among the students is still reported
+
+    def test_the_systems_own_documents_are_never_student_work(self):
+        for name in ("Growth record — Forensics Wk 04 — Eyewitness — 2026-09-25",
+                     "Class growth summary — Biology Wk 03 — Energy — 2026-09-25",
+                     "Feedback — Forensics Wk 04 — Eyewitness — 2026-09-25",
+                     "Summary ratings — Biology — 2026-10-05", "Teaching summary — Biology — 2026-10-05",
+                     "Monday run — 2026-09-28"):
+            self.assertTrue(work.NOT_STUDENT_WORK.search(name), name)
+        self.assertIsNone(work.NOT_STUDENT_WORK.search("s.ana.rivera — 09-16 12.41 — Copy of Energy Flow - Ana Rivera"))
 
     def test_headerless_first_last_tab_is_turned_round_by_school_usernames(self):
         # Like the Biology tab: no header row, First | Last columns.
@@ -1265,6 +1281,43 @@ class AgendaEditTests(unittest.TestCase):
             google.update_cells("write", "SHEETID", [("'Tab'!A1", "=1+1")])
         self.assertEqual(call_google.call_args.kwargs["body"]["valueInputOption"], "RAW")
         self.assertEqual(call_google.call_args.kwargs["method"], "POST")
+
+
+class RoutineTests(unittest.TestCase):
+    CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT"}
+
+    def status(self, fail=None):
+        found = {
+            "Monday run": [{"id": "OLDRUN", "name": "Monday run — 2026-09-28", "createdTime": "2026-09-28T12:00:00Z"},
+                           {"id": "NEWRUN", "name": "Monday run — 2026-10-05", "createdTime": "2026-10-05T12:00:00Z"},
+                           {"id": "NOTE", "name": "Notes about the Monday run", "createdTime": "2026-10-06T00:00:00Z"}],
+            "Scores entered": [{"id": "LEDGER", "name": "Scores entered (On Dashboard)", "createdTime": "2026-09-26T00:00:00Z"}],
+            "Student answers": [{"id": "ANSWERS", "name": "Student answers — Biology", "createdTime": "2026-09-26T00:00:00Z"}]}
+
+        def search(token, name, mime, parent, prefix=False, order=None):
+            if fail == name:
+                raise google.GoogleError("Not found, or not shared with the dashboard's account.", 404)
+            return found[name]
+        rows = {"'Sheet1'!A2:A": [["2026-09-28 08:10"], [""], ["2026-10-05 08:05"]]}
+        with patch.object(google, "files_named_in", side_effect=search), \
+                patch.object(google, "sheet_tabs", return_value=("x", {"Sheet1": 0})), \
+                patch.object(google, "sheet_values", side_effect=lambda t, sid, r: rows.get(r, [])):
+            return routine.status("token", self.CONFIG)
+
+    def test_the_routine_page_shows_the_newest_monday_run_and_each_sheets_last_row(self):
+        out = self.status()
+        self.assertEqual(out["monday_run"]["name"], "Monday run — 2026-10-05")
+        self.assertTrue(out["monday_run"]["url"].endswith("/document/d/NEWRUN/edit"))
+        self.assertEqual((out["scores_entered"]["name"], out["scores_entered"]["last"]),
+                         ("Scores entered (On Dashboard)", "2026-10-05 08:05"))
+        self.assertEqual(out["research"]["last"], "2026-10-05 08:05")
+
+    def test_one_unreadable_record_doesnt_hide_the_others(self):
+        out = self.status(fail="Monday run")
+        self.assertIn("not shared", out["monday_run"]["problem"])
+        self.assertEqual(out["scores_entered"]["name"], "Scores entered (On Dashboard)")
+        with patch.object(google, "files_named_in", return_value=[]):
+            self.assertEqual(routine.status("token", {}), {"monday_run": None, "scores_entered": None, "research": None})
 
 
 class SweepEndpointTests(unittest.TestCase):

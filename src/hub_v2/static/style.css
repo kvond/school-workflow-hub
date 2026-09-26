@@ -122,6 +122,12 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .lesson-edit textarea { resize: vertical; }
 .lesson-edit :disabled { opacity: 0.6; background: var(--bg); }
 .lesson-edit .note q { font-style: italic; }
+.routine { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 0 0 16px; }
+.routine h2 { margin: 0 0 8px; font-size: 17px; }
+.routine-item + .routine-item { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.routine-item p { margin: 4px 0; }
+.routine-when { color: var(--muted); }
+.routine-needs { font-size: 14px; }
 .answers-slide { margin: 16px 0 4px; font-size: 14px; }
 .answers td { min-width: 180px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answers td:first-child { min-width: 150px; white-space: normal; }
@@ -133,8 +139,19 @@ button[disabled] { opacity: 0.6; cursor: default; }
   .cards { grid-template-columns: 1fr; }
   .summary .primary { margin-left: 0; }
 }
+.sheet-page { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 24px; margin: 0 0 16px; }
+.sheet-page h2 { margin: 4px 0 8px; font-size: 20px; }
+.sheet-page h3 { margin: 14px 0 6px; font-size: 15px; }
+.sheet-top { display: flex; justify-content: space-between; color: var(--muted); margin: 0; font-size: 13px; }
+.sheet-table td.blank-line { border-bottom: 1px solid var(--ink); min-width: 140px; }
+.write-line { border-bottom: 1px solid var(--line); padding-bottom: 22px; margin: 10px 0; }
+.sheet-rule { font-size: 13px; color: var(--muted); margin-top: 14px; }
+.signatures p { margin: 22px 0 0; }
+
 @media print {
   .top, .controls, .days, .see-work, .edit, button { display: none !important; }
+  .sheets-head, #work-status, .bar { display: none !important; }
+  .sheet-page { border: none; padding: 0; margin: 0; break-after: page; }
   body { background: #fff; color: #000; }
   .card, .form-work { border-color: #999; break-inside: avoid; }
 }
