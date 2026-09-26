@@ -897,14 +897,106 @@ async function applyTidy(box, p) {
 }
 
 // ---------- Page wiring ----------
+// ---------- Routine: what runs on its own, and what you do ----------
+// Keep this list and the Todoist list the same: "Copy for Todoist" copies it.
+const ROUTINE = {
+  scheduled: [
+    {who: 'School Claude', when: 'Every Monday, 7:30 AM', key: 'monday_run',
+     what: 'Monday grades and roster: checks each Infinite Campus roster against your roster sheet, enters scores in IC (0s from the first turn-in; final scores once the two weeks close), clicks “I entered these in IC”, and leaves a “Monday run — date” Doc at the top of 00 REAL ALL TURN IN. Nothing is saved until you reply OK.',
+     needs: 'Chrome open on your computer, the computer awake, and you signed in to Infinite Campus and the Teaching Hub.'},
+    {who: 'Teaching Hub', when: 'Once a day, when the dashboard is opened', key: 'research',
+     what: 'Adds the answers from Biology assignments whose two weeks have closed to “Student answers — Biology”.',
+     needs: 'The dashboard opened once that day, on any tab and in any browser. The Monday run counts.'},
+    {who: 'Teaching Hub', when: 'Whenever a week is opened on Student work',
+     what: 'Scores every deck, finds missing and late work, and shows each assignment’s IC status.',
+     needs: 'Nothing but opening it.'},
+  ],
+  mine: [
+    {when: 'Every Monday, 7:15 AM', todoist: 'every monday at 7:15am', what: 'Sign in to Infinite Campus and the Teaching Hub in Chrome, and leave Chrome open.', note: 'The Monday run can’t sign in for you.'},
+    {when: 'Every Monday, 8:00 AM', todoist: 'every monday at 8am', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
+    {when: 'Every Thursday', todoist: 'every thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', note: 'Without those links the Hub can’t find or score the work.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.'},
+    {when: 'Every Friday', todoist: 'every friday', what: 'On Student work, click “Tidy this week’s folders” for each class.'},
+    {when: 'First Monday of the month', todoist: 'every first monday', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.'},
+    {when: 'When you change a prompt in the Agenda', todoist: 'every last friday', what: 'Ask Claude Code to copy the changed prompt to GitHub.'},
+    {when: 'Every August', todoist: 'every august 1', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.'},
+  ],
+};
+
+const routine = {seq: 0};
+
+function todoistText() {
+  return ['Add these to my Todoist project "Teaching Hub". Use each "when" as the due date and each "note" as the description.', '',
+    ...ROUTINE.mine.map(t => `- ${t.what} | when: ${t.todoist}${t.note ? ` | note: ${t.note}` : ''}`)].join('\n');
+}
+
+function routineStatus(key, data) {
+  const found = data?.[key];
+  if (found?.problem) return note(found.problem);
+  if (key === 'monday_run') {
+    if (!found) return el('p', {class: 'muted', text: 'No “Monday run” Doc yet, so it hasn’t run (or hasn’t been set up).'});
+    const days = (Date.now() - new Date(found.at)) / 86400000;
+    return el('p', {class: days > 8 ? 'note warn' : 'muted'}, `Last run: ${when(found.at)}. `, link(found.name + ' ↗', found.url),
+      days > 8 ? ' That’s more than a week ago: check that school Claude’s Monday schedule is still set.' : '');
+  }
+  if (key === 'research') {
+    const checked = store.get('research-sweep');
+    if (!found) return note('No “Student answers — Biology” sheet was found at the top of 00 REAL ALL TURN IN.', 'info');
+    return el('p', {class: 'muted'}, found.last ? `Answers last added ${found.last}. ` : 'No answers added yet. ',
+      checked ? `Checked in this browser on ${checked}. ` : '', link('Open the sheet ↗', found.url));
+  }
+  return null;
+}
+
+function renderRoutine(data) {
+  const body = $('routine-body');
+  const scheduled = el('section', {class: 'routine'}, el('h2', {text: 'Done for you, on schedule'}),
+    ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
+      el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
+      el('p', {text: t.what}),
+      el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
+      t.key ? routineStatus(t.key, data) : null)));
+  const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
+    el('div', {class: 'table-wrap'}, el('table', {},
+      el('thead', {}, el('tr', {}, ['When', 'What', 'Why it matters'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {text: t.when}), el('td', {text: t.what}),
+        el('td', {class: 'muted', text: t.note || ''})))))));
+  const sheet = data?.scores_entered;
+  const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
+    el('ul', {class: 'files'},
+      el('li', {}, sheet && !sheet.problem
+        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — the dashboard adds a row when “I entered these in IC” or “Mark feedback done” is clicked${sheet.last ? `; last row ${sheet.last}` : ''}.`]
+        : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
+      el('li', {}, 'Feedback, Growth record and Class growth summary Docs: in each week’s 📥 folder.'),
+      el('li', {}, '“Monday run — date” Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
+  body.replaceChildren(scheduled, mine, sheets);
+}
+
+async function loadRoutine() {
+  const seq = ++routine.seq;
+  renderRoutine(null);
+  setStatus('routine-status', 'Checking what has run…');
+  try {
+    const data = await getJSON('api/routine');
+    if (seq !== routine.seq) return;
+    renderRoutine(data);
+    setStatus('routine-status', '');
+  } catch (error) {
+    if (seq === routine.seq) setStatus('routine-status', error.message, true);
+  }
+}
+
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  const current = tab === 'work' ? 'work' : 'plans';
-  for (const name of ['plans', 'work']) $('page-' + name).hidden = name !== current;
+  const current = ['work', 'routine'].includes(tab) ? tab : 'plans';
+  for (const name of ['plans', 'work', 'routine']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
+  else if (current === 'routine') loadRoutine();
   else if (!plans.started) loadPlans(plans.date);
 }
 
@@ -917,6 +1009,11 @@ $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.tar
 $('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); renderWork(); });
+$('reload-routine').addEventListener('click', loadRoutine);
+$('copy-todoist').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(todoistText()); setStatus('routine-status', 'Copied. Paste it into ChatGPT to add these to Todoist.'); }
+  catch { setStatus('routine-status', 'Couldn’t copy in this browser.', true); }
+});
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); } catch (error) { setStatus('work-status', error.message, true); }
 });

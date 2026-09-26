@@ -122,6 +122,12 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .lesson-edit textarea { resize: vertical; }
 .lesson-edit :disabled { opacity: 0.6; background: var(--bg); }
 .lesson-edit .note q { font-style: italic; }
+.routine { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 0 0 16px; }
+.routine h2 { margin: 0 0 8px; font-size: 17px; }
+.routine-item + .routine-item { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }
+.routine-item p { margin: 4px 0; }
+.routine-when { color: var(--muted); }
+.routine-needs { font-size: 14px; }
 .answers-slide { margin: 16px 0 4px; font-size: 14px; }
 .answers td { min-width: 180px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answers td:first-child { min-width: 150px; white-space: normal; }

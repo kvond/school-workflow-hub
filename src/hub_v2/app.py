@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, answers, completion, feedback, google, ledger, tidy, work
+from . import agenda_edit, answers, completion, feedback, google, ledger, routine, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -126,6 +126,8 @@ def api(sub, query, config):
             raise ValueError("score")
         found = lesson_work(token, config, agenda, class_key, week, fresh=False)
         return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+    if sub == "api/routine":
+        return routine.status(token, config)
     if sub in ("api/ledger", "api/feedback"):
         class_key, week, form_id = _form_args(query)
         if sub == "api/ledger":

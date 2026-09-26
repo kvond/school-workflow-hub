@@ -14,6 +14,7 @@
   <nav class="tabs" aria-label="Pages">
     <a href="#plans" data-tab="plans">Lesson plans</a>
     <a href="#work" data-tab="work">Student work</a>
+    <a href="#routine" data-tab="routine">Routine</a>
   </nav>
   <a class="agenda-link" id="agenda-link" target="_blank" rel="noopener noreferrer" hidden>Open Agenda ↗</a>
 </header>
@@ -49,6 +50,17 @@
     <p id="work-status" class="status" role="status"></p>
     <div id="tidy-box" class="tidy-box"></div>
     <div id="work-body"></div>
+  </section>
+  <section id="page-routine" hidden>
+    <div class="bar">
+      <h1>Routine</h1>
+      <div class="controls">
+        <button type="button" id="copy-todoist">Copy for Todoist</button>
+        <button type="button" id="reload-routine">Reload</button>
+      </div>
+    </div>
+    <p id="routine-status" class="status" role="status"></p>
+    <div id="routine-body"></div>
   </section>
 </main>
 </body>
