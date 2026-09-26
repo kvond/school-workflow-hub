@@ -1063,9 +1063,9 @@ async function missingWorkSheets() {
 // Keep this list and the Todoist list the same: "Copy for Todoist" copies it.
 const ROUTINE = {
   scheduled: [
-    {who: 'School Claude', when: 'Every Monday, 7:30 AM', key: 'monday_run',
+    {who: 'School Claude', when: 'Every Monday, 7:23 AM', key: 'monday_run',
      what: 'Monday grades and roster: checks each Infinite Campus roster against your roster sheet, enters scores in IC (0s from the first turn-in; final scores once the two weeks close), clicks “I entered these in IC”, and leaves a “Monday run — date” Doc at the top of 00 REAL ALL TURN IN. Nothing is saved until you reply OK.',
-     needs: 'Chrome open on your computer, the computer awake, and you signed in to Infinite Campus and the Teaching Hub.'},
+     needs: 'The schedule itself fires from Claude’s servers, but the run works in your home computer’s Chrome, so at 7:23 AM that computer needs: the Claude desktop app open (with this task set to run on that computer), the computer awake, and you signed in to Chrome, Infinite Campus and the Teaching Hub.'},
     {who: 'Teaching Hub', when: 'Once a day, when the dashboard is opened', key: 'research',
      what: 'Adds the answers from Biology assignments whose two weeks have closed to “Student answers — Biology”.',
      needs: 'The dashboard opened once that day, on any tab and in any browser. The Monday run counts.'},
@@ -1074,7 +1074,7 @@ const ROUTINE = {
      needs: 'Nothing but opening it.'},
   ],
   mine: [
-    {when: 'Every Monday, 7:15 AM', todoist: 'every monday at 7:15am', what: 'Sign in to Infinite Campus and the Teaching Hub in Chrome, and leave Chrome open.', note: 'The Monday run can’t sign in for you.'},
+    {when: 'Every Monday, 7:15 AM', todoist: 'every monday at 7:15am', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
     {when: 'Every Monday, 8:00 AM', todoist: 'every monday at 8am', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
     {when: 'Every Thursday', todoist: 'every thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
     {when: 'Every Friday', todoist: 'every friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
