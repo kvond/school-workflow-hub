@@ -169,6 +169,12 @@ def sheet_grid(token, spreadsheet_id, ranges):
     return grids
 
 
+def form_info(token, form_id):
+    """A Form's student-facing title and its published link (responderUri)."""
+    return get_json("https://forms.googleapis.com/v1/forms/%s" % quote(form_id), token,
+                    {"fields": "info(title,documentTitle),responderUri"})
+
+
 def form_responses(token, form_id):
     responses, cursor = [], None
     for _ in range(20):
