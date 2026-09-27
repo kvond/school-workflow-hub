@@ -612,7 +612,9 @@ function icPanel(form, lesson, scores) {
   const all = [
     ...form.students.filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
       .filter(x => x.s && !x.s.problem).map(x => ({...x, show: shown(x.s)})),
-    ...(form.window ? [...form.missing, ...form.late.filter(r => r.matched)].filter(inSection)
+    // A student with a file in "Not sorted" may have turned it in: they're left
+    // off the list (and named below) so a 0 isn't entered for them unchecked.
+    ...(form.window ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
       .map(r => ({r, s: null, zero: true, show: shown(null)})) : []),
   ].sort((a, b) => (a.r.section + a.r.last + a.r.first).localeCompare(b.r.section + b.r.last + b.r.first));
   // New since you last entered this assignment: turned in after that, or, for
@@ -660,6 +662,11 @@ function icPanel(form, lesson, scores) {
       el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
       el('td', {}, zero ? el('span', {class: 'badge', text: closed ? 'nothing on time' : 'nothing yet'}) : null,
         entered && isNew ? el('span', {class: 'badge warn', text: `new since ${markDate(sheet.entered_at)}`}) : null)))))));
+  const unsorted = form.window ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
+  if (unsorted.length) {
+    panel.append(note(`Not listed: ${unsorted.map(m => `${m.last}, ${m.first}`).join('; ')}. `
+      + 'Each has a file in “Not sorted” that may be this assignment. Check that box before giving them a 0.', 'info'));
+  }
   panel.append(el('p', {class: 'muted', text: closed
     ? 'The two weeks are over, so students with nothing on time (including late work) are listed as 0. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.'
     : `Students with nothing turned in yet, and empty boxes, are listed as 0; each 0 is replaced when the student turns work in before ${form.window?.label || 'the two weeks close'}. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.`}));
