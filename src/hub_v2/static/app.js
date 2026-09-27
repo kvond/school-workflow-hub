@@ -1082,10 +1082,10 @@ const ROUTINE = {
   ],
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
-    {when: 'Mon 7:15 AM', you: 'Home computer: open the Claude app, sign in to Chrome, IC and the Hub. Leave it on.',
-     done: 'School Claude can do the Monday run at 7:23.'},
+    {when: 'Mon 7:15 AM', you: 'Home computer: open the Claude app, sign in to Chrome, IC and the Hub. Leave it on. Nothing to click on the Hub.',
+     done: 'At 7:23 school Claude reads the scores on the Hub and fills them into IC.'},
     {when: 'Mon 8:00 AM', you: 'Read school Claude’s list. Reply OK.',
-     done: 'Scores (and 0s) and roster fixes are saved in IC.'},
+     done: 'Your OK saves the scores (and 0s) and roster fixes in IC.'},
     {when: 'Thursday', you: 'Student work → Start feedback → paste into Teacher Claude → print → Mark feedback done.',
      done: 'Each student gets two pages of feedback.'},
     {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
