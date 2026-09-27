@@ -341,13 +341,6 @@ function fileList(files) {
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
 }
 
-function sheetNotes(row) {
-  return [row.source === 'folder' ? 'From turn-in folder' : '',
-    ...row.files.filter(f => f.other_week).map(f => `Named Week ${f.other_week}`),
-    row.earlier.some(e => e.late) && !row.late ? 'A later late version was not graded' : '',
-    row.earlier.length ? `${row.earlier.length} earlier file(s)` : ''].filter(Boolean).join('; ');
-}
-
 // ---------- Completion scores (Notes and Revision, out of 10) ----------
 const DECKS = ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
 const scoreFile = row => row.files.find(f => DECKS.includes(f.mime)) || row.files[0];
@@ -601,9 +594,8 @@ function marksLine(form) {
   return parts.length ? el('p', {class: 'marks', text: parts.join(' · ')}) : null;
 }
 
-function icPanel(form, lesson, scores) {
+function icPanel(form, scores) {
   const section = work.section;
-  const cls = CLASSES.find(([k]) => k === work.cls)[1];
   const ui = work.ui[form.form_id] || {};
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
@@ -623,17 +615,6 @@ function icPanel(form, lesson, scores) {
     x.fresh = !entered || (x.zero ? closed && new Date(form.window.at) > entered : new Date(x.r.submitted_at) > entered);
   }
   const fresh = all.filter(x => x.fresh);
-  const dash = v => v === '' ? '— (leave blank)' : v;
-  const claudeText = list => [
-    'Please enter these completion scores in Infinite Campus. I am signed in and have the grade book open in this Chrome window.',
-    `Class: ${cls}${section === 'all' ? '' : ' ' + section} · ${work.week} · Assignment: ${form.label}${lesson.topic ? ` (${lesson.topic})` : ''}`,
-    ...(icStatus(form) ? [icStatus(form).text] : []),
-    'Each score is out of 10. "Notes" goes in this assignment\'s notes/content score and "Revision" in its revision score.',
-    'Before you save, show me each student, assignment and score you are about to enter, and wait for my OK.',
-    'Do not change any other grade. If a student already has a different score for this assignment, it is an update from a resubmission: show me the old and new score and replace it only after I say OK. If a student or the assignment is not there, stop and ask me. "— (leave blank)" means leave it blank.',
-    'After saving, reload the page and read the saved scores back to me.',
-    '', 'Last, First — Section — Notes /10 — Revision /10',
-    ...list.map(({r, show, zero}) => `${r.last}, ${r.first} — ${r.section} — Notes ${dash(show[0])} — Revision ${dash(show[1])}${zero ? ` (nothing turned in ${closed ? 'on time' : 'yet'})` : ''}`)].join('\n');
   const status = el('span', {class: 'muted'});
   const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Enter these scores in Infinite Campus'}));
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
@@ -642,13 +623,9 @@ function icPanel(form, lesson, scores) {
   const standing = icStatus(form);
   if (standing) panel.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
-  panel.append(el('p', {}, el('strong', {text: 'Open Infinite Campus first'}), entered
-    ? ` and go to this assignment. You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'} Type them in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.`
-    : ' and go to this assignment in your grade book. Type the scores in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.'));
+  panel.append(el('p', {}, 'School Claude enters these on Monday. To enter them yourself, open this assignment in Infinite Campus and type them in.',
+    entered ? ` You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'}` : ''));
   panel.append(el('div', {class: 'action-row'},
-    fresh.length ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(claudeText(fresh), status)},
-      entered ? `Copy for Claude (${fresh.length} new since)` : 'Copy for Claude') : null,
-    entered ? el('button', {type: 'button', onclick: () => copyText(claudeText(all), status)}, 'Copy all for Claude') : null,
     sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')},
       'I entered these in IC (click adds to Scores entered)') : null,
     status));
@@ -719,35 +696,6 @@ function studentRow(row, scores) {
     el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores));
 }
 
-function csvCell(value) {
-  let text = String(value ?? '');
-  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
-  return '"' + text.replace(/"/g, '""') + '"';
-}
-
-function downloadSheet(form, lesson) {
-  const section = work.section;
-  const inSection = r => section === 'all' || r.section === section;
-  const scores = work.scores[form.form_id] || {};
-  const scored = r => {
-    const s = scores[scoreFile(r)?.id];
-    return s && !s.problem ? shown(s) : ['', ''];
-  };
-  const rows = [
-    ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', when(r.submitted_at), ...scored(r), r.files[0]?.url || '', sheetNotes(r)]),
-    ...form.late.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Late', when(r.submitted_at), ...shown(null), r.files[0]?.url || '', `Turned in after ${form.window?.label || 'the two-week window'} — not graded`]),
-    ...form.missing.filter(inSection).map(m => [m.last, m.first, m.section, 'No', '', ...shown(null, Boolean(form.window)), '', m.unsorted ? 'Has a file in "Not sorted" — check it' : '']),
-  ].sort((a, b) => (a[2] + a[0] + a[1]).localeCompare(b[2] + b[0] + b[1]));
-  const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', when(r.submitted_at), ...scored(r), r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || r.files[0]?.name || 'unknown')]);
-  const lines = [['Last name', 'First name', 'Section', 'Turned in', 'Turned in at', 'Notes /10', 'Revision /10', 'Work link', 'Notes'], ...rows, ...unmatched];
-  const blob = new Blob(['﻿' + lines.map(line => line.map(csvCell).join(',')).join('\r\n')], {type: 'text/csv;charset=utf-8'});
-  const name = [CLASSES.find(([k]) => k === work.cls)[1], work.week, form.label, section === 'all' ? 'all sections' : section]
-    .join(' - ').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 120) + '.csv';
-  const a = el('a', {href: URL.createObjectURL(blob), download: name});
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-}
-
 function renderForm(form, lesson) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
@@ -781,9 +729,6 @@ function renderForm(form, lesson) {
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress;
   box.append(el('div', {class: 'action-row'},
-    el('button', {type: 'button', class: 'primary', onclick: () => downloadSheet(form, lesson)}, 'Download grade sheet (CSV)'),
-    form.students.length ? el('button', {type: 'button', disabled: Boolean(ui.progress), onclick: () => scoreForm(form)},
-      scores ? 'Score again' : 'Score completion') : null,
     scoredAll ? el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
       ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC') : null,
     scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
@@ -807,7 +752,7 @@ function renderForm(form, lesson) {
         coding.missing.length ? ` on the code list but no box has it — ${coding.missing.join(', ')}.` : '',
         coding.extra.length ? ` A box has a code that isn’t on the list — ${coding.extra.join(', ')}.` : ''].join(''), 'info'));
     }
-    if (ui.open === 'ic') box.append(icPanel(form, lesson, scores));
+    if (ui.open === 'ic') box.append(icPanel(form, scores));
     if (ui.open === 'feedback') box.append(feedbackPanel(form));
     if (ui.open === 'answers') box.append(answersPanel(form, scores));
   }
@@ -1076,9 +1021,9 @@ const ROUTINE = {
     {when: 'Daily', who: 'Teaching Hub', key: 'research',
      what: 'Saves finished Biology answers to “Student answers — Biology”.',
      needs: 'The Hub opened once that day.'},
-    {when: 'Anytime', who: 'Teaching Hub',
-     what: 'Scores the work when you open a week on Student work.',
-     needs: 'Nothing.'},
+    {when: 'Whenever a class and week are open on Student work', who: 'Teaching Hub',
+     what: 'Finds the work turned in for that week and scores it. Weeks nobody opens aren’t scored; on Monday school Claude opens every one.',
+     needs: 'Nothing to click.'},
   ],
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
@@ -1086,7 +1031,7 @@ const ROUTINE = {
      done: 'At 7:23 school Claude reads the scores on the Hub and fills them into IC.'},
     {when: 'Mon 8:00 AM', you: 'Read school Claude’s list. Reply OK.',
      done: 'Your OK saves the scores (and 0s) and roster fixes in IC.'},
-    {when: 'Thursday', you: 'Student work → Start feedback → paste into Teacher Claude → print → Mark feedback done.',
+    {when: 'Thursday', you: 'Student work → pick class and week → Start feedback → Copy prompt → paste into Teacher Claude. Print the Doc it saves in the 📥 folder. Click Mark feedback done.',
      done: 'Each student gets two pages of feedback.'},
     {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
      done: 'Students answer their feedback.'},
@@ -1104,6 +1049,18 @@ const ROUTINE = {
      done: 'The backup copy matches the Agenda.'},
     {when: 'August', you: 'Rename “Student answers — Biology” with the year, make a new blank one, update rosters.',
      done: 'The new year starts clean.'},
+  ],
+  // Every button on the Hub and who clicks it.
+  buttons: [
+    {button: 'Scores are ready to enter in IC', who: 'School Claude, Monday', note: 'Opens the list of scores. You can open it just to look.'},
+    {button: 'I entered these in IC', who: 'School Claude, Monday', note: 'After your OK. Click it yourself only if you typed scores into IC.'},
+    {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
+    {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
+    {button: 'Tidy this week’s folders → Move them', who: 'You, Friday', note: 'Once per class.'},
+    {button: 'Edit here → Save to Agenda', who: 'You, Friday', note: 'On Lesson plans, to plan next week.'},
+    {button: 'Move · Check links', who: 'You, when a lesson moves', note: 'Move is under Edit here; Check links is on this page.'},
+    {button: 'Answers by question · Missing-work sheets', who: 'You, if you want', note: 'For reading answers and printing reminder sheets.'},
+    {button: 'Reload · ← → · Today', who: 'You, if you want', note: 'Refresh the page or change the week.'},
   ],
 };
 
@@ -1147,6 +1104,11 @@ function renderRoutine(data) {
       el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
       el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
         el('td', {text: t.you}), el('td', {text: t.done})))))));
+  const buttons = el('section', {class: 'routine'}, el('h2', {text: 'Who clicks which button'}),
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['Button', 'Who', ''].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.buttons.map(b => el('tr', {}, el('td', {class: 'routine-when', text: b.button}),
+        el('td', {text: b.who}), el('td', {class: 'muted', text: b.note})))))));
   const sheet = data?.scores_entered;
   const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
     el('ul', {class: 'files'},
@@ -1155,7 +1117,7 @@ function renderRoutine(data) {
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
       el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
       el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(mine, scheduled, sheets);
+  body.replaceChildren(mine, buttons, scheduled, sheets);
 }
 
 // ---------- Link check ----------
