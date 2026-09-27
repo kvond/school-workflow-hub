@@ -1422,7 +1422,7 @@ class LinkCheckTests(unittest.TestCase):
         out = self.check(fixture(), "forensics")
         self.assertEqual(self.kinds(out), [("Wk 03", "no-form"), ("Wk 04", "other-week")])
         other = next(f for f in out["flags"] if f["kind"] == "other-week")
-        self.assertIn("names Week 3", other["message"])
+        self.assertIn("for Week 3", other["message"])
         forms = [f for f in out["rows"][1]["forms"] if f["where"] == "Turn it in"]
         self.assertEqual([f["title"] for f in forms], ["Forensics — Week 03 — Reasoning — Turn In",
                                                        "Forensics — Week 04 — Observation — Turn In"])
@@ -1438,9 +1438,17 @@ class LinkCheckTests(unittest.TestCase):
         cells[(4, 20)] = cell("Turn in", hyperlink=DIRECT)
         cells[(5, 21)] = cell(SECOND)  # the hidden link opens a different Form than the visible one
         kinds = self.kinds(self.check(shared, "biology"))
-        self.assertIn(("Wk 03", "shared-form"), kinds)
-        self.assertIn(("Wk 04", "shared-form"), kinds)
+        self.assertIn(("Wk 03, Wk 04", "shared-form"), kinds)  # one line for the Form, naming both weeks
         self.assertIn(("Wk 04", "hidden-differs"), kinds)
+
+    def test_no_class_weeks_are_skipped_and_an_unopenable_deck_is_its_own_kind(self):
+        quiet = fixture()
+        quiet.classes["forensics"]["cells"][(4, 3)] = cell("No class — 0 meetings")
+        titles = dict(self.TITLES)
+        titles.pop("FICTIONALDECK1234567890")
+        out = self.check(quiet, "forensics", titles)
+        self.assertEqual(self.kinds(out), [("Wk 04", "deck-unreadable"), ("Wk 04", "other-week")])
+        self.assertEqual([r["week"] for r in out["rows"]], ["Wk 04"])
 
     def test_a_form_the_dashboard_cant_open_is_flagged(self):
         titles = dict(self.TITLES)

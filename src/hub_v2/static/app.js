@@ -1068,28 +1068,42 @@ async function missingWorkSheets() {
 
 // ---------- Routine: what runs on its own, and what you do ----------
 const ROUTINE = {
+  // What runs without you. "needs" is what has to be open for it to run.
   scheduled: [
-    {who: 'School Claude', when: 'Every Monday, 7:23 AM', key: 'monday_run',
-     what: 'Monday grades and roster: checks each Infinite Campus roster against your roster sheet, enters scores in IC (0s from the first turn-in; final scores once the two weeks close), clicks “I entered these in IC”, and leaves a “Monday run — date” Doc at the top of 00 REAL ALL TURN IN. Nothing is saved until you reply OK.',
-     needs: 'The schedule itself fires from Claude’s servers, but the run works in your home computer’s Chrome, so at 7:23 AM that computer needs: the Claude desktop app open (with this task set to run on that computer), the computer awake, and you signed in to Chrome, Infinite Campus and the Teaching Hub.'},
-    {who: 'Teaching Hub', when: 'Once a day, when the dashboard is opened', key: 'research',
-     what: 'Adds the answers from Biology assignments whose two weeks have closed to “Student answers — Biology”.',
-     needs: 'The dashboard opened once that day, on any tab and in any browser. The Monday run counts.'},
-    {who: 'Teaching Hub', when: 'Whenever a week is opened on Student work',
-     what: 'Scores every deck, finds missing and late work, and shows each assignment’s IC status.',
-     needs: 'Nothing but opening it.'},
+    {when: 'Monday 7:23 AM', who: 'School Claude', key: 'monday_run',
+     what: 'Checks IC rosters and fills in scores (0s for missing work), then waits for your OK.',
+     needs: 'Your home computer on, with the Claude app open and you signed in.'},
+    {when: 'Daily', who: 'Teaching Hub', key: 'research',
+     what: 'Saves finished Biology answers to “Student answers — Biology”.',
+     needs: 'The Hub opened once that day.'},
+    {when: 'Anytime', who: 'Teaching Hub',
+     what: 'Scores the work when you open a week on Student work.',
+     needs: 'Nothing.'},
   ],
+  // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
-    {when: 'Every Monday, 7:15 AM', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', does: 'At 7:23 school Claude uses this Chrome to check each IC roster against your roster sheet, fill in the scores the Hub has ready (0s for missing work) and write the “Monday run” Doc. Without it the run can’t start.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
-    {when: 'Every Monday, 8:00 AM', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.', does: 'Your OK is what saves the run: school Claude saves the listed scores and roster fixes in IC, then clicks “I entered these in IC”, which adds them to the Scores entered sheet so they’re never entered twice.'},
-    {when: 'Every Thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', does: 'Teacher Claude reads each revised deck and writes one Doc with two pages of feedback per student, including their growth so far. “Mark feedback done” records who got it.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
-    {when: 'Every Friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.', does: 'Students read their feedback and write what they understand now, which shows you what changed in their thinking.'},
-    {when: 'Every Friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', does: 'Saves next week’s plans to the Agenda. The Turn-in Form link is how the Hub finds and scores each student’s work, and the Student copy link is the deck students copy.', note: 'Without those links the Hub can’t find or score the work.'},
-    {when: 'Every Friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.', does: 'Puts a small code in every answer box, so the Hub can score each box and add Biology answers to the research sheet.'},
-    {when: 'Every Friday', what: 'On Student work, click “Tidy this week’s folders” for each class.', does: 'Moves each week’s turned-in files into that week’s one 📥 folder, and work more than two weeks late into “⏰ Late — not graded”, so the counts and 0s are right.'},
-    {when: 'First Monday of the month', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.', does: 'Writes the Biology teaching summary: how each student’s explanations grow over time (with a graph), earlier and later writing, and which critical aspects the class has and is missing.'},
-    {when: 'When you change a prompt in the Agenda', what: 'Ask Claude Code to copy the changed prompt to GitHub.', does: 'Keeps the saved copy on GitHub the same as the Agenda. The Hub reads Prompt 2 straight from the Agenda; GitHub keeps the backup and history.'},
-    {when: 'Every August', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.', does: 'Keeps last year’s answers as their own record and gives the Hub an empty sheet to fill for the new year; new rosters let the Hub and IC match the new students.'},
+    {when: 'Mon 7:15 AM', you: 'Home computer: open the Claude app, sign in to Chrome, IC and the Hub. Leave it on.',
+     done: 'School Claude can do the Monday run at 7:23.'},
+    {when: 'Mon 8:00 AM', you: 'Read school Claude’s list. Reply OK.',
+     done: 'Scores (and 0s) and roster fixes are saved in IC.'},
+    {when: 'Thursday', you: 'Student work → Start feedback → paste into Teacher Claude → print → Mark feedback done.',
+     done: 'Each student gets two pages of feedback.'},
+    {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
+     done: 'Students answer their feedback.'},
+    {when: 'Friday', you: 'Plan next week on Lesson plans. Each lesson needs a Turn-in Form and a Student copy link.',
+     done: 'The Hub can find and score next week’s work.'},
+    {when: 'Friday', you: 'Run embed-coding on next week’s new decks.',
+     done: 'Every answer box can be scored.'},
+    {when: 'Friday', you: 'Student work → Tidy this week’s folders, for each class.',
+     done: 'Files sit in the right week, so counts and 0s are right.'},
+    {when: '1st Monday of the month', you: 'Run Prompt 3 in Teacher Claude.',
+     done: 'Your Biology teaching summary.'},
+    {when: 'After you move or add a lesson', you: 'Click Check links (below). Move its Schoology page to the new week.',
+     done: 'Students’ links open the right Form and deck.'},
+    {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
+     done: 'The backup copy matches the Agenda.'},
+    {when: 'August', you: 'Rename “Student answers — Biology” with the year, make a new blank one, update rosters.',
+     done: 'The new year starts clean.'},
   ],
 };
 
@@ -1121,7 +1135,7 @@ function renderRoutine(data) {
   const late = data && (!run || run.problem || (Date.now() - new Date(run.at)) / DAY > 8);
   const scheduled = el('details', {class: 'routine routine-scheduled', open: store.get('routine-scheduled-open') === '1',
     ontoggle: e => store.set('routine-scheduled-open', e.target.open ? '1' : '0')},
-    el('summary', {}, el('h2', {text: 'Done for you, on schedule'}),
+    el('summary', {}, el('h2', {text: 'Done for you'}),
       late ? el('span', {class: 'badge warn', text: run?.problem ? 'Can’t check the Monday run' : 'Monday run: not in the last week'}) : null),
     ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
       el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
@@ -1129,23 +1143,46 @@ function renderRoutine(data) {
       el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
       t.key ? routineStatus(t.key, data) : null)));
   const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
-    el('div', {class: 'table-wrap'}, el('table', {},
-      el('thead', {}, el('tr', {}, ['When', 'What you do', 'What it does', 'Why it matters'].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {text: t.when}), el('td', {text: t.what}),
-        el('td', {text: t.does}), el('td', {class: 'muted', text: t.note || ''})))))));
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
+        el('td', {text: t.you}), el('td', {text: t.done})))))));
   const sheet = data?.scores_entered;
   const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
     el('ul', {class: 'files'},
       el('li', {}, sheet && !sheet.problem
-        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — the dashboard adds a row when “I entered these in IC” or “Mark feedback done” is clicked${sheet.last ? `; last row ${sheet.last}` : ''}.`]
+        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — a row for each IC entry and feedback round${sheet.last ? ` (last: ${sheet.last})` : ''}.`]
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
-      el('li', {}, 'Feedback, Growth record and Class growth summary Docs: in each week’s 📥 folder.'),
-      el('li', {}, '“Monday run — date” Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
+      el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
+      el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
   body.replaceChildren(mine, scheduled, sheets);
 }
 
 // ---------- Link check ----------
-const KIND_NOTE = {'shared-form': 'info', 'no-form': 'info'};
+// Problems first, one line each; Forms shared by weeks and decks the Hub
+// can't open are summed up underneath, since they're usually fine.
+const QUIET = new Set(['shared-form', 'deck-unreadable']);
+
+function linkCheckResult(name, data) {
+  const problems = data.flags.filter(f => !QUIET.has(f.kind));
+  const shared = data.flags.filter(f => f.kind === 'shared-form');
+  const decks = data.flags.filter(f => f.kind === 'deck-unreadable');
+  return [
+    data.problem ? note(data.problem) : null,
+    problems.length
+      ? el('ul', {class: 'link-flags'}, problems.map(f => el('li', {}, el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
+      : el('p', {class: 'ok', text: `✓ Every ${name} lesson links a Turn-in Form for its own week.`}),
+    shared.length ? el('details', {class: 'muted'},
+      el('summary', {text: `${shared.length} Form${shared.length === 1 ? ' is' : 's are'} used for more than one week (fine when a lesson spans those weeks)`}),
+      el('ul', {class: 'link-flags'}, shared.map(f => el('li', {}, el('strong', {text: `${f.week}: `}), f.message)))) : null,
+    decks.length ? el('p', {class: 'muted', text: `${decks.length} deck link${decks.length === 1 ? '' : 's'} couldn’t be checked: the Hub can’t open ${decks.length === 1 ? 'it' : 'them'}.`}) : null,
+    el('details', {}, el('summary', {text: `See every ${name} lesson’s Forms and decks`}),
+      el('div', {class: 'table-wrap'}, el('table', {},
+        el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
+        el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
+          el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
+          el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'})))))))];
+}
 
 async function runLinkCheck() {
   const body = $('link-check-body');
@@ -1157,18 +1194,7 @@ async function runLinkCheck() {
     body.append(part);
     try {
       const data = await getJSON(`api/audit?class=${key}`);
-      part.lastChild.remove();
-      if (data.problem) part.append(note(data.problem));
-      part.append(data.flags.length
-        ? el('ul', {class: 'link-flags'}, data.flags.map(f => el('li', {class: KIND_NOTE[f.kind] ? 'muted' : ''},
-            el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
-        : el('p', {class: 'ok', text: `✓ Every ${name} lesson's Forms and decks line up.`}));
-      part.append(el('details', {}, el('summary', {text: `Every ${name} lesson's Forms and decks (${data.rows.length})`}),
-        el('div', {class: 'table-wrap'}, el('table', {},
-          el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
-          el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
-            el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
-            el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}))))))));
+      part.lastChild.replaceWith(...linkCheckResult(name, data).filter(Boolean));
     } catch (error) {
       part.lastChild.replaceWith(note(error.message));
     }
