@@ -7,7 +7,7 @@ import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, agenda_edit, answers, app, completion, feedback, google, ledger, roster, routine, tidy, work
+from hub_v2 import agenda, agenda_edit, answers, app, audit, completion, feedback, google, ledger, roster, routine, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -1396,6 +1396,50 @@ class SweepEndpointTests(unittest.TestCase):
         status, sweep = self.post("https://hub.fictional.example", {"class": "forensics"})
         self.assertEqual(status, "400 Bad Request")
         sweep.assert_not_called()
+
+
+class LinkCheckTests(unittest.TestCase):
+    TITLES = {"FICTIONALFORMID1234567890abc": "Forensics — Week 03 — Reasoning — Turn In",
+              "FICTIONALFORMID0987654321xyz": "Forensics — Week 04 — Observation — Turn In",
+              "FICTIONALDECK1234567890": "▶ LIVE — Week 04 — Eyewitness Accounts (VT)"}
+
+    def check(self, agenda_, class_key, titles=None):
+        titles = titles or self.TITLES
+        def drive(token, file_id, fields=None):
+            if file_id not in titles:
+                raise google.GoogleError("Not found, or not shared with the dashboard's account.", 404)
+            return {"name": titles[file_id]}
+        with patch.object(google, "drive_file", side_effect=drive):
+            return audit.check("token", agenda_, class_key)
+
+    def kinds(self, out):
+        return sorted((f["week"], f["kind"]) for f in out["flags"])
+
+    def test_a_form_named_for_another_week_and_a_lesson_with_no_form_are_flagged(self):
+        out = self.check(fixture(), "forensics")
+        self.assertEqual(self.kinds(out), [("Wk 03", "no-form"), ("Wk 04", "other-week")])
+        other = next(f for f in out["flags"] if f["kind"] == "other-week")
+        self.assertIn("names Week 3", other["message"])
+        self.assertEqual(out["rows"][1]["forms"], ["Forensics — Week 03 — Reasoning — Turn In",
+                                                   "Forensics — Week 04 — Observation — Turn In"])
+
+    def test_a_published_link_a_form_linked_in_two_weeks_and_a_stale_hidden_link_are_flagged(self):
+        out = self.check(fixture(), "anatomy")  # A&P: a published "Turn it in" link, direct hidden link
+        self.assertIn(("Wk 04", "unreadable"), self.kinds(out))
+        shared = fixture()
+        cells = shared.classes["biology"]["cells"]
+        cells[(4, 20)] = cell("Turn in", hyperlink=DIRECT)
+        cells[(5, 21)] = cell(SECOND)  # the hidden link opens a different Form than the visible one
+        kinds = self.kinds(self.check(shared, "biology"))
+        self.assertIn(("Wk 03", "shared-form"), kinds)
+        self.assertIn(("Wk 04", "shared-form"), kinds)
+        self.assertIn(("Wk 04", "hidden-differs"), kinds)
+
+    def test_a_form_the_dashboard_cant_open_is_flagged(self):
+        titles = dict(self.TITLES)
+        titles.pop("FICTIONALFORMID0987654321xyz")
+        out = self.check(fixture(), "forensics", titles)
+        self.assertIn(("Wk 04", "unreadable"), self.kinds(out))
 
 
 class MoveLessonTests(unittest.TestCase):

@@ -125,6 +125,13 @@ with its closing date and an "I will turn it in by" line, or closed and staying
 after the two weeks start), a short plan, how to turn work in, and student and
 parent/guardian signature lines. It uses only the dashboard's own records.
 
+**Link check** (Routine) reads, for every lesson row of each class tab, the Drive
+titles of its Turn-in Forms and decks and flags what doesn't line up: a Form or
+deck titled for another week, a hidden _turnInURL that opens a different Form
+than the visible link, one Form linked in two weeks, a link the dashboard can't
+read, or a lesson with no Form. It also lists every lesson's Forms and decks by
+title, for comparing with Schoology. Read only.
+
 **Routine** lists what runs on its own (school Claude's Monday grades-and-roster
 run, the daily research-sheet check, scoring on open), what each needs to be
 open, the teacher's own daily/weekly/monthly tasks (with **Copy for Todoist**),
