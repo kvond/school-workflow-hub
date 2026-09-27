@@ -1080,16 +1080,16 @@ const ROUTINE = {
      needs: 'Nothing but opening it.'},
   ],
   mine: [
-    {when: 'Every Monday, 7:15 AM', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
-    {when: 'Every Monday, 8:00 AM', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
-    {when: 'Every Thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
-    {when: 'Every Friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
-    {when: 'Every Friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', note: 'Without those links the Hub can’t find or score the work.'},
-    {when: 'Every Friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.'},
-    {when: 'Every Friday', what: 'On Student work, click “Tidy this week’s folders” for each class.'},
-    {when: 'First Monday of the month', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.'},
-    {when: 'When you change a prompt in the Agenda', what: 'Ask Claude Code to copy the changed prompt to GitHub.'},
-    {when: 'Every August', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.'},
+    {when: 'Every Monday, 7:15 AM', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', does: 'At 7:23 school Claude uses this Chrome to check each IC roster against your roster sheet, fill in the scores the Hub has ready (0s for missing work) and write the “Monday run” Doc. Without it the run can’t start.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
+    {when: 'Every Monday, 8:00 AM', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.', does: 'Your OK is what saves the run: school Claude saves the listed scores and roster fixes in IC, then clicks “I entered these in IC”, which adds them to the Scores entered sheet so they’re never entered twice.'},
+    {when: 'Every Thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', does: 'Teacher Claude reads each revised deck and writes one Doc with two pages of feedback per student, including their growth so far. “Mark feedback done” records who got it.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
+    {when: 'Every Friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.', does: 'Students read their feedback and write what they understand now, which shows you what changed in their thinking.'},
+    {when: 'Every Friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', does: 'Saves next week’s plans to the Agenda. The Turn-in Form link is how the Hub finds and scores each student’s work, and the Student copy link is the deck students copy.', note: 'Without those links the Hub can’t find or score the work.'},
+    {when: 'Every Friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.', does: 'Puts a small code in every answer box, so the Hub can score each box and add Biology answers to the research sheet.'},
+    {when: 'Every Friday', what: 'On Student work, click “Tidy this week’s folders” for each class.', does: 'Moves each week’s turned-in files into that week’s one 📥 folder, and work more than two weeks late into “⏰ Late — not graded”, so the counts and 0s are right.'},
+    {when: 'First Monday of the month', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.', does: 'Writes the Biology teaching summary: how each student’s explanations grow over time (with a graph), earlier and later writing, and which critical aspects the class has and is missing.'},
+    {when: 'When you change a prompt in the Agenda', what: 'Ask Claude Code to copy the changed prompt to GitHub.', does: 'Keeps the saved copy on GitHub the same as the Agenda. The Hub reads Prompt 2 straight from the Agenda; GitHub keeps the backup and history.'},
+    {when: 'Every August', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.', does: 'Keeps last year’s answers as their own record and gives the Hub an empty sheet to fill for the new year; new rosters let the Hub and IC match the new students.'},
   ],
 };
 
@@ -1130,9 +1130,9 @@ function renderRoutine(data) {
       t.key ? routineStatus(t.key, data) : null)));
   const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
     el('div', {class: 'table-wrap'}, el('table', {},
-      el('thead', {}, el('tr', {}, ['When', 'What', 'Why it matters'].map(h => el('th', {text: h})))),
+      el('thead', {}, el('tr', {}, ['When', 'What you do', 'What it does', 'Why it matters'].map(h => el('th', {text: h})))),
       el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {text: t.when}), el('td', {text: t.what}),
-        el('td', {class: 'muted', text: t.note || ''})))))));
+        el('td', {text: t.does}), el('td', {class: 'muted', text: t.note || ''})))))));
   const sheet = data?.scores_entered;
   const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
     el('ul', {class: 'files'},
