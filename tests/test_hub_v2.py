@@ -1409,7 +1409,10 @@ class LinkCheckTests(unittest.TestCase):
             if file_id not in titles:
                 raise google.GoogleError("Not found, or not shared with the dashboard's account.", 404)
             return {"name": titles[file_id]}
-        with patch.object(google, "drive_file", side_effect=drive):
+        def info(token, form_id):
+            return {"info": {"title": "Student title " + form_id[-3:]},
+                    "responderUri": "https://docs.google.com/forms/d/e/1FAIpQLSpublished%s/viewform" % form_id[-12:]}
+        with patch.object(google, "drive_file", side_effect=drive), patch.object(google, "form_info", side_effect=info):
             return audit.check("token", agenda_, class_key)
 
     def kinds(self, out):
@@ -1420,8 +1423,12 @@ class LinkCheckTests(unittest.TestCase):
         self.assertEqual(self.kinds(out), [("Wk 03", "no-form"), ("Wk 04", "other-week")])
         other = next(f for f in out["flags"] if f["kind"] == "other-week")
         self.assertIn("names Week 3", other["message"])
-        self.assertEqual(out["rows"][1]["forms"], ["Forensics — Week 03 — Reasoning — Turn In",
-                                                   "Forensics — Week 04 — Observation — Turn In"])
+        forms = [f for f in out["rows"][1]["forms"] if f["where"] == "Turn it in"]
+        self.assertEqual([f["title"] for f in forms], ["Forensics — Week 03 — Reasoning — Turn In",
+                                                       "Forensics — Week 04 — Observation — Turn In"])
+        # Each Form carries its published id and student-facing title, to match Schoology's published links.
+        self.assertEqual(forms[0]["published_id"], "1FAIpQLSpublished" + "234567890abc")
+        self.assertEqual(forms[0]["student_title"], "Student title abc")
 
     def test_a_published_link_a_form_linked_in_two_weeks_and_a_stale_hidden_link_are_flagged(self):
         out = self.check(fixture(), "anatomy")  # A&P: a published "Turn it in" link, direct hidden link

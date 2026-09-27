@@ -1067,7 +1067,6 @@ async function missingWorkSheets() {
 }
 
 // ---------- Routine: what runs on its own, and what you do ----------
-// Keep this list and the Todoist list the same: "Copy for Todoist" copies it.
 const ROUTINE = {
   scheduled: [
     {who: 'School Claude', when: 'Every Monday, 7:23 AM', key: 'monday_run',
@@ -1081,25 +1080,20 @@ const ROUTINE = {
      needs: 'Nothing but opening it.'},
   ],
   mine: [
-    {when: 'Every Monday, 7:15 AM', todoist: 'every monday at 7:15am', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
-    {when: 'Every Monday, 8:00 AM', todoist: 'every monday at 8am', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
-    {when: 'Every Thursday', todoist: 'every thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
-    {when: 'Every Friday', todoist: 'every friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
-    {when: 'Every Friday', todoist: 'every friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', note: 'Without those links the Hub can’t find or score the work.'},
-    {when: 'Every Friday', todoist: 'every friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.'},
-    {when: 'Every Friday', todoist: 'every friday', what: 'On Student work, click “Tidy this week’s folders” for each class.'},
-    {when: 'First Monday of the month', todoist: 'every first monday', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.'},
-    {when: 'When you change a prompt in the Agenda', todoist: 'every last friday', what: 'Ask Claude Code to copy the changed prompt to GitHub.'},
-    {when: 'Every August', todoist: 'every august 1', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.'},
+    {when: 'Every Monday, 7:15 AM', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
+    {when: 'Every Monday, 8:00 AM', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
+    {when: 'Every Thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
+    {when: 'Every Friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
+    {when: 'Every Friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', note: 'Without those links the Hub can’t find or score the work.'},
+    {when: 'Every Friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.'},
+    {when: 'Every Friday', what: 'On Student work, click “Tidy this week’s folders” for each class.'},
+    {when: 'First Monday of the month', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.'},
+    {when: 'When you change a prompt in the Agenda', what: 'Ask Claude Code to copy the changed prompt to GitHub.'},
+    {when: 'Every August', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.'},
   ],
 };
 
 const routine = {seq: 0};
-
-function todoistText() {
-  return ['Add these to my Todoist project "Teaching Hub". Use each "when" as the due date and each "note" as the description.', '',
-    ...ROUTINE.mine.map(t => `- ${t.what} | when: ${t.todoist}${t.note ? ` | note: ${t.note}` : ''}`)].join('\n');
-}
 
 function routineStatus(key, data) {
   const found = data?.[key];
@@ -1173,7 +1167,8 @@ async function runLinkCheck() {
         el('div', {class: 'table-wrap'}, el('table', {},
           el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
           el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
-            el('td', {text: r.forms.join(' · ') || '—'}), el('td', {text: r.decks.join(' · ') || '—'}))))))));
+            el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
+            el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}))))))));
     } catch (error) {
       part.lastChild.replaceWith(note(error.message));
     }
@@ -1218,10 +1213,6 @@ $('work-week').addEventListener('change', e => { work.week = e.target.value; $('
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
 $('reload-routine').addEventListener('click', loadRoutine);
 $('run-link-check').addEventListener('click', runLinkCheck);
-$('copy-todoist').addEventListener('click', async () => {
-  try { await navigator.clipboard.writeText(todoistText()); setStatus('routine-status', 'Copied. Paste it into ChatGPT to add these to Todoist.'); }
-  catch { setStatus('routine-status', 'Couldn’t copy in this browser.', true); }
-});
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); } catch (error) { setStatus('work-status', error.message, true); }
 });

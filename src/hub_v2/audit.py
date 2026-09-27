@@ -19,6 +19,7 @@ from . import google
 from .agenda import build_lesson, form_link, links, norm
 
 DECK = re.compile(r"/presentation/d/([A-Za-z0-9_-]{20,})")
+PUBLISHED = re.compile(r"/forms/d/e/([A-Za-z0-9_-]{20,})")
 WEEK = re.compile(r"\b(?:week|wk)\s*0*(\d{1,2})\b", re.I)
 
 
@@ -38,6 +39,21 @@ def _titles(token, ids):
         except google.GoogleError as error:
             return {"problem": "can't be opened by the dashboard (%s)" % error}
     ids = sorted(set(ids))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return dict(zip(ids, pool.map(fetch, ids)))
+
+
+def _published(token, form_ids):
+    """{form id: (student-facing title, published id)} from the Forms API, so a
+    published link (the kind Schoology uses) can be matched to its Form."""
+    def fetch(form_id):
+        try:
+            info = google.form_info(token, form_id)
+        except google.GoogleError:
+            return ("", "")
+        match = PUBLISHED.search(info.get("responderUri", "") or "")
+        return ((info.get("info") or {}).get("title", ""), match.group(1) if match else "")
+    ids = sorted(set(form_ids))
     with ThreadPoolExecutor(max_workers=8) as pool:
         return dict(zip(ids, pool.map(fetch, ids)))
 
@@ -66,6 +82,8 @@ def check(token, agenda, class_key):
     ids = [f["form_id"] for r in rows for f in r["visible"] + r["hidden"] + r["second"] if f["form_id"]]
     ids += [d["id"] for r in rows for d in r["decks"]]
     titles = _titles(token, ids) if ids else {}
+    form_ids = [f["form_id"] for r in rows for f in r["visible"] + r["hidden"] + r["second"] if f["form_id"]]
+    published = _published(token, form_ids) if form_ids else {}
 
     flags = []
 
@@ -116,9 +134,20 @@ def check(token, agenda, class_key):
                     title = titles.get(form_id)
                     flag(r, "shared-form", "The Form “%s” is also linked in another week's row."
                          % (title if isinstance(title, str) else form_id))
+    def form_row(f, where):
+        title = titles.get(f["form_id"]) if f["form_id"] else None
+        student_title, pub = published.get(f["form_id"], ("", "")) if f["form_id"] else ("", "")
+        if not pub:
+            match = PUBLISHED.search(f["url"])
+            pub = match.group(1) if match else ""
+        return {"where": where, "label": f["label"], "form_id": f["form_id"] or "", "published_id": pub,
+                "title": title if isinstance(title, str) else "", "student_title": student_title}
     summary = [{"week": r["week"], "topic": r["topic"],
-                "forms": [titles.get(f["form_id"]) if isinstance(titles.get(f["form_id"]), str) else f["label"]
-                          for f in r["visible"] + r["second"]],
-                "decks": [titles.get(d["id"]) if isinstance(titles.get(d["id"]), str) else d["label"] for d in r["decks"]]}
+                "forms": [form_row(f, "Turn it in") for f in r["visible"]]
+                + [form_row(f, "2nd turn it in") for f in r["second"]]
+                + [form_row(f, "_turnInURL") for f in r["hidden"]],
+                "decks": [{"label": d["label"], "id": d["id"],
+                           "title": titles.get(d["id"]) if isinstance(titles.get(d["id"]), str) else ""}
+                          for d in r["decks"]]}
                for r in rows]
     return {"class": entry["name"], "rows": summary, "flags": flags, "problem": None}
