@@ -176,7 +176,11 @@ class RosterTests(unittest.TestCase):
                      "Class growth summary — Biology Wk 03 — Energy — 2026-09-25",
                      "Feedback — Forensics Wk 04 — Eyewitness — 2026-09-25",
                      "Summary ratings — Biology — 2026-10-05", "Teaching summary — Biology — 2026-10-05",
-                     "Monday run — 2026-09-28"):
+                     "Monday run — 2026-09-28",
+                     # Teacher Claude sometimes joins the words with underscores or hyphens.
+                     "Growth_record_Forensics_Week_04_Eyewitness_Accounts_2026-09-25",
+                     "Class_growth_summary_Forensics_Week_04", "class-growth-summary-biology",
+                     "Forensics_Week_04_Eyewitness_Accounts_Student_Feedback", "Teaching_summary_Biology"):
             self.assertTrue(work.NOT_STUDENT_WORK.search(name), name)
         self.assertIsNone(work.NOT_STUDENT_WORK.search("s.ana.rivera — 09-16 12.41 — Copy of Energy Flow - Ana Rivera"))
 
