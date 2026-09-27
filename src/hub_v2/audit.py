@@ -6,11 +6,16 @@ it in" Form) and of its decks, and flag what doesn't line up:
 
 - a Form or deck whose title names a different week than its row;
 - a hidden _turnInURL that points to a different Form than the visible link;
-- one Form linked from rows of two different weeks;
 - a Form link the dashboard can't read (published, short or not shared);
 - a lesson with a topic but no Turn-in Form.
 
-Read only. Weeks named in brackets ("[CLOSED …]", "[EMPTY …]") are skipped.
+A Form linked from two weeks' rows is listed once ("shared-form"), since a
+lesson can span weeks. A deck the dashboard can't open is "deck-unreadable",
+which the page counts rather than lists: its week can't be checked, but
+nothing else depends on it.
+
+Read only. Weeks named in brackets ("[CLOSED …]", "[EMPTY …]") and "No class"
+weeks are skipped.
 """
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -69,7 +74,7 @@ def check(token, agenda, class_key):
     for row, label in layout["rows"]:
         lesson = build_lesson(cells, layout, row, "")
         topic = lesson["topic"]
-        if not topic or topic.startswith("["):
+        if not topic or topic.startswith("[") or norm(topic).startswith("noclass"):
             continue
         cell = lambda key: cells.get((row, cols[key])) if cols.get(key) else None
         decks = []
@@ -95,45 +100,44 @@ def check(token, agenda, class_key):
         number = _week(r["week"])
         forms = r["visible"] + [f for f in r["second"] if f["form_id"] not in {v["form_id"] for v in r["visible"]}]
         if not forms and not r["hidden"]:
-            flag(r, "no-form", "No Turn-in Form is linked.")
+            flag(r, "no-form", "No Turn-in Form.")
         seen = {f["form_id"] for f in forms if f["form_id"]}
         for f in forms + [f for f in r["hidden"] if not f["form_id"] or f["form_id"] not in seen]:
             if not f["form_id"]:
-                flag(r, "unreadable", "The “%s” link is a %s link the dashboard can't read."
-                     % (f["label"] or "Turn in", "short forms.gle" if "forms.gle" in f["url"] else "published"))
+                flag(r, "unreadable", "The Hub can't check the “%s” link (%s)."
+                     % (f["label"] or "Turn in", "a short forms.gle link" if "forms.gle" in f["url"] else "a published link"))
                 continue
             title = titles.get(f["form_id"])
             if isinstance(title, dict):
-                flag(r, "unreadable", "The “%s” Form %s." % (f["label"] or "Turn in", title["problem"]))
+                flag(r, "unreadable", "The Hub can't open the “%s” Form (deleted, or not shared with it)."
+                     % (f["label"] or "Turn in"))
                 continue
             named = _week(title)
             if number is not None and named is not None and named != number:
-                flag(r, "other-week", "The “%s” link opens a Form titled “%s”, which names Week %d."
-                     % (f["label"] or "Turn in", title, named))
+                flag(r, "other-week", "Turn-in Form is for Week %d: “%s”." % (named, title))
             if f in forms:
                 used.setdefault(f["form_id"], set()).add(norm(r["week"]))
         shown = {f["form_id"] for f in r["visible"] if f["form_id"]}
         for f in r["hidden"]:
             if f["form_id"] and shown and f["form_id"] not in shown:
                 title = titles.get(f["form_id"])
-                flag(r, "hidden-differs", "The hidden _turnInURL opens a different Form (“%s”) than the "
-                     "“Turn it in” link." % (title if isinstance(title, str) else "unknown"))
+                flag(r, "hidden-differs", "The hidden _turnInURL column links a different Form: “%s”."
+                     % (title if isinstance(title, str) else "one the Hub can't open"))
         for d in r["decks"]:
             title = titles.get(d["id"])
             if isinstance(title, dict):
-                flag(r, "unreadable", "The %s deck %s." % (d["label"], title["problem"]))
+                flag(r, "deck-unreadable", "The Hub can't open the %s." % d["label"])
                 continue
             named = _week(title)
             if number is not None and named is not None and named != number:
-                flag(r, "deck-week", "The %s deck is titled “%s”, which names Week %d."
-                     % (d["label"], title, named))
+                flag(r, "deck-week", "%s is for Week %d: “%s”." % (d["label"], named, title))
     for form_id, weeks in used.items():
         if len(weeks) > 1:
-            for r in rows:
-                if any(f["form_id"] == form_id for f in r["visible"] + r["second"]):
-                    title = titles.get(form_id)
-                    flag(r, "shared-form", "The Form “%s” is also linked in another week's row."
-                         % (title if isinstance(title, str) else form_id))
+            linked = [r for r in rows if any(f["form_id"] == form_id for f in r["visible"] + r["second"])]
+            title = titles.get(form_id)
+            flags.append({"week": ", ".join(dict.fromkeys(r["week"] for r in linked)), "row": linked[0]["row"],
+                          "topic": linked[0]["topic"], "kind": "shared-form",
+                          "message": "One Form for these weeks: “%s”." % (title if isinstance(title, str) else form_id)})
     def form_row(f, where):
         title = titles.get(f["form_id"]) if f["form_id"] else None
         student_title, pub = published.get(f["form_id"], ("", "")) if f["form_id"] else ("", "")
