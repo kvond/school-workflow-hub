@@ -1173,7 +1173,8 @@ async function runLinkCheck() {
         el('div', {class: 'table-wrap'}, el('table', {},
           el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
           el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
-            el('td', {text: r.forms.join(' · ') || '—'}), el('td', {text: r.decks.join(' · ') || '—'}))))))));
+            el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
+            el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}))))))));
     } catch (error) {
       part.lastChild.replaceWith(note(error.message));
     }
