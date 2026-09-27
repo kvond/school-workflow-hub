@@ -134,10 +134,9 @@ title, for comparing with Schoology. Read only.
 
 **Routine** lists what runs on its own (school Claude's Monday grades-and-roster
 run, the daily research-sheet check, scoring on open), what each needs to be
-open, the teacher's own daily/weekly/monthly tasks (with **Copy for Todoist**),
-and live status read from Drive: the newest "Monday run — date" Doc (flagged
-when more than a week old) and the last row of the Scores entered and research
-sheets. Documents the system makes and keeps beside the work (feedback, growth
+open, the teacher's own daily/weekly/monthly tasks, and live status read from
+Drive: the newest "Monday run — date" Doc (flagged when more than a week old)
+and the last row of the Scores entered and research sheets. Documents the system makes and keeps beside the work (feedback, growth
 records, class growth summaries, summary ratings, Monday run logs) are never
 read as student work, and a one-cell title above a roster list isn't reported
 as an unreadable row.
