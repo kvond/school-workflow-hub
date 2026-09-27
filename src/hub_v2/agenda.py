@@ -115,7 +115,12 @@ def parse_class_tab(cells):
         norm(text(cells.get((r, c)))) == "topic" for c in range(1, 27))), None)
     if not header_row:
         return None, "No header row with 'Topic' was found."
-    headers = {c: norm(text(cells.get((header_row, c)))) for c in range(1, 27)}
+    # A column with no name in the header row may be named in a row above it
+    # (the Forensics tab names its "2nd turn it in" column in row 2).
+    headers = {}
+    for c in range(1, 27):
+        names = [norm(text(cells.get((r, c)))) for r in range(header_row, 0, -1)]
+        headers[c] = next((n for n in names if n), "")
 
     def col(*names, starts=None, ends=None):
         for c, h in headers.items():
@@ -132,6 +137,7 @@ def parse_class_tab(cells):
         "teacher_deck": col("teacherdeck"), "student_deck": col("studentdeck"),
         "folder": col("folder"), "activity": col(starts="activity"),
         "turnin": col("turnitin"), "turnin_url": col("turninurl"),
+        "turnin2": col("2ndturnitin", "secondturnitin", "turnitin2"),
     }
     plans = {}
     for c, h in headers.items():
@@ -193,13 +199,14 @@ def build_lesson(cells, layout, row, edit_url):
     return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
             "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
-            "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url")),
+            "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
             "edit_url": edit_url}
 
 
-def lesson_forms(visible, hidden):
+def lesson_forms(visible, hidden, second=None):
     """The lesson's Forms: the named 'Turn it in' links, or the hidden
-    _turnInURL when none of the named links can be read."""
+    _turnInURL when none of the named links can be read, plus any Form in the
+    '2nd turn it in' column."""
     def forms_in(cell):
         found = {}
         for url, label in links(cell):
@@ -219,6 +226,9 @@ def lesson_forms(visible, hidden):
         forms = [f for f in raw if f["form_id"]]
         if len(named) == 1 and len(forms) == 1:
             forms[0]["label"] = forms[0]["label"] or named[0]["label"]
+    for form in forms_in(second):
+        if not any((f["form_id"] or f["url"]) == (form["form_id"] or form["url"]) for f in forms):
+            forms.append(form)
     for form in forms:
         form["label"] = form["label"] or "Turn in"
     return forms
