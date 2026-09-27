@@ -1013,10 +1013,18 @@ async function missingWorkSheets() {
 
 // ---------- Routine: what runs on its own, and what you do ----------
 const ROUTINE = {
+  // How a completion score gets from a student's deck into IC, in order.
+  scoring: [
+    {when: 'Any day, any time', what: 'Students turn in their deck through the lesson’s Turn-in Form.'},
+    {when: 'Monday 7:23 AM', what: 'School Claude opens every class and week on Student work. That is when the Hub scores the decks, with a 0 for work not turned in.'},
+    {when: 'Monday 7:23 AM', what: 'School Claude sends you the list of scores and roster changes. Nothing is in IC yet.'},
+    {when: 'Monday 8:00 AM', what: 'You reply OK. School Claude enters the scores in IC and saves them.'},
+    {when: 'Two weeks after the first turn-in', what: 'The assignment closes. The next Monday’s scores are its final ones; late work isn’t graded.'},
+  ],
   // What runs without you. "needs" is what has to be open for it to run.
   scheduled: [
     {when: 'Monday 7:23 AM', who: 'School Claude', key: 'monday_run',
-     what: 'Checks IC rosters and fills in scores (0s for missing work), then waits for your OK.',
+     what: 'Checks IC rosters, scores every week on the Hub (0s for missing work) and sends you the list. After your OK it enters them in IC.',
      needs: 'Your home computer on, with the Claude app open and you signed in.'},
     {when: 'Daily', who: 'Teaching Hub', key: 'research',
      what: 'Saves finished Biology answers to “Student answers — Biology”.',
@@ -1028,7 +1036,7 @@ const ROUTINE = {
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
     {when: 'Mon 7:15 AM', you: 'Home computer: open the Claude app, sign in to Chrome, IC and the Hub. Leave it on. Nothing to click on the Hub.',
-     done: 'At 7:23 school Claude reads the scores on the Hub and fills them into IC.'},
+     done: 'At 7:23 school Claude can open the Hub, score the work and make your list.'},
     {when: 'Mon 8:00 AM', you: 'Read school Claude’s list. Reply OK.',
      done: 'Your OK saves the scores (and 0s) and roster fixes in IC.'},
     {when: 'Thursday', you: 'Student work → pick class and week → Start feedback → Copy prompt → paste into Teacher Claude. Print the Doc it saves in the 📥 folder. Click Mark feedback done.',
@@ -1099,6 +1107,11 @@ function renderRoutine(data) {
       el('p', {text: t.what}),
       el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
       t.key ? routineStatus(t.key, data) : null)));
+  const scoring = el('section', {class: 'routine'}, el('h2', {text: 'When completion scores happen'}),
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('tbody', {}, ROUTINE.scoring.map((step, i) => el('tr', {}, el('td', {class: 'routine-when', text: `${i + 1}. ${step.when}`}),
+        el('td', {text: step.what})))))),
+    el('p', {class: 'muted', text: 'Nothing is scored overnight or in the background. To see scores sooner, open that class and week on Student work: it scores them right then.'}));
   const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
     el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
       el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
@@ -1117,7 +1130,7 @@ function renderRoutine(data) {
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
       el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
       el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(mine, buttons, scheduled, sheets);
+  body.replaceChildren(scoring, mine, buttons, scheduled, sheets);
 }
 
 // ---------- Link check ----------
