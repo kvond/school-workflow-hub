@@ -37,10 +37,10 @@ STUDENT_WORK = ("application/vnd.google-apps.presentation", "application/vnd.goo
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 "application/vnd.ms-powerpoint", "image/jpeg", "image/png", "image/heic")
 # Documents the teacher's system makes and keeps beside the work (feedback,
-# growth records, class growth summaries, summary ratings, Monday run logs) are
-# never student work.
+# growth records, class growth summaries, teacher notes, summary ratings,
+# Monday run logs) are never student work.
 NOT_STUDENT_WORK = re.compile(r"growth (?:report|record)|feedback|class (?:growth )?summary|teaching summary|"
-                              r"summary ratings|monday run|template|answer key", re.I)
+                              r"summary ratings|monday run|teacher notes|template|answer key", re.I)
 MAX_FOLDERS = 60
 LATE_AFTER_DAYS = 14
 ROSTER_STALE_DAYS = 7
@@ -455,11 +455,28 @@ def _words(text):
     return {w for w in re.findall(r"[a-z]{4,}", str(text or "").lower())} - {"turn", "copy", "live", "week"}
 
 
-def pair_decks(forms, decks):
-    """Give each unclaimed lesson deck to the Form it most plausibly belongs to:
-    the only Form with no uploads yet, or the pairing whose names share the most
-    words. Ambiguous pairings are left alone."""
+def pair_decks(forms, decks, names=None):
+    """Give each lesson deck to the Form it most plausibly belongs to.
+
+    When the lesson has as many decks as readable Forms, every deck is paired
+    with a Form at once by the pairing whose names share the most words in
+    all (a deck's own name can share words with another Form's, so pairs are
+    judged together, not one at a time). Otherwise an unclaimed deck goes to
+    the only Form with no uploads yet, or to the empty Forms by the same
+    shared-words rule. Ambiguous pairings are left alone. names are the decks'
+    Drive titles, in the same order, for their words ("Observation_Deductive…").
+    """
     import itertools
+    names = list(names) if names is not None else list(decks)
+    words = {d: _words(n.replace("_", " ")) for d, n in zip(decks, names)}
+    readable = [f for f in forms if f["form_id"]]
+    if 1 < len(readable) == len(decks) <= 4:
+        scored = sorted(((sum(len(_words(f["label"] + " " + f["name"]) & words[d]) for f, d in zip(readable, order)),
+                          order) for order in itertools.permutations(decks)), key=lambda s: s[0], reverse=True)
+        if scored[0][0] > 0 and scored[0][0] > scored[1][0]:
+            for form, deck in zip(readable, scored[0][1]):
+                form["signature"].add(deck)
+            return
     empty = [f for f in forms if f["form_id"] and not f["signature"]]
     unclaimed = [d for d in decks if not any(_matches(d, f["signature"]) for f in forms)]
     if not empty or not unclaimed:
@@ -471,7 +488,7 @@ def pair_decks(forms, decks):
         return
     scored = []
     for order in itertools.permutations(unclaimed):
-        scored.append((sum(len(_words(f["label"] + " " + f["name"]) & _words(d))
+        scored.append((sum(len(_words(f["label"] + " " + f["name"]) & words[d])
                            for f, d in zip(empty, order)), order))
     scored.sort(key=lambda s: s[0], reverse=True)
     if scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
@@ -694,8 +711,9 @@ def lesson_work(token, config, agenda, class_key, week_label):
             index += len(lesson["forms"])
             deck_ids = {m.group(1) for material in lesson["materials"]
                         for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
-            decks = [deck_stem(info.get("name", "")) for info in _metadata(token, deck_ids).values()]
-            pair_decks(lesson_forms, [d for d in decks if len(d) >= 8])
+            named = [(deck_stem(info.get("name", "")), info.get("name", "")) for info in _metadata(token, deck_ids).values()]
+            named = [(stem, name) for stem, name in named if len(stem) >= 8]
+            pair_decks(lesson_forms, [stem for stem, _ in named], [name for _, name in named])
         for submission in pending:
             first = submission["files"][0]
             stem = deck_stem(known.get(first["id"], {}).get("name") or first["name"])

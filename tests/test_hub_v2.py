@@ -599,6 +599,23 @@ class FolderTests(unittest.TestCase):
         rivera = next(r for r in reasoning["students"] if r["last"] == "Rivera")
         self.assertEqual(rivera["submitted_at"], "2026-09-16T15:36:00Z")
 
+    def test_a_lessons_decks_are_paired_with_its_forms_together_by_shared_words(self):
+        # The live Forensics Wk 03 case: one Form's only upload is another week's deck, the
+        # other Form has none yet, and one deck's name shares two words with the wrong Form.
+        observation_deck = "Observation_Deductive_Reasoning_VT_CSI_1_markered"
+        inductive_deck = "Inductive_Deductive_Forensics_Google_Slides"
+        forms = [{"form_id": "A", "label": "Inductive and Deductive Reasoning — Turn In", "name": "",
+                  "signature": {work.deck_stem("Week 04 — Eyewitness Accounts (VT)")}},
+                 {"form_id": "B", "label": "Observation Skills — Turn In", "name": "", "signature": set()}]
+        stems = [work.deck_stem(observation_deck), work.deck_stem(inductive_deck)]
+        work.pair_decks(forms, stems, [observation_deck, inductive_deck])
+        self.assertIn(stems[1], forms[0]["signature"])
+        self.assertIn(stems[0], forms[1]["signature"])
+        copy = work.deck_stem("s.a.b — 09-16 11.25 — Copy of Observation_Deductive_Reasoning_VT_CSI_1_markered - A B")
+        self.assertGreater(work._matches(copy, forms[1]["signature"]), work._matches(copy, forms[0]["signature"]))
+        self.assertTrue(work.NOT_STUDENT_WORK.search(
+            "Teacher notes (private) — Forensics Wk 03 — Inductive and Deductive Reasoning — Turn In — 2026-09-24"))
+
     def test_name_time_and_deck_stem(self):
         self.assertEqual(work.name_time("s.a.b — 09-16 11.29 — x", "2026-09-20T01:00:00Z"), "2026-09-16T15:29:00Z")
         self.assertEqual(work.name_time("s.a.b — 01-05 10.00 — x", "2027-01-06T01:00:00Z"), "2027-01-05T15:00:00Z")
