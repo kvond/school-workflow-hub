@@ -341,13 +341,6 @@ function fileList(files) {
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
 }
 
-function sheetNotes(row) {
-  return [row.source === 'folder' ? 'From turn-in folder' : '',
-    ...row.files.filter(f => f.other_week).map(f => `Named Week ${f.other_week}`),
-    row.earlier.some(e => e.late) && !row.late ? 'A later late version was not graded' : '',
-    row.earlier.length ? `${row.earlier.length} earlier file(s)` : ''].filter(Boolean).join('; ');
-}
-
 // ---------- Completion scores (Notes and Revision, out of 10) ----------
 const DECKS = ['application/vnd.google-apps.presentation', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'];
 const scoreFile = row => row.files.find(f => DECKS.includes(f.mime)) || row.files[0];
@@ -601,9 +594,8 @@ function marksLine(form) {
   return parts.length ? el('p', {class: 'marks', text: parts.join(' · ')}) : null;
 }
 
-function icPanel(form, lesson, scores) {
+function icPanel(form, scores) {
   const section = work.section;
-  const cls = CLASSES.find(([k]) => k === work.cls)[1];
   const ui = work.ui[form.form_id] || {};
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
@@ -623,17 +615,6 @@ function icPanel(form, lesson, scores) {
     x.fresh = !entered || (x.zero ? closed && new Date(form.window.at) > entered : new Date(x.r.submitted_at) > entered);
   }
   const fresh = all.filter(x => x.fresh);
-  const dash = v => v === '' ? '— (leave blank)' : v;
-  const claudeText = list => [
-    'Please enter these completion scores in Infinite Campus. I am signed in and have the grade book open in this Chrome window.',
-    `Class: ${cls}${section === 'all' ? '' : ' ' + section} · ${work.week} · Assignment: ${form.label}${lesson.topic ? ` (${lesson.topic})` : ''}`,
-    ...(icStatus(form) ? [icStatus(form).text] : []),
-    'Each score is out of 10. "Notes" goes in this assignment\'s notes/content score and "Revision" in its revision score.',
-    'Before you save, show me each student, assignment and score you are about to enter, and wait for my OK.',
-    'Do not change any other grade. If a student already has a different score for this assignment, it is an update from a resubmission: show me the old and new score and replace it only after I say OK. If a student or the assignment is not there, stop and ask me. "— (leave blank)" means leave it blank.',
-    'After saving, reload the page and read the saved scores back to me.',
-    '', 'Last, First — Section — Notes /10 — Revision /10',
-    ...list.map(({r, show, zero}) => `${r.last}, ${r.first} — ${r.section} — Notes ${dash(show[0])} — Revision ${dash(show[1])}${zero ? ` (nothing turned in ${closed ? 'on time' : 'yet'})` : ''}`)].join('\n');
   const status = el('span', {class: 'muted'});
   const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Enter these scores in Infinite Campus'}));
   if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
@@ -642,13 +623,9 @@ function icPanel(form, lesson, scores) {
   const standing = icStatus(form);
   if (standing) panel.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
-  panel.append(el('p', {}, el('strong', {text: 'Open Infinite Campus first'}), entered
-    ? ` and go to this assignment. You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'} Type them in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.`
-    : ' and go to this assignment in your grade book. Type the scores in yourself, or copy them for the Claude extension, which enters them while you watch and asks before it saves.'));
+  panel.append(el('p', {}, 'School Claude enters these on Monday. To enter them yourself, open this assignment in Infinite Campus and type them in.',
+    entered ? ` You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'}` : ''));
   panel.append(el('div', {class: 'action-row'},
-    fresh.length ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(claudeText(fresh), status)},
-      entered ? `Copy for Claude (${fresh.length} new since)` : 'Copy for Claude') : null,
-    entered ? el('button', {type: 'button', onclick: () => copyText(claudeText(all), status)}, 'Copy all for Claude') : null,
     sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')},
       'I entered these in IC (click adds to Scores entered)') : null,
     status));
@@ -719,35 +696,6 @@ function studentRow(row, scores) {
     el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores));
 }
 
-function csvCell(value) {
-  let text = String(value ?? '');
-  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
-  return '"' + text.replace(/"/g, '""') + '"';
-}
-
-function downloadSheet(form, lesson) {
-  const section = work.section;
-  const inSection = r => section === 'all' || r.section === section;
-  const scores = work.scores[form.form_id] || {};
-  const scored = r => {
-    const s = scores[scoreFile(r)?.id];
-    return s && !s.problem ? shown(s) : ['', ''];
-  };
-  const rows = [
-    ...form.students.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Yes', when(r.submitted_at), ...scored(r), r.files[0]?.url || '', sheetNotes(r)]),
-    ...form.late.filter(r => r.matched && inSection(r)).map(r => [r.last, r.first, r.section, 'Late', when(r.submitted_at), ...shown(null), r.files[0]?.url || '', `Turned in after ${form.window?.label || 'the two-week window'} — not graded`]),
-    ...form.missing.filter(inSection).map(m => [m.last, m.first, m.section, 'No', '', ...shown(null, Boolean(form.window)), '', m.unsorted ? 'Has a file in "Not sorted" — check it' : '']),
-  ].sort((a, b) => (a[2] + a[0] + a[1]).localeCompare(b[2] + b[0] + b[1]));
-  const unmatched = form.students.filter(r => !r.matched).map(r => ['', '', '', 'Yes', when(r.submitted_at), ...scored(r), r.files[0]?.url || '', 'Not matched to the roster: ' + (r.email || r.files[0]?.name || 'unknown')]);
-  const lines = [['Last name', 'First name', 'Section', 'Turned in', 'Turned in at', 'Notes /10', 'Revision /10', 'Work link', 'Notes'], ...rows, ...unmatched];
-  const blob = new Blob(['﻿' + lines.map(line => line.map(csvCell).join(',')).join('\r\n')], {type: 'text/csv;charset=utf-8'});
-  const name = [CLASSES.find(([k]) => k === work.cls)[1], work.week, form.label, section === 'all' ? 'all sections' : section]
-    .join(' - ').replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 120) + '.csv';
-  const a = el('a', {href: URL.createObjectURL(blob), download: name});
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-}
-
 function renderForm(form, lesson) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
@@ -781,9 +729,6 @@ function renderForm(form, lesson) {
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress;
   box.append(el('div', {class: 'action-row'},
-    el('button', {type: 'button', class: 'primary', onclick: () => downloadSheet(form, lesson)}, 'Download grade sheet (CSV)'),
-    form.students.length ? el('button', {type: 'button', disabled: Boolean(ui.progress), onclick: () => scoreForm(form)},
-      scores ? 'Score again' : 'Score completion') : null,
     scoredAll ? el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
       ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC') : null,
     scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
@@ -807,7 +752,7 @@ function renderForm(form, lesson) {
         coding.missing.length ? ` on the code list but no box has it — ${coding.missing.join(', ')}.` : '',
         coding.extra.length ? ` A box has a code that isn’t on the list — ${coding.extra.join(', ')}.` : ''].join(''), 'info'));
     }
-    if (ui.open === 'ic') box.append(icPanel(form, lesson, scores));
+    if (ui.open === 'ic') box.append(icPanel(form, scores));
     if (ui.open === 'feedback') box.append(feedbackPanel(form));
     if (ui.open === 'answers') box.append(answersPanel(form, scores));
   }
@@ -1068,28 +1013,54 @@ async function missingWorkSheets() {
 
 // ---------- Routine: what runs on its own, and what you do ----------
 const ROUTINE = {
+  // What runs without you. "needs" is what has to be open for it to run.
   scheduled: [
-    {who: 'School Claude', when: 'Every Monday, 7:23 AM', key: 'monday_run',
-     what: 'Monday grades and roster: checks each Infinite Campus roster against your roster sheet, enters scores in IC (0s from the first turn-in; final scores once the two weeks close), clicks “I entered these in IC”, and leaves a “Monday run — date” Doc at the top of 00 REAL ALL TURN IN. Nothing is saved until you reply OK.',
-     needs: 'The schedule itself fires from Claude’s servers, but the run works in your home computer’s Chrome, so at 7:23 AM that computer needs: the Claude desktop app open (with this task set to run on that computer), the computer awake, and you signed in to Chrome, Infinite Campus and the Teaching Hub.'},
-    {who: 'Teaching Hub', when: 'Once a day, when the dashboard is opened', key: 'research',
-     what: 'Adds the answers from Biology assignments whose two weeks have closed to “Student answers — Biology”.',
-     needs: 'The dashboard opened once that day, on any tab and in any browser. The Monday run counts.'},
-    {who: 'Teaching Hub', when: 'Whenever a week is opened on Student work',
-     what: 'Scores every deck, finds missing and late work, and shows each assignment’s IC status.',
-     needs: 'Nothing but opening it.'},
+    {when: 'Monday 7:23 AM', who: 'School Claude', key: 'monday_run',
+     what: 'Checks IC rosters and fills in scores (0s for missing work), then waits for your OK.',
+     needs: 'Your home computer on, with the Claude app open and you signed in.'},
+    {when: 'Daily', who: 'Teaching Hub', key: 'research',
+     what: 'Saves finished Biology answers to “Student answers — Biology”.',
+     needs: 'The Hub opened once that day.'},
+    {when: 'Whenever a class and week are open on Student work', who: 'Teaching Hub',
+     what: 'Finds the work turned in for that week and scores it. Weeks nobody opens aren’t scored; on Monday school Claude opens every one.',
+     needs: 'Nothing to click.'},
   ],
+  // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
-    {when: 'Every Monday, 7:15 AM', what: 'On your home computer: open the Claude desktop app, sign in to Chrome, Infinite Campus and the Teaching Hub, and leave the computer awake with Chrome and the app open.', note: 'School Claude’s Monday run starts at 7:23 AM and can’t open the app, wake the computer or sign in for you.'},
-    {when: 'Every Monday, 8:00 AM', what: 'Review school Claude’s Monday list (roster and scores) and reply OK; skim the “Monday run” Doc.'},
-    {when: 'Every Thursday', what: 'Feedback: on Student work, for each assignment with new revisions, Start feedback → paste into Teacher Claude → check the three Docs in the week’s 📥 folder → print → click “Mark feedback done”.', note: 'Click Mark feedback done right after the run, or the same students are listed again.'},
-    {when: 'Every Friday', what: 'Hand back the printed feedback and collect the “What I understand now” pages.'},
-    {when: 'Every Friday', what: 'Plan next week on Lesson plans (Edit here), and check each lesson row has its Turn-in Form and Student copy links.', note: 'Without those links the Hub can’t find or score the work.'},
-    {when: 'Every Friday', what: 'Run the embed-coding program on next week’s new decks before handing them out.'},
-    {when: 'Every Friday', what: 'On Student work, click “Tidy this week’s folders” for each class.'},
-    {when: 'First Monday of the month', what: 'Run Prompt 3 (Biology teaching summary) in Teacher Claude, and glance at “Student answers — Biology” for the recently closed weeks.'},
-    {when: 'When you change a prompt in the Agenda', what: 'Ask Claude Code to copy the changed prompt to GitHub.'},
-    {when: 'Every August', what: 'New school year: rename “Student answers — Biology” to add the year, make a new blank one with the exact name, and update the rosters.'},
+    {when: 'Mon 7:15 AM', you: 'Home computer: open the Claude app, sign in to Chrome, IC and the Hub. Leave it on. Nothing to click on the Hub.',
+     done: 'At 7:23 school Claude reads the scores on the Hub and fills them into IC.'},
+    {when: 'Mon 8:00 AM', you: 'Read school Claude’s list. Reply OK.',
+     done: 'Your OK saves the scores (and 0s) and roster fixes in IC.'},
+    {when: 'Thursday', you: 'Student work → pick class and week → Start feedback → Copy prompt → paste into Teacher Claude. Print the Doc it saves in the 📥 folder. Click Mark feedback done.',
+     done: 'Each student gets two pages of feedback.'},
+    {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
+     done: 'Students answer their feedback.'},
+    {when: 'Friday', you: 'Plan next week on Lesson plans. Each lesson needs a Turn-in Form and a Student copy link.',
+     done: 'The Hub can find and score next week’s work.'},
+    {when: 'Friday', you: 'Run embed-coding on next week’s new decks.',
+     done: 'Every answer box can be scored.'},
+    {when: 'Friday', you: 'Student work → Tidy this week’s folders, for each class.',
+     done: 'Files sit in the right week, so counts and 0s are right.'},
+    {when: '1st Monday of the month', you: 'Run Prompt 3 in Teacher Claude.',
+     done: 'Your Biology teaching summary.'},
+    {when: 'After you move or add a lesson', you: 'Click Check links (below). Move its Schoology page to the new week.',
+     done: 'Students’ links open the right Form and deck.'},
+    {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
+     done: 'The backup copy matches the Agenda.'},
+    {when: 'August', you: 'Rename “Student answers — Biology” with the year, make a new blank one, update rosters.',
+     done: 'The new year starts clean.'},
+  ],
+  // Every button on the Hub and who clicks it.
+  buttons: [
+    {button: 'Scores are ready to enter in IC', who: 'School Claude, Monday', note: 'Opens the list of scores. You can open it just to look.'},
+    {button: 'I entered these in IC', who: 'School Claude, Monday', note: 'After your OK. Click it yourself only if you typed scores into IC.'},
+    {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
+    {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
+    {button: 'Tidy this week’s folders → Move them', who: 'You, Friday', note: 'Once per class.'},
+    {button: 'Edit here → Save to Agenda', who: 'You, Friday', note: 'On Lesson plans, to plan next week.'},
+    {button: 'Move · Check links', who: 'You, when a lesson moves', note: 'Move is under Edit here; Check links is on this page.'},
+    {button: 'Answers by question · Missing-work sheets', who: 'You, if you want', note: 'For reading answers and printing reminder sheets.'},
+    {button: 'Reload · ← → · Today', who: 'You, if you want', note: 'Refresh the page or change the week.'},
   ],
 };
 
@@ -1121,7 +1092,7 @@ function renderRoutine(data) {
   const late = data && (!run || run.problem || (Date.now() - new Date(run.at)) / DAY > 8);
   const scheduled = el('details', {class: 'routine routine-scheduled', open: store.get('routine-scheduled-open') === '1',
     ontoggle: e => store.set('routine-scheduled-open', e.target.open ? '1' : '0')},
-    el('summary', {}, el('h2', {text: 'Done for you, on schedule'}),
+    el('summary', {}, el('h2', {text: 'Done for you'}),
       late ? el('span', {class: 'badge warn', text: run?.problem ? 'Can’t check the Monday run' : 'Monday run: not in the last week'}) : null),
     ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
       el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
@@ -1129,23 +1100,51 @@ function renderRoutine(data) {
       el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
       t.key ? routineStatus(t.key, data) : null)));
   const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
-    el('div', {class: 'table-wrap'}, el('table', {},
-      el('thead', {}, el('tr', {}, ['When', 'What', 'Why it matters'].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {text: t.when}), el('td', {text: t.what}),
-        el('td', {class: 'muted', text: t.note || ''})))))));
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
+        el('td', {text: t.you}), el('td', {text: t.done})))))));
+  const buttons = el('section', {class: 'routine'}, el('h2', {text: 'Who clicks which button'}),
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['Button', 'Who', ''].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.buttons.map(b => el('tr', {}, el('td', {class: 'routine-when', text: b.button}),
+        el('td', {text: b.who}), el('td', {class: 'muted', text: b.note})))))));
   const sheet = data?.scores_entered;
   const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
     el('ul', {class: 'files'},
       el('li', {}, sheet && !sheet.problem
-        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — the dashboard adds a row when “I entered these in IC” or “Mark feedback done” is clicked${sheet.last ? `; last row ${sheet.last}` : ''}.`]
+        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — a row for each IC entry and feedback round${sheet.last ? ` (last: ${sheet.last})` : ''}.`]
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
-      el('li', {}, 'Feedback, Growth record and Class growth summary Docs: in each week’s 📥 folder.'),
-      el('li', {}, '“Monday run — date” Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(mine, scheduled, sheets);
+      el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
+      el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
+  body.replaceChildren(mine, buttons, scheduled, sheets);
 }
 
 // ---------- Link check ----------
-const KIND_NOTE = {'shared-form': 'info', 'no-form': 'info'};
+// Problems first, one line each; Forms shared by weeks and decks the Hub
+// can't open are summed up underneath, since they're usually fine.
+const QUIET = new Set(['shared-form', 'deck-unreadable']);
+
+function linkCheckResult(name, data) {
+  const problems = data.flags.filter(f => !QUIET.has(f.kind));
+  const shared = data.flags.filter(f => f.kind === 'shared-form');
+  const decks = data.flags.filter(f => f.kind === 'deck-unreadable');
+  return [
+    data.problem ? note(data.problem) : null,
+    problems.length
+      ? el('ul', {class: 'link-flags'}, problems.map(f => el('li', {}, el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
+      : el('p', {class: 'ok', text: `✓ Every ${name} lesson links a Turn-in Form for its own week.`}),
+    shared.length ? el('details', {class: 'muted'},
+      el('summary', {text: `${shared.length} Form${shared.length === 1 ? ' is' : 's are'} used for more than one week (fine when a lesson spans those weeks)`}),
+      el('ul', {class: 'link-flags'}, shared.map(f => el('li', {}, el('strong', {text: `${f.week}: `}), f.message)))) : null,
+    decks.length ? el('p', {class: 'muted', text: `${decks.length} deck link${decks.length === 1 ? '' : 's'} couldn’t be checked: the Hub can’t open ${decks.length === 1 ? 'it' : 'them'}.`}) : null,
+    el('details', {}, el('summary', {text: `See every ${name} lesson’s Forms and decks`}),
+      el('div', {class: 'table-wrap'}, el('table', {},
+        el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
+        el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
+          el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
+          el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'})))))))];
+}
 
 async function runLinkCheck() {
   const body = $('link-check-body');
@@ -1157,18 +1156,7 @@ async function runLinkCheck() {
     body.append(part);
     try {
       const data = await getJSON(`api/audit?class=${key}`);
-      part.lastChild.remove();
-      if (data.problem) part.append(note(data.problem));
-      part.append(data.flags.length
-        ? el('ul', {class: 'link-flags'}, data.flags.map(f => el('li', {class: KIND_NOTE[f.kind] ? 'muted' : ''},
-            el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
-        : el('p', {class: 'ok', text: `✓ Every ${name} lesson's Forms and decks line up.`}));
-      part.append(el('details', {}, el('summary', {text: `Every ${name} lesson's Forms and decks (${data.rows.length})`}),
-        el('div', {class: 'table-wrap'}, el('table', {},
-          el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
-          el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
-            el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
-            el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}))))))));
+      part.lastChild.replaceWith(...linkCheckResult(name, data).filter(Boolean));
     } catch (error) {
       part.lastChild.replaceWith(note(error.message));
     }

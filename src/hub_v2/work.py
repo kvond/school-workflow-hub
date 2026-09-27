@@ -38,9 +38,12 @@ STUDENT_WORK = ("application/vnd.google-apps.presentation", "application/vnd.goo
                 "application/vnd.ms-powerpoint", "image/jpeg", "image/png", "image/heic")
 # Documents the teacher's system makes and keeps beside the work (feedback,
 # growth records, class growth summaries, teacher notes, summary ratings,
-# Monday run logs) are never student work.
-NOT_STUDENT_WORK = re.compile(r"growth (?:report|record)|feedback|class (?:growth )?summary|teaching summary|"
-                              r"summary ratings|monday run|teacher notes|template|answer key", re.I)
+# Monday run logs) are never student work. Words may be joined by spaces,
+# underscores or hyphens: Teacher Claude sometimes saves "Growth_record_…".
+_JOIN = r"[\s_-]+"
+NOT_STUDENT_WORK = re.compile(
+    r"growth{0}(?:report|record)|feedback|class{0}(?:growth{0})?summary|teaching{0}summary|summary{0}ratings|"
+    r"monday{0}run|teacher{0}notes|template|answer{0}key".format(_JOIN), re.I)
 MAX_FOLDERS = 60
 LATE_AFTER_DAYS = 14
 ROSTER_STALE_DAYS = 7

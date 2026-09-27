@@ -37,7 +37,7 @@ anything unsortable is listed as "Not sorted". Each file is matched to the
 roster by school email or by the username/name in its file name. Each student's
 current file is shown (Form uploads first; trashed files and files named for
 another week are never picked) with the rest as history, alongside who hasn't
-turned in and a grade sheet CSV. A problem
+turned in. A problem
 with one tab, cell or Form is shown on that card; it never blanks the page.
 
 **Editing a lesson from the dashboard.** On Lesson plans, **Edit here** opens a
@@ -66,8 +66,8 @@ its own and marked "Late — not graded" on the grade sheet. Every load also run
 work from someone on another class's roster or on no roster is flagged, and the
 Rosters sheet's last change is shown.
 
-Completion scoring runs by itself when Student work opens (results are cached
-per deck version; **Score again** re-runs it). It exports each student's current on-time
+Completion scoring runs by itself when a week is open on Student work (results
+are cached per deck version; **Reload** reads the week again). It exports each student's current on-time
 deck from Drive and compares it, box by box, with the copy linked in the
 lesson's Agenda row. The required items are the codes in the deck's
 `[[MARKER-INVENTORY:…]]` header: Notes = 10 × (completed NOTES + BANK) ÷
@@ -75,9 +75,8 @@ required, Revision = 10 × completed DRAFT ÷ required, following the teacher's
 Prompt 1. It counts; it never judges quality, and no model is called. A box
 counts when the student wrote something new in it; the printed prompt copied
 back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
-ready to enter in IC** lists the scores for typing into Infinite Campus, or
-copies them with instructions for the Claude extension to enter while the
-teacher watches. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
+ready to enter in IC** lists the scores, which school Claude's Monday run
+enters in Infinite Campus after the teacher's OK. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
 open (enter every score listed, 0s included; a 0 is replaced when the student
 turns work in), closed and
 waiting for final scores (enter every score, 0s included, then click **I entered

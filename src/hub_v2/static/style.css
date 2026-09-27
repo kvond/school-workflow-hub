@@ -134,6 +134,10 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .routine-item p { margin: 4px 0; }
 .routine-when { color: var(--muted); }
 .routine-needs { font-size: 14px; }
+.routine-table td { vertical-align: top; }
+.routine-table td.routine-when { width: 11em; font-weight: 600; color: var(--ink); }
+.link-class details { margin: 6px 0; }
+.link-class details > summary { cursor: pointer; }
 .answers-slide { margin: 16px 0 4px; font-size: 14px; }
 .answers td { min-width: 180px; max-width: 360px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .answers td:first-child { min-width: 150px; white-space: normal; }
