@@ -124,6 +124,10 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .routine-scheduled > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .routine-scheduled > summary h2 { display: inline; margin: 0; }
 .routine-scheduled[open] > summary { margin-bottom: 8px; }
+.link-class + .link-class { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
+.link-class h3 { margin: 4px 0; font-size: 15px; }
+.link-flags { margin: 4px 0 8px; padding-left: 18px; }
+.link-flags li { margin: 4px 0; }
 .move-lesson { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 10px; }
 .move-lesson select { max-width: 100%; }
 .routine-item + .routine-item { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 12px; }

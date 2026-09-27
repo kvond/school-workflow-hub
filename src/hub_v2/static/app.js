@@ -1150,6 +1150,37 @@ function renderRoutine(data) {
   body.replaceChildren(mine, scheduled, sheets);
 }
 
+// ---------- Link check ----------
+const KIND_NOTE = {'shared-form': 'info', 'no-form': 'info'};
+
+async function runLinkCheck() {
+  const body = $('link-check-body');
+  const button = $('run-link-check');
+  button.disabled = true;
+  body.replaceChildren();
+  for (const [key, name] of CLASSES) {
+    const part = el('div', {class: 'link-class'}, el('h3', {text: name}), el('p', {class: 'muted', text: 'Checking…'}));
+    body.append(part);
+    try {
+      const data = await getJSON(`api/audit?class=${key}`);
+      part.lastChild.remove();
+      if (data.problem) part.append(note(data.problem));
+      part.append(data.flags.length
+        ? el('ul', {class: 'link-flags'}, data.flags.map(f => el('li', {class: KIND_NOTE[f.kind] ? 'muted' : ''},
+            el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
+        : el('p', {class: 'ok', text: `✓ Every ${name} lesson's Forms and decks line up.`}));
+      part.append(el('details', {}, el('summary', {text: `Every ${name} lesson's Forms and decks (${data.rows.length})`}),
+        el('div', {class: 'table-wrap'}, el('table', {},
+          el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
+          el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
+            el('td', {text: r.forms.join(' · ') || '—'}), el('td', {text: r.decks.join(' · ') || '—'}))))))));
+    } catch (error) {
+      part.lastChild.replaceWith(note(error.message));
+    }
+  }
+  button.disabled = false;
+}
+
 async function loadRoutine() {
   const seq = ++routine.seq;
   renderRoutine(null);
@@ -1186,6 +1217,7 @@ $('work-class').addEventListener('change', e => { work.cls = e.target.value; sto
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
 $('reload-routine').addEventListener('click', loadRoutine);
+$('run-link-check').addEventListener('click', runLinkCheck);
 $('copy-todoist').addEventListener('click', async () => {
   try { await navigator.clipboard.writeText(todoistText()); setStatus('routine-status', 'Copied. Paste it into ChatGPT to add these to Todoist.'); }
   catch { setStatus('routine-status', 'Couldn’t copy in this browser.', true); }
