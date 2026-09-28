@@ -26,11 +26,13 @@ last update is shown.
 """
 import os
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 from . import google, roster
-from .agenda import norm
+from .agenda import lesson_kind, norm
 
 STUDENT_WORK = ("application/vnd.google-apps.presentation", "application/vnd.google-apps.document",
                 "application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -45,6 +47,13 @@ NOT_STUDENT_WORK = re.compile(
     r"growth{0}(?:report|record)|feedback|class{0}(?:growth{0})?summary|teaching{0}summary|summary{0}ratings|"
     r"monday{0}run|teacher{0}notes|template|answer{0}key".format(_JOIN), re.I)
 MAX_FOLDERS = 60
+# Turn-ins through the wrong Form: lessons this many teaching weeks either side
+# of the one on the page are checked, and their Forms' responses kept briefly.
+NEARBY_LESSONS = 2
+RESPONSES_SECONDS = 120
+# Words every deck or Form name has, which say nothing about which lesson it is.
+GENERIC_WORDS = {"copy", "live", "week", "cycle", "forensics", "biology", "anatomy", "slides", "google",
+                 "markered", "presentation", "untitled", "lesson", "student", "final", "draft", "notes"}
 LATE_AFTER_DAYS = 14
 ROSTER_STALE_DAYS = 7
 ROSTER_FLAG_DAYS = 7  # roster-change flags about older work are dropped
@@ -371,6 +380,102 @@ def form_weeks(agenda, class_key):
                 if form["form_id"] and (form["form_id"] not in starts or monday < starts[form["form_id"]]):
                     starts[form["form_id"]] = monday
     return starts
+
+
+def deck_words(name):
+    """The telling words of the deck a file was copied from, not the student's name:
+    's.x — 09-16 11.29 — Copy of ▶ LIVE — Week 04 — Eyewitness Accounts (VT) - Ana B.pptx'
+    → {'eyewitness', 'accounts'}."""
+    text = re.sub(r"^\s*s\.[a-z0-9.\-]+\s+[—-]\s+\d{2}-\d{2}\s+\d{2}\.\d{2}\s+[—-]\s*", "", str(name or ""), flags=re.I)
+    text = re.sub(r"\.(pptx?|pdf|docx?|key)$", "", text, flags=re.I)
+    if " - " in text:
+        text = text.rsplit(" - ", 1)[0]
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text).replace("_", " ").lower()
+    return set(re.findall(r"[a-z]{5,}", text)) - GENERIC_WORDS
+
+
+def lesson_words(topic, label, deck_names, found):
+    """(base, words): what a lesson is called (its topic, its Form's label and its
+    decks' titles), and that plus the words most of its matching turn-ins share.
+    Only files that already name the lesson teach it words, so a pile of another
+    lesson's decks turned in through its Form can't."""
+    base = deck_words(topic) | deck_words(label)
+    for name in deck_names:
+        base |= deck_words(name)
+    matching = [words for words in ({w for f in s["files"] for w in deck_words(f.get("name"))} for s in found)
+                if words & base]
+    counts = {}
+    for words in matching:
+        for word in words:
+            counts[word] = counts.get(word, 0) + 1
+    return base, base | {w for w, n in counts.items() if n >= 2 and 2 * n >= len(matching)}
+
+
+def wrong_form_moves(entries):
+    """[(from, submission, to)] for turn-ins that are another lesson's deck.
+
+    entries are this week's Forms ("current": True) and nearby lessons' Forms,
+    each with its "base" and "words" (see lesson_words) and "found". A file
+    stays when its deck names anything of its own lesson; it moves only when it
+    shares a telling word with exactly one other lesson (a word two lessons
+    share tells nothing). Only moves out of this week's Forms, or into them,
+    are returned."""
+    seen = {}
+    for entry in entries:
+        for word in entry["words"]:
+            seen[word] = seen.get(word, 0) + 1
+    telling = [{w for w in entry["words"] if seen[w] == 1} for entry in entries]
+    moves = []
+    for i, entry in enumerate(entries):
+        for submission in entry["found"]:
+            words = {w for f in submission["files"] for w in deck_words(f.get("name"))}
+            if not words or words & (telling[i] | entry["base"]):
+                continue
+            hits = [j for j, other in enumerate(telling) if j != i and words & other]
+            if len(hits) == 1 and (entry["current"] or entries[hits[0]]["current"]):
+                moves.append((i, submission, hits[0]))
+    return moves
+
+
+_responses_cache = {}
+_responses_lock = threading.Lock()
+
+
+def recent_submissions(token, form_id):
+    """A nearby Form's turn-ins, kept for RESPONSES_SECONDS."""
+    with _responses_lock:
+        hit = _responses_cache.get(form_id)
+        if hit and time.time() - hit[0] < RESPONSES_SECONDS:
+            return list(hit[1])
+    found = submissions(google.form_responses(token, form_id))
+    with _responses_lock:
+        _responses_cache[form_id] = (time.time(), found)
+    return list(found)
+
+
+def nearby_forms(token, agenda, class_key, week_label, skip):
+    """[{week, label, topic, form_id, found}] for the Forms of the lessons up to
+    NEARBY_LESSONS teaching weeks before and after this one."""
+    layout = agenda.classes[class_key]["layout"] or {"rows": []}
+    labels = [label for label in dict.fromkeys(label for _, label in layout["rows"])
+              if any(lesson_kind(lesson["topic"]) == "lesson" for lesson in agenda.lessons(class_key, label))]
+    here = next((i for i, label in enumerate(labels) if norm(label) == norm(week_label)), None)
+    if here is None:
+        return []
+    out = []
+    for label in labels[max(0, here - NEARBY_LESSONS):here] + labels[here + 1:here + 1 + NEARBY_LESSONS]:
+        for lesson in agenda.lessons(class_key, label):
+            for form in lesson["forms"]:
+                if not form["form_id"] or form["form_id"] in skip:
+                    continue
+                try:
+                    found = recent_submissions(token, form["form_id"])
+                except google.GoogleError:
+                    continue
+                skip = skip | {form["form_id"]}
+                out.append({"week": label, "label": form["label"], "topic": lesson["topic"],
+                            "form_id": form["form_id"], "found": found})
+    return out
 
 
 def deck_stem(name):
@@ -748,6 +853,35 @@ def lesson_work(token, config, agenda, class_key, week_label):
             else:
                 other.append(submission)
 
+    # A turn-in that is another lesson's deck (through the wrong Form, or in the
+    # wrong week's folder) isn't counted here; one made through a nearby
+    # lesson's Form that is this lesson's deck is counted here, marked "via".
+    entries, index = [], 0
+    for lesson in lessons:
+        deck_ids = {m.group(1) for material in lesson["materials"]
+                    for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
+        titles = [info.get("name", "") for info in _metadata(token, deck_ids).values()]
+        for form in forms[index:index + len(lesson["forms"])]:
+            base, words = lesson_words(lesson["topic"], form["label"], titles, form["found"])
+            entries.append({"current": True, "form": form, "week": week_label, "label": form["label"],
+                            "found": form["found"], "base": base, "words": words})
+        index += len(lesson["forms"])
+    for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}):
+        base, words = lesson_words(near["topic"], near["label"], [], near["found"])
+        entries.append({"current": False, "week": near["week"], "label": near["label"], "found": near["found"],
+                        "base": base, "words": words})
+    for i, submission, j in wrong_form_moves(entries):
+        source, target = entries[i], entries[j]
+        if submission not in source["found"]:
+            continue
+        source["found"].remove(submission)
+        if source["current"]:
+            source["form"].setdefault("moved_out", []).append(
+                {"submission": submission, "to": "%s · %s" % (target["week"], target["label"])})
+        if target["current"]:
+            via = source["label"] if source["current"] else "%s · %s" % (source["week"], source["label"])
+            target["found"].append(dict(submission, files=[dict(f, via=via) for f in submission["files"]]))
+
     # Each Form's two weeks start at its first turn-in; files not sorted to a
     # Form use the week's earliest-opened one.
     starts = form_weeks(agenda, class_key)
@@ -768,12 +902,24 @@ def lesson_work(token, config, agenda, class_key, week_label):
                                   cutoff=open_for["at"] if open_for else None)
             for m in missing:
                 m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted
+            moved = form.get("moved_out", [])
+            describe_files(token, [m["submission"] for m in moved], known)
+            elsewhere = []
+            for m in moved:
+                student, _ = identify(m["submission"], students, domains, prefix)
+                first = m["submission"]["files"][0] if m["submission"]["files"] else {}
+                elsewhere.append({"who": "%s, %s" % (student["last"], student["first"]) if student else
+                                  (m["submission"]["email"] or first.get("name", "")),
+                                  "section": student["section"] if student else "", "to": m["to"],
+                                  "source": m["submission"]["source"], "file": first.get("name", ""),
+                                  "url": first.get("url", ""), "submitted_at": m["submission"]["submitted_at"]})
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
                               "shared_files": sum(1 for s in form["found"] if s.get("shared")),
                               "students": [r for r in rows if not r["late"]],
                               "late": [r for r in rows if r["late"]], "missing": missing,
+                              "elsewhere": elsewhere,
                               "window": {"opened": open_for["opened"], "label": open_for["label"],
                                          "from": open_for["from"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                                          "at": open_for["at"].strftime("%Y-%m-%dT%H:%M:%SZ")}

@@ -630,6 +630,56 @@ class FolderTests(unittest.TestCase):
         self.assertTrue(work.NOT_STUDENT_WORK.search(
             "Teacher notes (private) — Forensics Wk 03 — Inductive and Deductive Reasoning — Turn In — 2026-09-24"))
 
+    def test_deck_words_leave_out_the_students_name_and_common_words(self):
+        self.assertEqual(work.deck_words("s.a.b — 09-16 11.29 — Copy of ▶ LIVE — Week 04 — Eyewitness Accounts (VT) - Ana Bee.pptx"),
+                         {"eyewitness", "accounts"})
+        self.assertEqual(work.deck_words("Copy of Observation_Deductive_Reasoning_VT_CSI_1_markered - Ana"),
+                         {"observation", "deductive", "reasoning"})
+
+    def wrong_form_entries(self, current):
+        def found(*names):
+            return [{"source": "form", "files": [{"name": name}], "key": name} for name in names]
+        eyewitness = "Copy of ▶ LIVE — Week 04 — Eyewitness Accounts (VT) - %s.pptx"
+        lessons = {
+            "Wk 03": ("Observation Skills & Deductive Reasoning", "Inductive and Deductive Reasoning — Turn In",
+                      found("Inductive_Deductive_Forensics_Google_Slides - A", "Inductive_Deductive_Forensics_Google_Slides - B",
+                            eyewitness % "Oladotun")),
+            "Wk 04": ("Eyewitness Testimony & The Innocence Project", "📤 Eyewitness Testimony — Turn in",
+                      found(eyewitness % "C", eyewitness % "D", eyewitness % "E")),
+            "Wk 05": ("Types of Evidence", "📤 Types of Evidence — Turn in",
+                      found(eyewitness % "Sabrina", "Copy of ▶ LIVE — Week 05 — Types of Evidence (VT) - Kamiyah.pptx",
+                            "Copy of Untitled presentation - Sam")),
+        }
+        return [{"current": week == current, "week": week, "label": label, "found": subs,
+                 **dict(zip(("base", "words"), work.lesson_words(topic, label, [], subs)))}
+                for week, (topic, label, subs) in lessons.items()]
+
+    def test_another_lessons_deck_turned_in_through_this_form_counts_for_that_lesson(self):
+        entries = self.wrong_form_entries("Wk 05")
+        moves = [(entries[i]["week"], s["files"][0]["name"], entries[j]["week"]) for i, s, j in work.wrong_form_moves(entries)]
+        # Sabrina's Eyewitness deck leaves Types of Evidence; Kamiyah's Types deck and an untitled copy stay.
+        # Oladotun's (Wk 03 Form → Wk 04) is between two other weeks, so it's left to those weeks' pages.
+        self.assertEqual(moves, [("Wk 05", "Copy of ▶ LIVE — Week 04 — Eyewitness Accounts (VT) - Sabrina.pptx", "Wk 04")])
+        entries = self.wrong_form_entries("Wk 04")
+        moves = sorted((entries[i]["week"], entries[j]["week"]) for i, s, j in work.wrong_form_moves(entries))
+        self.assertEqual(moves, [("Wk 03", "Wk 04"), ("Wk 05", "Wk 04")])  # both counted for Eyewitness
+
+    def test_a_deck_that_names_its_own_lesson_or_two_others_stays(self):
+        entries = self.wrong_form_entries("Wk 05")
+        entries[2]["found"] += [
+            {"source": "form", "key": "own", "files": [{"name": "Copy of Types and Eyewitness review - Lee.pptx"}]},
+            {"source": "form", "key": "two", "files": [{"name": "Copy of Inductive Eyewitness mashup - Kim.pptx"}]}]
+        moved = [s["key"] for i, s, j in work.wrong_form_moves(entries)]
+        self.assertNotIn("own", moved)
+        self.assertNotIn("two", moved)
+
+    def test_a_pile_of_another_lessons_decks_doesnt_teach_a_lesson_their_name(self):
+        wrong = [{"source": "form", "key": k, "files": [{"name": "Copy of ▶ LIVE — Week 04 — Eyewitness Accounts (VT) - %s" % k}]}
+                 for k in "ABC"]
+        base, words = work.lesson_words("Types of Evidence", "📤 Types of Evidence — Turn in", [], wrong)
+        self.assertEqual(words, base)
+        self.assertNotIn("eyewitness", words)
+
     def test_name_time_and_deck_stem(self):
         self.assertEqual(work.name_time("s.a.b — 09-16 11.29 — x", "2026-09-20T01:00:00Z"), "2026-09-16T15:29:00Z")
         self.assertEqual(work.name_time("s.a.b — 01-05 10.00 — x", "2027-01-06T01:00:00Z"), "2027-01-05T15:00:00Z")
