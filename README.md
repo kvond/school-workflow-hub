@@ -162,12 +162,18 @@ title, for comparing with Schoology. Read only.
 **Routine** opens with **Copy Monday prompt (Claude extension)**: the teacher
 pastes it into the Claude extension in her own Chrome, signed in to Infinite
 Campus and the Hub, and it checks rosters, reads the IC lists, waits for her OK,
-then enters and reads back the scores (nothing runs it on a timer). The page
+then enters and reads back the scores (nothing runs it on a timer); the prompt
+replaces anything the extension remembers from earlier weeks. **Lesson planning**
+comes next: plan on Lesson plans, and right after updating a deck, **Copy
+embed-coding prompt** copies the Agenda's Prompt 0 (Feedback Prompts tab, read
+live, so edits there show here) to paste into Claude with the deck. The page
 then shows when completion scores happen, what runs on its own (the daily
 research-sheet check, scoring on open), the teacher's own tasks, who clicks
 which button, and live status read from Drive: the newest "Monday run — date"
 Doc (flagged when more than a week old)
-and the last row of the Scores entered and research sheets. Documents the system makes and keeps beside the work (feedback, growth
+and the last row of the Scores entered and research sheets. Until an answer is
+added, the research line says which Biology assignment closes next and when (the
+daily check notes it), since answers are only added once its two weeks close. Documents the system makes and keeps beside the work (feedback, growth
 records, class growth summaries, summary ratings, Monday run logs) are never
 read as student work, and a one-cell title above a roster list isn't reported
 as an unreadable row.

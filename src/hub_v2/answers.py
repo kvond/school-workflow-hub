@@ -156,7 +156,8 @@ def sweep(token, write_token, config, agenda, class_key, load_work, score_rows, 
     Weeks that haven't started, and weeks whose Forms all have rows already,
     are skipped without reading Drive. load_work(week) is the Student work
     result for a week, score_rows(week, form, found) its scored students.
-    Stops after SWEEP_SECONDS with more=True, so the page asks again."""
+    Stops after SWEEP_SECONDS with more=True, so the page asks again. "next"
+    is the open assignment that closes soonest (its answers come next)."""
     if class_key not in SHEETS:
         raise ValueError("class")
     sheet = find(token, config, class_key)
@@ -169,7 +170,7 @@ def sweep(token, write_token, config, agenda, class_key, load_work, score_rows, 
         today = work.school_day(now)
         _, _, keys = _saved(token, sheet, class_key)
         done = {key.split("|", 1)[0] for key in keys}  # Forms with rows already
-        start, added, forms, more, seen = clock(), 0, [], False, set()
+        start, added, forms, more, seen, upcoming = clock(), 0, [], False, set(), None
         for option in agenda.week_options(class_key):
             if not option["forms"] or not option.get("monday") or date.fromisoformat(option["monday"]) > today:
                 continue
@@ -183,7 +184,13 @@ def sweep(token, write_token, config, agenda, class_key, load_work, score_rows, 
             found = load_work(option["label"])
             for lesson in found.get("lessons", []):
                 for form in lesson["forms"]:
-                    if form.get("form_id") not in ids or not closed(form, now):
+                    if form.get("form_id") not in ids:
+                        continue
+                    if not closed(form, now):
+                        # Still open: the soonest to close is the next to be added.
+                        if form.get("window") and (not upcoming or form["window"]["at"] < upcoming["at"]):
+                            upcoming = {"week": option["label"], "assignment": lesson.get("topic") or form["label"],
+                                        "label": form["window"]["label"], "at": form["window"]["at"]}
                         continue
                     seen.add(form["form_id"])  # a Form listed in two weeks is saved once
                     context = {"class": agenda.classes[class_key]["name"], "week": option["label"],
@@ -194,6 +201,6 @@ def sweep(token, write_token, config, agenda, class_key, load_work, score_rows, 
                         added += new
                         forms.append({"week": option["label"], "assignment": form["label"], "saved": new})
         return {"configured": True, "url": "https://docs.google.com/spreadsheets/d/%s/edit" % sheet["id"],
-                "saved": added, "forms": forms, "more": more}
+                "saved": added, "forms": forms, "more": more, "next": upcoming}
     finally:
         _sweeping.release()

@@ -447,15 +447,18 @@ async function saveAnswers(form, seq) {
 async function sweepResearch() {
   const today = todayISO();
   if (store.get('research-sweep') === today) return;
+  let next = null;
   for (const cls of RESEARCH_CLASSES) {
     for (let round = 0; round < 8; round++) {
       let done;
       try { done = await postJSON('api/answers/sweep', {class: cls}); } catch { return; }  // try again next load
+      if (done.next && (!next || done.next.at < next.at)) next = done.next;
       if (!done.more) break;
       if (done.busy) await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }
   store.set('research-sweep', today);
+  store.set('research-next', JSON.stringify(next));
 }
 
 function researchLine(form) {
@@ -1071,6 +1074,7 @@ async function missingWorkSheets() {
 const mondayPrompt = () => `Please do my "Monday grades and roster" check now, in this Chrome window. I'm here and will review before anything is saved.
 
 GROUND RULES
+- This prompt replaces anything you remember about this routine from earlier weeks. Where your memory differs, follow this prompt.
 - If Infinite Campus (IC) or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password or choose a sign-in for me.
 - Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
 - Never delete anything, never create an IC assignment, and never change a grade or due date that isn't on the list I approve.
@@ -1135,20 +1139,23 @@ const ROUTINE = {
      done: 'Each student gets two pages of feedback.'},
     {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
      done: 'Students answer their feedback.'},
-    {when: 'Friday', you: 'Plan next week on Lesson plans. Each lesson needs a Turn-in Form and a Student copy link.',
-     done: 'The Hub can find and score next week’s work.'},
-    {when: 'Friday', you: 'Run embed-coding on next week’s new decks.',
-     done: 'Every answer box can be scored.'},
     {when: 'Friday', you: 'Student work → Tidy this week’s folders, for each class.',
      done: 'Files sit in the right week, so counts and 0s are right.'},
     {when: '1st Monday of the month', you: 'Run Prompt 3 in Teacher Claude.',
      done: 'Your Biology teaching summary.'},
-    {when: 'After you move or add a lesson', you: 'Click Check links (below). Schoology needs nothing: students find lessons by folder name.',
-     done: 'Students’ links open the right Form and deck.'},
     {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
      done: 'The backup copy matches the Agenda.'},
     {when: 'August', you: 'Rename “Student answers — Biology” with the year, make a new blank one, update rosters.',
      done: 'The new year starts clean.'},
+  ],
+  // Lesson planning, usually before Friday or on Sunday night.
+  planning: [
+    {when: 'Planning a week', you: 'Lesson plans → Edit here: topic, day plans, the deck and its Turn-in Form → Save to Agenda.',
+     done: 'The lesson shows on the dashboard, and the Hub can find and score its work.'},
+    {when: 'Right after you update a deck', you: 'Copy embed-coding prompt (below) → paste it into Claude with the deck attached.',
+     done: 'Every answer box has a code, so the Hub can score it.'},
+    {when: 'After you move or add a lesson', you: 'Click Check links (below). Schoology needs nothing: students find lessons by folder name.',
+     done: 'Students’ links open the right Form and deck.'},
   ],
   // Every button on the Hub and who clicks it.
   buttons: [
@@ -1158,7 +1165,8 @@ const ROUTINE = {
     {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
     {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
     {button: 'Tidy this week’s folders → Move them', who: 'You, Friday', note: 'Once per class.'},
-    {button: 'Edit here → Save to Agenda', who: 'You, Friday', note: 'On Lesson plans, to plan next week.'},
+    {button: 'Edit here → Save to Agenda', who: 'You, lesson planning', note: 'On Lesson plans, to plan a week.'},
+    {button: 'Copy embed-coding prompt', who: 'You, lesson planning', note: 'Right after you update a deck; paste it into Claude with the deck.'},
     {button: 'Move · Check links', who: 'You, when a lesson moves', note: 'Move is under Edit here; Check links is on this page.'},
     {button: 'Answers by question · Missing-work sheets', who: 'You, if you want', note: 'For reading answers and printing reminder sheets.'},
     {button: 'Reload · ← → · Today', who: 'You, if you want', note: 'Refresh the page or change the week.'},
@@ -1178,9 +1186,14 @@ function routineStatus(key, data) {
   }
   if (key === 'research') {
     const checked = store.get('research-sweep');
+    let next = null;
+    try { next = JSON.parse(store.get('research-next') || 'null'); } catch { /* none noted */ }
     if (!found) return note('No “Student answers — Biology” sheet was found at the top of 00 REAL ALL TURN IN.', 'info');
-    return el('p', {class: 'muted'}, found.last ? `Answers last added ${found.last}. ` : 'No answers added yet. ',
-      checked ? `Checked in this browser on ${checked}. ` : '', link('Open the sheet ↗', found.url));
+    const coming = next && new Date(next.at) > new Date()
+      ? `Next to close: ${next.week} · ${next.assignment}, ${next.label}. Its answers are added the first time the Hub is opened after that. ` : '';
+    return el('p', {class: 'muted'},
+      found.last ? `Answers last added ${found.last}. ` : 'No answers added yet: an assignment’s answers are added once its two weeks close. ',
+      coming, checked ? `Checked in this browser on ${checked}. ` : '', link('Open the sheet ↗', found.url));
   }
   return null;
 }
@@ -1205,6 +1218,18 @@ function renderRoutine(data) {
       el('p', {text: t.what}),
       el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
       t.key ? routineStatus(t.key, data) : null)));
+  const embed = data?.embed_prompt;
+  const embedCopied = el('span', {class: 'muted'});
+  const planning = el('section', {class: 'routine'}, el('h2', {text: 'Lesson planning (before Friday, or Sunday night)'}),
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.planning.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
+        el('td', {text: t.you}), el('td', {text: t.done})))))),
+    embed?.text ? el('div', {class: 'action-row'},
+      el('button', {type: 'button', class: 'primary', onclick: () => copyText(embed.text, embedCopied)}, 'Copy embed-coding prompt'),
+      link('Edit it in the Agenda ↗', embed.url), embedCopied) : null,
+    embed?.problem ? note(embed.problem, 'info') : null,
+    embed?.text ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: embed.text})) : null);
   const scoring = el('section', {class: 'routine'}, el('h2', {text: 'When completion scores happen'}),
     el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
       el('tbody', {}, ROUTINE.scoring.map((step, i) => el('tr', {}, el('td', {class: 'routine-when', text: `${i + 1}. ${step.when}`}),
@@ -1228,7 +1253,7 @@ function renderRoutine(data) {
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
       el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
       el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(monday, scoring, mine, buttons, scheduled, sheets);
+  body.replaceChildren(monday, planning, scoring, mine, buttons, scheduled, sheets);
 }
 
 // ---------- Link check ----------
