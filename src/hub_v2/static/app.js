@@ -1062,7 +1062,7 @@ const ROUTINE = {
      done: 'Files sit in the right week, so counts and 0s are right.'},
     {when: '1st Monday of the month', you: 'Run Prompt 3 in Teacher Claude.',
      done: 'Your Biology teaching summary.'},
-    {when: 'After you move or add a lesson', you: 'Click Check links (below). Move its Schoology page to the new week.',
+    {when: 'After you move or add a lesson', you: 'Click Check links (below). Schoology needs nothing: students find lessons by folder name.',
      done: 'Students’ links open the right Form and deck.'},
     {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
      done: 'The backup copy matches the Agenda.'},
