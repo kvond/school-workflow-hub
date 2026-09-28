@@ -333,13 +333,18 @@ def _day_label(day):
     return "%s %d" % (day.strftime("%a %b"), day.day)
 
 
-def window(found):
+def window(found, not_before=None):
     """({opened, at, label} | None): an assignment stays open until the end of
-    the day two weeks after the first turn-in by anyone, school time."""
+    the day two weeks after the first turn-in by anyone, school time — but the
+    two weeks never start before not_before, the Monday of the first Agenda
+    week the assignment is in, so a student turning in early doesn't start
+    the clock for everyone."""
     times = [t for t in (when(s["submitted_at"]) for s in found if s.get("event", True)) if t]
     if not times:
         return None
     first = school_day(min(times))
+    if not_before and first < not_before:
+        first = not_before
     last = first + timedelta(days=LATE_AFTER_DAYS)
     local = datetime(last.year, last.month, last.day, 23, 59, 59)
     at = (local + timedelta(hours=eastern_offset(local))).replace(tzinfo=timezone.utc)
@@ -349,6 +354,21 @@ def window(found):
 def week_monday(agenda, week_label):
     week = next((w for w in getattr(agenda, "weeks", []) if norm(w["label"]) == norm(week_label)), None)
     return date.fromisoformat(week["monday"]) if week else None
+
+
+def form_weeks(agenda, class_key):
+    """{form id: the Monday of the first Agenda week whose row links it}."""
+    entry = agenda.classes[class_key]
+    starts = {}
+    for label in dict.fromkeys(label for _, label in (entry["layout"] or {"rows": []})["rows"]):
+        monday = week_monday(agenda, label)
+        if not monday:
+            continue
+        for lesson in agenda.lessons(class_key, label):
+            for form in lesson["forms"]:
+                if form["form_id"] and (form["form_id"] not in starts or monday < starts[form["form_id"]]):
+                    starts[form["form_id"]] = monday
+    return starts
 
 
 def deck_stem(name):
@@ -728,7 +748,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
 
     # Each Form's two weeks start at its first turn-in; files not sorted to a
     # Form use the week's earliest-opened one.
-    windows = [window(form["found"]) for form in forms]
+    starts = form_weeks(agenda, class_key)
+    windows = [window(form["found"], starts.get(form["form_id"])) for form in forms]
     opened = [w for w in windows if w]
     earliest = min(opened, key=lambda w: w["at"]) if opened else None
     describe_files(token, other, known)

@@ -314,6 +314,12 @@ def update_cells(token, spreadsheet_id, updates):
                         {"range": cell_range, "values": [[value]]} for cell_range, value in updates]})
 
 
+def batch_update(token, spreadsheet_id, requests):
+    """Apply Sheets requests in one call: all of them happen, or none do."""
+    return get_json("https://sheets.googleapis.com/v4/spreadsheets/%s:batchUpdate" % quote(spreadsheet_id),
+                    token, method="POST", body={"requests": requests}, timeout=60)
+
+
 def folder_children(token, folder_id):
     """Every item directly inside a Drive folder, trashed items excluded."""
     items, cursor = [], None

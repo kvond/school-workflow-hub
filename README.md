@@ -46,22 +46,35 @@ and **Save to Agenda** writes the changed ones to that row of the class tab.
 Edits made in the Agenda show on the dashboard at the next read, so it works both
 ways. The server re-reads the Agenda first: if the row moved, or a cell changed
 there since the page loaded, nothing is written and the page shows the Agenda's
-new text (saving again then replaces it). Cells with links or formulas (decks,
-Forms, folders) are only edited in the Agenda. Text is written as plain text,
-so bold or italics inside an edited cell are not kept, and each written cell is
-read back. The dashboard's account must be an Editor on the Agenda spreadsheet.
+new text (saving again then replaces it). The editor also takes the lesson's
+**links**: the deck (the teacher's Slides link goes in _teacherURL and, unless
+that column is a formula, the student /copy link in _studentURL), the activity
+guide (_extraURL), and the Turn-in Forms (the Form's own link in _turnInURL
+with a linked "📤 Topic — Turn in" label in "Turn it in", and the 2nd turn-in
+column). Links are written as plain URLs or linked labels, never formulas, and
+a published or forms.gle Form link is refused. Formula cells are only edited in
+the Agenda. Text is written as plain text, so bold or italics inside an edited
+cell are not kept, and each written cell is read back. The dashboard's account
+must be an Editor on the Agenda spreadsheet.
 
-**Moving a lesson.** In the editor, **Move this lesson to another week** trades
-two lessons' weeks: only their Wk and Dates cells change (Dates stay with the
-calendar; formula Dates update themselves), so plans, notes, deck links and the
-Turn-in Form travel with each row. A moved lesson keeps finding its work: its
+**Moving a lesson.** In the editor, **Move this lesson to another week** works
+like reordering a list: the lesson goes to the week picked and the lessons in
+between slide one week to make room, skipping weeks with no class ([CLOSED …],
+[SPRING BREAK …], "No class") or nothing planned. Only the lesson's cells move
+(topic, plans, notes, links, Forms); every row keeps its Wk label and Dates, so
+the Agenda stays in week order. Moving into a week with nothing planned moves
+only that lesson. It is one Sheets request through a hidden scratch tab removed
+in the same request, and it is refused if a formula in the rows reads another
+row or tab. A moved lesson keeps finding its work: its
 weeks are its Agenda week and the week its own decks are named for (so student
 copies named for the old week aren't flagged), and its 📥 folder is found by its
 title under the old number. A folder named for another lesson is never taken
 for its week number alone.
 
 Each assignment (Form) stays open until the end of the day two weeks after its
-first turn-in by anyone (school time). Later work is marked **Late**, listed on
+first turn-in by anyone (school time), but the two weeks never start before the
+Monday of the first Agenda week that links the Form, so an early turn-in doesn't
+start the clock (or the 0s) for everyone. Later work is marked **Late**, listed on
 its own and marked "Late — not graded" on the grade sheet. Every load also runs a **roster check**:
 work from someone on another class's roster or on no roster is flagged, and the
 Rosters sheet's last change is shown.

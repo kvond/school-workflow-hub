@@ -1,20 +1,30 @@
-"""Saving a lesson's plain-text cells from the dashboard back to the Agenda.
+"""Saving a lesson from the dashboard back to the Agenda, and moving lessons
+between weeks.
 
 The teacher edits a lesson on the Lesson plans page and chooses Save to
-Agenda. The page sends each changed field with the text it started from; the
+Agenda. The page sends each changed field with what it started from; the
 server re-reads the Agenda, checks the row still holds that week, and writes
 a field only when its cell still says what the page started from. A cell
 someone changed in the Agenda meanwhile is returned for the teacher to look
-at, and nothing in that save is written. Cells with links or formulas are never
-written, and text is written as plain text. Each written cell is read back.
-Sheets has no conditional write, so an edit made in the Agenda in the second
-between the check and the write could still be replaced.
+at, and nothing in that save is written. Text is written as plain text; a
+formula cell is never written. Links (deck, activity, Turn-in Forms) are
+written as plain URLs or as a linked label, never as formulas. Each written
+cell is read back. Sheets has no conditional write, so an edit made in the
+Agenda in the second between the check and the write could still be replaced.
 """
+import random
+import re
+
 from . import google
-from .agenda import field_columns, norm, plain, text
+from .agenda import build_lesson, field_columns, first_link, form_link, lesson_kind, norm, plain, text
 
 MAX_TEXT = 10000
 MAX_FIELDS = 20
+# The links Edit here can change: {field: the Agenda column that holds it}.
+LINKS = {"deck": "teacher_url", "activity": "extra_url", "turnin": "turnin_url", "turnin2": "turnin2"}
+DECK = re.compile(r"https://(?:docs\.google\.com/presentation|drive\.google\.com/file)/d/([A-Za-z0-9_-]{20,})")
+DRIVE = re.compile(r"https://(?:docs|drive)\.google\.com/\S+$")
+REF = re.compile(r"(?<![A-Za-z_])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])")
 
 
 class Changed(Exception):
@@ -22,6 +32,10 @@ class Changed(Exception):
     def __init__(self, current=None, message=""):
         super().__init__(message)
         self.current = current or {}
+
+
+class Refused(ValueError):
+    """A request the teacher can put right; the message says how."""
 
 
 def column_letter(col):
@@ -37,6 +51,82 @@ def clean(value):
     return "\n".join(line.rstrip() for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n")).strip()
 
 
+def _formula(cells, row, col):
+    return ((cells.get((row, col)) or {}).get("userEnteredValue") or {}).get("formulaValue") or ""
+
+
+def _derived(cells, row, col):
+    """A formula built from other cells (e.g. the student /copy link from the
+    teacher link): the Agenda fills it in, so it's never written."""
+    formula = _formula(cells, row, col)
+    return bool(formula) and "http" not in formula
+
+
+def normal_link(key, url):
+    """The link to keep for a field, or '' to clear it. Refused when it can't be used."""
+    url = str(url or "").strip()
+    if not url:
+        return ""
+    if key == "deck":
+        match = DECK.match(url)
+        if not match:
+            raise Refused("The deck link should be a Google Slides link (docs.google.com/presentation/d/…).")
+        return "https://docs.google.com/presentation/d/%s/edit" % match.group(1)
+    if key in ("turnin", "turnin2"):
+        form = form_link(url)
+        if not form or not form["form_id"]:
+            raise Refused("Use the Form's own link: open the Form's editor and copy its address "
+                          "(docs.google.com/forms/d/…). Published and forms.gle links can't be read.")
+        return "https://docs.google.com/forms/d/%s/viewform" % form["form_id"]
+    if not DRIVE.match(url):
+        raise Refused("The activity link should be a Google Drive link.")
+    return url
+
+
+def _plain_cell(value):
+    return {"userEnteredValue": {"stringValue": value}} if value else {}
+
+
+def _linked_cell(label, url):
+    return ({"userEnteredValue": {"stringValue": label},
+             "textFormatRuns": [{"startIndex": 0, "format": {"link": {"uri": url}}}]} if url else {})
+
+
+def _link_cells(cells, cols, row, key, url, topic):
+    """[(column, new cell, link expected there)] for one link field."""
+    own = cols[LINKS[key]]
+    if _formula(cells, row, own):
+        raise Refused("That link's cell in the Agenda is a formula, so change it in the Agenda.")
+    if key == "deck":
+        out = [(own, _plain_cell(url), url)]
+        student = cols.get("student_url")
+        if student and not _derived(cells, row, student):
+            copy = url[:-len("/edit")] + "/copy" if url else ""
+            out.append((student, _plain_cell(copy), copy))
+        return out
+    if key == "activity":
+        return [(own, _plain_cell(url), url)]
+    if key == "turnin":
+        out = [(own, _plain_cell(url), url)]
+        shown = cols.get("turnin")
+        if shown and not _derived(cells, row, shown):
+            out.append((shown, _linked_cell("📤 %s — Turn in" % topic if topic else "📤 Turn in", url), url))
+        return out
+    return [(own, _linked_cell("📤 2nd turn in", url), url)]
+
+
+def _cell_range(sheet_id, row, col):
+    return {"sheetId": sheet_id, "startRowIndex": row - 1, "endRowIndex": row,
+            "startColumnIndex": col - 1, "endColumnIndex": col}
+
+
+def _write_error(config, error):
+    if error.status in (401, 403):
+        return google.GoogleError("The dashboard can't write to the Agenda. Share the Agenda spreadsheet with %s "
+                                  "as an Editor." % google.service_account(config), error.status)
+    return error
+
+
 def save(token, write_token, config, agenda, class_key, week, row, changes):
     """Write the changed fields of one lesson row: {"saved": [...], "unconfirmed": [...]}."""
     entry = agenda.classes[class_key]
@@ -46,11 +136,14 @@ def save(token, write_token, config, agenda, class_key, week, row, changes):
     label = dict(layout["rows"]).get(row)
     if label is None or norm(label) != norm(week):
         raise Changed(message="This lesson's row moved in the Agenda. Reload the page and try again.")
-    columns = field_columns(layout)
-    if not changes or len(changes) > MAX_FIELDS or any(key not in columns for key in changes):
+    columns, cols, cells = field_columns(layout), layout["columns"], entry["cells"]
+    asked = {key[5:]: change for key, change in changes.items() if key.startswith("link:")}
+    texts = {key: change for key, change in changes.items() if not key.startswith("link:")}
+    if (not changes or len(changes) > MAX_FIELDS or any(key not in columns for key in texts)
+            or any(key not in LINKS or not cols.get(LINKS[key]) for key in asked)):
         raise ValueError("fields")
     updates, conflicts = [], {}
-    for key, change in changes.items():
+    for key, change in texts.items():
         cell = entry["cells"].get((row, columns[key]))
         if not plain(cell):
             raise ValueError("That cell has a link or formula, so it can only be edited in the Agenda.")
@@ -59,31 +152,78 @@ def save(token, write_token, config, agenda, class_key, week, row, changes):
             conflicts[key] = current
         elif clean(change["to"]) != clean(current):
             updates.append((key, columns[key], clean(change["to"])))
+    lesson = build_lesson(cells, layout, row, "")
+    topic = next((value for key, _, value in updates if key == "topic"), lesson["topic"])
+    links = []  # (field, column, new cell, link expected there)
+    for key, change in asked.items():
+        current = lesson["links"].get(key, "")
+        if change["from"].strip() != current:
+            conflicts["link:" + key] = current
+        elif change["to"].strip() != current:
+            wanted = normal_link(key, change["to"])
+            links += [("link:" + key, col, new_cell, expect)
+                      for col, new_cell, expect in _link_cells(cells, cols, row, key, wanted, topic)]
     if conflicts:
         raise Changed(conflicts, "Some of this changed in the Agenda since you opened it.")
-    if not updates:
+    if not updates and not links:
         return {"saved": [], "unconfirmed": []}
     tab = "'%s'" % entry["tab"].replace("'", "''")
     ranges = ["%s!%s%d" % (tab, column_letter(col), row) for _, col, _ in updates]
     try:
-        google.update_cells(write_token, agenda.spreadsheet_id,
-                            [(where, value) for where, (_, _, value) in zip(ranges, updates)])
+        if updates:
+            google.update_cells(write_token, agenda.spreadsheet_id,
+                                [(where, value) for where, (_, _, value) in zip(ranges, updates)])
+        if links:
+            google.batch_update(write_token, agenda.spreadsheet_id, [
+                {"updateCells": {"range": _cell_range(entry.get("sheet_id", 0), row, col), "rows": [{"values": [new_cell]}],
+                                 "fields": "userEnteredValue,textFormatRuns"}} for _, col, new_cell, _ in links])
     except google.GoogleError as error:
-        if error.status in (401, 403):
-            raise google.GoogleError("The dashboard can't write to the Agenda. Share the Agenda spreadsheet with %s "
-                                     "as an Editor." % google.service_account(config), error.status) from None
-        raise
+        raise _write_error(config, error) from None
+    ranges += ["%s!%s%d" % (tab, column_letter(col), row) for _, col, _, _ in links]
     after = google.sheet_grid(token, agenda.spreadsheet_id, ranges).get(entry["tab"], {})
     unconfirmed = [key for key, col, value in updates if clean(text(after.get((row, col)))) != value]
-    return {"saved": [key for key, _, _ in updates if key not in unconfirmed], "unconfirmed": unconfirmed}
+    unconfirmed += [key for key, col, _, expect in links
+                    if (first_link(after.get((row, col))) if expect else text(after.get((row, col))).strip()) != expect]
+    unconfirmed = list(dict.fromkeys(unconfirmed))
+    saved = list(dict.fromkeys([key for key, _, _ in updates] + [key for key, _, _, _ in links]))
+    return {"saved": [key for key in saved if key not in unconfirmed], "unconfirmed": unconfirmed}
+
+
+def _points_elsewhere(formula, row):
+    """Whether a formula reads a cell outside its own row (another row, a
+    fixed row or another tab), which a move would leave pointing at the old place."""
+    bare = re.sub(r'"[^"]*"', '""', formula)
+    if "!" in bare:
+        return True
+    return any(fixed or int(number) != row for _, _, fixed, number in REF.findall(bare))
+
+
+def _runs(columns):
+    """[(first, last)] for each run of consecutive columns."""
+    runs = []
+    for col in sorted(columns):
+        if runs and col == runs[-1][1] + 1:
+            runs[-1][1] = col
+        else:
+            runs.append([col, col])
+    return [tuple(run) for run in runs]
+
+
+def _copy(from_sheet, from_row, to_sheet, to_row, first, last):
+    span = {"startColumnIndex": first - 1, "endColumnIndex": last}
+    return {"copyPaste": {"source": {"sheetId": from_sheet, "startRowIndex": from_row - 1, "endRowIndex": from_row, **span},
+                          "destination": {"sheetId": to_sheet, "startRowIndex": to_row - 1, "endRowIndex": to_row, **span},
+                          "pasteType": "PASTE_NORMAL", "pasteOrientation": "NORMAL"}}
 
 
 def move(token, write_token, config, agenda, class_key, week, row, to_week):
-    """Trade places: this lesson's row takes to_week, and the lesson(s) now in
-    to_week take this lesson's week. Only the Wk and Dates cells change, so the
-    rest of each row (plans, notes, deck links, Forms) moves with its lesson.
-    Dates that are formulas update themselves; with no lesson in to_week yet,
-    this row's Dates cell is left for the teacher."""
+    """Move a lesson to another week the way items move in a list: the lessons
+    in between slide one week toward the week it left, skipping weeks with no
+    class or nothing planned. Only the lesson's cells move (topic, plans,
+    notes, links, Forms); every row keeps its Wk label and Dates, so the
+    Agenda stays in week order. Into a week with nothing planned, the lesson
+    just moves there. Done in one Sheets request, through a hidden scratch
+    tab that is removed in the same request."""
     entry = agenda.classes[class_key]
     layout = entry["layout"]
     if not layout or not entry.get("tab"):
@@ -94,38 +234,58 @@ def move(token, write_token, config, agenda, class_key, week, row, to_week):
         raise Changed(message="This lesson's row moved in the Agenda. Reload the page and try again.")
     if norm(to_week) == norm(week):
         raise ValueError("week")
-    targets = [r for r, other in layout["rows"] if norm(other) == norm(to_week)]
-    target_label = labels[targets[0]] if targets else next(
-        (w["label"] for w in agenda.weeks if norm(w["label"]) == norm(to_week)), None)
-    if not target_label:
-        raise ValueError("That week isn't in the Agenda.")
     cols, cells = layout["columns"], entry["cells"]
-    wk, dates = cols["week"], cols.get("dates")
-    if not all(plain(cells.get((r, wk))) for r in [row] + targets):
-        raise ValueError("A Wk cell in these rows has a formula, so the move can only be made in the Agenda.")
-    updates = [(row, wk, target_label)] + [(r, wk, label) for r in targets]
-    dates_left = False
-    if dates:
-        literal = [r for r in [row] + targets if plain(cells.get((r, dates)))]
-        if targets and len(literal) == len(targets) + 1:
-            mine, theirs = (text(cells.get((r, dates))).strip() for r in (row, targets[0]))
-            updates += [(row, dates, theirs)] + [(r, dates, mine) for r in targets]
-        elif row in literal and not targets:
-            dates_left = True
-    tab = "'%s'" % entry["tab"].replace("'", "''")
-    ranges = ["%s!%s%d" % (tab, column_letter(col), r) for r, col, _ in updates]
+    topic_col = cols.get("topic")
+    if not topic_col:
+        raise Refused("This Agenda tab has no Topic column, so lessons can't be moved from here.")
+    topic = lambda r: text(cells.get((r, topic_col))).strip()
+    kind = lambda r: lesson_kind(topic(r))
+    if kind(row) != "lesson":
+        raise Refused("There's no lesson in %s to move." % label)
+    target = next((r for r, other in layout["rows"] if norm(other) == norm(to_week)), None)
+    if target is None:
+        raise Refused("%s has no row in the Agenda." % to_week)
+    if kind(target) == "closed":
+        raise Refused("%s has no class, so a lesson can't move there." % labels[target])
+    order = [r for r, _ in layout["rows"]]
+    here, there = order.index(row), order.index(target)
+    step = 1 if there > here else -1
+    between = order[here + step:there:step]
+    chain = [row, target] if kind(target) == "free" else [row] + [r for r in between if kind(r) == "lesson"] + [target]
+    # The lesson goes to the target; each other one takes the place of the one before it.
+    moves = [(row, target)] + [(chain[k], chain[k - 1]) for k in range(1, len(chain))]
+    used = [c for key, c in cols.items() if c and key not in ("week", "dates")]
+    used += [c for day in layout["plans"].values() for c in day.values() if c]
+    content = set(range(min(used), max(used) + 1)) - {cols.get("week"), cols.get("dates")}
+    for r in chain:
+        for c in sorted(content):
+            formula = _formula(cells, r, c)
+            if formula and _points_elsewhere(formula, r):
+                raise Refused("A formula in %s (cell %s%d) reads another row or tab, so this move has to be "
+                              "made in the Agenda." % (labels[r], column_letter(c), r))
+    sheet_id, scratch = entry.get("sheet_id", 0), random.randint(10 ** 8, 2 * 10 ** 9)
+    runs = _runs(content)
+    requests = [{"addSheet": {"properties": {"sheetId": scratch, "title": "_hub_move_%d" % scratch, "hidden": True,
+                                             "gridProperties": {"rowCount": len(chain), "columnCount": max(content)}}}}]
+    requests += [_copy(sheet_id, r, scratch, k + 1, first, last) for k, r in enumerate(chain) for first, last in runs]
+    requests += [_copy(scratch, chain.index(src) + 1, sheet_id, dst, first, last)
+                 for src, dst in moves for first, last in runs]
+    placeholder = kind(target) == "free" and topic(target)
+    if placeholder:  # an [EMPTY …] note belongs to its week, not to the one the lesson left
+        requests.append({"updateCells": {"range": _cell_range(sheet_id, row, topic_col), "rows": [{"values": [{}]}],
+                                         "fields": "userEnteredValue,textFormatRuns"}})
+    requests.append({"deleteSheet": {"sheetId": scratch}})
     try:
-        google.update_cells(write_token, agenda.spreadsheet_id,
-                            [(where, value) for where, (_, _, value) in zip(ranges, updates)])
+        google.batch_update(write_token, agenda.spreadsheet_id, requests)
     except google.GoogleError as error:
-        if error.status in (401, 403):
-            raise google.GoogleError("The dashboard can't write to the Agenda. Share the Agenda spreadsheet with %s "
-                                     "as an Editor." % google.service_account(config), error.status) from None
-        raise
-    after = google.sheet_grid(token, agenda.spreadsheet_id, ranges).get(entry["tab"], {})
-    unconfirmed = [r for r, col, value in updates if clean(text(after.get((r, col)))) != clean(value)]
-    topic = cols.get("topic")
-    return {"moved": {"from": label, "to": target_label,
-                      "topic": text(cells.get((row, topic))).strip() if topic else ""},
-            "swapped": [text(cells.get((r, topic))).strip() if topic else "" for r in targets],
-            "dates_left": dates_left, "unconfirmed": sorted(set(unconfirmed))}
+        raise _write_error(config, error) from None
+    tab = "'%s'" % entry["tab"].replace("'", "''")
+    after = google.sheet_grid(token, agenda.spreadsheet_id,
+                              ["%s!%s%d" % (tab, column_letter(topic_col), r) for r in chain]).get(entry["tab"], {})
+    expected = {dst: ("" if placeholder and src == target else topic(src)) for src, dst in moves}
+    unconfirmed = [labels[r] for r, want in expected.items() if clean(text(after.get((r, topic_col)))) != clean(want)]
+    return {"moved": {"from": label, "to": labels[target], "topic": topic(row)},
+            "shifted": [{"topic": topic(src), "from": labels[src], "to": labels[dst]}
+                        for src, dst in moves[1:] if kind(src) == "lesson"],
+            "skipped": [labels[r] for r in between if kind(r) != "lesson"] if kind(target) == "lesson" else [],
+            "unconfirmed": unconfirmed}

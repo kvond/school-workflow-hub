@@ -122,16 +122,21 @@ function renderLesson(cls, lesson, weekday) {
 }
 
 // ---------- Editing a lesson and saving it to the Agenda ----------
-// Only the lesson's plain-text cells are edited here; cells with links or
-// formulas stay in the Agenda. The server writes a field only if the Agenda
-// still says what this page started from.
+// A lesson's plain-text cells and its links (deck, activity, Turn-in Forms)
+// are edited here; cells that are formulas stay in the Agenda. The server
+// writes a field only if the Agenda still says what this page started from.
 function lessonValues(lesson) {
   const values = {topic: lesson.topic, todo: lesson.todo, prep: lesson.prep};
   for (const p of lesson.plans) { values['plan:' + p.day] = p.plan; values['note:' + p.day] = p.note; }
-  return Object.fromEntries(Object.keys(lesson.editable || {}).map(key => [key, values[key] ?? '']));
+  return Object.fromEntries([
+    ...Object.keys(lesson.editable || {}).map(key => [key, values[key] ?? '']),
+    ...Object.entries(lesson.links || {}).map(([key, url]) => ['link:' + key, url || ''])]);
 }
 
-const fieldLabel = key => ({topic: 'Topic', todo: 'To-do', prep: 'Lab / prep'})[key]
+const LINK_LABELS = {'link:deck': 'Deck link (your Google Slides link; students get a copy link)',
+  'link:activity': 'Activity / guide link', 'link:turnin': 'Turn-in Form link (the Form’s own editor link)',
+  'link:turnin2': '2nd Turn-in Form link'};
+const fieldLabel = key => ({topic: 'Topic', todo: 'To-do', prep: 'Lab / prep'})[key] || LINK_LABELS[key]
   || `${FULL_DAY[key.split(':')[1]]} ${key.startsWith('plan:') ? 'plan' : 'note'}`;
 
 function startEdit(cls, lesson) {
@@ -149,8 +154,9 @@ function lessonEditor(cls, lesson) {
   for (const key of Object.keys(edit.base)) {
     const locked = lesson.editable[key] === false;
     const id = `edit-${cls.key}-${lesson.row}-${key.replace(':', '-')}`;
-    const input = key === 'topic'
-      ? el('input', {id, type: 'text', disabled: locked || edit.busy})
+    const input = key === 'topic' || key.startsWith('link:')
+      ? el('input', {id, type: key === 'topic' ? 'text' : 'url', disabled: locked || edit.busy,
+                     placeholder: key === 'topic' ? '' : 'Paste a link, or leave empty'})
       : el('textarea', {id, rows: key.startsWith('plan:') ? 4 : 2, disabled: locked || edit.busy});
     input.value = edit.draft[key];
     input.addEventListener('input', () => { edit.draft[key] = input.value; });
@@ -169,8 +175,11 @@ function lessonEditor(cls, lesson) {
 }
 
 // ---------- Moving a lesson to another week ----------
-// The lessons trade weeks in the Agenda: only their Wk and Dates cells change,
-// so plans, notes, deck links and Forms travel with each row.
+// Like reordering a list: the lesson goes to the week picked and the lessons
+// between slide one week to make room, skipping weeks with no class or
+// nothing planned. Each week keeps its dates, so the Agenda stays in order.
+const closedWeek = topic => /^\[/.test(topic || '') && !/^\[\s*empty/i.test(topic);
+const freeWeek = topic => !(topic || '').trim() || /^\[\s*empty/i.test(topic);
 async function loadClassWeeks(key) {
   if (plans.weeks[key] || plans.weeksLoading[key]) return;
   plans.weeksLoading[key] = true;
@@ -189,19 +198,20 @@ function moveSection(cls, lesson) {
   if (!others.length) { box.append(el('p', {class: 'muted', text: 'No other weeks were found for this class.'})); return box; }
   const short = t => (t || 'nothing planned yet').length > 60 ? t.slice(0, 57) + '…' : (t || 'nothing planned yet');
   const select = el('select', {'aria-label': 'Week to move this lesson to', disabled: edit.busy},
-    others.map(w => el('option', {value: w.label, text: `${w.label} · ${short(w.topic)}`})));
+    others.map(w => el('option', {value: w.label, text: `${w.label} · ${short(w.topic)}`, disabled: closedWeek(w.topic)})));
   const here = weeks.findIndex(w => w.label === lesson.week);
   const next = weeks[here + 1] || weeks[here - 1];
-  if (next && next.label !== lesson.week) select.value = next.label;
+  if (next && next.label !== lesson.week && !closedWeek(next.topic)) select.value = next.label;
   box.append(el('div', {class: 'action-row'}, select,
       el('button', {type: 'button', disabled: edit.busy, onclick: () => moveLesson(cls, lesson, select.value)}, 'Move')),
-    el('p', {class: 'muted', text: 'The two lessons trade weeks: this one takes the week you pick, and the lesson there takes this one’s. Plans, notes, deck links and the Turn-in Form move with each lesson.'}));
+    el('p', {class: 'muted', text: 'The lessons in between slide one week to make room, like reordering a list; weeks with no class or nothing planned are skipped, and every week keeps its dates. Moving into a week with nothing planned moves only this lesson. Plans, notes, links and Turn-in Forms move with each lesson.'}));
   return box;
 }
 
 async function moveLesson(cls, lesson, toWeek) {
   const target = (plans.weeks[cls.key] || []).find(w => w.label === toWeek);
-  const other = target?.topic ? `“${target.topic}” will move to ${lesson.week}.` : `Nothing is planned in ${toWeek} yet, so only this lesson moves.`;
+  const other = freeWeek(target?.topic) ? `Nothing is planned in ${toWeek}, so only this lesson moves.`
+    : `The lessons between ${lesson.week} and ${toWeek} slide one week to make room.`;
   if (!window.confirm(`Move “${lesson.topic || 'this lesson'}” to ${toWeek}? ${other}\n\nTitles that say a week number (Schoology, decks, Forms) don’t change.`)) return;
   const edit = plans.editing;
   edit.busy = true; edit.error = null;
@@ -212,8 +222,8 @@ async function moveLesson(cls, lesson, toWeek) {
     plans.weeks[cls.key] = null;
     await loadPlans(plans.date, true);
     const said = [`Moved “${done.moved.topic || 'the lesson'}” to ${done.moved.to}`];
-    if (done.swapped.length) said.push(`“${done.swapped.join('”, “')}” moved to ${done.moved.from}`);
-    if (done.dates_left) said.push(`its Dates cell still shows ${done.moved.from}’s dates, so fix that in the Agenda`);
+    if (done.shifted.length) said.push(`slid one week: ${done.shifted.map(s => `“${s.topic}” to ${s.to}`).join(', ')}`);
+    if (done.skipped.length) said.push(`skipped ${done.skipped.join(', ')}`);
     if (done.unconfirmed.length) said.push('some cells didn’t read back as expected, so check the Agenda');
     setStatus('plans-status', said.join('; ') + '.', Boolean(done.unconfirmed.length));
   } catch (error) {
@@ -233,6 +243,7 @@ async function saveLesson() {
   renderPlans(plans.data);
   try {
     const done = await postJSON('api/agenda', {class: edit.cls, week: edit.week, row: edit.row, changes});
+    plans.weeks[edit.cls] = null;  // a new topic shows in the Move list
     if (plans.editing === edit) plans.editing = null;
     await loadPlans(plans.date, true);
     setStatus('plans-status', done.unconfirmed.length
@@ -1051,7 +1062,7 @@ const ROUTINE = {
      done: 'Files sit in the right week, so counts and 0s are right.'},
     {when: '1st Monday of the month', you: 'Run Prompt 3 in Teacher Claude.',
      done: 'Your Biology teaching summary.'},
-    {when: 'After you move or add a lesson', you: 'Click Check links (below). Move its Schoology page to the new week.',
+    {when: 'After you move or add a lesson', you: 'Click Check links (below). Schoology needs nothing: students find lessons by folder name.',
      done: 'Students’ links open the right Form and deck.'},
     {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
      done: 'The backup copy matches the Agenda.'},

@@ -4,7 +4,8 @@ Columns are found by their header text, rows by their week label, and tabs by
 name. Whatever can be read is shown: a missing tab, header or cell becomes a
 note on that class, never a failed page. The plain-text cells of a lesson
 (topic, each day's plan and note, to-do, lab / prep) can be edited from the
-dashboard; see agenda_edit.py. Cells with links or formulas are only read.
+dashboard, and so can its deck, activity and Turn-in Form links; see
+agenda_edit.py.
 """
 import re
 from datetime import date, datetime, timedelta
@@ -21,6 +22,25 @@ FORM = re.compile(r"https://docs\.google\.com/forms/d/(e/)?([A-Za-z0-9_-]{20,})"
 def norm(value):
     """'🌿 Biology' -> 'biology', 'Mon — plan' -> 'monplan', 'A&P' -> 'a&p'."""
     return re.sub(r"[^a-z0-9&]+", "", str(value or "").lower())
+
+
+def lesson_kind(topic):
+    """'lesson', 'free' (nothing planned, or an [EMPTY …] placeholder) or
+    'closed' (a [CLOSED …], [SPRING BREAK …] or "No class" week)."""
+    topic = str(topic or "").strip()
+    if not topic or norm(topic).startswith("empty"):
+        return "free"
+    if topic.startswith("[") or norm(topic).startswith("noclass"):
+        return "closed"
+    return "lesson"
+
+
+def first_link(cell, forms=False):
+    """The first link in a cell (only a Google Form when forms=True), or ''."""
+    for url, label in links(cell):
+        if not forms or form_link(url, label):
+            return url
+    return ""
 
 
 def text(cell):
@@ -196,10 +216,19 @@ def build_lesson(cells, layout, row, edit_url):
             materials.append({"label": label or "Activity", "url": url})
     # Which text cells the dashboard may save: True, or False for a cell with a link or formula.
     editable = {key: plain(cells.get((row, c))) for key, c in field_columns(layout).items()}
+    # The links the dashboard can change (see agenda_edit.LINKS), as the Agenda has them now.
+    current = {"deck": first_link(cell("teacher_url")) or first_link(cell("teacher_deck")),
+               "activity": first_link(cell("extra_url")) or first_link(cell("activity")),
+               "turnin": first_link(cell("turnin"), forms=True) or first_link(cell("turnin_url"), forms=True),
+               "turnin2": first_link(cell("turnin2"), forms=True)}
+    link_fields = {key: url for key, url in current.items()
+                   if cols.get({"deck": "teacher_url", "activity": "extra_url",
+                                "turnin": "turnin_url", "turnin2": "turnin2"}[key])}
     return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
             "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
+            "links": link_fields,
             "edit_url": edit_url}
 
 
