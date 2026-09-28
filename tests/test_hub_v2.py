@@ -171,6 +171,24 @@ class RosterTests(unittest.TestCase):
         self.assertEqual([(s["last"], s["first"]) for s in students], [("Rivera", "Ana")])
         self.assertEqual(skipped, 1)  # a one-cell row among the students is still reported
 
+    def test_an_added_column_gives_each_new_student_the_day_they_joined(self):
+        cells = grid({1: ["Last Name", "First Name", "Added"], 2: ["Rivera", "Ana", ""],
+                      3: ["Okafor", "Chidi", "10/01/2026"], 4: ["Lee", "Sam", "2026-10-06"], 5: ["Kim", "Jo", "soon"]})
+        students, _ = roster.parse_tab(cells, "biology", "A4 Biology")
+        self.assertEqual([(s["last"], s["added"]) for s in students],
+                         [("Rivera", ""), ("Okafor", "2026-10-01"), ("Lee", "2026-10-06"), ("Kim", "")])
+        # No header row: "Added" typed in row 1 beside the first student still marks the column.
+        cells = grid({1: ["Rivera, Ana", "", "Added"], 2: ["Okafor, Chidi", "", "9/30/26"]})
+        students, _ = roster.parse_tab(cells, "biology", "A4 Biology")
+        self.assertEqual([s["added"] for s in students], ["", "2026-09-30"])
+
+    def test_a_student_added_after_an_assignment_began_is_excused_not_zero(self):
+        missing = [{"last": "Rivera", "added": ""}, {"last": "Okafor", "added": "2026-09-28"},
+                   {"last": "Lee", "added": "2026-10-06"}]
+        still, excused = work.excuse_new(missing, date(2026, 9, 28))
+        self.assertEqual(([m["last"] for m in still], [m["last"] for m in excused]), (["Rivera", "Okafor"], ["Lee"]))
+        self.assertEqual(work.excuse_new(missing, None), (missing, []))  # not begun: nothing to excuse
+
     def test_the_systems_own_documents_are_never_student_work(self):
         for name in ("Growth record — Forensics Wk 04 — Eyewitness — 2026-09-25",
                      "Class growth summary — Biology Wk 03 — Energy — 2026-09-25",

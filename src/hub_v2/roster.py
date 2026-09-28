@@ -2,11 +2,14 @@
 
 Each section tab lists students as Last, First (a "Last name / First name"
 header row, a "Last, First" cell, or a section heading row are all accepted).
+A column headed "Added" (or "Date added" / "Joined") holds the date a student
+joined the class; assignments that began before it are excused for them.
 Rows that can't be read are counted and reported, not fatal.
 """
 import json
 import re
 import unicodedata
+from datetime import datetime
 
 from . import google
 
@@ -38,6 +41,18 @@ def aliases(student):
 
 
 LAYOUTS = {"first_last_columns": "first_last", "last_first_columns": "last_first"}
+ADDED = {"added", "date added", "joined", "date joined", "added on"}
+
+
+def added_date(value):
+    """'9/28/2026', '09/28/26' or '2026-09-28' → '2026-09-28'; anything else → ''."""
+    value = str(value or "").strip()
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
 _ORIENTATION = {}
 
 
@@ -54,6 +69,8 @@ def parse_tab(cells, class_key, section, layouts=None):
     students, skipped = [], 0
     order, basis = start(section)
     names = {plain(s): s for tabs in SECTIONS.values() for s in tabs}
+    added_col = next((c for r in range(1, 201) for c in range(3, 11)
+                      if plain(cells.get((r, c), {}).get("formattedValue", "")) in ADDED), None)
     for r in range(1, 201):
         a = str(cells.get((r, 1), {}).get("formattedValue", "")).strip()
         b = str(cells.get((r, 2), {}).get("formattedValue", "")).strip()
@@ -77,8 +94,9 @@ def parse_tab(cells, class_key, section, layouts=None):
         if not plain(last) or not plain(first):
             skipped += 1
             continue
+        added = added_date(cells.get((r, added_col), {}).get("formattedValue", "")) if added_col else ""
         students.append({"class_key": class_key, "section": section, "first": first, "last": last,
-                         "order": how})
+                         "order": how, "added": added})
     return students, skipped
 
 

@@ -633,11 +633,14 @@ function icPanel(form, scores) {
     // off the list (and named below) so a 0 isn't entered for them unchecked.
     ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
       .map(r => ({r, s: null, zero: true, show: shown(null)})) : []),
+    // Added to the roster after this assignment began: excused, never a 0.
+    ...(form.excused || []).filter(inSection).map(r => ({r, s: null, excused: true, show: ['Excused', 'Excused']})),
   ].sort((a, b) => (a.r.section + a.r.last + a.r.first).localeCompare(b.r.section + b.r.last + b.r.first));
   // New since you last entered this assignment: turned in after that, or, for
   // a student with nothing, a 0 not entered yet or due again at the close.
   for (const x of all) {
-    x.fresh = !entered || (x.zero ? closed && new Date(form.window.at) > entered : new Date(x.r.submitted_at) > entered);
+    x.fresh = !entered || (x.excused ? false : x.zero ? closed && new Date(form.window.at) > entered
+      : new Date(x.r.submitted_at) > entered);
   }
   const fresh = all.filter(x => x.fresh);
   const status = el('span', {class: 'muted'});
@@ -660,9 +663,11 @@ function icPanel(form, scores) {
   }
   panel.append(el('div', {class: 'table-wrap'}, el('table', {},
     el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
-    el('tbody', {}, all.map(({r, show, zero, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
+    el('tbody', {}, all.map(({r, show, zero, excused, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
       el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
       el('td', {}, zero ? el('span', {class: 'badge', text: closed ? 'nothing on time' : 'nothing yet'}) : null,
+        excused ? el('span', {class: 'badge', title: `Added to the roster ${r.added}, after this assignment began`,
+                              text: 'new student: mark Exempt in IC'}) : null,
         entered && isNew ? el('span', {class: 'badge warn', text: `new since ${markDate(sheet.entered_at)}`}) : null)))))));
   const unsorted = startedFor(form) ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
   if (unsorted.length) {
@@ -805,6 +810,12 @@ function renderForm(form, lesson) {
       el('div', {class: 'table-wrap'}, el('table', {},
         el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
         el('tbody', {}, late.map(r => studentRow(r)))))));
+  }
+  const excused = (form.excused || []).filter(inSection);
+  if (excused.length) {
+    box.append(el('p', {class: 'muted'}, el('strong', {text: `Excused — new students (${excused.length}): `}),
+      excused.map(m => `${m.last}, ${m.first} (added ${m.added})`).join('; '),
+      '. They joined after this assignment began, so it isn’t counted for them.'));
   }
   if (missing.length) {
     box.append(el('div', {class: 'missing'}, el('h4', {text: closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
@@ -1069,7 +1080,7 @@ PART B — SCORES (read only)
    - "IC: its two weeks start …": enter only the scores listed; no 0s.
    - "IC: open until …" or "IC: closed …": enter every score listed, including the 0s.
    - "IC: final scores entered …", or no "IC:" line: skip it.
-   Click "Scores are ready to enter in IC" and read its table (Student, Section, Notes /10, Revision /10). If the card has a "Not counted here" note, those files belong to another assignment: enter nothing for those students on this one. A "Via …" badge means the file came through another Form but counts here.
+   Click "Scores are ready to enter in IC" and read its table (Student, Section, Notes /10, Revision /10). If the card has a "Not counted here" note, those files belong to another assignment: enter nothing for those students on this one. A "Via …" badge means the file came through another Form but counts here. A student shown as "Excused" (new student) joined after the assignment began: mark it Exempt for them in IC, never 0.
 6. In IC, for each section, find the matching assignment by its name, not its week number. Work out where Notes and Revision go. For each student on the Hub's table:
    - Blank in IC: to enter.
    - Same score in IC: nothing to do.
@@ -1081,7 +1092,7 @@ PART C — REVIEW (STOP)
 7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, how many blanks you'll fill, each change old → new, and anything you left with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
 
 PART D — SAVE WHAT I APPROVE
-8. Roster: add only the students I approve, as new rows in the same format; don't delete rows or touch other columns.
+8. Roster: add only the students I approve, as new rows in the same format, with today's date (MM/DD/YYYY) in the tab's "Added" column. If the tab has no "Added" column, type Added in the first empty cell of row 1 to the right of the names. Don't delete rows or change other cells.
 9. IC: enter the approved scores and due dates, click Save, reload, read them back, and tell me any that don't match.
 10. In the Hub, click "I entered these in IC" on each assignment you saved.
 
