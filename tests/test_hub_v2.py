@@ -1617,6 +1617,23 @@ class LinkSaveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.save({"link:turnin2": {"from": "", "to": SECOND}})  # this tab has no "2nd turn it in" column
 
+    def test_the_second_turn_in_can_be_named_without_changing_its_link(self):
+        cells = dict(fixture().classes["biology"]["cells"])
+        cells[(3, 22)] = cell("2nd turn it in")
+        cells[(5, 22)] = cell("📤 2nd turn in", hyperlink=SECOND)
+        agenda_ = agenda.Agenda("FICTIONALSHEET", "Fictional Agenda", {"🌿 Biology": 2}, {"🌿 Biology": cells})
+        lesson = agenda_.lessons("biology", "Wk 04")[0]
+        self.assertEqual((lesson["links"]["turnin2"], lesson["link_labels"]), (SECOND, {"turnin2": "📤 2nd turn in"}))
+        with patch.object(google, "batch_update") as batch, patch.object(google, "update_cells"), \
+                patch.object(google, "sheet_grid", return_value={"🌿 Biology": {(5, 22): cell("x", hyperlink=SECOND)}}):
+            result = agenda_edit.save("token", "write", self.CONFIG, agenda_, "biology", "Wk 04", 5, {
+                "link:turnin2": {"from": SECOND, "to": SECOND, "label": "📤 Investigative Processes — Turn in"}})
+        written = batch.call_args.args[2][0]["updateCells"]["rows"][0]["values"][0]
+        self.assertEqual(written["userEnteredValue"], {"stringValue": "📤 Investigative Processes — Turn in"})
+        self.assertEqual(result, {"saved": ["link:turnin2"], "unconfirmed": []})
+        with self.assertRaises(ValueError):  # only the 2nd turn-in takes a name
+            self.save({"link:turnin": {"from": DIRECT, "to": DIRECT, "label": "x"}})
+
     def test_clearing_a_link_empties_its_cells(self):
         result, batch, _ = self.save({"link:activity": {"from": "", "to": ""}})
         batch.assert_not_called()

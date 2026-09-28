@@ -20,6 +20,7 @@ from .agenda import build_lesson, field_columns, first_link, form_link, lesson_k
 
 MAX_TEXT = 10000
 MAX_FIELDS = 20
+MAX_NAME = 120
 # The links Edit here can change: {field: the Agenda column that holds it}.
 LINKS = {"deck": "teacher_url", "activity": "extra_url", "turnin": "turnin_url", "turnin2": "turnin2"}
 DECK = re.compile(r"https://(?:docs\.google\.com/presentation|drive\.google\.com/file)/d/([A-Za-z0-9_-]{20,})")
@@ -92,8 +93,9 @@ def _linked_cell(label, url):
              "textFormatRuns": [{"startIndex": 0, "format": {"link": {"uri": url}}}]} if url else {})
 
 
-def _link_cells(cells, cols, row, key, url, topic):
-    """[(column, new cell, link expected there)] for one link field."""
+def _link_cells(cells, cols, row, key, url, topic, name=""):
+    """[(column, new cell, link expected there)] for one link field. name is
+    the 2nd Turn-in Form's label, when the teacher gave one."""
     own = cols[LINKS[key]]
     if _formula(cells, row, own):
         raise Refused("That link's cell in the Agenda is a formula, so change it in the Agenda.")
@@ -112,7 +114,8 @@ def _link_cells(cells, cols, row, key, url, topic):
         if shown and not _derived(cells, row, shown):
             out.append((shown, _linked_cell("📤 %s — Turn in" % topic if topic else "📤 Turn in", url), url))
         return out
-    return [(own, _linked_cell("📤 2nd turn in", url), url)]
+    name = " ".join(str(name or "").split()).lstrip("📤 ").strip()[:MAX_NAME]
+    return [(own, _linked_cell("📤 %s" % name if name else "📤 2nd turn in", url), url)]
 
 
 def _cell_range(sheet_id, row, col):
@@ -157,12 +160,16 @@ def save(token, write_token, config, agenda, class_key, week, row, changes):
     links = []  # (field, column, new cell, link expected there)
     for key, change in asked.items():
         current = lesson["links"].get(key, "")
+        name = change.get("label")
+        if name is not None and (key != "turnin2" or not isinstance(name, str) or len(name) > MAX_NAME):
+            raise ValueError("label")
+        renamed = name is not None and name.strip() != lesson.get("link_labels", {}).get(key, "")
         if change["from"].strip() != current:
             conflicts["link:" + key] = current
-        elif change["to"].strip() != current:
+        elif change["to"].strip() != current or (renamed and change["to"].strip()):
             wanted = normal_link(key, change["to"])
             links += [("link:" + key, col, new_cell, expect)
-                      for col, new_cell, expect in _link_cells(cells, cols, row, key, wanted, topic)]
+                      for col, new_cell, expect in _link_cells(cells, cols, row, key, wanted, topic, name)]
     if conflicts:
         raise Changed(conflicts, "Some of this changed in the Agenda since you opened it.")
     if not updates and not links:

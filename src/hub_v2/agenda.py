@@ -229,6 +229,9 @@ def build_lesson(cells, layout, row, edit_url):
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
             "links": link_fields,
+            # The 2nd Turn-in Form's name, as its link label shows it (the page can rename it).
+            "link_labels": {"turnin2": next((label for url, label in links(cell("turnin2")) if form_link(url, label)), "")}
+            if "turnin2" in link_fields else {},
             "edit_url": edit_url}
 
 
