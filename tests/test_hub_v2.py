@@ -1071,30 +1071,35 @@ HEADER = ("[[MARKER-INVENTORY:C09]] NOTES=3 DRAFT=1 OPTIONAL=0 BANK_TERMS=2 "
           "BANK_IDS=Producer,Trophic level COURSE=Biology VERSION=2026-09-18")
 
 
-def handout(**changes):
-    """The distributed copy, or a student's copy with some boxes changed."""
+def handout(codes=True, extra=False, **changes):
+    """The distributed copy, or a student's copy with some boxes changed.
+    codes=False leaves the code boxes off the answer slides and extra=True puts
+    a slide in front, like a copy of an older version of the deck."""
     def text(name, default):
         return changes.get(name, default)
-    return pptx([
+    def code(unit):
+        return [unit] if codes else []
+    return pptx(([[("INTRO", "Welcome to this cycle. Read the directions on the next slides.", (20, 20, 900, 80))]]
+                 if extra else []) + [
         [("S1", HEADER, (0, 0, 900, 40))],
         # Codes placed on their answer boxes.
         [("PROMPT", "Finish this sentence as a rule: energy enters through ____.", (20, 20, 900, 60)),
          ("RULE", text("RULE", "[ Write your rule here ]"), (20, 120, 400, 100)),
          ("COUNT", text("COUNT", "Producers Count: [ Enter # ]"), (500, 120, 300, 100)),
-         ("CHOICE", text("CHOICE", "↑ ↓ ?"), (20, 300, 100, 40)),
-         ("M1", "[[NOTES:C09:Q-RULE]]", (30, 130, 80, 10)),
-         ("M2", text("M2", "[[NOTES:C09:Q-COUNT]]"), (510, 130, 80, 10))],
+         ("CHOICE", text("CHOICE", "↑ ↓ ?"), (20, 300, 100, 40))]
+        + code(("M1", "[[NOTES:C09:Q-RULE]]", (30, 130, 80, 10)))
+        + code(("M2", text("M2", "[[NOTES:C09:Q-COUNT]]"), (510, 130, 80, 10))),
         # First and revised answer, codes listed together in a corner.
         [("L1", "Your first answer", (20, 80, 400, 30)),
          ("B1", text("B1", ""), (20, 120, 400, 150)),
          ("L2", "Your revised answer", (20, 320, 400, 30)),
-         ("B2", text("B2", ""), (20, 360, 400, 150)),
-         ("M3", "[[NOTES:C09:Q-MASTERY]]", (900, 540, 90, 10)),
-         ("M4", "[[DRAFT:C09:Q-MASTERY]]", (900, 552, 90, 10))],
+         ("B2", text("B2", ""), (20, 360, 400, 150))]
+        + code(("M3", "[[NOTES:C09:Q-MASTERY]]", (900, 540, 90, 10)))
+        + code(("M4", "[[DRAFT:C09:Q-MASTERY]]", (900, 552, 90, 10))),
         # Concept Bank, codes listed together.
         [("T1", text("T1", "Producer  "), (20, 20, 400, 80)),
-         ("T2", text("T2", "Trophic level  "), (20, 120, 400, 80)),
-         ("M5", "[[BANK:C09:Producer]]\n[[BANK:C09:Trophic level]]", (900, 500, 90, 30))],
+         ("T2", text("T2", "Trophic level  "), (20, 120, 400, 80))]
+        + code(("M5", "[[BANK:C09:Producer]]\n[[BANK:C09:Trophic level]]", (900, 500, 90, 30))),
         # No codes here.
         [("FREE", text("FREE", "Notes space"), (20, 20, 800, 400))],
     ])
@@ -1120,6 +1125,19 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result["counts"]["NOTES"], {"done": 1, "required": 2})
         self.assertEqual(result["notes_score"], 2.5)  # 10 x 1 / (2 NOTES + 2 BANK), not 1 / 5
         self.assertIn("NOTES Q-COUNT", result["coding"]["missing"])
+
+    def test_a_copy_of_an_older_deck_without_codes_is_scored_by_the_handed_out_decks_codes(self):
+        # No code boxes on its answer slides and an extra slide in front: slides are matched
+        # by their printed text and scored with the handed-out deck's codes.
+        answers = dict(RULE="Energy enters through producers", B1="Plants make food", B2="Plants catch light",
+                       T1="Producer  makes its own food", T2="Trophic level  a step in the chain")
+        older = completion.read_deck(handout(codes=False, extra=True, **answers))
+        result = completion.assess(older, completion.read_deck(handout()))
+        status = {(i["category"], i["id"]): i["status"] for i in result["items"]}
+        self.assertEqual(status[("NOTES", "Q-RULE")], "done")
+        self.assertEqual(status[("DRAFT", "Q-MASTERY")], "done")
+        self.assertEqual((status[("BANK", "Producer")], status[("BANK", "Trophic level")]), ("done", "done"))
+        self.assertEqual(result["counts"]["NOTES"], {"done": 2, "required": 3})
 
     def test_untouched_copy_scores_zero(self):
         result = self.score()

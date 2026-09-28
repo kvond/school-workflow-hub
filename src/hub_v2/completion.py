@@ -277,9 +277,15 @@ def _signature(slide):
     return {(m.group(1), m.group(3).strip()) for u in slide["units"] for m in MARKER.finditer(u["text"])}
 
 
+def _printed(slide):
+    return " ".join(_plain(u["text"]) for u in slide["units"] if not MARKER.search(u["text"]))[:600]
+
+
 def _align(student, template):
     """{student slide number: template slide} by the codes each slide carries,
-    then by position for slides without codes when the decks are the same length."""
+    then by position for slides without codes when the decks are the same
+    length, then by the slide's printed text: a copy of an older version of the
+    deck may lack codes and have slides added or removed."""
     by_codes, pairs = [], {}
     for t in template["slides"]:
         by_codes.append((_signature(t), t))
@@ -292,6 +298,23 @@ def _align(student, template):
     if len(student["slides"]) == len(template["slides"]):
         for s, t in zip(student["slides"], template["slides"]):
             pairs.setdefault(s["number"], t)
+    # How much of a handed-out slide's printed text is on the student's slide
+    # (their answers add text, so it's measured against the handed-out slide).
+    def kept(printed, mine):
+        blocks = difflib.SequenceMatcher(None, printed, mine, autojunk=False).get_matching_blocks()
+        return sum(b.size for b in blocks) / len(printed)
+    taken = {t["number"] for t in pairs.values()}
+    printed = {t["number"]: _printed(t) for t in template["slides"]}
+    for s in student["slides"]:
+        mine = _printed(s)
+        if s["number"] in pairs or not mine:
+            continue
+        best = max(((kept(printed[t["number"]], mine), t) for t in template["slides"]
+                    if t["number"] not in taken and len(printed[t["number"]]) >= 15),
+                   key=lambda item: item[0], default=(0, None))
+        if best[1] is not None and best[0] >= 0.8:
+            pairs[s["number"]] = best[1]
+            taken.add(best[1]["number"])
     return pairs
 
 
@@ -439,11 +462,17 @@ def assess(student, template):
     found = {}
     uncoded, how = [], set()
     codes = markers(student)
+    handed_out = markers(template) if template else []
+    current = {(c, qid) for c in CATEGORIES for qid in required[c]}
     for slide in student["slides"]:
         mine = [m for m in codes if m["slide"] == slide["number"]]
         match = pairs.get(slide["number"])
         if template and match is None:
             continue  # nothing to compare this slide with
+        if template and not any((m["category"], m["id"]) in current for m in mine):
+            # A copy of an older version of the deck: this slide lacks today's
+            # codes, so use the handed-out deck's codes for its matching slide.
+            mine = [m for m in handed_out if m["slide"] == match["number"]]
         if template:
             written, exact = _written(slide, match, student["size"])
         else:
