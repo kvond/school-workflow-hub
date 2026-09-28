@@ -71,6 +71,16 @@ copies named for the old week aren't flagged), and its 📥 folder is found by i
 title under the old number. A folder named for another lesson is never taken
 for its week number alone.
 
+**Turn-ins through the wrong Form.** Students sometimes turn in one lesson's
+deck through another lesson's Form. Each week's page compares every turn-in's
+deck name with its own lesson (topic, Form label, deck titles, and the words its
+matching turn-ins share) and with the lessons up to two teaching weeks either
+side. A deck that names nothing of its own lesson and matches exactly one other
+isn't counted for its Form: the card lists it under "Not counted here", and the
+lesson it belongs to counts it, marked "Via <Form>", so its score, IC list and
+feedback go to the right assignment. A deck left in the wrong week's folder is
+listed with the week it belongs to, to be moved there.
+
 Each assignment (Form) stays open until the end of the day two weeks after its
 first turn-in by anyone (school time), but the two weeks never start before the
 Monday of the first Agenda week that links the Form, so an early turn-in doesn't

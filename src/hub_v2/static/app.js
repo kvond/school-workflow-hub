@@ -354,6 +354,7 @@ function fileList(files) {
     link(f.name, f.url),
     f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
     f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
+    f.via ? el('span', {class: 'badge warn', title: 'This lesson’s deck, turned in through another lesson’s Form; it counts here', text: `Via ${f.via}`}) : null,
     f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
     f.late ? el('span', {class: 'badge warn', title: 'Turned in more than two weeks after this week — not graded', text: 'Late'}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
@@ -741,6 +742,16 @@ function renderForm(form, lesson) {
     form.shared_files ? el('span', {class: 'badge', text: `includes ${form.shared_files} from the earlier shared Form`}) : null));
   if (form.window) {
     box.append(el('p', {class: 'muted', text: `Open ${form.window.opened} until ${form.window.label}: two weeks from the first turn-in, never starting before the lesson’s week. Anything later is Late and isn’t graded.`}));
+  }
+  if (form.elsewhere?.length) {
+    // Another lesson's deck turned in through this Form (or left in this week's folder): not counted here.
+    box.append(el('div', {class: 'note info'},
+      el('strong', {text: `Not counted here (${form.elsewhere.length}): another lesson’s deck. `}),
+      form.elsewhere.map((e, i) => [i ? '; ' : '', `${e.who}${e.section ? ` (${e.section})` : ''} — `,
+        e.url ? link(e.file || 'file', e.url) : e.file,
+        e.source === 'folder' ? ` is in this week’s folder but belongs to ${e.to}: move it to that week’s 📥 folder`
+          : ` counts for ${e.to}`]).flat(),
+      '.'));
   }
   const marks = marksLine(form);
   if (marks) box.append(marks);
