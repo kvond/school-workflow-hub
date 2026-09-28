@@ -348,7 +348,9 @@ def window(found, not_before=None):
     last = first + timedelta(days=LATE_AFTER_DAYS)
     local = datetime(last.year, last.month, last.day, 23, 59, 59)
     at = (local + timedelta(hours=eastern_offset(local))).replace(tzinfo=timezone.utc)
-    return {"opened": _day_label(first), "at": at, "label": _day_label(last) + ", 11:59 PM"}
+    start = datetime(first.year, first.month, first.day)
+    begins = (start + timedelta(hours=eastern_offset(start))).replace(tzinfo=timezone.utc)
+    return {"opened": _day_label(first), "at": at, "label": _day_label(last) + ", 11:59 PM", "from": begins}
 
 
 def week_monday(agenda, week_label):
@@ -773,6 +775,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
                               "students": [r for r in rows if not r["late"]],
                               "late": [r for r in rows if r["late"]], "missing": missing,
                               "window": {"opened": open_for["opened"], "label": open_for["label"],
+                                         "from": open_for["from"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                                          "at": open_for["at"].strftime("%Y-%m-%dT%H:%M:%SZ")}
                               if open_for else None})
         index += len(lesson["forms"])
