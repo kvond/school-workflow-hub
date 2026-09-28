@@ -1067,6 +1067,7 @@ GROUND RULES
 - If Infinite Campus (IC) or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password or choose a sign-in for me.
 - Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
 - Never delete anything, never create an IC assignment, and never change a grade or due date that isn't on the list I approve.
+- Never type in the "Scores entered (On Dashboard)" sheet. The Hub adds its rows itself when you click "I entered these in IC".
 - My sections: A2 Forensics and A3 Forensics (class: Forensics), A4 Biology (Biology), B3 A&P (A&P).
 
 PART A — ROSTER CHECK (read only)
@@ -1094,7 +1095,7 @@ PART C — REVIEW (STOP)
 PART D — SAVE WHAT I APPROVE
 8. Roster: add only the students I approve, as new rows in the same format, with today's date (MM/DD/YYYY) in the tab's "Added" column. If the tab has no "Added" column, type Added in the first empty cell of row 1 to the right of the names. Don't delete rows or change other cells.
 9. IC: enter the approved scores and due dates, click Save, reload, read them back, and tell me any that don't match.
-10. In the Hub, click "I entered these in IC" on each assignment you saved.
+10. In the Hub, click "I entered these in IC" on each assignment you saved (that button, not the sheet, records it).
 
 PART E — LOG
 11. Make a Google Doc named "Monday run — ${todayISO()}" at the top of 00 REAL ALL TURN IN with the roster changes made, what was entered, changed and left per section and assignment, anything that didn't read back, and a short note on anything confusing or slow.`;
