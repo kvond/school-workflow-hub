@@ -1166,6 +1166,19 @@ class CompletionTests(unittest.TestCase):
                          ({"done": 2, "required": 2}, {"done": 1, "required": 1}))
         self.assertEqual(result["notes_score"], 10.0)
 
+    def test_on_a_one_question_slide_any_answer_box_counts_wherever_it_sits(self):
+        # The code sits by the question at the top; the answer box is at the bottom right,
+        # too far to be matched by distance. It's the slide's only question, so it counts.
+        def deck(answer):
+            return completion.read_deck(pptx([[
+                ("Q", "In any food chain, which living things let the sun's energy in?", (20, 20, 900, 60)),
+                ("CODE", "[[NOTES:C05:CA1-ANY]]", (30, 60, 80, 10)),  # inside the question's panel
+                ("LABEL", "WRITE YOUR ANSWER BELOW:", (500, 380, 300, 30)),
+                ("ANSWER", answer, (600, 450, 380, 120))]]))
+        result = completion.assess(deck("Producers are the doorway."), deck(""))
+        self.assertEqual([(i["id"], i["status"]) for i in result["items"]], [("CA1-ANY", "done")])
+        self.assertEqual(completion.assess(deck(""), deck(""))["items"][0]["status"], "blank")
+
     def test_untouched_copy_scores_zero(self):
         result = self.score()
         self.assertEqual((result["notes_score"], result["revision_score"]), (0.0, 0.0))
