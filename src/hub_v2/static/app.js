@@ -130,12 +130,13 @@ function lessonValues(lesson) {
   for (const p of lesson.plans) { values['plan:' + p.day] = p.plan; values['note:' + p.day] = p.note; }
   return Object.fromEntries([
     ...Object.keys(lesson.editable || {}).map(key => [key, values[key] ?? '']),
-    ...Object.entries(lesson.links || {}).map(([key, url]) => ['link:' + key, url || ''])]);
+    ...Object.entries(lesson.links || {}).flatMap(([key, url]) => [['link:' + key, url || ''],
+      ...(key in (lesson.link_labels || {}) ? [['label:' + key, (lesson.link_labels[key] || '').replace(/^📤\s*/, '')]] : [])])]);
 }
 
 const LINK_LABELS = {'link:deck': 'Deck link (your Google Slides link; students get a copy link)',
   'link:activity': 'Activity / guide link', 'link:turnin': 'Turn-in Form link (the Form’s own editor link)',
-  'link:turnin2': '2nd Turn-in Form link'};
+  'link:turnin2': '2nd Turn-in Form link', 'label:turnin2': 'Its name (what students and IC call it)'};
 const fieldLabel = key => ({topic: 'Topic', todo: 'To-do', prep: 'Lab / prep'})[key] || LINK_LABELS[key]
   || `${FULL_DAY[key.split(':')[1]]} ${key.startsWith('plan:') ? 'plan' : 'note'}`;
 
@@ -154,9 +155,9 @@ function lessonEditor(cls, lesson) {
   for (const key of Object.keys(edit.base)) {
     const locked = lesson.editable[key] === false;
     const id = `edit-${cls.key}-${lesson.row}-${key.replace(':', '-')}`;
-    const input = key === 'topic' || key.startsWith('link:')
-      ? el('input', {id, type: key === 'topic' ? 'text' : 'url', disabled: locked || edit.busy,
-                     placeholder: key === 'topic' ? '' : 'Paste a link, or leave empty'})
+    const input = key === 'topic' || key.startsWith('link:') || key.startsWith('label:')
+      ? el('input', {id, type: key.startsWith('link:') ? 'url' : 'text', disabled: locked || edit.busy,
+                     placeholder: key.startsWith('link:') ? 'Paste a link, or leave empty' : ''})
       : el('textarea', {id, rows: key.startsWith('plan:') ? 4 : 2, disabled: locked || edit.busy});
     input.value = edit.draft[key];
     input.addEventListener('input', () => { edit.draft[key] = input.value; });
@@ -236,7 +237,14 @@ async function saveLesson() {
   const edit = plans.editing;
   const changes = {};
   for (const [key, value] of Object.entries(edit.draft)) {
+    if (key.startsWith('label:')) continue;
     if (value !== edit.base[key]) changes[key] = {from: edit.base[key], to: value};
+  }
+  // A new name for the 2nd Turn-in goes with its link, whether or not the link changed.
+  for (const key of Object.keys(edit.draft).filter(k => k.startsWith('label:'))) {
+    const link = 'link:' + key.slice(6);
+    if (edit.draft[key] !== edit.base[key]) changes[link] = {from: edit.base[link], to: edit.draft[link], label: edit.draft[key]};
+    else if (changes[link]) changes[link].label = edit.draft[key];
   }
   if (!Object.keys(changes).length) { plans.editing = null; renderPlans(plans.data); return; }
   edit.busy = true; edit.error = null;
