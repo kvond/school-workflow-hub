@@ -182,10 +182,20 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
     if not with_missing:
         return rows, []
     done = {(r["section"], roster.plain(r["last"]), roster.plain(r["first"])) for r in rows if r["matched"]}
-    missing = [{"last": s["last"], "first": s["first"], "section": s["section"]}
+    missing = [{"last": s["last"], "first": s["first"], "section": s["section"], "added": s.get("added", "")}
                for s in students if student_key(s) not in done]
     missing.sort(key=lambda s: (s["section"], roster.plain(s["last"]), roster.plain(s["first"])))
     return rows, missing
+
+
+def excuse_new(missing, began):
+    """(still missing, excused): a student added to the roster after an
+    assignment began (their "Added" date is later than its first day) is
+    excused from it rather than given a 0."""
+    if not began:
+        return missing, []
+    late_joiners = [m for m in missing if m.get("added") and m["added"] > began.isoformat()]
+    return [m for m in missing if m not in late_joiners], late_joiners
 
 
 def folder_week(name):
@@ -905,6 +915,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
                                   cutoff=open_for["at"] if open_for else None)
             for m in missing:
                 m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted
+            began = school_day(open_for["from"]) if open_for else None
+            missing, excused = excuse_new(missing, began)
             moved = form.get("moved_out", [])
             describe_files(token, [m["submission"] for m in moved], known)
             elsewhere = []
@@ -922,7 +934,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
                               "shared_files": sum(1 for s in form["found"] if s.get("shared")),
                               "students": [r for r in rows if not r["late"]],
                               "late": [r for r in rows if r["late"]], "missing": missing,
-                              "elsewhere": elsewhere,
+                              "elsewhere": elsewhere, "excused": excused,
                               "window": {"opened": open_for["opened"], "label": open_for["label"],
                                          "from": open_for["from"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                                          "at": open_for["at"].strftime("%Y-%m-%dT%H:%M:%SZ")}

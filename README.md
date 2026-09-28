@@ -87,7 +87,10 @@ Monday of the first Agenda week that links the Form, so an early turn-in doesn't
 start the clock (or the 0s) for everyone. Later work is marked **Late**, listed on
 its own and marked "Late — not graded" on the grade sheet. Every load also runs a **roster check**:
 work from someone on another class's roster or on no roster is flagged, and the
-Rosters sheet's last change is shown.
+Rosters sheet's last change is shown. A student added to the roster late gets
+the date in the tab's **Added** column; every assignment that began before
+that date shows them as **Excused — new student** instead of missing, and the
+IC list marks them "Excused" (to be marked Exempt in IC, never 0).
 
 Completion scoring runs by itself when a week is open on Student work (results
 are cached per deck version; **Reload** reads the week again). It exports each student's current on-time
