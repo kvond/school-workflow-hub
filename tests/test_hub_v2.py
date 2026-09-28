@@ -260,6 +260,14 @@ class WorkTests(unittest.TestCase):
         self.assertEqual((ana["late"], ana["files"][0]["id"], ana["earlier"][0]["late"]), (False, "ONTIME", True))
         self.assertEqual((chidi["late"], chidi["files"][0]["late"]), (True, True))
         self.assertEqual(missing, [])
+        # A turn-in before the lesson's own Agenda week doesn't start the two weeks early.
+        later = work.window(found, not_before=date(2026, 10, 5))
+        self.assertEqual((later["opened"], later["label"]), ("Mon Oct 5", "Mon Oct 19, 11:59 PM"))
+        self.assertEqual(work.window(found, not_before=date(2026, 9, 21))["opened"], "Fri Sep 25")
+
+    def test_each_form_starts_no_earlier_than_its_first_agenda_week(self):
+        starts = work.form_weeks(fixture(), "biology")
+        self.assertEqual(starts, {"FICTIONALFORMID1234567890abc": date(2026, 9, 21)})
 
     def test_roster_check_flags_work_from_another_class_or_no_roster(self):
         biology, _ = roster.parse_tab(grid({1: ["Last Name", "First Name"], 2: ["Riggs", "Kay"]}),
@@ -1461,55 +1469,156 @@ class LinkCheckTests(unittest.TestCase):
         self.assertIn(("Wk 04", "unreadable"), self.kinds(out))
 
 
+def moving_fixture(extra=None):
+    """The fictional Biology tab with more weeks: Wk 03 and Wk 04 lessons (rows 4, 5),
+    Wk 05 closed (6), Wk 06 lesson (7), Wk 07 nothing planned (8), Wk 08 lesson (9),
+    Wk 09 an [EMPTY …] slack week (10)."""
+    base = fixture()
+    cells = dict(base.classes["biology"]["cells"])
+    for row, (label, topic) in {6: ("Wk 05", "[CLOSED ALL WEEK — no class]"), 7: ("Wk 06", "Photosynthesis"),
+                                8: ("Wk 07", ""), 9: ("Wk 08", "Respiration"),
+                                10: ("Wk 09", "[EMPTY WEEK — slack]")}.items():
+        cells[(row, 1)] = cell(label)
+        if topic:
+            cells[(row, 3)] = cell(topic)
+    cells.update(extra or {})
+    tabs = {"🗂 Weeks": 1, "🌿 Biology": 2, "🔬 Forensics": 3, "🫀 A&P": 4}
+    return agenda.Agenda("FICTIONALSHEET", "Fictional Agenda", tabs, {"🌿 Biology": cells})
+
+
 class MoveLessonTests(unittest.TestCase):
     CONFIG = {"HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
-    # The fictional Biology tab: row 4 is Wk 03 ("Earlier topic"), row 5 is Wk 04 ("Fictional topic").
 
-    def move(self, to_week, agenda_=None, week="Wk 04", row=5, readback=None):
-        agenda_ = agenda_ or fixture()
+    def move(self, to_week, week, row, agenda_=None, readback=None):
+        agenda_ = agenda_ or moving_fixture()
+        cells = agenda_.classes["biology"]["cells"]
+        topic = lambda r: (cells.get((r, 3)) or {}).get("formattedValue", "")
         def grid_back(token, sid, ranges):
             if readback is not None:
                 return {"🌿 Biology": readback}
-            written = {}
-            for (where, value) in write.call_args.args[2]:
-                col = ord(where.split("!")[1][0]) - 64
-                written[(int(where.split("!")[1][1:]), col)] = cell(value)
-            return {"🌿 Biology": written}
-        with patch.object(google, "update_cells") as write, patch.object(google, "sheet_grid", side_effect=grid_back):
+            # What the copies leave: each destination row shows its source's topic.
+            copies = [r["copyPaste"] for r in batch.call_args.args[2] if "copyPaste" in r]
+            chain = list(dict.fromkeys(c["source"]["startRowIndex"] + 1 for c in copies
+                                       if c["destination"]["sheetId"] != 2))
+            shown = {}
+            for c in copies:
+                if c["destination"]["sheetId"] == 2 and c["source"]["startColumnIndex"] == 2:
+                    shown[(c["destination"]["startRowIndex"] + 1, 3)] = cell(topic(chain[c["source"]["startRowIndex"]]))
+            for r in batch.call_args.args[2]:
+                if "updateCells" in r:
+                    shown[(r["updateCells"]["range"]["startRowIndex"] + 1, 3)] = cell("")
+            return {"🌿 Biology": shown}
+        with patch.object(google, "batch_update") as batch, patch.object(google, "update_cells") as plain_write, \
+                patch.object(google, "sheet_grid", side_effect=grid_back):
             result = agenda_edit.move("token", "write", self.CONFIG, agenda_, "biology", week, row, to_week)
-        return result, write
+        plain_write.assert_not_called()
+        return result, batch
 
-    def test_two_lessons_trade_weeks_and_their_dates_stay_with_the_calendar(self):
-        result, write = self.move("Wk 03")
-        self.assertEqual(write.call_args.args[0], "write")
-        self.assertEqual(write.call_args.args[2], [("'🌿 Biology'!A5", "Wk 03"), ("'🌿 Biology'!A4", "Wk 04"),
-                                                   ("'🌿 Biology'!B5", ""), ("'🌿 Biology'!B4", "Sep 21 – Sep 25")])
-        self.assertEqual(result["moved"], {"from": "Wk 04", "to": "Wk 03", "topic": "Fictional topic"})
-        self.assertEqual((result["swapped"], result["unconfirmed"]), (["Earlier topic"], []))
+    def test_lessons_slide_over_and_closed_or_empty_weeks_are_skipped(self):
+        result, batch = self.move("Wk 03", "Wk 08", 9)  # Respiration to Wk 03; the others move one week later
+        requests = batch.call_args.args[2]
+        self.assertEqual(batch.call_args.args[0], "write")
+        self.assertIn("addSheet", requests[0])
+        self.assertEqual(requests[-1], {"deleteSheet": {"sheetId": requests[0]["addSheet"]["properties"]["sheetId"]}})
+        copies = [r["copyPaste"] for r in requests if "copyPaste" in r]
+        # Only the lesson columns move: never Wk (A) or Dates (B), so the Agenda stays in week order.
+        self.assertTrue(all(c["source"]["startColumnIndex"] == 2 for c in copies))
+        back = [(c["destination"]["startRowIndex"] + 1) for c in copies if c["destination"]["sheetId"] == 2]
+        self.assertEqual(back, [4, 9, 7, 5])
+        self.assertEqual(result["moved"], {"from": "Wk 08", "to": "Wk 03", "topic": "Respiration"})
+        self.assertEqual(result["shifted"], [{"topic": "Photosynthesis", "from": "Wk 06", "to": "Wk 08"},
+                                             {"topic": "Fictional topic", "from": "Wk 04", "to": "Wk 06"},
+                                             {"topic": "Earlier topic", "from": "Wk 03", "to": "Wk 04"}])
+        self.assertEqual((result["skipped"], result["unconfirmed"]), (["Wk 07", "Wk 05"], []))
 
-    def test_a_lesson_moves_into_an_empty_week_and_its_dates_are_left_for_the_teacher(self):
-        agenda_ = fixture()
-        agenda_.weeks.append({"label": "Wk 06", "monday": "2026-10-05", "closures": ""})
-        result, write = self.move("Wk 06", agenda_)
-        self.assertEqual(write.call_args.args[2], [("'🌿 Biology'!A5", "Wk 06")])
-        self.assertTrue(result["dates_left"])
-        self.assertEqual(result["swapped"], [])
+    def test_a_lesson_moves_into_an_empty_week_and_the_weeks_note_stays_behind(self):
+        result, batch = self.move("Wk 09", "Wk 04", 5)
+        requests = batch.call_args.args[2]
+        back = [(c["copyPaste"]["destination"]["startRowIndex"] + 1) for c in requests
+                if "copyPaste" in c and c["copyPaste"]["destination"]["sheetId"] == 2]
+        self.assertEqual(back, [10, 5])
+        cleared = [r["updateCells"]["range"] for r in requests if "updateCells" in r]
+        self.assertEqual([(c["startRowIndex"] + 1, c["startColumnIndex"] + 1) for c in cleared], [(5, 3)])
+        self.assertEqual((result["shifted"], result["skipped"], result["unconfirmed"]), ([], [], []))
 
-    def test_a_row_that_moved_a_week_not_in_the_agenda_and_formula_week_cells_are_refused(self):
+    def test_closed_weeks_non_lessons_moved_rows_and_formulas_that_point_elsewhere_are_refused(self):
+        with self.assertRaises(agenda_edit.Refused):
+            self.move("Wk 05", "Wk 04", 5)  # no class that week
+        with self.assertRaises(agenda_edit.Refused):
+            self.move("Wk 03", "Wk 07", 8)  # nothing to move
+        with self.assertRaises(agenda_edit.Refused):
+            self.move("Wk 40", "Wk 04", 5)
         with self.assertRaises(agenda_edit.Changed):
-            self.move("Wk 03", week="Wk 03")  # row 5 no longer holds Wk 03
+            self.move("Wk 03", "Wk 03", 5)
         with self.assertRaises(ValueError):
-            self.move("Wk 09")
-        with self.assertRaises(ValueError):
-            self.move("Wk 04")  # already there
-        formula = fixture()
-        formula.classes["biology"]["cells"][(4, 1)] = cell("Wk 03", userEnteredValue={"formulaValue": "=Weeks!C3"})
-        with self.assertRaises(ValueError):
-            self.move("Wk 03", formula)
+            self.move("Wk 04", "Wk 04", 5)
+        for formula in ("=Weeks!C3", "=C6", "=$C$7"):
+            elsewhere = moving_fixture({(7, 4): cell("x", userEnteredValue={"formulaValue": formula})})
+            with self.assertRaises(agenda_edit.Refused):
+                self.move("Wk 03", "Wk 08", 9, elsewhere)
+        same_row = moving_fixture({(7, 12): cell("Student", userEnteredValue={
+            "formulaValue": '=IF(P7="","",HYPERLINK(P7,"🎞 Student copy ↗"))'})})
+        self.assertEqual(self.move("Wk 03", "Wk 08", 9, same_row)[0]["unconfirmed"], [])
 
     def test_a_move_that_doesnt_read_back_is_reported(self):
-        result, _ = self.move("Wk 03", readback={(5, 1): cell("Wk 04")})
-        self.assertIn(5, result["unconfirmed"])
+        result, _ = self.move("Wk 03", "Wk 08", 9, readback={(4, 3): cell("Respiration")})
+        self.assertEqual(result["unconfirmed"], ["Wk 08", "Wk 06", "Wk 04"])
+
+
+class LinkSaveTests(unittest.TestCase):
+    CONFIG = {"HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
+    NEW_DECK = "https://docs.google.com/presentation/d/FICTIONALNEWDECK0987654321/edit?usp=sharing"
+
+    def save(self, changes, readback=None):
+        with patch.object(google, "batch_update") as batch, patch.object(google, "update_cells") as plain_write, \
+                patch.object(google, "sheet_grid", return_value={"🌿 Biology": readback or {}}):
+            result = agenda_edit.save("token", "write", self.CONFIG, fixture(), "biology", "Wk 04", 5, changes)
+        return result, batch, plain_write
+
+    def written(self, batch):
+        return {r["updateCells"]["range"]["startColumnIndex"] + 1: r["updateCells"]["rows"][0]["values"][0]
+                for r in batch.call_args.args[2]}
+
+    def test_a_deck_link_sets_the_teacher_link_and_the_students_copy_link(self):
+        edit = "https://docs.google.com/presentation/d/FICTIONALNEWDECK0987654321/edit"
+        copy = edit[:-4] + "copy"
+        result, batch, plain_write = self.save({"link:deck": {"from": DECK, "to": self.NEW_DECK}},
+                                               readback={(5, 17): cell(edit), (5, 16): cell(copy)})
+        plain_write.assert_not_called()
+        self.assertEqual(self.written(batch), {17: {"userEnteredValue": {"stringValue": edit}},
+                                               16: {"userEnteredValue": {"stringValue": copy}}})
+        self.assertEqual(result, {"saved": ["link:deck"], "unconfirmed": []})
+
+    def test_a_turn_in_form_link_is_a_plain_link_and_a_labelled_link_never_a_formula(self):
+        form = "https://docs.google.com/forms/d/FICTIONALNEWFORM0987654321abc/viewform"
+        result, batch, _ = self.save({"link:turnin": {"from": DIRECT, "to": form + "?usp=sharing"},
+                                      "topic": {"from": "Fictional topic", "to": "Types of Evidence"}},
+                                     readback={(5, 21): cell(form), (5, 3): cell("Types of Evidence"),
+                                               (5, 20): cell("📤 Types of Evidence — Turn in", hyperlink=form)})
+        cells = self.written(batch)
+        self.assertEqual(cells[21], {"userEnteredValue": {"stringValue": form}})
+        self.assertEqual(cells[20], {"userEnteredValue": {"stringValue": "📤 Types of Evidence — Turn in"},
+                                     "textFormatRuns": [{"startIndex": 0, "format": {"link": {"uri": form}}}]})
+        self.assertTrue(all("formulaValue" not in c["userEnteredValue"] for c in cells.values()))
+        self.assertEqual(result["unconfirmed"], [])
+
+    def test_unreadable_links_changed_links_and_missing_columns_are_refused(self):
+        for to in (PUBLISHED, "https://forms.gle/fictional", "https://example.com/form"):
+            with self.assertRaises(agenda_edit.Refused):
+                self.save({"link:turnin": {"from": DIRECT, "to": to}})
+        with self.assertRaises(agenda_edit.Refused):
+            self.save({"link:deck": {"from": DECK, "to": "https://example.com/slides"}})
+        with self.assertRaises(agenda_edit.Changed) as caught:
+            self.save({"link:deck": {"from": "https://docs.google.com/presentation/d/SOMETHINGELSE12345678/edit",
+                                     "to": self.NEW_DECK}})
+        self.assertEqual(caught.exception.current, {"link:deck": DECK})
+        with self.assertRaises(ValueError):
+            self.save({"link:turnin2": {"from": "", "to": SECOND}})  # this tab has no "2nd turn it in" column
+
+    def test_clearing_a_link_empties_its_cells(self):
+        result, batch, _ = self.save({"link:activity": {"from": "", "to": ""}})
+        batch.assert_not_called()
+        self.assertEqual(result, {"saved": [], "unconfirmed": []})
 
 
 class MoveEndpointTests(unittest.TestCase):

@@ -321,7 +321,8 @@ def agenda_post(environ, respond, config):
     except agenda_edit.Changed as changed:
         return respond("409 Conflict", {"error": str(changed), "current": changed.current})
     except ValueError as error:
-        told = str(error) if "Agenda" in str(error) else "That request wasn't understood."
+        told = (str(error) if isinstance(error, agenda_edit.Refused) or "Agenda" in str(error)
+                else "That request wasn't understood.")
         return respond("400 Bad Request", {"error": told})
     except (KeyError, TypeError, AttributeError):
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
@@ -333,8 +334,8 @@ def agenda_post(environ, respond, config):
 
 
 def move_post(environ, respond, config):
-    """Move a lesson to another week, trading places with the lesson there.
-    Signed-in teacher, same-origin JSON only."""
+    """Move a lesson to another week; the lessons between slide over (see
+    agenda_edit.move). Signed-in teacher, same-origin JSON only."""
     refused = _same_origin_json(environ, respond, config)
     if refused:
         return refused
@@ -356,7 +357,8 @@ def move_post(environ, respond, config):
     except agenda_edit.Changed as changed:
         return respond("409 Conflict", {"error": str(changed), "current": changed.current})
     except ValueError as error:
-        told = str(error) if "Agenda" in str(error) else "That request wasn't understood."
+        told = (str(error) if isinstance(error, agenda_edit.Refused) or "Agenda" in str(error)
+                else "That request wasn't understood.")
         return respond("400 Bad Request", {"error": told})
     except (KeyError, TypeError, AttributeError):
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
