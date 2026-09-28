@@ -20,8 +20,9 @@ _cache = {}
 _lock = threading.Lock()
 
 
-def load_prompt(token, agenda):
-    """(Prompt 2 text, link to its cell) from the Agenda, or (None, reason)."""
+def _prompts_tab(token, agenda):
+    """(cells, gid) of the Agenda's Feedback Prompts tab, re-read at most once a
+    minute, or (None, reason)."""
     with _lock:
         cached = _cache.get(agenda.spreadsheet_id)
         if cached and time.time() - cached[0] < PROMPT_CACHE_SECONDS:
@@ -30,22 +31,41 @@ def load_prompt(token, agenda):
         _, tabs = google.sheet_tabs(token, agenda.spreadsheet_id)
         tab = find_tab(tabs, "Feedback Prompts")
         if not tab:
-            return None, "The Agenda has no “Feedback Prompts” tab, so there's no feedback prompt to use."
+            return None, "The Agenda has no “Feedback Prompts” tab."
         cells = google.sheet_grid(token, agenda.spreadsheet_id, ["'%s'!A1:B20" % tab.replace("'", "''")]).get(tab, {})
+        result = (cells, tabs[tab])
     except google.GoogleError as error:
-        return None, "The feedback prompt couldn't be read from the Agenda (%s)." % error
-    found = None
-    for row in range(1, 21):
-        value = text(cells.get((row, 2))).strip()
-        label = norm(text(cells.get((row, 1))))
-        if norm(value).startswith("prompt 2") or ("feedback" in label and len(value) > 200):
-            found = (value, "https://docs.google.com/spreadsheets/d/%s/edit#gid=%s&range=B%d"
-                     % (agenda.spreadsheet_id, tabs[tab], row))
-            break
-    result = found or (None, "No “Prompt 2” cell was found on the Agenda's Feedback Prompts tab.")
+        return None, "The Agenda's prompts couldn't be read (%s)." % error
     with _lock:
         _cache[agenda.spreadsheet_id] = (time.time(), result)
     return result
+
+
+def _prompt(token, agenda, number, label_word, missing):
+    """(Prompt <number> text, link to its cell): the B cell that starts with
+    "Prompt <number>", or a long one labelled with label_word; else (None, reason)."""
+    cells, gid = _prompts_tab(token, agenda)
+    if cells is None:
+        return None, gid
+    for row in range(1, 21):
+        value = text(cells.get((row, 2))).strip()
+        label = norm(text(cells.get((row, 1))))
+        if norm(value).startswith("prompt%d" % number) or (label_word in label and len(value) > 200):
+            return value, ("https://docs.google.com/spreadsheets/d/%s/edit#gid=%s&range=B%d"
+                           % (agenda.spreadsheet_id, gid, row))
+    return None, missing
+
+
+def load_prompt(token, agenda):
+    """(Prompt 2 text, link to its cell) from the Agenda, or (None, reason)."""
+    return _prompt(token, agenda, 2, "feedback",
+                   "No “Prompt 2” cell was found on the Agenda's Feedback Prompts tab.")
+
+
+def load_embed_prompt(token, agenda):
+    """(Prompt 0 text: embedding codes in a lesson deck, link to its cell), or (None, reason)."""
+    return _prompt(token, agenda, 0, "embed",
+                   "No “Prompt 0” (embedding codes) cell was found on the Agenda's Feedback Prompts tab.")
 
 
 def short_names(students):

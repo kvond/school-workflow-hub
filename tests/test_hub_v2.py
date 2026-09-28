@@ -1405,6 +1405,25 @@ class LedgerAndFeedbackTests(unittest.TestCase):
         self.assertTrue(prompt.startswith("Prompt 2"))
         self.assertTrue(where.endswith("gid=42&range=B7"))
 
+    def test_the_embed_coding_prompt_is_read_from_the_agenda(self):
+        cells = {(6, 1): cell("Embedd Codes - Prompt 00"), (6, 2): cell("Prompt 0: Embedding codes BEGIN " + "x" * 300),
+                 (7, 1): cell("Feedback — Prompt 2"), (7, 2): cell("Prompt 2 — feedback for students\n" + "x" * 300)}
+        feedback._cache.clear()
+        with patch.object(google, "sheet_tabs", return_value=("Agenda", {"Feedback Prompts": 42})), \
+                patch.object(google, "sheet_grid", return_value={"Feedback Prompts": cells}) as grid:
+            prompt, where = feedback.load_embed_prompt("token", fixture())
+            feedback_prompt, _ = feedback.load_prompt("token", fixture())
+        self.assertTrue(prompt.startswith("Prompt 0: Embedding codes"))
+        self.assertTrue(where.endswith("gid=42&range=B6"))
+        self.assertTrue(feedback_prompt.startswith("Prompt 2"))
+        self.assertEqual(grid.call_count, 1)  # the tab is read once for both
+        feedback._cache.clear()
+        with patch.object(google, "sheet_tabs", return_value=("Agenda", {"Feedback Prompts": 42})), \
+                patch.object(google, "sheet_grid", return_value={"Feedback Prompts": {(7, 2): cells[(7, 2)]}}):
+            prompt, why = feedback.load_embed_prompt("token", fixture())
+        self.assertIsNone(prompt)
+        self.assertIn("Prompt 0", why)
+
 
 class RecordEndpointTests(unittest.TestCase):
     def post(self, origin, body):
@@ -1522,6 +1541,19 @@ class RoutineTests(unittest.TestCase):
         self.assertEqual((out["scores_entered"]["name"], out["scores_entered"]["last"]),
                          ("Scores entered (On Dashboard)", "2026-10-05 08:05"))
         self.assertEqual(out["research"]["last"], "2026-10-05 08:05")
+
+    def test_the_routine_endpoint_carries_the_embed_coding_prompt(self):
+        with patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(routine, "status", return_value={"monday_run": None}), \
+                patch.object(feedback, "load_embed_prompt", return_value=("Prompt 0: Embedding codes", "https://agenda.example")):
+            out = app.api("api/routine", {}, {})
+        self.assertEqual(out["embed_prompt"], {"text": "Prompt 0: Embedding codes", "url": "https://agenda.example"})
+        with patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(google, "service_token", return_value="token"), \
+                patch.object(routine, "status", return_value={}), \
+                patch.object(feedback, "load_embed_prompt", return_value=(None, "No Prompt 0 cell.")):
+            self.assertEqual(app.api("api/routine", {}, {})["embed_prompt"], {"problem": "No Prompt 0 cell."})
 
     def test_one_unreadable_record_doesnt_hide_the_others(self):
         out = self.status(fail="Monday run")
@@ -1980,6 +2012,9 @@ class ResearchSheetTests(unittest.TestCase):
         load.assert_called_once_with("Wk 04")
         score.assert_not_called()
         self.assertEqual(out["saved"], 0)
+        # The Routine page says which assignment's answers come next, and when.
+        self.assertEqual(out["next"], {"week": "Wk 04", "assignment": "Fictional topic",
+                                       "label": "Thu Oct 8, 11:59 PM", "at": "2026-10-09T03:59:00Z"})
 
     def test_the_sweep_stops_at_its_time_limit_and_asks_to_be_called_again(self):
         ticks = iter([0, answers.SWEEP_SECONDS + 1])

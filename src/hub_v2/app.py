@@ -127,7 +127,9 @@ def api(sub, query, config):
         found = lesson_work(token, config, agenda, class_key, week, fresh=False)
         return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
     if sub == "api/routine":
-        return routine.status(token, config)
+        prompt, where = feedback.load_embed_prompt(token, agenda)
+        return {**routine.status(token, config),
+                "embed_prompt": {"text": prompt, "url": where} if prompt else {"problem": where}}
     if sub == "api/audit":
         return audit.check(token, agenda, _class_key(_one(query, "class")))
     if sub in ("api/ledger", "api/feedback"):
