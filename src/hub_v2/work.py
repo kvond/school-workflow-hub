@@ -473,7 +473,8 @@ def nearby_forms(token, agenda, class_key, week_label, skip):
                 except google.GoogleError:
                     continue
                 skip = skip | {form["form_id"]}
-                out.append({"week": label, "label": form["label"], "topic": lesson["topic"],
+                out.append({"week": label, "label": form["label"],
+                            "topic": lesson["topic"] if len(lesson["forms"]) == 1 else "",
                             "form_id": form["form_id"], "found": found})
     return out
 
@@ -861,8 +862,10 @@ def lesson_work(token, config, agenda, class_key, week_label):
         deck_ids = {m.group(1) for material in lesson["materials"]
                     for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
         titles = [info.get("name", "") for info in _metadata(token, deck_ids).values()]
+        alone = len(lesson["forms"]) == 1  # a row's topic and decks describe its Forms only when it has one
         for form in forms[index:index + len(lesson["forms"])]:
-            base, words = lesson_words(lesson["topic"], form["label"], titles, form["found"])
+            base, words = lesson_words(lesson["topic"] if alone else "", form["label"], titles if alone else [],
+                                       form["found"])
             entries.append({"current": True, "form": form, "week": week_label, "label": form["label"],
                             "found": form["found"], "base": base, "words": words})
         index += len(lesson["forms"])

@@ -664,6 +664,17 @@ class FolderTests(unittest.TestCase):
         moves = sorted((entries[i]["week"], entries[j]["week"]) for i, s, j in work.wrong_form_moves(entries))
         self.assertEqual(moves, [("Wk 03", "Wk 04"), ("Wk 05", "Wk 04")])  # both counted for Eyewitness
 
+    def test_two_forms_in_one_row_are_told_apart_by_their_own_labels(self):
+        # Wk 04's row has two Forms; its topic and deck name only one of them.
+        entries = self.wrong_form_entries("Wk 04")
+        investigative = [{"source": "form", "key": k, "files": [{"name": "▶ LIVE — Week 05 — Investigative Processes (VT) - %s" % k}]}
+                         for k in "FG"]
+        base, words = work.lesson_words("", "📤 Investigative Processes (Steps of CSI) — Turn in", [], investigative)
+        entries.append({"current": True, "week": "Wk 04", "label": "Investigative", "found": investigative,
+                        "base": base, "words": words})
+        moves = sorted((entries[i]["week"], entries[j]["label"][:12]) for i, s, j in work.wrong_form_moves(entries))
+        self.assertEqual(moves, [("Wk 03", "📤 Eyewitness"), ("Wk 05", "📤 Eyewitness")])
+
     def test_a_deck_that_names_its_own_lesson_or_two_others_stays(self):
         entries = self.wrong_form_entries("Wk 05")
         entries[2]["found"] += [
