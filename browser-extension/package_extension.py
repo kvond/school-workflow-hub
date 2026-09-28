@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 
 FILES = ("background.js", "protocol.js", "plan.js", "executor.js", "hub-content.js", "ic-content.js",
-         "ic-adapter.js", "popup.html", "popup.css", "popup.js")
+         "ic-adapter.js", "entry.js", "hub-entry.js", "ic-entry.js", "popup.html", "popup.css", "popup.js")
 
 
 def origin(value):
@@ -41,8 +41,10 @@ def package(hub_origin, ic_origin, output):
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     manifest["host_permissions"] = [hub_origin + "/*", ic_origin + "/*"]
     manifest["content_scripts"] = [
-        {"matches": [hub_origin + "/*"], "js": ["config.js", "protocol.js", "hub-content.js"], "run_at": "document_idle"},
-        {"matches": [ic_origin + "/*"], "js": ["config.js", "protocol.js", "plan.js", "executor.js", "ic-adapter.js", "ic-content.js"], "run_at": "document_idle"},
+        {"matches": [hub_origin + "/*"], "js": ["config.js", "protocol.js", "entry.js", "hub-content.js", "hub-entry.js"],
+         "run_at": "document_idle"},
+        {"matches": [ic_origin + "/*"], "js": ["config.js", "protocol.js", "plan.js", "executor.js", "ic-adapter.js",
+                                              "ic-content.js", "entry.js", "ic-entry.js"], "run_at": "document_idle"},
     ]
     config = {"HUB_ORIGIN": hub_origin, "IC_ORIGIN": ic_origin}
     contents = {name: (source / name).read_bytes() for name in FILES}

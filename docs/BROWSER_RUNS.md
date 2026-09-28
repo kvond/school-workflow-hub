@@ -65,6 +65,39 @@ inspect the actual score panel, then reserve the run and save an accurate
 private report through `/api/browser-runs` (the Automation run records panel)
 to clear it — release keeps recovery in place by design.
 
+## Teacher-initiated Hub v2 list entry (September 28)
+
+The teacher authorized the browser companion (0.3.0) to enter the Teaching
+Hub v2's IC list for one assignment at a time, in the signed-in school Chrome.
+It replaces the Claude extension typing scores by hand, which gave inconsistent
+results. The Claude extension still does the roster check and the clicking, and
+does these only after the teacher's OK in chat.
+
+- **Source.** On the Hub's IC panel, "Send to the Chrome helper" hands the
+  companion the list shown there (`hub-ic-list/v1`). The list names every
+  roster student with a score, a 0, Excused, "check by hand" or nothing yet.
+  The companion keeps it in browser session storage, which is memory only, for
+  three hours. The page gets back only codes and counts.
+- **Destination.** In the open 10-point score panel, "Hub helper" matches IC rows
+  to the list by name, one to one. It refuses when most rows don't match or when
+  they span sections, and it shows every row with what it will do. The teacher
+  checks the lesson and the column: (F) is Notes and (S) is Revision by default.
+- **Write.** The companion re-reads IC first and stops if anything changed. It
+  fills blanks and raises lower scores, and never lowers one (keep the higher
+  score). It leaves flagged rows, excused students, unsure rows and unmatched
+  names alone, then uses native Save, reloads, and compares every score. A
+  score that didn't read back is reported by name. An unconfirmed Save says to
+  check IC before trying again.
+- **Receipt and repeats.** The companion sends the Hub counts only, never names.
+  Once every section and column is done and read back, the Hub adds an "Entered
+  in IC" row with those counts to the "Scores entered" sheet. There is no cloud
+  lease. Each run re-reads IC and enters only what is still missing, so a repeat
+  after a partial or uncertain run cannot lower or duplicate a score.
+
+Synthetic tests and a dry run against a mock score panel have passed. Live
+acceptance is still required: the first supervised run in the real Infinite
+Campus, with the teacher checking the reloaded scores.
+
 ## Worker procedure
 
 1. Verify the school browser account, current school/year/sections, live Agenda

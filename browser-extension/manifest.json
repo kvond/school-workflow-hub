@@ -1,9 +1,12 @@
 {
   "manifest_version": 3,
   "name": "School Workflow Hub \u2014 browser companion",
-  "description": "Review recorded grades against the current Infinite Campus assignment in your signed-in school browser.",
-  "version": "0.2.3",
+  "description": "Enter the Teaching Hub's IC list in the Infinite Campus assignment you have open, in your signed-in school browser: blanks and raises only, checked after reload.",
+  "version": "0.3.0",
   "minimum_chrome_version": "102",
+  "permissions": [
+    "storage"
+  ],
   "background": {
     "service_worker": "background.js"
   },

@@ -103,8 +103,16 @@ required, Revision = 10 × completed DRAFT ÷ required, following the teacher's
 Prompt 1. It counts; it never judges quality, and no model is called. A box
 counts when the student wrote something new in it; the printed prompt copied
 back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
-ready to enter in IC** lists the scores, which the Claude extension enters in
-Infinite Campus after the teacher's OK when she runs the Monday prompt. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
+ready to enter in IC** lists the scores. **Send to the Chrome helper** hands
+that list to the browser companion in the teacher's own Chrome. In IC's score
+panel, its **Hub helper** shows every student and what it will do. It keeps the
+higher score: blanks and raises only, never a lower score, and it leaves IC
+flags, excused and unsure rows alone. After her tick it types, saves, reloads
+and checks each score. On Monday the Claude extension does the clicks after her
+OK. When every section and column has read back, the Hub adds "Entered in IC"
+with the helper's counts to the Scores entered sheet. A student whose only
+turn-in was another lesson's deck is "check by hand", not a 0. The page itself
+never writes to IC. See [the helper's README](browser-extension/README.md). Each assignment card also shows where it stands for IC:
 open (enter every score listed, 0s included; a 0 is replaced when the student
 turns work in), closed and
 waiting for final scores (enter every score, 0s included, then click **I entered
@@ -161,8 +169,10 @@ title, for comparing with Schoology. Read only.
 
 **Routine** opens with **Copy Monday prompt (Claude extension)**: the teacher
 pastes it into the Claude extension in her own Chrome, signed in to Infinite
-Campus and the Hub, and it checks rosters, reads the IC lists, waits for her OK,
-then enters and reads back the scores (nothing runs it on a timer); the prompt
+Campus and the Hub, and it checks rosters, sends each assignment to the Chrome
+helper and collects its plans, waits for her OK, then has the helper enter and
+check the scores (nothing runs it on a timer). A line under it says whether the
+Chrome helper is installed in that browser; the prompt
 replaces anything the extension remembers from earlier weeks. **Lesson planning**
 comes next: plan on Lesson plans, and right after updating a deck, **Copy
 embed-coding prompt** copies the Agenda's Prompt 0 (Feedback Prompts tab, read

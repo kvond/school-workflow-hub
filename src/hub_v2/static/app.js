@@ -1,7 +1,8 @@
 // Teaching Hub v2: lesson plans from the Agenda, and student work found from
 // each lesson's Form responses and turn-in folder, with completion scores
-// counted from each deck's coded boxes. The grade sheet downloads to you;
-// scores go into Infinite Campus by you or the Claude extension, never by this page.
+// counted from each deck's coded boxes. Scores go into Infinite Campus through
+// the Chrome helper (the browser companion extension) in the teacher's own
+// Chrome, after her OK there, or by her own typing; never by this page.
 // Biology answers are copied into the teacher's research sheet once an assignment closes.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
@@ -578,7 +579,8 @@ async function recordMark(form, kind) {
   const ui = work.ui[form.form_id];
   ui.busy = 'Noting it…'; ui.error = null; renderWork();
   try {
-    const done = await postJSON('api/record', {class: work.cls, week: work.week, form: form.form_id, kind});
+    const done = await postJSON('api/record', {class: work.cls, week: work.week, form: form.form_id, kind,
+      note: kind === 'ic' ? 'Clicked on the Hub' : ''});
     work.marks[form.form_id] = done.sheet;
     const where = done.sheet?.name || 'Scores entered';
     ui.saved = kind === 'ic' ? `Added to “${where}”: this assignment is entered in IC.`
@@ -624,13 +626,14 @@ function marksLine(form) {
   return parts.length ? el('p', {class: 'marks', text: parts.join(' · ')}) : null;
 }
 
-function icPanel(form, scores) {
+function icPanel(form, scores, lesson) {
   const section = work.section;
   const ui = work.ui[form.form_id] || {};
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
   const closed = closedFor(form);
   const inSection = r => section === 'all' || r.section === section;
+  const elsewhere = elsewhereKeys(form);
   const all = [
     // A score the Hub isn't sure of (the copy lacks many of the deck's codes) is
     // never entered automatically: the teacher checks it by hand.
@@ -639,8 +642,11 @@ function icPanel(form, scores) {
         show: x.s.note ? ['check by hand', 'check by hand'] : shown(x.s)})),
     // A student with a file in "Not sorted" may have turned it in: they're left
     // off the list (and named below) so a 0 isn't entered for them unchecked.
+    // A student whose only turn-in was another lesson's deck (through this Form) is
+    // checked by hand, not given a 0 unseen.
     ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
-      .map(r => ({r, s: null, zero: true, show: shown(null)})) : []),
+      .map(r => elsewhere.has(personKey(r)) ? {r, s: null, other: true, show: ['check by hand', 'check by hand']}
+        : {r, s: null, zero: true, show: shown(null)}) : []),
     // Added to the roster after this assignment began: excused, never a 0.
     ...(form.excused || []).filter(inSection).map(r => ({r, s: null, excused: true, show: ['Excused', 'Excused']})),
   ].sort((a, b) => (a.r.section + a.r.last + a.r.first).localeCompare(b.r.section + b.r.last + b.r.first));
@@ -659,21 +665,29 @@ function icPanel(form, scores) {
   const standing = icStatus(form);
   if (standing) panel.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
-  panel.append(el('p', {}, 'The Claude extension enters these when you run the Monday prompt (Routine page). To enter them yourself, open this assignment in Infinite Campus and type them in.',
+  const canSend = helper.state === 'ready' && icStatus(form)?.kind !== 'final' && helperRows(form).length;
+  panel.append(el('p', {}, helper.state === 'ready'
+    ? 'The Chrome helper enters these in IC. Click “Send to the Chrome helper”, then in Infinite Campus open this assignment’s score panel ((F) for Notes, (S) for Revision, in each section) and click “Hub helper”. It shows what it will do and enters nothing until you tick its box. On Monday the Claude extension does these clicks after your OK.'
+    : 'The Chrome helper isn’t installed in this browser, so it can’t enter these (see Routine). To enter them yourself, open this assignment in Infinite Campus and type them in.',
     entered ? ` You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'}` : ''));
+  if (ui.helper) panel.append(note(ui.helper, 'info'));
+  const progress = helperProgress(form);
+  if (progress) panel.append(progress);
   panel.append(el('div', {class: 'action-row'},
+    canSend ? el('button', {type: 'button', class: 'primary', onclick: () => sendToHelper(form, lesson)}, 'Send to the Chrome helper') : null,
     sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')},
       'I entered these in IC (click adds to Scores entered)') : null,
     status));
   if (sheet?.configured) {
-    panel.append(el('p', {class: 'muted'}, 'Click “I entered these in IC” only after the scores are in IC. It adds a dated row to ',
-      link(`“${sheet.name || 'Scores entered'}”`, sheet.url), '. From then on, only work turned in later is marked new; once the two weeks have closed, it marks this assignment’s final scores done, and nothing more is entered for it.'));
+    panel.append(el('p', {class: 'muted'}, 'The Hub adds “Entered in IC” to ',
+      link(`“${sheet.name || 'Scores entered'}”`, sheet.url), ' by itself once the Chrome helper has entered every section and column. Click “I entered these in IC” only if you typed the scores into IC yourself. From then on, only work turned in later is marked new; once the two weeks have closed, it marks this assignment’s final scores done, and nothing more is entered for it.'));
   }
   panel.append(el('div', {class: 'table-wrap'}, el('table', {},
     el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
-    el('tbody', {}, all.map(({r, s: result, show, zero, excused, unsure, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
+    el('tbody', {}, all.map(({r, s: result, show, zero, other, excused, unsure, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
       el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
       el('td', {}, zero ? el('span', {class: 'badge', text: closed ? 'nothing on time' : 'nothing yet'}) : null,
+        other ? el('span', {class: 'badge warn', text: 'turned in another lesson’s deck through this Form'}) : null,
         excused ? el('span', {class: 'badge', title: `Added to the roster ${r.added}, after this assignment began`,
                               text: 'new student: mark Exempt in IC'}) : null,
         unsure ? el('span', {class: 'badge warn', title: result.note,
@@ -689,6 +703,170 @@ function icPanel(form, scores) {
     : `Students with nothing turned in yet, and empty boxes, are listed as 0; each 0 is replaced when the student turns work in before ${form.window?.label || 'the two weeks close'}. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.`}));
   return panel;
 }
+
+// ---------- Chrome helper: enters an assignment's IC list in Infinite Campus ----------
+// The browser companion extension in the teacher's own Chrome. This page hands
+// it the list shown above (every roster student, with what to enter); in IC the
+// helper shows what it will do, and only after her tick and click there does it
+// type, save, reload and check the scores. It tells this page the counts, never
+// names. Once every section and column is done, the Hub notes "Entered in IC".
+const HELPER = {send: 'hub-ic-entry', reply: 'hub-ic-entry-result'};
+const helper = {state: 'unknown', version: '', results: {}, waiting: new Map(), sent: {}};
+try { helper.sent = JSON.parse(store.get('helper-sent') || '{}'); } catch { helper.sent = {}; }
+const saveSent = () => {
+  const day = Date.now() - 86400000;
+  for (const [id, sent] of Object.entries(helper.sent)) if (Date.parse(sent.sent_at) < day) delete helper.sent[id];
+  store.set('helper-sent', JSON.stringify(helper.sent));
+};
+const fold = value => String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const personKey = r => `${fold(r.last)}|${fold(r.first)}|${r.section}`;
+const oneLine = (value, max = 200) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+function elsewhereKeys(form) {
+  return new Set((form.elsewhere || []).map(e => {
+    const [last, ...first] = String(e.who).split(',');
+    return personKey({last, first: first.join(','), section: e.section});
+  }));
+}
+
+// Every roster student of the class (all sections) with what to enter, the
+// same rules as the table above.
+function helperRows(form) {
+  const scores = work.scores[form.form_id] || {};
+  const started = startedFor(form), elsewhere = elsewhereKeys(form);
+  const rows = new Map();
+  const add = (r, kind, notes = null, revision = null, reason = '') => {
+    const key = personKey(r);
+    if (rows.has(key)) { Object.assign(rows.get(key), {kind: 'check', notes: null, revision: null, reason: 'listed twice on the roster'}); return; }
+    if (!oneLine(r.last) || !oneLine(r.section)) return;
+    rows.set(key, {last: oneLine(r.last, 100), first: oneLine(r.first, 100), section: oneLine(r.section, 100), kind, notes, revision, reason});
+  };
+  for (const r of form.students.filter(r => r.matched)) {
+    const s = scores[scoreFile(r)?.id];
+    if (!s) add(r, 'check', null, null, 'not scored yet');
+    else if (s.problem) add(r, 'check', null, null, 'deck couldn’t be scored');
+    else if (s.note) add(r, 'check', null, null, 'the Hub isn’t sure of this score');
+    else if (s.notes_score == null && s.revision_score == null) add(r, 'check', null, null, 'no codes to count');
+    else add(r, 'score', s.notes_score ?? null, s.revision_score ?? null);
+  }
+  for (const r of [...form.missing, ...(form.late || []).filter(r => r.matched)]) {
+    if (!started) add(r, 'none', null, null, 'its two weeks haven’t started');
+    else if (r.unsorted) add(r, 'check', null, null, 'has a file in Not sorted');
+    else if (elsewhere.has(personKey(r))) add(r, 'check', null, null, 'turned in another lesson’s deck through this Form');
+    else add(r, 'zero', 0, 0);
+  }
+  for (const r of form.excused || []) add(r, 'excused', null, null, 'new student');
+  return [...rows.values()];
+}
+
+// The IC score panels that must be done: each section with something to enter, and each column it has.
+function helperNeed(rows) {
+  const need = [];
+  for (const section of [...new Set(rows.map(r => r.section))].sort()) {
+    for (const column of ['notes', 'revision']) {
+      if (rows.some(r => r.section === section && ['score', 'zero'].includes(r.kind) && r[column] != null)) need.push([section, column]);
+    }
+  }
+  return need;
+}
+
+async function sendToHelper(form, lesson) {
+  const ui = work.ui[form.form_id] = {...work.ui[form.form_id], error: null, helper: null};
+  const rows = helperRows(form);
+  const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
+    class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
+    assignment: oneLine(lesson?.topic || work.week), form_label: oneLine(form.label),
+    status: !startedFor(form) ? 'before' : closedFor(form) ? 'closed' : 'open',
+    status_text: oneLine(icStatus(form)?.text, 400), sent_at: new Date().toISOString(), rows};
+  const request_id = crypto.randomUUID();
+  const code = await new Promise(resolve => {
+    helper.waiting.set(request_id, resolve);
+    setTimeout(() => { if (helper.waiting.delete(request_id)) resolve('helper_unavailable'); }, 5000);
+    window.postMessage({channel: HELPER.send, version: 1, request_id, type: 'send', list}, location.origin);
+  });
+  if (code === 'list_ready') {
+    helper.sent[form.form_id] = {class_key: work.cls, week: work.week, label: form.label, need: helperNeed(rows), sent_at: list.sent_at};
+    saveSent();
+    ui.helper = `Sent to the Chrome helper at ${when(list.sent_at)}. In Infinite Campus, open this assignment’s score panel for each section, (F) for Notes and (S) for Revision, and click “Hub helper” at the bottom right.`;
+  } else {
+    ui.error = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
+      helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'}[code]
+      || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
+  }
+  renderWork();
+}
+
+const COLUMN = {notes: 'Notes', revision: 'Revision'};
+const goodResult = (r, since) => r && ['entered', 'checked'].includes(r.outcome) && r.certain && !r.counts.not_saved && r.at >= since;
+function resultText(r) {
+  const n = r.counts;
+  if (r.outcome === 'checked') return `✓ nothing needed (${when(r.at)})`;
+  if (r.outcome === 'entered') return `✓ ${n.filled} entered, ${n.raised} raised${n.left ? `, ${n.left} left for you` : ''} (${when(r.at)})`;
+  if (r.outcome === 'partial') return `⚠ saved, but ${n.not_saved} didn’t read back: check in IC (${when(r.at)})`;
+  return `⚠ not confirmed: check this assignment in IC (${when(r.at)})`;
+}
+function helperProgress(form) {
+  const sent = helper.sent[form.form_id];
+  const done = helper.results[form.form_id] || [];
+  if (!sent && !done.length) return null;
+  const pairs = sent ? sent.need : done.map(r => [r.section, r.column]);
+  return el('ul', {class: 'files'}, pairs.map(([section, column]) => {
+    const r = done.find(d => d.section === section && d.column === column);
+    const text = r && (!sent || r.at >= sent.sent_at) ? resultText(r) : 'not entered yet';
+    return el('li', {}, el('strong', {text: `Chrome helper · ${section} ${COLUMN[column]}: `}), text);
+  }));
+}
+function helperNote(sent, done) {
+  return oneLine('Chrome helper — ' + sent.need.map(([section, column]) => {
+    const n = done.find(d => d.section === section && d.column === column).counts;
+    return `${section} ${COLUMN[column]}: ${n.filled} entered, ${n.raised} raised, ${n.left} left`;
+  }).join('; '), 480);
+}
+function noteResult(result) {
+  const list = helper.results[result.form_id] = (helper.results[result.form_id] || [])
+    .filter(r => r.section !== result.section || r.column !== result.column || r.at > result.at);
+  if (!list.some(r => r.section === result.section && r.column === result.column)) list.push(result);
+}
+// Every section and column done in this round, each read back: the Hub notes it once.
+async function maybeRecord(formId) {
+  const sent = helper.sent[formId];
+  const done = helper.results[formId] || [];
+  if (!sent || sent.recorded || !sent.need.length
+      || !sent.need.every(([section, column]) => goodResult(done.find(d => d.section === section && d.column === column), sent.sent_at))) return;
+  sent.recorded = true; saveSent();
+  const ui = work.ui[formId] = {...work.ui[formId]};
+  try {
+    const out = await postJSON('api/record', {class: sent.class_key, week: sent.week, form: formId, kind: 'ic', note: helperNote(sent, done)});
+    work.marks[formId] = out.sheet;
+    ui.saved = `The Chrome helper entered every section: added “Entered in IC” to “${out.sheet?.name || 'Scores entered'}”.`;
+  } catch (error) {
+    sent.recorded = false; saveSent();
+    ui.error = `The helper finished, but the Hub couldn’t note it (${error.message}). Click “I entered these in IC”.`;
+  }
+  if (work.data) renderWork();
+}
+function helperLine() {
+  return el('p', {id: 'helper-status', class: helper.state === 'ready' ? 'ok' : 'note warn'},
+    helper.state === 'ready' ? `✓ The Chrome helper${helper.version ? ' ' + helper.version : ''} is installed in this browser.`
+      : helper.state === 'helper_not_configured' ? 'The Chrome helper here isn’t set up for this Hub. Ask Claude Code for a new helper package.'
+        : 'The Chrome helper isn’t installed in this browser. The Monday run needs it to enter scores: install it once on each computer (chrome://extensions → Developer mode → Load unpacked).');
+}
+window.addEventListener('message', event => {
+  if (event.source !== window || event.origin !== location.origin || event.data?.channel !== HELPER.reply) return;
+  const data = event.data;
+  if (data.type === 'sent') { helper.waiting.get(data.request_id)?.(data.code); helper.waiting.delete(data.request_id); return; }
+  if (data.type === 'status') {
+    helper.state = data.code === 'helper_ready' ? 'ready' : data.code;
+    helper.version = data.helper_version || '';
+    (data.results || []).forEach(noteResult);
+    Object.keys(helper.sent).forEach(maybeRecord);  // finished while this page was closed
+  } else if (data.type === 'entered' && data.result) {
+    noteResult(data.result);
+    maybeRecord(data.result.form_id);
+  } else return;
+  $('helper-status')?.replaceWith(helperLine());
+  if (work.data) renderWork();
+});
+window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 
 function feedbackPanel(form) {
   const ui = work.ui[form.form_id] || {};
@@ -802,7 +980,7 @@ function renderForm(form, lesson) {
         coding.missing.length ? ` on the code list but no box has it — ${coding.missing.join(', ')}.` : '',
         coding.extra.length ? ` A box has a code that isn’t on the list — ${coding.extra.join(', ')}.` : ''].join(''), 'info'));
     }
-    if (ui.open === 'ic') box.append(icPanel(form, scores));
+    if (ui.open === 'ic') box.append(icPanel(form, scores, lesson));
     if (ui.open === 'feedback') box.append(feedbackPanel(form));
     if (ui.open === 'answers') box.append(answersPanel(form, scores));
   }
@@ -1077,10 +1255,9 @@ GROUND RULES
 - This prompt replaces anything you remember about this routine from earlier weeks. Where your memory differs, follow this prompt.
 - If Infinite Campus (IC) or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password or choose a sign-in for me.
 - Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
-- Never delete anything, never create an IC assignment, and never change a grade or due date that isn't on the list I approve.
-- Never type in the "Scores entered (On Dashboard)" sheet. The Hub adds its rows itself when you click "I entered these in IC".
-- Keep the higher score: never lower a score that's already in IC. Where IC's score is higher than the Hub's, keep IC's. Enter only blanks and raises.
-- Leave IC flags (such as AE, SI or Missing) as they are.
+- Never type scores into IC yourself. The Chrome helper ("Hub helper" in IC) enters them: it keeps the higher score (fills blanks and raises lower scores, never lowers one), leaves IC flags alone, and after Save reloads IC and checks every score. If the Hub has no "Send to the Chrome helper" button, the helper isn't installed in this Chrome: stop and tell me.
+- Never delete anything, never create an IC assignment, and never change a due date that isn't on the list I approve.
+- Never type in the "Scores entered (On Dashboard)" sheet. The Hub adds its rows itself.
 - My sections: A2 Forensics and A3 Forensics (class: Forensics), A4 Biology (Biology), B3 A&P (A&P).
 
 PART A — ROSTER CHECK (read only)
@@ -1090,36 +1267,27 @@ PART A — ROSTER CHECK (read only)
 
 PART B — SCORES (read only)
 4. Check today's week and the three weeks before it in each class, with Section set to "All sections". Only work on assignments whose two weeks are still open, or closed within the last 8 days.
-5. For each of those assignments, wait until "Scoring N of M…" is gone and read its line that starts with "IC:":
-   - "IC: its two weeks start …": enter only the scores listed; no 0s.
-   - "IC: open until …" or "IC: closed …": enter every score listed, including the 0s.
-   - "IC: final scores entered …", or no "IC:" line: skip it.
-   Click "Scores are ready to enter in IC" and read its table (Student, Section, Notes /10, Revision /10). If the card has a "Not counted here" note, those files belong to another assignment: enter nothing for those students on this one. A "Via …" badge means the file came through another Form but counts here. A student shown as "Excused" (new student) joined after the assignment began: mark it Exempt for them in IC, never 0.
-6. In IC, for each section, find the matching assignment by its name, not its week number. Work out where Notes and Revision go. For each student on the Hub's table:
-   - Blank in IC: to enter.
-   - Same or higher score in IC: keep IC's; nothing to do.
-   - Lower score in IC than on the Hub: a raise, old → new.
-   - A blank, "—", "N/A" or "check by hand" on the Hub, or a student not in this IC section: leave it and list it for me.
-   If an assignment isn't in IC at all, list it for me; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
+5. For each of those assignments, wait until "Scoring N of M…" is gone and read its line that starts with "IC:". Skip it if it says "IC: final scores entered …" or has no "IC:" line. Otherwise click "Scores are ready to enter in IC", then "Send to the Chrome helper".
+6. In IC, find that assignment by its name, not its week number. For each section, open its (F) assignment (Notes) and its (S) assignment (Revision) so the score panel shows, and click "Hub helper" at the bottom right. Check the helper picked the right Hub lesson and column (fix them in its panel if not), but don't tick its box yet. Note its counts (to enter, raises, kept, left) and every row it leaves, with the reason. If an assignment isn't in IC at all, list it; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
 
 PART C — REVIEW (STOP)
-7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, how many blanks you'll fill, each raise old → new, and anything you left with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
+7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, the helper's counts, each raise old → new, and each row it leaves with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
 
 PART D — SAVE WHAT I APPROVE
 8. Roster: add only the students I approve, as new rows in the same format, with today's date (MM/DD/YYYY) in the tab's "Added" column. If the tab has no "Added" column, type Added in the first empty cell of row 1 to the right of the names. Don't delete rows or change other cells.
-9. IC: enter the approved scores and due dates, click Save, reload, read them back, and tell me any that don't match.
-10. In the Hub, click "I entered these in IC" on each assignment you saved (that button, not the sheet, records it).
+9. IC: for each approved assignment and section, open its score panel, click "Hub helper", tick its box and click "Enter … and Save". Wait for it to say it saved and checked the scores. If it says it stopped or couldn't confirm, tell me exactly what it says and don't try again. For students it lists as new students, mark the assignment Exempt in IC. Enter approved due dates and click Save.
+10. The Hub notes "Entered in IC" by itself once the helper has done every section and column of an assignment. If an assignment doesn't show "✓ Entered in IC" afterward, tell me which.
 
 PART E — LOG
-11. Make a Google Doc named "Monday run — ${todayISO()}" at the top of 00 REAL ALL TURN IN with the roster changes made, what was entered, changed and left per section and assignment, anything that didn't read back, and a short note on anything confusing or slow.`;
+11. Make a Google Doc named "Monday run — ${todayISO()}" at the top of 00 REAL ALL TURN IN with the roster changes made, what the helper entered, raised and left per section and assignment, anything that didn't read back, and a short note on anything confusing or slow.`;
 
 const ROUTINE = {
   // How a completion score gets from a student's deck into IC, in order.
   scoring: [
     {when: 'Any day, any time', what: 'Students turn in their deck through the lesson’s Turn-in Form.'},
     {when: 'Monday, when you start it', what: 'You paste the Monday prompt into the Claude extension. It opens every class and week on Student work; that is when the Hub scores the decks, with a 0 for work not turned in.'},
-    {when: 'Monday', what: 'The extension shows you the list of scores and roster changes. Nothing is in IC yet.'},
-    {when: 'Monday', what: 'You reply OK. The extension enters the scores in IC and saves them.'},
+    {when: 'Monday', what: 'The extension shows you what the Chrome helper will enter and the roster changes. Nothing is in IC yet.'},
+    {when: 'Monday', what: 'You reply OK. The Chrome helper types the scores (and 0s) into IC, saves, reloads IC to check each one, and the Hub notes “Entered in IC”.'},
     {when: 'Two weeks after the first turn-in', what: 'The assignment closes (its two weeks never start before the lesson’s own week). The next Monday’s scores are its final ones; late work isn’t graded.'},
   ],
   // What runs without you. "needs" is what has to be open for it to run.
@@ -1134,7 +1302,7 @@ const ROUTINE = {
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
     {when: 'Monday', you: 'Chrome signed in to IC and the Hub → Copy Monday prompt (top of this page) → paste it into the Claude extension → review its list → reply OK.',
-     done: 'Scores (and 0s), due dates and roster fixes are saved in IC, and a “Monday run” Doc records them.'},
+     done: 'The Chrome helper enters the scores (and 0s) in IC and checks them; due dates and roster fixes are saved; a “Monday run” Doc records it.'},
     {when: 'Thursday', you: 'Student work → pick class and week → Start feedback → Copy prompt → paste into Teacher Claude. Print the Doc it saves in the 📥 folder. Click Mark feedback done.',
      done: 'Each student gets two pages of feedback.'},
     {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
@@ -1145,6 +1313,8 @@ const ROUTINE = {
      done: 'Your Biology teaching summary.'},
     {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
      done: 'The backup copy matches the Agenda.'},
+    {when: 'Once on each computer', you: 'Install the Chrome helper: chrome://extensions → Developer mode → Load unpacked → the helper folder from Claude Code. After an update, click its reload arrow there.',
+     done: 'The helper can enter the Hub’s scores in IC from that Chrome.'},
     {when: 'August', you: 'Rename “Student answers — Biology” with the year, make a new blank one, update rosters.',
      done: 'The new year starts clean.'},
   ],
@@ -1161,7 +1331,9 @@ const ROUTINE = {
   buttons: [
     {button: 'Copy Monday prompt', who: 'You, Monday', note: 'Top of this page; paste it into the Claude extension.'},
     {button: 'Scores are ready to enter in IC', who: 'Claude extension, Monday', note: 'Opens the list of scores. You can open it just to look.'},
-    {button: 'I entered these in IC', who: 'Claude extension, Monday', note: 'After your OK. Click it yourself only if you typed scores into IC.'},
+    {button: 'Send to the Chrome helper', who: 'Claude extension, Monday (or you)', note: 'Hands that assignment’s list to the helper in this Chrome.'},
+    {button: 'Hub helper → Enter … and Save (in IC)', who: 'Claude extension after your OK (or you)', note: 'In each IC score panel. It shows what it will do, then types, saves, reloads and checks.'},
+    {button: 'I entered these in IC', who: 'The Hub, by itself', note: 'Once the helper has done every section. Click it only if you typed scores into IC yourself.'},
     {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
     {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
     {button: 'Tidy this week’s folders → Move them', who: 'You, Friday', note: 'Once per class.'},
@@ -1203,7 +1375,8 @@ function renderRoutine(data) {
   // The Monday run comes first: the teacher copies its prompt here each week.
   const copied = el('span', {class: 'muted'});
   const monday = el('section', {class: 'routine'}, el('h2', {text: 'Monday: grades and roster'}),
-    el('p', {text: 'In Chrome, signed in to Infinite Campus and the Hub: copy the prompt, paste it into the Claude extension’s side panel, review its list and reply OK. Any Claude account signed in to the extension works; the Claude app isn’t needed.'}),
+    el('p', {text: 'In Chrome, signed in to Infinite Campus and the Hub: copy the prompt, paste it into the Claude extension’s side panel, review its list and reply OK. The extension checks rosters and clicks through; the Chrome helper does the score entry and checks it. Any Claude account signed in to the extension works; the Claude app isn’t needed.'}),
+    helperLine(),
     el('div', {class: 'action-row'},
       el('button', {type: 'button', class: 'primary', onclick: () => copyText(mondayPrompt(), copied)}, 'Copy Monday prompt (Claude extension)'),
       copied),
