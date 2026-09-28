@@ -378,7 +378,9 @@ def _assign(slide_markers, written, template_slide, size):
             if words.startswith("moved: "):
                 continue  # a dragged card counts only where it lands on a code
             near = min(boxed, key=lambda m: _distance(_center(m["box"]), unit["box"]))
-            if _distance(_center(near["box"]), unit["box"]) <= reach:
+            if _distance(_center(near["box"]), unit["box"]) <= reach or len(slide_markers) == 1:
+                # A slide with one question: whatever the student wrote on it answers that
+                # question, wherever the answer box sits (often well below the code).
                 result[(near["category"], near["id"])].append((unit, words))
             else:
                 uncoded.append((unit, words))
