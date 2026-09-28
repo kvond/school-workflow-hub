@@ -98,8 +98,8 @@ required, Revision = 10 × completed DRAFT ÷ required, following the teacher's
 Prompt 1. It counts; it never judges quality, and no model is called. A box
 counts when the student wrote something new in it; the printed prompt copied
 back is flagged, and writing in uncoded boxes is reported by slide. **Scores are
-ready to enter in IC** lists the scores, which school Claude's Monday run
-enters in Infinite Campus after the teacher's OK. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
+ready to enter in IC** lists the scores, which the Claude extension enters in
+Infinite Campus after the teacher's OK when she runs the Monday prompt. The page itself never writes to IC. Each assignment card also shows where it stands for IC:
 open (enter every score listed, 0s included; a 0 is replaced when the student
 turns work in), closed and
 waiting for final scores (enter every score, 0s included, then click **I entered
@@ -154,10 +154,14 @@ than the visible link, one Form linked in two weeks, a link the dashboard can't
 read, or a lesson with no Form. It also lists every lesson's Forms and decks by
 title, for comparing with Schoology. Read only.
 
-**Routine** lists what runs on its own (school Claude's Monday grades-and-roster
-run, the daily research-sheet check, scoring on open), what each needs to be
-open, the teacher's own daily/weekly/monthly tasks, and live status read from
-Drive: the newest "Monday run — date" Doc (flagged when more than a week old)
+**Routine** opens with **Copy Monday prompt (Claude extension)**: the teacher
+pastes it into the Claude extension in her own Chrome, signed in to Infinite
+Campus and the Hub, and it checks rosters, reads the IC lists, waits for her OK,
+then enters and reads back the scores (nothing runs it on a timer). The page
+then shows when completion scores happen, what runs on its own (the daily
+research-sheet check, scoring on open), the teacher's own tasks, who clicks
+which button, and live status read from Drive: the newest "Monday run — date"
+Doc (flagged when more than a week old)
 and the last row of the Scores entered and research sheets. Documents the system makes and keeps beside the work (feedback, growth
 records, class growth summaries, summary ratings, Monday run logs) are never
 read as student work, and a one-cell title above a roster list isn't reported

@@ -648,7 +648,7 @@ function icPanel(form, scores) {
   const standing = icStatus(form);
   if (standing) panel.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
-  panel.append(el('p', {}, 'School Claude enters these on Monday. To enter them yourself, open this assignment in Infinite Campus and type them in.',
+  panel.append(el('p', {}, 'The Claude extension enters these when you run the Monday prompt (Routine page). To enter them yourself, open this assignment in Infinite Campus and type them in.',
     entered ? ` You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'}` : ''));
   panel.append(el('div', {class: 'action-row'},
     sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'ic')},
@@ -1047,33 +1047,69 @@ async function missingWorkSheets() {
 }
 
 // ---------- Routine: what runs on its own, and what you do ----------
+// The Monday prompt: pasted into the Claude extension in the teacher's own
+// Chrome (signed in to IC and the Hub). It prepares, waits for her OK, then
+// saves. Nothing here runs it on a timer.
+const mondayPrompt = () => `Please do my "Monday grades and roster" check now, in this Chrome window. I'm here and will review before anything is saved.
+
+GROUND RULES
+- If Infinite Campus (IC) or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password or choose a sign-in for me.
+- Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
+- Never delete anything, never create an IC assignment, and never change a grade or due date that isn't on the list I approve.
+- My sections: A2 Forensics and A3 Forensics (class: Forensics), A4 Biology (Biology), B3 A&P (A&P).
+
+PART A — ROSTER CHECK (read only)
+1. In IC, list each section's students as Last, First.
+2. Open my Google Sheet named "Rosters" (one tab per section). For each section list: students in IC but not in the tab, students in the tab but not in IC, and names spelled differently.
+3. In the Teaching Hub (${location.origin}/v2/#work), open Student work for each class and note anything its "Roster check" box flags.
+
+PART B — SCORES (read only)
+4. Check today's week and the three weeks before it in each class, with Section set to "All sections". Only work on assignments whose two weeks are still open, or closed within the last 8 days.
+5. For each of those assignments, wait until "Scoring N of M…" is gone and read its line that starts with "IC:":
+   - "IC: its two weeks start …": enter only the scores listed; no 0s.
+   - "IC: open until …" or "IC: closed …": enter every score listed, including the 0s.
+   - "IC: final scores entered …", or no "IC:" line: skip it.
+   Click "Scores are ready to enter in IC" and read its table (Student, Section, Notes /10, Revision /10). If the card has a "Not counted here" note, those files belong to another assignment: enter nothing for those students on this one. A "Via …" badge means the file came through another Form but counts here.
+6. In IC, for each section, find the matching assignment by its name, not its week number. Work out where Notes and Revision go. For each student on the Hub's table:
+   - Blank in IC: to enter.
+   - Same score in IC: nothing to do.
+   - Different score in IC: a change, old → new (mark it if the new score is lower).
+   - A blank or "—" on the Hub, or a student not in this IC section: leave it and list it for me.
+   If an assignment isn't in IC at all, list it for me; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
+
+PART C — REVIEW (STOP)
+7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, how many blanks you'll fill, each change old → new, and anything you left with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
+
+PART D — SAVE WHAT I APPROVE
+8. Roster: add only the students I approve, as new rows in the same format; don't delete rows or touch other columns.
+9. IC: enter the approved scores and due dates, click Save, reload, read them back, and tell me any that don't match.
+10. In the Hub, click "I entered these in IC" on each assignment you saved.
+
+PART E — LOG
+11. Make a Google Doc named "Monday run — ${todayISO()}" at the top of 00 REAL ALL TURN IN with the roster changes made, what was entered, changed and left per section and assignment, anything that didn't read back, and a short note on anything confusing or slow.`;
+
 const ROUTINE = {
   // How a completion score gets from a student's deck into IC, in order.
   scoring: [
     {when: 'Any day, any time', what: 'Students turn in their deck through the lesson’s Turn-in Form.'},
-    {when: 'Monday 7:23 AM', what: 'School Claude opens every class and week on Student work. That is when the Hub scores the decks, with a 0 for work not turned in.'},
-    {when: 'Monday 7:23 AM', what: 'School Claude sends you the list of scores and roster changes. Nothing is in IC yet.'},
-    {when: 'Monday 8:00 AM', what: 'You reply OK. School Claude enters the scores in IC and saves them.'},
-    {when: 'Two weeks after the first turn-in', what: 'The assignment closes. The next Monday’s scores are its final ones; late work isn’t graded.'},
+    {when: 'Monday, when you start it', what: 'You paste the Monday prompt into the Claude extension. It opens every class and week on Student work; that is when the Hub scores the decks, with a 0 for work not turned in.'},
+    {when: 'Monday', what: 'The extension shows you the list of scores and roster changes. Nothing is in IC yet.'},
+    {when: 'Monday', what: 'You reply OK. The extension enters the scores in IC and saves them.'},
+    {when: 'Two weeks after the first turn-in', what: 'The assignment closes (its two weeks never start before the lesson’s own week). The next Monday’s scores are its final ones; late work isn’t graded.'},
   ],
   // What runs without you. "needs" is what has to be open for it to run.
   scheduled: [
-    {when: 'Monday 7:23 AM', who: 'School Claude', key: 'monday_run',
-     what: 'Checks IC rosters, scores every week on the Hub (0s for missing work) and sends you the list. After your OK it enters them in IC.',
-     needs: 'Your home computer on, with the Claude app open and you signed in.'},
     {when: 'Daily', who: 'Teaching Hub', key: 'research',
      what: 'Saves finished Biology answers to “Student answers — Biology”.',
      needs: 'The Hub opened once that day.'},
     {when: 'Whenever a class and week are open on Student work', who: 'Teaching Hub',
-     what: 'Finds the work turned in for that week and scores it. Weeks nobody opens aren’t scored; on Monday school Claude opens every one.',
+     what: 'Finds the work turned in for that week and scores it. Weeks nobody opens aren’t scored; on Monday the Claude extension opens every one.',
      needs: 'Nothing to click.'},
   ],
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
-    {when: 'Mon 7:15 AM', you: 'Home computer: open the Claude app, sign in to Chrome, IC and the Hub. Leave it on. Nothing to click on the Hub.',
-     done: 'At 7:23 school Claude can open the Hub, score the work and make your list.'},
-    {when: 'Mon 8:00 AM', you: 'Read school Claude’s list. Reply OK.',
-     done: 'Your OK saves the scores (and 0s) and roster fixes in IC.'},
+    {when: 'Monday', you: 'Chrome signed in to IC and the Hub → Copy Monday prompt (top of this page) → paste it into the Claude extension → review its list → reply OK.',
+     done: 'Scores (and 0s), due dates and roster fixes are saved in IC, and a “Monday run” Doc records them.'},
     {when: 'Thursday', you: 'Student work → pick class and week → Start feedback → Copy prompt → paste into Teacher Claude. Print the Doc it saves in the 📥 folder. Click Mark feedback done.',
      done: 'Each student gets two pages of feedback.'},
     {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
@@ -1095,8 +1131,9 @@ const ROUTINE = {
   ],
   // Every button on the Hub and who clicks it.
   buttons: [
-    {button: 'Scores are ready to enter in IC', who: 'School Claude, Monday', note: 'Opens the list of scores. You can open it just to look.'},
-    {button: 'I entered these in IC', who: 'School Claude, Monday', note: 'After your OK. Click it yourself only if you typed scores into IC.'},
+    {button: 'Copy Monday prompt', who: 'You, Monday', note: 'Top of this page; paste it into the Claude extension.'},
+    {button: 'Scores are ready to enter in IC', who: 'Claude extension, Monday', note: 'Opens the list of scores. You can open it just to look.'},
+    {button: 'I entered these in IC', who: 'Claude extension, Monday', note: 'After your OK. Click it yourself only if you typed scores into IC.'},
     {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
     {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
     {button: 'Tidy this week’s folders → Move them', who: 'You, Friday', note: 'Once per class.'},
@@ -1113,10 +1150,10 @@ function routineStatus(key, data) {
   const found = data?.[key];
   if (found?.problem) return note(found.problem);
   if (key === 'monday_run') {
-    if (!found) return el('p', {class: 'muted', text: 'No “Monday run” Doc yet, so it hasn’t run (or hasn’t been set up).'});
+    if (!found) return el('p', {class: 'muted', text: 'No “Monday run” Doc yet.'});
     const days = (Date.now() - new Date(found.at)) / 86400000;
     return el('p', {class: days > 8 ? 'note warn' : 'muted'}, `Last run: ${when(found.at)}. `, link(found.name + ' ↗', found.url),
-      days > 8 ? ' That’s more than a week ago: check that school Claude’s Monday schedule is still set.' : '');
+      days > 8 ? ' That’s more than a week ago: run the Monday prompt.' : '');
   }
   if (key === 'research') {
     const checked = store.get('research-sweep');
@@ -1129,14 +1166,19 @@ function routineStatus(key, data) {
 
 function renderRoutine(data) {
   const body = $('routine-body');
-  // Folded by default so the teacher's own tasks come first; the heading warns
-  // when the Monday run is missing or more than a week old.
-  const run = data?.monday_run;
-  const late = data && (!run || run.problem || (Date.now() - new Date(run.at)) / DAY > 8);
+  // The Monday run comes first: the teacher copies its prompt here each week.
+  const copied = el('span', {class: 'muted'});
+  const monday = el('section', {class: 'routine'}, el('h2', {text: 'Monday: grades and roster'}),
+    el('p', {text: 'In Chrome, signed in to Infinite Campus and the Hub: copy the prompt, paste it into the Claude extension’s side panel, review its list and reply OK. Any Claude account signed in to the extension works; the Claude app isn’t needed.'}),
+    el('div', {class: 'action-row'},
+      el('button', {type: 'button', class: 'primary', onclick: () => copyText(mondayPrompt(), copied)}, 'Copy Monday prompt (Claude extension)'),
+      copied),
+    el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: mondayPrompt()})),
+    data ? routineStatus('monday_run', data) : null);
+  // Folded by default so the teacher's own tasks come first.
   const scheduled = el('details', {class: 'routine routine-scheduled', open: store.get('routine-scheduled-open') === '1',
     ontoggle: e => store.set('routine-scheduled-open', e.target.open ? '1' : '0')},
-    el('summary', {}, el('h2', {text: 'Done for you'}),
-      late ? el('span', {class: 'badge warn', text: run?.problem ? 'Can’t check the Monday run' : 'Monday run: not in the last week'}) : null),
+    el('summary', {}, el('h2', {text: 'Done for you'})),
     ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
       el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
       el('p', {text: t.what}),
@@ -1165,7 +1207,7 @@ function renderRoutine(data) {
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
       el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
       el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(scoring, mine, buttons, scheduled, sheets);
+  body.replaceChildren(monday, scoring, mine, buttons, scheduled, sheets);
 }
 
 // ---------- Link check ----------

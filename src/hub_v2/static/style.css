@@ -165,3 +165,4 @@ button[disabled] { opacity: 0.6; cursor: default; }
   body { background: #fff; color: #000; }
   .card, .form-work { border-color: #999; break-inside: avoid; }
 }
+.prompt-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 360px; overflow: auto; }
