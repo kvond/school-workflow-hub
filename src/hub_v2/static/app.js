@@ -629,8 +629,11 @@ function icPanel(form, scores) {
   const closed = closedFor(form);
   const inSection = r => section === 'all' || r.section === section;
   const all = [
+    // A score the Hub isn't sure of (the copy lacks many of the deck's codes) is
+    // never entered automatically: the teacher checks it by hand.
     ...form.students.filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
-      .filter(x => x.s && !x.s.problem).map(x => ({...x, show: shown(x.s)})),
+      .filter(x => x.s && !x.s.problem).map(x => ({...x, unsure: Boolean(x.s.note),
+        show: x.s.note ? ['check by hand', 'check by hand'] : shown(x.s)})),
     // A student with a file in "Not sorted" may have turned it in: they're left
     // off the list (and named below) so a 0 isn't entered for them unchecked.
     ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
@@ -665,11 +668,13 @@ function icPanel(form, scores) {
   }
   panel.append(el('div', {class: 'table-wrap'}, el('table', {},
     el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
-    el('tbody', {}, all.map(({r, show, zero, excused, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
+    el('tbody', {}, all.map(({r, s: result, show, zero, excused, unsure, fresh: isNew}) => el('tr', {}, el('td', {text: `${r.last}, ${r.first}`}), el('td', {text: r.section}),
       el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
       el('td', {}, zero ? el('span', {class: 'badge', text: closed ? 'nothing on time' : 'nothing yet'}) : null,
         excused ? el('span', {class: 'badge', title: `Added to the roster ${r.added}, after this assignment began`,
                               text: 'new student: mark Exempt in IC'}) : null,
+        unsure ? el('span', {class: 'badge warn', title: result.note,
+                             text: `Hub counted ${fmt(result.notes_score)} / ${fmt(result.revision_score)}; not sure`}) : null,
         entered && isNew ? el('span', {class: 'badge warn', text: `new since ${markDate(sheet.entered_at)}`}) : null)))))));
   const unsorted = startedFor(form) ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
   if (unsorted.length) {
@@ -1090,7 +1095,7 @@ PART B — SCORES (read only)
    - Blank in IC: to enter.
    - Same or higher score in IC: keep IC's; nothing to do.
    - Lower score in IC than on the Hub: a raise, old → new.
-   - A blank, "—" or "N/A" on the Hub, or a student not in this IC section: leave it and list it for me.
+   - A blank, "—", "N/A" or "check by hand" on the Hub, or a student not in this IC section: leave it and list it for me.
    If an assignment isn't in IC at all, list it for me; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
 
 PART C — REVIEW (STOP)

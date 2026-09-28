@@ -317,6 +317,21 @@ class WorkTests(unittest.TestCase):
                                       result["lessons"], [], {"school.example"})
         self.assertEqual(later["flags"], [])
 
+    def test_only_a_student_on_the_roster_starts_the_two_weeks(self):
+        # A file from someone on no roster (the teacher's test, another class's student) is
+        # listed, but doesn't open the assignment, so nobody is given a 0 for it.
+        config = {"HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example", "HUB_SCHOOL_EMAIL_DOMAINS": "school.example"}
+        stray = [response("s.new.student@school.example", "2026-09-22T14:00:00Z", ("F3", "Deck"))]
+        with patch.object(work.roster, "load", return_value=({"forensics": self.students}, [])), \
+                patch.object(google, "form_responses", side_effect=lambda t, form_id: stray
+                             if form_id == "FICTIONALFORMID1234567890abc" else []), \
+                patch.object(google, "drive_file", return_value={"name": "Deck", "trashed": False,
+                             "mimeType": "application/vnd.google-apps.presentation"}):
+            result = work.lesson_work("token", config, fixture(), "forensics", "Wk 04")
+        form = result["lessons"][0]["forms"][0]
+        self.assertEqual([r["matched"] for r in form["students"]], [False])
+        self.assertIsNone(form["window"])
+
     def test_lesson_work_reports_a_form_it_cannot_read(self):
         def responses(token, form_id):
             if form_id == "FICTIONALFORMID0987654321xyz":

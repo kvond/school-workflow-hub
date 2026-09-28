@@ -354,7 +354,8 @@ def _day_label(day):
 
 def window(found, not_before=None):
     """({opened, at, label} | None): an assignment stays open until the end of
-    the day two weeks after the first turn-in by anyone, school time — but the
+    the day two weeks after the first turn-in (by a student on the class's
+    roster; lesson_work passes only those), school time — but the
     two weeks never start before not_before, the Monday of the first Agenda
     week the assignment is in, so a student turning in early doesn't start
     the clock for everyone."""
@@ -898,7 +899,11 @@ def lesson_work(token, config, agenda, class_key, week_label):
     # Each Form's two weeks start at its first turn-in; files not sorted to a
     # Form use the week's earliest-opened one.
     starts = form_weeks(agenda, class_key)
-    windows = [window(form["found"], starts.get(form["form_id"])) for form in forms]
+    # Only a student on this class's roster starts the clock: a stray file (another
+    # class's student, the teacher's own test) mustn't give everyone a 0.
+    def on_roster(found):
+        return [sub for sub in found if identify(sub, students, domains, prefix)[0]]
+    windows = [window(on_roster(form["found"]), starts.get(form["form_id"])) for form in forms]
     opened = [w for w in windows if w]
     earliest = min(opened, key=lambda w: w["at"]) if opened else None
     describe_files(token, other, known)
