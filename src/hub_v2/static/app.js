@@ -1070,6 +1070,8 @@ GROUND RULES
 - Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
 - Never delete anything, never create an IC assignment, and never change a grade or due date that isn't on the list I approve.
 - Never type in the "Scores entered (On Dashboard)" sheet. The Hub adds its rows itself when you click "I entered these in IC".
+- Keep the higher score: never lower a score that's already in IC. Where IC's score is higher than the Hub's, keep IC's. Enter only blanks and raises.
+- Leave IC flags (such as AE, SI or Missing) as they are.
 - My sections: A2 Forensics and A3 Forensics (class: Forensics), A4 Biology (Biology), B3 A&P (A&P).
 
 PART A — ROSTER CHECK (read only)
@@ -1086,13 +1088,13 @@ PART B — SCORES (read only)
    Click "Scores are ready to enter in IC" and read its table (Student, Section, Notes /10, Revision /10). If the card has a "Not counted here" note, those files belong to another assignment: enter nothing for those students on this one. A "Via …" badge means the file came through another Form but counts here. A student shown as "Excused" (new student) joined after the assignment began: mark it Exempt for them in IC, never 0.
 6. In IC, for each section, find the matching assignment by its name, not its week number. Work out where Notes and Revision go. For each student on the Hub's table:
    - Blank in IC: to enter.
-   - Same score in IC: nothing to do.
-   - Different score in IC: a change, old → new (mark it if the new score is lower).
-   - A blank or "—" on the Hub, or a student not in this IC section: leave it and list it for me.
+   - Same or higher score in IC: keep IC's; nothing to do.
+   - Lower score in IC than on the Hub: a raise, old → new.
+   - A blank, "—" or "N/A" on the Hub, or a student not in this IC section: leave it and list it for me.
    If an assignment isn't in IC at all, list it for me; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
 
 PART C — REVIEW (STOP)
-7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, how many blanks you'll fill, each change old → new, and anything you left with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
+7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, how many blanks you'll fill, each raise old → new, and anything you left with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
 
 PART D — SAVE WHAT I APPROVE
 8. Roster: add only the students I approve, as new rows in the same format, with today's date (MM/DD/YYYY) in the tab's "Added" column. If the tab has no "Added" column, type Added in the first empty cell of row 1 to the right of the names. Don't delete rows or change other cells.

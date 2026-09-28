@@ -7,7 +7,9 @@ review — it never judges how good an answer is:
     Revision = 10 x completed DRAFT / required DRAFT
 
 The required items are the codes in the deck's own [[MARKER-INVENTORY:...]]
-header (or, without one, every code in the deck). Each code is a small text
+header (or, without one, every code in the deck) that have a box to answer in:
+a code on the list that no box in the student's copy carries isn't counted,
+so a deck with only 3 answerable boxes is out of those 3 (the teacher's rule). Each code is a small text
 box such as [[NOTES:C03:CA1-RULE]] placed on its answer box. A box counts as
 completed when the student wrote something in it that wasn't already in the
 copy they were given; a box whose new text is the printed slide text copied
@@ -475,8 +477,10 @@ def assess(student, template):
             items.append(found.get((category, qid)) or {"category": category, "id": qid, "slide": None,
                                                         "status": "not found", "excerpt": "", "answer": "",
                                                         "at": None, "question": ""})
+    # Only codes with a box to answer in count toward the 10 (see the module note).
     counts = {c: {"done": sum(1 for i in items if i["category"] == c and i["status"] == "done"),
-                  "required": len(required[c])} for c in CATEGORIES}
+                  "required": sum(1 for i in items if i["category"] == c and i["status"] != "not found")}
+              for c in CATEGORIES}
     scored_items = [i for i in items if i["category"] != "OPTIONAL"]
     missing_codes = sum(1 for i in scored_items if i["status"] == "not found")
     student_note = None
