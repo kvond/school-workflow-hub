@@ -263,6 +263,8 @@ class WorkTests(unittest.TestCase):
         # A turn-in before the lesson's own Agenda week doesn't start the two weeks early.
         later = work.window(found, not_before=date(2026, 10, 5))
         self.assertEqual((later["opened"], later["label"]), ("Mon Oct 5", "Mon Oct 19, 11:59 PM"))
+        # The page lists 0s only from the start of that day, school time.
+        self.assertEqual(later["from"].isoformat(), "2026-10-05T04:00:00+00:00")
         self.assertEqual(work.window(found, not_before=date(2026, 9, 21))["opened"], "Fri Sep 25")
 
     def test_each_form_starts_no_earlier_than_its_first_agenda_week(self):

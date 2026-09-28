@@ -360,6 +360,8 @@ const fmt = value => value == null ? 'N/A' : String(value);
 // empty score is 0, and a 0 is replaced when the student turns work in before
 // the two weeks close. Before anyone has turned it in, nothing is scored.
 const closedFor = form => Boolean(form.window && new Date(form.window.at) < new Date());
+// Its two weeks have begun (they never begin before the lesson's own week): only then do 0s count.
+const startedFor = form => Boolean(form.window && (!form.window.from || new Date(form.window.from) <= new Date()));
 const shown = (score, started = true) => !score ? (started ? ['0', '0'] : ['', ''])
   : [score.notes_score, score.revision_score].map(fmt);
 const STATUS = {blank: 'blank', copied: 'looks copied from the slide', 'not found': 'its code isn’t in this copy'};
@@ -588,6 +590,9 @@ function icStatus(form) {
   if (!form.window) return null;
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
+  if (!startedFor(form)) {
+    return {kind: 'open', text: `IC: its two weeks start ${form.window.opened}. Enter only the scores listed; 0s for work not turned in start then.`};
+  }
   if (!closedFor(form)) {
     return {kind: 'open', text: `IC: open until ${form.window.label}. Enter every score listed, including the 0s; a 0 is replaced when the student turns work in before it closes.`};
   }
@@ -617,7 +622,7 @@ function icPanel(form, scores) {
       .filter(x => x.s && !x.s.problem).map(x => ({...x, show: shown(x.s)})),
     // A student with a file in "Not sorted" may have turned it in: they're left
     // off the list (and named below) so a 0 isn't entered for them unchecked.
-    ...(form.window ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
+    ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
       .map(r => ({r, s: null, zero: true, show: shown(null)})) : []),
   ].sort((a, b) => (a.r.section + a.r.last + a.r.first).localeCompare(b.r.section + b.r.last + b.r.first));
   // New since you last entered this assignment: turned in after that, or, for
@@ -650,7 +655,7 @@ function icPanel(form, scores) {
       el('td', {text: show[0] || '—'}), el('td', {text: show[1] || '—'}),
       el('td', {}, zero ? el('span', {class: 'badge', text: closed ? 'nothing on time' : 'nothing yet'}) : null,
         entered && isNew ? el('span', {class: 'badge warn', text: `new since ${markDate(sheet.entered_at)}`}) : null)))))));
-  const unsorted = form.window ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
+  const unsorted = startedFor(form) ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
   if (unsorted.length) {
     panel.append(note(`Not listed: ${unsorted.map(m => `${m.last}, ${m.first}`).join('; ')}. `
       + 'Each has a file in “Not sorted” that may be this assignment. Check that box before giving them a 0.', 'info'));
@@ -727,7 +732,7 @@ function renderForm(form, lesson) {
     form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
     form.shared_files ? el('span', {class: 'badge', text: `includes ${form.shared_files} from the earlier shared Form`}) : null));
   if (form.window) {
-    box.append(el('p', {class: 'muted', text: `Open until ${form.window.label} — two weeks after the first turn-in (${form.window.opened}). Anything later is Late and isn’t graded.`}));
+    box.append(el('p', {class: 'muted', text: `Open ${form.window.opened} until ${form.window.label}: two weeks from the first turn-in, never starting before the lesson’s week. Anything later is Late and isn’t graded.`}));
   }
   const marks = marksLine(form);
   if (marks) box.append(marks);
@@ -784,7 +789,7 @@ function renderForm(form, lesson) {
   }
   if (missing.length) {
     box.append(el('div', {class: 'missing'}, el('h4', {text: closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
-      : form.window ? `Not turned in yet (${missing.length}) — 0 until they turn it in` : `Not turned in yet (${missing.length})`}),
+      : startedFor(form) ? `Not turned in yet (${missing.length}) — 0 until they turn it in` : `Not turned in yet (${missing.length})`}),
       el('ul', {}, missing.map(m => el('li', {}, `${m.last}, ${m.first}${section === 'all' ? ' · ' + m.section : ''}`,
         m.unsorted ? el('span', {class: 'badge warn', text: 'has a file in Not sorted'}) : null)))));
   }
@@ -929,7 +934,7 @@ function studentHistory(weekResults, section) {
   for (const {week, data} of weekResults) {
     for (const lesson of data.lessons) {
       for (const form of lesson.forms) {
-        if (!form.window || seen.has(form.form_id)) continue;  // not begun, or already counted from another week
+        if (!startedFor(form) || seen.has(form.form_id)) continue;  // not begun, or already counted from another week
         seen.add(form.form_id);
         const close = new Date(form.window.at);
         const opened = new Date(close.getTime() - 15 * DAY + 60000);  // the start of the first turn-in day
