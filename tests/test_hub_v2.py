@@ -1702,7 +1702,8 @@ class LinkSaveTests(unittest.TestCase):
         cells[(5, 22)] = cell("📤 2nd turn in", hyperlink=SECOND)
         agenda_ = agenda.Agenda("FICTIONALSHEET", "Fictional Agenda", {"🌿 Biology": 2}, {"🌿 Biology": cells})
         lesson = agenda_.lessons("biology", "Wk 04")[0]
-        self.assertEqual((lesson["links"]["turnin2"], lesson["link_labels"]), (SECOND, {"turnin2": "📤 2nd turn in"}))
+        self.assertEqual((lesson["links"]["turnin2"], lesson["link_labels"]),
+                         (SECOND, {"turnin": "Turn it in", "turnin2": "📤 2nd turn in"}))
         with patch.object(google, "batch_update") as batch, patch.object(google, "update_cells"), \
                 patch.object(google, "sheet_grid", return_value={"🌿 Biology": {(5, 22): cell("x", hyperlink=SECOND)}}):
             result = agenda_edit.save("token", "write", self.CONFIG, agenda_, "biology", "Wk 04", 5, {
@@ -1710,8 +1711,25 @@ class LinkSaveTests(unittest.TestCase):
         written = batch.call_args.args[2][0]["updateCells"]["rows"][0]["values"][0]
         self.assertEqual(written["userEnteredValue"], {"stringValue": "📤 Investigative Processes — Turn in"})
         self.assertEqual(result, {"saved": ["link:turnin2"], "unconfirmed": []})
-        with self.assertRaises(ValueError):  # only the 2nd turn-in takes a name
-            self.save({"link:turnin": {"from": DIRECT, "to": DIRECT, "label": "x"}})
+        with self.assertRaises(ValueError):  # only Turn-in Forms take a name
+            self.save({"link:activity": {"from": "", "to": "", "label": "x"}})
+
+    def test_the_main_turn_in_can_be_named_and_a_second_deck_linked(self):
+        cells = dict(fixture().classes["biology"]["cells"])
+        cells[(3, 22)] = cell("2nd deck")
+        agenda_ = agenda.Agenda("FICTIONALSHEET", "Fictional Agenda", {"🌿 Biology": 2}, {"🌿 Biology": cells})
+        second = "https://docs.google.com/presentation/d/FICTIONALSECONDDECK12345/edit"
+        with patch.object(google, "batch_update") as batch, patch.object(google, "update_cells"), \
+                patch.object(google, "sheet_grid", return_value={"🌿 Biology": {(5, 22): cell(second), (5, 21): cell(DIRECT),
+                                                                                (5, 20): cell("x", hyperlink=DIRECT)}}):
+            result = agenda_edit.save("token", "write", self.CONFIG, agenda_, "biology", "Wk 04", 5, {
+                "link:deck2": {"from": "", "to": second + "?usp=sharing"},
+                "link:turnin": {"from": DIRECT, "to": DIRECT, "label": "Searching the Scene — Turn in"}})
+        cells_written = {r["updateCells"]["range"]["startColumnIndex"] + 1: r["updateCells"]["rows"][0]["values"][0]
+                         for r in batch.call_args.args[2]}
+        self.assertEqual(cells_written[22], {"userEnteredValue": {"stringValue": second}})
+        self.assertEqual(cells_written[20]["userEnteredValue"], {"stringValue": "📤 Searching the Scene — Turn in"})
+        self.assertEqual(result["unconfirmed"], [])
 
     def test_clearing_a_link_empties_its_cells(self):
         result, batch, _ = self.save({"link:activity": {"from": "", "to": ""}})

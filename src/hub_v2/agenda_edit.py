@@ -22,7 +22,9 @@ MAX_TEXT = 10000
 MAX_FIELDS = 20
 MAX_NAME = 120
 # The links Edit here can change: {field: the Agenda column that holds it}.
-LINKS = {"deck": "teacher_url", "activity": "extra_url", "turnin": "turnin_url", "turnin2": "turnin2"}
+LINKS = {"deck": "teacher_url", "deck2": "second_deck", "activity": "extra_url", "turnin": "turnin_url",
+         "turnin2": "turnin2"}
+NAMED = ("turnin", "turnin2")  # the links that carry a name students and IC see
 DECK = re.compile(r"https://(?:docs\.google\.com/presentation|drive\.google\.com/file)/d/([A-Za-z0-9_-]{20,})")
 DRIVE = re.compile(r"https://(?:docs|drive)\.google\.com/\S+$")
 REF = re.compile(r"(?<![A-Za-z_])(\$?)([A-Z]{1,3})(\$?)(\d+)(?![\d(])")
@@ -68,7 +70,7 @@ def normal_link(key, url):
     url = str(url or "").strip()
     if not url:
         return ""
-    if key == "deck":
+    if key in ("deck", "deck2"):
         match = DECK.match(url)
         if not match:
             raise Refused("The deck link should be a Google Slides link (docs.google.com/presentation/d/…).")
@@ -95,7 +97,7 @@ def _linked_cell(label, url):
 
 def _link_cells(cells, cols, row, key, url, topic, name=""):
     """[(column, new cell, link expected there)] for one link field. name is
-    the 2nd Turn-in Form's label, when the teacher gave one."""
+    a Turn-in Form's label, when the teacher gave one."""
     own = cols[LINKS[key]]
     if _formula(cells, row, own):
         raise Refused("That link's cell in the Agenda is a formula, so change it in the Agenda.")
@@ -106,15 +108,16 @@ def _link_cells(cells, cols, row, key, url, topic, name=""):
             copy = url[:-len("/edit")] + "/copy" if url else ""
             out.append((student, _plain_cell(copy), copy))
         return out
-    if key == "activity":
+    if key in ("activity", "deck2"):
         return [(own, _plain_cell(url), url)]
+    name = " ".join(str(name or "").split()).lstrip("📤 ").strip()[:MAX_NAME]
     if key == "turnin":
         out = [(own, _plain_cell(url), url)]
         shown = cols.get("turnin")
         if shown and not _derived(cells, row, shown):
-            out.append((shown, _linked_cell("📤 %s — Turn in" % topic if topic else "📤 Turn in", url), url))
+            label = "📤 %s" % name if name else "📤 %s — Turn in" % topic if topic else "📤 Turn in"
+            out.append((shown, _linked_cell(label, url), url))
         return out
-    name = " ".join(str(name or "").split()).lstrip("📤 ").strip()[:MAX_NAME]
     return [(own, _linked_cell("📤 %s" % name if name else "📤 2nd turn in", url), url)]
 
 
@@ -161,7 +164,7 @@ def save(token, write_token, config, agenda, class_key, week, row, changes):
     for key, change in asked.items():
         current = lesson["links"].get(key, "")
         name = change.get("label")
-        if name is not None and (key != "turnin2" or not isinstance(name, str) or len(name) > MAX_NAME):
+        if name is not None and (key not in NAMED or not isinstance(name, str) or len(name) > MAX_NAME):
             raise ValueError("label")
         renamed = name is not None and name.strip() != lesson.get("link_labels", {}).get(key, "")
         if change["from"].strip() != current:
