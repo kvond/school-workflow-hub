@@ -135,8 +135,10 @@ function lessonValues(lesson) {
 }
 
 const LINK_LABELS = {'link:deck': 'Deck link (your Google Slides link; students get a copy link)',
+  'link:deck2': '2nd deck link (a second lesson this week)',
   'link:activity': 'Activity / guide link', 'link:turnin': 'Turn-in Form link (the Form’s own editor link)',
-  'link:turnin2': '2nd Turn-in Form link', 'label:turnin2': 'Its name (what students and IC call it)'};
+  'label:turnin': 'Its name (what students and IC call it)',
+  'link:turnin2': '2nd Turn-in Form link (the second lesson’s)', 'label:turnin2': 'Its name (what students and IC call it)'};
 const fieldLabel = key => ({topic: 'Topic', todo: 'To-do', prep: 'Lab / prep'})[key] || LINK_LABELS[key]
   || `${FULL_DAY[key.split(':')[1]]} ${key.startsWith('plan:') ? 'plan' : 'note'}`;
 

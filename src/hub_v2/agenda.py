@@ -218,20 +218,21 @@ def build_lesson(cells, layout, row, edit_url):
     editable = {key: plain(cells.get((row, c))) for key, c in field_columns(layout).items()}
     # The links the dashboard can change (see agenda_edit.LINKS), as the Agenda has them now.
     current = {"deck": first_link(cell("teacher_url")) or first_link(cell("teacher_deck")),
+               "deck2": first_link(cell("second_deck")),
                "activity": first_link(cell("extra_url")) or first_link(cell("activity")),
                "turnin": first_link(cell("turnin"), forms=True) or first_link(cell("turnin_url"), forms=True),
                "turnin2": first_link(cell("turnin2"), forms=True)}
     link_fields = {key: url for key, url in current.items()
-                   if cols.get({"deck": "teacher_url", "activity": "extra_url",
+                   if cols.get({"deck": "teacher_url", "deck2": "second_deck", "activity": "extra_url",
                                 "turnin": "turnin_url", "turnin2": "turnin2"}[key])}
     return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
             "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
             "links": link_fields,
-            # The 2nd Turn-in Form's name, as its link label shows it (the page can rename it).
-            "link_labels": {"turnin2": next((label for url, label in links(cell("turnin2")) if form_link(url, label)), "")}
-            if "turnin2" in link_fields else {},
+            # Each Turn-in Form's name, as its link label shows it (the page can rename it).
+            "link_labels": {key: next((label for url, label in links(cell(column)) if form_link(url, label)), "")
+                            for key, column in (("turnin", "turnin"), ("turnin2", "turnin2")) if key in link_fields},
             "edit_url": edit_url}
 
 
