@@ -7,7 +7,8 @@ review — it never judges how good an answer is:
     Revision = 10 x completed DRAFT / required DRAFT
 
 The required items are the codes in the deck's own [[MARKER-INVENTORY:...]]
-header (or, without one, every code in the deck) that have a box to answer in:
+header (or, without one, every code in the deck; a student's copy of another
+version of the lesson is held to its own header) that have a box to answer in:
 a code on the list that no box in the student's copy carries isn't counted,
 so a deck with only 3 answerable boxes is out of those 3 (the teacher's rule). Each code is a small text
 box such as [[NOTES:C03:CA1-RULE]] placed on its answer box. A box counts as
@@ -456,6 +457,12 @@ def score(done, required):
 def assess(student, template):
     """The completion counts for one student deck against the distributed copy."""
     code, required, basis, note = inventory(template or student)
+    if template:
+        # A copy of another version of the same lesson carries its own code list:
+        # the student answers the boxes in the copy they were handed, so that list counts.
+        own = inventory(student)
+        if own[2] == "header" and own[0] == code and own[1] != required:
+            code, required, basis, note = own
     pairs = _align(student, template) if template else {}
     template_text = {s["number"]: " ".join(t for u in s["units"] for t in _tokens(u["text"]))
                      for s in (template or {"slides": []})["slides"]}

@@ -1086,7 +1086,7 @@ HEADER = ("[[MARKER-INVENTORY:C09]] NOTES=3 DRAFT=1 OPTIONAL=0 BANK_TERMS=2 "
           "BANK_IDS=Producer,Trophic level COURSE=Biology VERSION=2026-09-18")
 
 
-def handout(codes=True, extra=False, **changes):
+def handout(codes=True, extra=False, header=None, **changes):
     """The distributed copy, or a student's copy with some boxes changed.
     codes=False leaves the code boxes off the answer slides and extra=True puts
     a slide in front, like a copy of an older version of the deck."""
@@ -1096,7 +1096,7 @@ def handout(codes=True, extra=False, **changes):
         return [unit] if codes else []
     return pptx(([[("INTRO", "Welcome to this cycle. Read the directions on the next slides.", (20, 20, 900, 80))]]
                  if extra else []) + [
-        [("S1", HEADER, (0, 0, 900, 40))],
+        [("S1", header or HEADER, (0, 0, 900, 40))],
         # Codes placed on their answer boxes.
         [("PROMPT", "Finish this sentence as a rule: energy enters through ____.", (20, 20, 900, 60)),
          ("RULE", text("RULE", "[ Write your rule here ]"), (20, 120, 400, 100)),
@@ -1153,6 +1153,18 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(status[("DRAFT", "Q-MASTERY")], "done")
         self.assertEqual((status[("BANK", "Producer")], status[("BANK", "Trophic level")]), ("done", "done"))
         self.assertEqual(result["counts"]["NOTES"], {"done": 2, "required": 3})
+
+    def test_a_copy_of_another_version_is_held_to_its_own_code_list(self):
+        # The copy the student was handed listed only two Notes boxes and one term; the
+        # current deck lists more. The student is scored on the boxes they were given.
+        older = ("[[MARKER-INVENTORY:C09]] NOTES=2 DRAFT=0 OPTIONAL=0 BANK_TERMS=1 "
+                 "NOTES_IDS=Q-RULE,Q-COUNT DRAFT_IDS= OPTIONAL_IDS= BANK_IDS=Producer")
+        copy = handout(header=older, RULE="Energy enters through producers", COUNT="Producers Count: 12",
+                       T1="Producer  makes its own food")
+        result = completion.assess(completion.read_deck(copy), completion.read_deck(handout()))
+        self.assertEqual((result["counts"]["NOTES"], result["counts"]["BANK"]),
+                         ({"done": 2, "required": 2}, {"done": 1, "required": 1}))
+        self.assertEqual(result["notes_score"], 10.0)
 
     def test_untouched_copy_scores_zero(self):
         result = self.score()
