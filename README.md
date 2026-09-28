@@ -96,7 +96,9 @@ Completion scoring runs by itself when a week is open on Student work (results
 are cached per deck version; **Reload** reads the week again). It exports each student's current on-time
 deck from Drive and compares it, box by box, with the copy linked in the
 lesson's Agenda row. The required items are the codes in the deck's
-`[[MARKER-INVENTORY:…]]` header: Notes = 10 × (completed NOTES + BANK) ÷
+`[[MARKER-INVENTORY:…]]` header that have a box to answer in (a listed code no
+box carries isn't counted, so 3 answerable boxes are out of 3): Notes = 10 ×
+(completed NOTES + BANK) ÷
 required, Revision = 10 × completed DRAFT ÷ required, following the teacher's
 Prompt 1. It counts; it never judges quality, and no model is called. A box
 counts when the student wrote something new in it; the printed prompt copied

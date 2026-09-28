@@ -1083,7 +1083,7 @@ def handout(**changes):
          ("COUNT", text("COUNT", "Producers Count: [ Enter # ]"), (500, 120, 300, 100)),
          ("CHOICE", text("CHOICE", "↑ ↓ ?"), (20, 300, 100, 40)),
          ("M1", "[[NOTES:C09:Q-RULE]]", (30, 130, 80, 10)),
-         ("M2", "[[NOTES:C09:Q-COUNT]]", (510, 130, 80, 10))],
+         ("M2", text("M2", "[[NOTES:C09:Q-COUNT]]"), (510, 130, 80, 10))],
         # First and revised answer, codes listed together in a corner.
         [("L1", "Your first answer", (20, 80, 400, 30)),
          ("B1", text("B1", ""), (20, 120, 400, 150)),
@@ -1112,6 +1112,14 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(required["BANK"], ["Producer", "Trophic level"])
         self.assertEqual(required["NOTES"], ["Q-RULE", "Q-COUNT", "Q-MASTERY"])
         self.assertEqual(required["OPTIONAL"], [])
+
+    def test_a_listed_code_with_no_box_to_answer_in_isnt_counted(self):
+        # The code list names Q-COUNT, but the deck has no box for it: out of the boxes there are.
+        template = completion.read_deck(handout(M2=""))
+        result = completion.assess(completion.read_deck(handout(M2="", RULE="Energy enters through producers")), template)
+        self.assertEqual(result["counts"]["NOTES"], {"done": 1, "required": 2})
+        self.assertEqual(result["notes_score"], 2.5)  # 10 x 1 / (2 NOTES + 2 BANK), not 1 / 5
+        self.assertIn("NOTES Q-COUNT", result["coding"]["missing"])
 
     def test_untouched_copy_scores_zero(self):
         result = self.score()
