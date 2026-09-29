@@ -193,7 +193,13 @@ teacher's confirmation moves a week's extra folders' contents, loose Form
 folders and the earlier shared Form's uploads into that week's one `📥` folder,
 and late work into its `⏰ Late — not graded` folder. Emptied extra folders go
 to the Drive trash when Drive allows it, otherwise they get `_` in front of their
-names. It needs the service account shared as an Editor on the turn-in root, and
+names. It also puts each on-roster student's name and assignment in front of
+their files' names ("Sabrina Del Rosario Davila.Investigative Processes (Steps
+of CSI) - <original name>"). The assignment name comes from the Form it counts
+for, so a Drive search by name finds a student's work. The file keeps a small
+Drive tag, and the Hub reads the original name from it, so matching,
+turn-in times and scoring don't change. A file renamed by hand afterwards keeps
+its new name. Renaming changes the deck's "last modified" time in Drive. It needs the service account shared as an Editor on the turn-in root, and
 only runs from the dashboard page (same-origin POST, signed-in teacher).
 
 ## Validation

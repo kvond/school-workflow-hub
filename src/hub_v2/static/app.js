@@ -354,7 +354,7 @@ async function loadWork(fresh = false) {
 function fileList(files) {
   if (!files.length) return el('span', {class: 'muted', text: 'Form sent with no file'});
   return el('ul', {class: 'files'}, files.map(f => el('li', {},
-    link(f.name, f.url),
+    link(f.shown || f.name, f.url),
     f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
     f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
     f.via ? el('span', {class: 'badge warn', title: 'This lesson’s deck, turned in through another lesson’s Form; it counts here', text: `Via ${f.via}`}) : null,
@@ -773,7 +773,7 @@ function helperNeed(rows) {
 // in one week (two Forms on one Agenda row) never reach the helper under one name.
 function formName(form, lesson) {
   const named = oneLine(String(form.label || '').replace(/^📤\s*/u, '').replace(/\s*[—–-]\s*turn\s*in\s*$/i, ''));
-  return named && !/^(?:2nd\s+)?turn\s*in$/i.test(named) ? named : oneLine(lesson?.topic || work.week);
+  return named && !/^(?:2nd\s+)?turn\s*(?:it\s*)?in$/i.test(named) ? named : oneLine(lesson?.topic || work.week);
 }
 
 async function sendToHelper(form, lesson) {
@@ -1075,14 +1075,18 @@ function renderRosterCheck(check) {
 // ---------- Tidy: one 📥 folder per course per week ----------
 function renderTidy(box, p) {
   const parts = [el('h3', {text: `Tidy ${p.week} folders`})];
-  if (!p.moves.length && !p.create && !p.empty_after.length) {
-    parts.push(note(p.keep ? `Already tidy: everything for ${p.week} is in ${p.keep.name}.` : 'Nothing to tidy.', 'info'));
-    if (p.problem && p.problem.indexOf("can't move files") < 0) parts.push(note(p.problem));
+  const renames = p.renames || [];
+  const moving = p.moves.length || p.create || p.empty_after.length;
+  if (!moving && !renames.length) {
+    parts.push(note(p.keep ? `Already tidy: everything for ${p.week} is in ${p.keep.name}, and every student file starts with the student’s name.` : 'Nothing to tidy.', 'info'));
+    if (p.problem && p.problem.indexOf("can't move") < 0) parts.push(note(p.problem));
     box.replaceChildren(...parts);
     return;
   }
-  parts.push(el('p', {}, p.keep ? ['Keep ', link(p.keep.name + ' ↗', p.keep.url), ' as this week’s one folder.']
-    : `Create “${p.create}” as this week’s one folder.`));
+  if (moving) {
+    parts.push(el('p', {}, p.keep ? ['Keep ', link(p.keep.name + ' ↗', p.keep.url), ' as this week’s one folder.']
+      : `Create “${p.create}” as this week’s one folder.`));
+  }
   const item = m => el('li', {}, (m.folder ? '📁 ' : '') + m.name,
     m.from_name ? el('small', {class: 'muted', text: ' — from ' + m.from_name}) : null);
   const toWeek = p.moves.filter(m => m.to !== 'late'), toLate = p.moves.filter(m => m.to === 'late');
@@ -1099,10 +1103,18 @@ function renderTidy(box, p) {
       : 'Then these emptied extra folders get “_” in front of their names so you know to skip them: ')
       + p.empty_after.map(e => e.name).join(', ')}));
   }
+  if (renames.length) {
+    // Name and lesson first, so a Drive search by a student's name finds their work.
+    parts.push(el('p', {class: 'label', text: `Put the student’s name and lesson in front of ${renames.length} file name(s)`}),
+      el('p', {class: 'muted', text: `For example: ${renames[0].to}`}),
+      el('details', {}, el('summary', {text: 'See every new name'}),
+        el('ul', {class: 'files'}, renames.map(r => el('li', {text: r.to})))));
+  }
   if (p.problem) parts.push(note(p.problem));
-  if (p.can_move) {
+  const label = moving && renames.length ? 'Move and rename' : moving ? 'Move them' : 'Rename them';
+  if ((moving && p.can_move) || (!moving && p.can_rename)) {
     parts.push(el('div', {class: 'action-row'},
-      el('button', {type: 'button', class: 'primary', onclick: () => applyTidy(box, p)}, 'Move them'),
+      el('button', {type: 'button', class: 'primary', onclick: () => applyTidy(box, p)}, label),
       el('button', {type: 'button', onclick: () => box.replaceChildren()}, 'Cancel')));
   }
   box.replaceChildren(...parts);
@@ -1127,7 +1139,9 @@ async function applyTidy(box, p) {
     if (!response.ok) throw new Error(body?.error || `The server returned an error (${response.status}).`);
     const parts = [el('h3', {text: `Tidy ${p.week} folders`}),
       note(body.moves.length ? `Moved ${body.moved} of ${body.moves.length} item(s).` : 'Nothing needed moving.', 'info')];
+    if (body.renames?.length) parts.push(note(`Renamed ${body.renamed} of ${body.renames.length} student file(s) to start with the student’s name and lesson.`, 'info'));
     if (body.failed.length) parts.push(note(`${body.failed.length} couldn’t be moved: ` + body.failed.map(f => `${f.name} (${f.why})`).join('; ')));
+    if (body.rename_failed?.length) parts.push(note(`${body.rename_failed.length} couldn’t be renamed: ` + body.rename_failed.map(f => `${f.name} (${f.why})`).join('; ')));
     if (body.trashed.length) parts.push(el('p', {class: 'muted', text: `Sent ${body.trashed.length} empty extra folder(s) to the Drive trash; you can restore them from there.`}));
     if (body.marked.length) parts.push(el('p', {class: 'muted', text: `Put “_” in front of ${body.marked.length} empty extra folder(s): ` + body.marked.map(e => e.name).join(', ')}));
     if (body.left_empty.length) {
@@ -1316,7 +1330,7 @@ const ROUTINE = {
     {when: 'Friday', you: 'Hand back feedback. Collect the “What I understand now” pages.',
      done: 'Students answer their feedback.'},
     {when: 'Friday', you: 'Student work → Tidy this week’s folders, for each class.',
-     done: 'Files sit in the right week, so counts and 0s are right.'},
+     done: 'Files sit in the right week, so counts and 0s are right, and each file starts with the student’s name and lesson, so a Drive search finds it.'},
     {when: '1st Monday of the month', you: 'Run Prompt 3 in Teacher Claude.',
      done: 'Your Biology teaching summary.'},
     {when: 'After you change a prompt', you: 'Ask Claude Code to copy it to GitHub.',
@@ -1344,7 +1358,7 @@ const ROUTINE = {
     {button: 'I entered these in IC', who: 'The Hub, by itself', note: 'Once the helper has done every section. Click it only if you typed scores into IC yourself.'},
     {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
     {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
-    {button: 'Tidy this week’s folders → Move them', who: 'You, Friday', note: 'Once per class.'},
+    {button: 'Tidy this week’s folders → Move and rename', who: 'You, Friday', note: 'Once per class. Puts files in the week’s folder and each student’s name and lesson at the front of their file names.'},
     {button: 'Edit here → Save to Agenda', who: 'You, lesson planning', note: 'On Lesson plans, to plan a week.'},
     {button: 'Copy embed-coding prompt', who: 'You, lesson planning', note: 'Right after you update a deck; paste it into Claude with the deck.'},
     {button: 'Move · Check links', who: 'You, when a lesson moves', note: 'Move is under Edit here; Check links is on this page.'},
