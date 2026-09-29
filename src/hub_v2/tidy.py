@@ -9,9 +9,15 @@ what would move; apply() moves exactly that previewed plan and checks each
 move. An emptied extra folder goes to the Drive trash (restorable) when Drive
 lets the dashboard trash it; otherwise it gets '_' in front of its name so the
 teacher knows there is nothing in it.
+
+Tidy also puts each student's name and lesson in front of their turned-in
+files' names ("Ana Rivera.Energy Flow - <original name>"), so a Drive search
+by name finds them. The original name stays readable to the Hub (see
+google.original_name), so matching, turn-in times and scoring don't change.
 """
 import hashlib
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from . import google, work
@@ -21,6 +27,7 @@ ICON = "📥"
 LATE_FOLDER = "⏰ Late — not graded"
 EMPTY_MARK = "_"
 MAX_MOVES = 300
+MAX_RENAMES = 300
 CAPABILITIES = "id,name,parents,capabilities(canAddChildren,canMoveItemWithinDrive,canTrash,canRename)"
 
 
@@ -52,9 +59,47 @@ def _ancestors(token, item_id, cache, limit=8):
     return chain
 
 
-def _late_files(token, config, agenda, class_key, week_label):
+def form_name(label, topic):
+    """An assignment's own name: its Form's "📤 Name — Turn in" label, else the lesson topic."""
+    named = " ".join(re.sub(r"\s*[—–-]\s*turn\s*in\s*$", "", re.sub(r"^📤\s*", "", str(label or "")),
+                            flags=re.I).split())
+    generic = re.fullmatch(r"(?:2nd\s+)?turn\s*(?:it\s*)?in", named, re.I)
+    return named if named and not generic else " ".join(str(topic).split())
+
+
+def student_prefix(row, assignment):
+    """'Sabrina Del Rosario Davila.Investigative Processes - ': first name (no
+    nickname) and last name, then the assignment it counts for."""
+    first = re.sub(r"\([^)]*\)", " ", str(row.get("first", "")))
+    return "%s.%s - " % (" ".join((first + " " + str(row.get("last", ""))).split()), assignment)
+
+
+def _renames(result):
+    """Each on-roster student's files counted for this week's assignments
+    (current, earlier and late versions) that don't start with their name yet."""
+    out, seen = [], set()
+    for lesson in result["lessons"]:
+        for form in lesson["forms"]:
+            assignment = form_name(form.get("label"), lesson.get("topic", ""))
+            if not assignment:
+                continue
+            for row in form["students"] + form.get("late", []):
+                if not row.get("matched"):
+                    continue
+                prefix = student_prefix(row, assignment)
+                for version in [row] + row.get("earlier", []):
+                    for f in version.get("files", []):
+                        if (not f.get("id") or f["id"] in seen or f.get("trashed") or f.get("problem")
+                                or f.get("shown") or f.get("name", "").startswith(prefix)):
+                            continue
+                        seen.add(f["id"])
+                        out.append({"id": f["id"], "from": f["name"], "prefix": prefix, "to": prefix + f["name"]})
+    return out
+
+
+def _late_files(token, config, agenda, class_key, week_label, result=None):
     """IDs of every file the Student work page marks Late for this week."""
-    result = work.lesson_work(token, config, agenda, class_key, week_label)
+    result = result or work.lesson_work(token, config, agenda, class_key, week_label)
     rows = [row for lesson in result["lessons"] for form in lesson["forms"]
             for row in form["students"] + form["late"]] + result["other_files"]
     versions = [row for row in rows] + [e for row in rows for e in row["earlier"]]
@@ -69,7 +114,7 @@ def plan(token, config, agenda, class_key, week_label, now=None):
     out = {"class_key": class_key, "week": week_label, "keep": None, "create": None,
            "late_folder": None, "create_late": None,
            "moves": [], "empty_after": [], "can_move": False, "can_trash": False,
-           "problem": None, "plan_id": ""}
+           "renames": [], "can_rename": False, "problem": None, "plan_id": ""}
     root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
     if not root or number is None:
         out["problem"] = "No turn-in root folder is configured."
@@ -127,8 +172,10 @@ def plan(token, config, agenda, class_key, week_label, now=None):
     # folder. No assignment can have closed before two weeks past the week's Monday.
     monday = work.week_monday(agenda, week_label)
     late_ids = set()
+    result = work.lesson_work(token, config, agenda, class_key, week_label)
     if monday and (now or datetime.now(timezone.utc)).date() > monday + timedelta(days=work.LATE_AFTER_DAYS):
-        late_ids = _late_files(token, config, agenda, class_key, week_label)
+        late_ids = _late_files(token, config, agenda, class_key, week_label, result)
+    out["renames"] = _renames(result)[:MAX_RENAMES]
     late_folder = None
     if keep:
         late_folder = next((f for f in google.folder_children(token, keep["id"])
@@ -205,7 +252,8 @@ def plan(token, config, agenda, class_key, week_label, now=None):
     out["plan_id"] = hashlib.sha256(json.dumps(
         [out["keep"] and out["keep"]["id"], out["create"], out["create_late"],
          sorted((m["id"], m["from_id"], m["to"]) for m in out["moves"]),
-         sorted(e["id"] for e in out["empty_after"])]).encode("utf-8")).hexdigest()[:24]
+         sorted(e["id"] for e in out["empty_after"]),
+         sorted((r["id"], r["to"]) for r in out["renames"])]).encode("utf-8")).hexdigest()[:24]
 
     # Can the dashboard's account move things here? (It needs Editor access.)
     try:
@@ -221,8 +269,14 @@ def plan(token, config, agenda, class_key, week_label, now=None):
     except google.GoogleError:
         ok = False
     out["can_move"] = ok
-    if not ok and (out["moves"] or out["create"] or out["empty_after"]):
-        out["problem"] = ("The dashboard can't move files yet. In Drive, share '00 REAL ALL TURN IN' with "
+    if out["renames"]:
+        try:
+            first = google.drive_file(token, out["renames"][0]["id"], CAPABILITIES)
+            out["can_rename"] = bool((first.get("capabilities") or {}).get("canRename"))
+        except google.GoogleError:
+            out["can_rename"] = False
+    if (not ok and (out["moves"] or out["create"] or out["empty_after"])) or (out["renames"] and not out["can_rename"]):
+        out["problem"] = ("The dashboard can't move or rename files yet. In Drive, share '00 REAL ALL TURN IN' with "
                           "%s as an Editor, then click Tidy again." % account)
     return out
 
@@ -232,9 +286,10 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
     current = plan(token, config, agenda, class_key, week_label, now)
     if current["plan_id"] != plan_id:
         raise Changed()
+    renamed, rename_failed = _rename(write_token, current)
     if not current["can_move"]:
         return {**current, "moved": 0, "failed": [], "trashed": [], "marked": [], "left_empty": [],
-                "applied": False}
+                "renamed": renamed, "rename_failed": rename_failed, "applied": bool(renamed)}
     keep_id = current["keep"]["id"] if current["keep"] else None
     if not keep_id:
         root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
@@ -283,4 +338,23 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
         except google.GoogleError:
             left.append({**folder, "why": "Only you can delete this empty folder."})
     return {**current, "keep_id": keep_id, "moved": moved, "failed": failed, "trashed": trashed,
-            "marked": marked, "left_empty": left, "applied": True}
+            "marked": marked, "left_empty": left, "renamed": renamed, "rename_failed": rename_failed,
+            "applied": True}
+
+
+def _rename(write_token, current):
+    """Put each previewed student's name and lesson in front of their file's
+    name, and check Drive's answer. Returns (renamed count, failures)."""
+    renamed, failed = 0, []
+    if not current["can_rename"]:
+        return 0, [{"name": r["from"], "why": "The dashboard can't rename it."} for r in current["renames"]]
+    for r in current["renames"]:
+        try:
+            after = google.prefix_name(write_token, r["id"], r["prefix"], r["from"])
+            if after.get("name") == r["to"]:
+                renamed += 1
+            else:
+                failed.append({"name": r["from"], "why": "Drive didn't confirm the new name."})
+        except google.GoogleError as error:
+            failed.append({"name": r["from"], "why": str(error)})
+    return renamed, failed

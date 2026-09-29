@@ -536,6 +536,7 @@ def describe_files(token, submissions_list, known):
     for f in files:
         info = details.get(f["id"], {})
         f["name"] = info.get("name") or f["name"] or "Uploaded file"
+        f["shown"] = info.get("shown_name", "")  # its name in Drive, when Tidy has renamed it
         f["mime"] = info.get("mimeType") or f["mime"]
         f["trashed"] = bool(info.get("trashed"))
         f["problem"] = info.get("problem")

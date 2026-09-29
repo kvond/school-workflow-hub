@@ -837,13 +837,22 @@ class FakeDrive:
                              "mimeType": self.FOLDER if folder else SLIDES, "createdTime": created}
 
     def children(self, token, fid):
-        return [dict(i) for i in self.items.values() if i["parents"][:1] == [fid] and i["id"] not in self.trashed]
+        return [google.as_read(dict(i)) for i in self.items.values()
+                if i["parents"][:1] == [fid] and i["id"] not in self.trashed]
 
     def file(self, token, fid, fields=None):
         if fid not in self.items:
             raise google.GoogleError("missing", 404)
-        return {**self.items[fid], "capabilities": {"canAddChildren": self.editor, "canRename": self.editor,
-                                                    "canMoveItemWithinDrive": self.editor, "canTrash": self.owner}}
+        return google.as_read({**self.items[fid], "capabilities": {
+            "canAddChildren": self.editor, "canRename": self.editor,
+            "canMoveItemWithinDrive": self.editor, "canTrash": self.owner}})
+
+    def prefix(self, token, fid, prefix, original):
+        if not self.editor:
+            raise google.GoogleError("denied", 403)
+        self.items[fid]["name"] = prefix + original
+        self.items[fid]["properties"] = {google.PREFIX_TAG: google._prefix_tag(prefix)}
+        return {"id": fid, "name": prefix + original}
 
     def named(self, token, name):
         return [dict(i) for i in self.items.values() if i["name"] == name and i["mimeType"] == self.FOLDER]
@@ -878,6 +887,7 @@ class FakeDrive:
                 patch.object(google, "move_item", side_effect=self.move),
                 patch.object(google, "trash_item", side_effect=self.trash),
                 patch.object(google, "rename_item", side_effect=self.rename),
+                patch.object(google, "prefix_name", side_effect=self.prefix),
                 patch.object(work.roster, "load", return_value=({"forensics": roster.parse_tab(
                     ROSTER, "forensics", "A2 Forensics")[0]}, [])),
                 patch.object(google, "create_folder", side_effect=self.create),
@@ -1017,6 +1027,79 @@ class TidyTests(unittest.TestCase):
             for x in patches:
                 x.stop()
         self.assertEqual(d.items["D1"]["parents"], ["DUP"])
+
+    def run_apply(self, d, responses, p):
+        patches = d.patches(responses)
+        for x in patches:
+            x.start()
+        try:
+            work._shared_cache.clear()
+            return tidy.apply("token", "write", self.config, self.agenda, "forensics", "Wk 04", p["plan_id"])
+        finally:
+            for x in patches:
+                x.stop()
+
+    def week_rows(self, d, responses):
+        patches = d.patches(responses)
+        for x in patches:
+            x.start()
+        try:
+            work._shared_cache.clear()
+            result = work.lesson_work("token", self.config, self.agenda, "forensics", "Wk 04")
+        finally:
+            for x in patches:
+                x.stop()
+        return {f["id"]: (r["last"], r["submitted_at"], f["name"], f["shown"])
+                for lesson in result["lessons"] for form in lesson["forms"] for r in form["students"]
+                for f in r["files"]}
+
+    def test_tidy_puts_each_students_name_and_lesson_in_front_of_their_file_names(self):
+        d, responses = self.drive()
+        before = self.week_rows(d, responses)
+        p = self.run_plan(d, responses)
+        renames = {r["id"]: r["to"] for r in p["renames"]}
+        self.assertEqual(renames["R1"], "Ana Rivera.Fictional topic - Copy of deck - Ana Rivera")
+        self.assertTrue(p["can_rename"])
+        self.assertEqual(d.items["R1"]["name"], "Copy of deck - Ana Rivera")  # a preview renames nothing
+        result = self.run_apply(d, responses, p)
+        self.assertEqual((result["renamed"], result["rename_failed"]), (len(p["renames"]), []))
+        self.assertEqual(d.items["R1"]["name"], "Ana Rivera.Fictional topic - Copy of deck - Ana Rivera")
+        # The Hub still reads each file by its original name: same student,
+        # same turn-in time (a folder file's time is in its name), same deck.
+        after = self.week_rows(d, responses)
+        self.assertEqual({k: v[:3] for k, v in after.items()}, {k: v[:3] for k, v in before.items()})
+        self.assertEqual(after["R1"][3], "Ana Rivera.Fictional topic - Copy of deck - Ana Rivera")
+        # Renamed files aren't renamed again.
+        work._shared_cache.clear()
+        self.assertEqual(self.run_plan(d, responses)["renames"], [])
+
+    def test_a_file_renamed_by_hand_afterwards_keeps_its_new_name(self):
+        tag = google._prefix_tag("Ana Rivera.Energy Flow - ")
+        item = {"name": "Ana Rivera.Energy Flow - Copy of deck.pptx", "properties": {google.PREFIX_TAG: tag}}
+        self.assertEqual(google.original_name(item), "Copy of deck.pptx")
+        read = google.as_read(dict(item))
+        self.assertEqual((read["name"], read["shown_name"]), ("Copy of deck.pptx", item["name"]))
+        for name in ("Ana R.Energy Flow - Copy of deck.pptx", "Ana Rivera.Energy Flow - ", "My own name"):
+            self.assertEqual(google.original_name({"name": name, "properties": {google.PREFIX_TAG: tag}}), name)
+        self.assertEqual(google.original_name({"name": "Copy of deck"}), "Copy of deck")
+        self.assertNotIn("shown_name", google.as_read({"name": "Copy of deck"}))
+
+    def test_the_rename_request_sets_the_name_and_its_tag(self):
+        with patch.object(google, "get_json", return_value={"id": "F", "name": "x"}) as call:
+            google.prefix_name("write", "F", "Ana Rivera.Energy Flow - ", "Copy of deck")
+        self.assertEqual(call.call_args.kwargs["method"], "PATCH")
+        self.assertEqual(call.call_args.kwargs["body"], {
+            "name": "Ana Rivera.Energy Flow - Copy of deck",
+            "properties": {google.PREFIX_TAG: google._prefix_tag("Ana Rivera.Energy Flow - ")}})
+        self.assertLessEqual(len((google.PREFIX_TAG + google._prefix_tag("x" * 300)).encode()), 124)
+
+    def test_an_assignment_is_named_by_its_form(self):
+        self.assertEqual(tidy.form_name("📤 Investigative Processes (Steps of CSI) — Turn in", "Types of Evidence"),
+                         "Investigative Processes (Steps of CSI)")
+        for generic in ("📤 2nd turn in", "Turn it in", "Turn in", ""):
+            self.assertEqual(tidy.form_name(generic, "Types of Evidence"), "Types of Evidence")
+        self.assertEqual(tidy.student_prefix({"first": "Sabrina (Bri)", "last": "Del Rosario Davila"}, "Types of Evidence"),
+                         "Sabrina Del Rosario Davila.Types of Evidence - ")
 
     def test_without_editor_access_the_plan_says_who_to_share_with(self):
         d, responses = self.drive(editor=False)

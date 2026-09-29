@@ -1,13 +1,15 @@
 """Google access for v2: confirm the signed-in teacher, then act as the
 dashboard's service account.
 
-Everything reads, except move_item, rename_item, trash_item and create_folder
-(the Tidy button) and append_rows (the teacher's own "Scores entered" sheet),
+Everything reads, except move_item, rename_item, prefix_name, trash_item and
+create_folder (the Tidy button) and append_rows (the teacher's own "Scores entered" sheet),
 which use a separate write token. Every call has a short
 timeout. Errors carry a short sentence a teacher can act on, never a token or a
 response body.
 """
+import hashlib
 import os
+import re
 import threading
 import time
 from urllib.parse import quote
@@ -21,7 +23,12 @@ SCOPES = (
 SHEET_FIELDS = ("sheets(properties(sheetId,title),data(startRow,startColumn,rowData(values("
                 "formattedValue,hyperlink,textFormatRuns(startIndex,format(link(uri))),"
                 "userEnteredValue(formulaValue)))))")
-FILE_FIELDS = "id,name,mimeType,trashed,createdTime,modifiedTime,parents"
+FILE_FIELDS = "id,name,mimeType,trashed,createdTime,modifiedTime,parents,properties"
+# Tidy puts the student's name and lesson in front of their files' names
+# ("Ana Rivera.Energy Flow - <original name>") and tags the file with the
+# prefix's length and a short hash, so the Hub keeps reading the original name
+# (its turn-in time, username and deck title) wherever it reads names.
+PREFIX_TAG = "hubPrefix"
 FOLDER = "application/vnd.google-apps.folder"
 
 
@@ -190,9 +197,40 @@ def form_responses(token, form_id):
     return responses
 
 
+def _prefix_tag(prefix):
+    return "%d:%s" % (len(prefix), hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:10])
+
+
+def original_name(item):
+    """The name a file had before Tidy put the student and lesson in front of
+    it; a file renamed by hand since (the tag no longer fits) keeps its name."""
+    name = str(item.get("name") or "")
+    tag = re.fullmatch(r"(\d{1,4}):([0-9a-f]{10})", str((item.get("properties") or {}).get(PREFIX_TAG, "")))
+    if tag and 0 < int(tag.group(1)) < len(name) and _prefix_tag(name[:int(tag.group(1))]) == tag.group(0):
+        return name[int(tag.group(1)):]
+    return name
+
+
+def as_read(item):
+    """Drive metadata as the Hub reads it: "name" is the original name, and
+    "shown_name" what Drive shows when Tidy has renamed the file."""
+    original = original_name(item)
+    if original != item.get("name"):
+        item["shown_name"], item["name"] = item["name"], original
+    return item
+
+
 def drive_file(token, file_id, fields=FILE_FIELDS):
+    return as_read(get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
+                            {"fields": fields, "supportsAllDrives": "true"}, timeout=10))
+
+
+def prefix_name(token, file_id, prefix, original):
+    """Rename a student's file to prefix + its original name, tagged so the Hub
+    still reads the original. Returns the file as Drive has it afterwards."""
     return get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
-                    {"fields": fields, "supportsAllDrives": "true"}, timeout=10)
+                    {"fields": "id,name,properties", "supportsAllDrives": "true"}, method="PATCH",
+                    body={"name": prefix + original, "properties": {PREFIX_TAG: _prefix_tag(prefix)}})
 
 
 PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -330,7 +368,7 @@ def folder_children(token, folder_id):
         if cursor:
             params["pageToken"] = cursor
         page = get_json("https://www.googleapis.com/drive/v3/files", token, params)
-        items.extend(page.get("files", []) or [])
+        items.extend(as_read(item) for item in page.get("files", []) or [])
         cursor = page.get("nextPageToken")
         if not cursor:
             break
