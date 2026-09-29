@@ -214,8 +214,10 @@ def original_name(item):
 def as_read(item):
     """Drive metadata as the Hub reads it: "name" is the original name, and
     "shown_name" what Drive shows when Tidy has renamed the file."""
+    if "name" not in item:  # a lookup that didn't ask for names
+        return item
     original = original_name(item)
-    if original != item.get("name"):
+    if original != item["name"]:
         item["shown_name"], item["name"] = item["name"], original
     return item
 
