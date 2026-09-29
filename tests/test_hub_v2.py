@@ -1083,6 +1083,11 @@ class TidyTests(unittest.TestCase):
             self.assertEqual(google.original_name({"name": name, "properties": {google.PREFIX_TAG: tag}}), name)
         self.assertEqual(google.original_name({"name": "Copy of deck"}), "Copy of deck")
         self.assertNotIn("shown_name", google.as_read({"name": "Copy of deck"}))
+        # A lookup without names (the roster sheet's modified time) passes through untouched.
+        self.assertEqual(google.as_read({"id": "S", "modifiedTime": "2026-09-29T12:00:00Z"}),
+                         {"id": "S", "modifiedTime": "2026-09-29T12:00:00Z"})
+        with patch.object(google, "get_json", return_value={"id": "S", "modifiedTime": "t"}):
+            self.assertEqual(google.drive_file("token", "S", "id,modifiedTime"), {"id": "S", "modifiedTime": "t"})
 
     def test_the_rename_request_sets_the_name_and_its_tag(self):
         with patch.object(google, "get_json", return_value={"id": "F", "name": "x"}) as call:
