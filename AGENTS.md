@@ -58,6 +58,21 @@ alone does not prove the grade was posted. See `docs/BROWSER_RUNS.md`.
 This manual path does not activate recurring jobs or grant permission for other
 school writes. Its executor and live acceptance remain separate requirements.
 
+On September 28 the teacher separately authorized the same browser companion
+to enter the Teaching Hub v2's IC list for an assignment ("Send to the Chrome
+helper" on the Hub, then "Hub helper" in the open IC score panel). It writes
+only after a trusted click on its own Enter button, which stays disabled until
+its checkbox is ticked, by the teacher or by the Claude extension after her
+OK in chat. Only blanks and raises are entered, because the teacher's rule is
+to keep the higher score. The companion never lowers a score. It leaves flagged
+rows, excused students, "check by hand" rows and names that don't match one to
+one. It requires a 10-point score panel whose students are mostly on the list,
+all from one section. Then it uses native Save, reloads, and reads every score
+back. The Hub notes "Entered in IC" only after every section and column has read
+back. It is not a schedule, and it grants no other school write. The mock dry
+run is not live acceptance. See `docs/BROWSER_RUNS.md` and
+`browser-extension/README.md`.
+
 The Python package holds no model client and makes no model call; the feedback
 and reporting workflows carry a live-model-call counter that the tests assert
 stays at zero. Keep it that way, and see `docs/ROSTER_SYNC_INTEGRATION.md` for

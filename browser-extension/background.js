@@ -1,6 +1,6 @@
 'use strict';
-importScripts('config.js','protocol.js');
-const P=globalThis.HubPostingProtocol,C=globalThis.HubPostingConfig;
+importScripts('config.js','protocol.js','entry.js');
+const P=globalThis.HubPostingProtocol,C=globalThis.HubPostingConfig,E=globalThis.HubIcEntry;
 // Private, memory-only bindings. Restart requires source/destination recovery.
 const pending=new Map();
 const same=(left,right)=>JSON.stringify(left)===JSON.stringify(right);
@@ -108,8 +108,62 @@ async function prepare(request,sender){
   return {...P.response(request.request_id,'gradebook_required'),diag:stage+'_failed'};
  }
 }
+// Hub v2 IC lists. The teacher sends one assignment's list from the Hub tab;
+// the IC tab reads it to review and enter that assignment. Lists live in
+// session storage: memory only, cleared when the browser closes, and not
+// readable by web pages or content scripts. Each list lasts three hours.
+let entryQueue=Promise.resolve();
+function entryLocked(fn){const run=entryQueue.then(fn,fn);entryQueue=run.catch(()=>{});return run;}
+async function entryLoad(){
+ const stored=(await chrome.storage.session.get('ic_lists')).ic_lists||[],now=Date.now();
+ return stored.filter(item=>{try{E.validateList(item.list,now);return true;}catch{return false;}});
+}
+const entrySave=lists=>chrome.storage.session.set({ic_lists:lists});
+async function entryHub(message,sender){
+ if(!E||!configured())return {ok:false,code:'helper_not_configured'};
+ if(message.op==='status')return entryLocked(async()=>({ok:true,code:'helper_ready',helper_version:chrome.runtime.getManifest().version,results:(await entryLoad()).flatMap(item=>item.done)}));
+ if(message.op!=='send')return {ok:false,code:'invalid_request'};
+ let list;
+ try{list=E.validateList(message.list);}catch(error){return {ok:false,code:error.message==='list_expired'?'list_expired':'invalid_list'};}
+ return entryLocked(async()=>{
+  const lists=await entryLoad(),earlier=lists.find(item=>item.list.form_id===list.form_id);
+  // A list sent again for the same assignment replaces it; what was already entered stays noted.
+  const kept=lists.filter(item=>item!==earlier);
+  kept.push({list,hub_tab_id:sender.tab.id,done:earlier?earlier.done:[]});
+  while(kept.length>E.MAX_LISTS)kept.shift();
+  await entrySave(kept);
+  return {ok:true,code:'list_ready'};
+ });
+}
+async function entryIC(message){
+ if(!E||!configured())return {ok:false,code:'helper_not_configured'};
+ if(message.op==='lists')return entryLocked(async()=>({ok:true,lists:(await entryLoad()).map(item=>({list:item.list}))}));
+ if(message.op!=='result')return {ok:false,code:'invalid_request'};
+ let result;
+ try{result=E.validateResult(message.result);}catch{return {ok:false,code:'invalid_result'};}
+ return entryLocked(async()=>{
+  const lists=await entryLoad(),item=lists.find(value=>value.list.list_id===result.list_id);
+  if(!item)return {ok:false,code:'list_missing'};
+  item.done=[...item.done.filter(done=>done.column!==result.column||done.section!==result.section),result];
+  await entrySave(lists);
+  // Counts only; the Hub tab may have closed, and then its next status read carries it.
+  chrome.tabs.sendMessage(item.hub_tab_id,{type:'hub_entry_result',result},{frameId:0}).catch(()=>{});
+  return {ok:true};
+ });
+}
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
- if(message?.type==='companion_popup_status'&&sender.id===chrome.runtime.id&&sender.url===chrome.runtime.getURL('popup.html')){respond(status());return;}
+ if(message?.type==='companion_popup_status'&&sender.id===chrome.runtime.id&&sender.url===chrome.runtime.getURL('popup.html')){
+  if(!E){respond(status());return;}
+  entryLocked(async()=>({...status(),entry_lists:(await entryLoad()).length})).then(respond,()=>respond(status()));return true;
+ }
+ if(message?.type==='entry_hub'){
+  if(!fromSite(sender,C.HUB_ORIGIN)){respond({ok:false,code:'invalid_request'});return;}
+  entryHub(message,sender).then(respond,()=>respond({ok:false,code:'helper_unavailable'}));return true;
+ }
+ if(message?.type==='entry_ic'){
+  if(!fromSite(sender,C.IC_ORIGIN)){respond({ok:false,code:'invalid_request'});return;}
+  entryIC(message).then(respond,()=>respond({ok:false,code:'helper_unavailable'}));return true;
+ }
  if(message?.type==='ic_review_ping'){
   if(Object.keys(message).sort().join('|')!=='request_id|session_id|type'){respond({ok:false,code:'review_expired'});return;}
   try{findSession(message,sender);respond({ok:true});}catch{respond({ok:false,code:'review_expired'});}return;

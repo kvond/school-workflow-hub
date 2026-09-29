@@ -1344,13 +1344,16 @@ class LedgerAndFeedbackTests(unittest.TestCase):
             x.start()
         try:
             with patch.object(google, "append_rows") as append:
-                ledger.record("token", "write", self.CONFIG, "ic", context)
+                ledger.record("token", "write", self.CONFIG, "ic", context,
+                              "Chrome helper — A2 Forensics Notes: 3 entered,\n 1 raised, 2 left")
         finally:
             for x in patches:
                 x.stop()
         written = append.call_args.args[3]
         self.assertEqual(written[0], ledger.HEADER)
-        self.assertEqual(written[1][1:], ["Entered in IC", "🔬 Forensics", "Wk 04", "Reasoning", self.FORM])
+        # The note says how it was entered, on one line.
+        self.assertEqual(written[1][1:], ["Entered in IC", "🔬 Forensics", "Wk 04", "Reasoning", self.FORM,
+                                          "Chrome helper — A2 Forensics Notes: 3 entered, 1 raised, 2 left"])
         self.assertEqual(len(written), 2)
         self.assertEqual(append.call_args.args[0], "write")  # only the write token writes
 
@@ -1451,8 +1454,15 @@ class RecordEndpointTests(unittest.TestCase):
         status, record = self.post("https://hub.fictional.example", body)
         self.assertEqual(status, "200 OK")
         self.assertEqual(record.call_args.args[3], "ic")
+        self.assertEqual(record.call_args.args[5], "")
         status, record = self.post("https://hub.fictional.example", body.replace(b'"ic"', b'"grades"'))
         self.assertEqual(status, "400 Bad Request")
+        noted = json.loads(body)
+        status, record = self.post("https://hub.fictional.example", json.dumps({**noted, "note": "Chrome helper — A2 Notes"}).encode())
+        self.assertEqual((status, record.call_args.args[5]), ("200 OK", "Chrome helper — A2 Notes"))
+        status, record = self.post("https://hub.fictional.example", json.dumps({**noted, "note": "x" * 501}).encode())
+        self.assertEqual(status, "400 Bad Request")
+        record.assert_not_called()
 
 
 class AgendaEditTests(unittest.TestCase):

@@ -1,8 +1,69 @@
-# Signed-in school browser companion
+# Signed-in school browser companion ("Chrome helper")
 
-This Chrome/Edge extension is the supervised Page 2 grade-posting candidate for
-macOS and Windows. Code and synthetic tests do not establish a successful live
-installation or grade write. Test each authorized browser/profile separately.
+This Chrome/Edge extension enters grades in Infinite Campus from the teacher's
+own signed-in school browser. Since 0.3.0 its main job is the Teaching Hub
+v2's IC list (below). The older Page 2 path is documented after it. Code,
+synthetic tests and a mock dry run do not establish a live grade write. Test
+each authorized browser and profile separately.
+
+## Hub v2: enter the IC list (0.3.0, authorized September 28)
+
+1. On the Hub, open an assignment's **Scores are ready to enter in IC** and click
+   **Send to the Chrome helper**. The page sends the list shown there
+   (`hub-ic-list/v1`, [entry.js](entry.js) `validateList`). It covers every
+   roster student of the class with a score, a 0, Excused, "check by hand" (with
+   the reason) or "nothing yet". The background keeps it in
+   `chrome.storage.session` for three hours. That storage is memory only,
+   cleared when the browser closes, and unreadable by web pages and content
+   scripts. Sending the list again for the same assignment replaces it.
+2. In Infinite Campus, open that assignment's score panel. A **Hub helper**
+   button appears at the bottom right while a list is waiting. It uses the same
+   panel readers as Page 2 (`HubIcAdapter.panel`). The panel must be scored out
+   of 10, with one score group and one label code.
+3. The review ([ic-entry.js](ic-entry.js)) picks the list whose lesson shares
+   the most words with the IC title, and the column from the title: `(F)` is
+   Notes and `(S)` is Revision. Both can be changed. It matches IC names
+   ("Last, First") to the list one to one, allowing nicknames and accents. It
+   refuses when under 60% of the IC rows match or when they span sections. It
+   shows every student with IC now, the Hub value, and what it will do.
+4. The teacher's rule is to **keep the higher score**, so the helper fills
+   blanks and raises lower scores, and keeps IC when it is the same or higher.
+   It leaves rows with an IC flag, excused students (to be marked Exempt by
+   hand), "check by hand" rows and names that don't match. Hub students missing
+   from the IC section are listed.
+5. **Enter N scores and Save** stays disabled until the checkbox naming the IC
+   assignment, the column and the Hub lesson is ticked, and it needs a trusted
+   click. `execute` re-reads IC and stops if anything changed since the
+   review. It types each change and compares the typed panel with the plan,
+   then uses native Save, reloads the frame, and compares every row. A score
+   that didn't read back is named. A Save that can't be confirmed is reported
+   as uncertain, and nothing is retried automatically.
+6. The result goes back to the Hub tab as counts only. When every section and
+   column of the list has read back, the Hub adds one "Entered in IC" row with
+   those counts to the "Scores entered" sheet.
+
+There is no cloud lease for this path. Each run starts from a fresh read of IC
+and enters only what is still missing, so repeating after a partial or
+uncertain run cannot lower or duplicate a score. On Monday the Claude extension
+clicks through these steps after the teacher's OK. It never types scores
+itself.
+
+**Acceptance state (September 28).** Unit and messaging tests pass
+([tests/entry.test.cjs](tests/entry.test.cjs),
+[tests/entry-runtime.test.cjs](tests/entry-runtime.test.cjs)). A dry run
+against a mock of the observed score panel filled two blanks, raised one score,
+kept higher scores, left a flagged row, then saved, reloaded and read back. A
+second review then found nothing to enter, and a change in IC after the review
+stopped the run before any typing. Typing into the real IC gradebook,
+including whether IC accepts the input events, is not yet exercised. The
+first supervised live run is the acceptance: check the reloaded scores in IC.
+
+**Install or update.** Package with the exact origins (see "Package and test"),
+then open chrome://extensions, turn on Developer mode, click Load unpacked and
+choose the package folder. After an update, click the extension's reload
+arrow. Content-script changes only apply to IC and Hub tabs opened or
+reloaded after that. The package's only permission is `storage`, for the
+session list.
 
 ## Current acceptance state — September 17, 2026 (evening)
 

@@ -229,6 +229,8 @@
   })();
   return {code:'review_opened'};
  }
- const api={parseReference,sameSource,selectAssignmentReview,inspect,prepare};root.HubIcAdapter=Object.freeze(api);
+ // The score-panel readers, shared with the Hub v2 list entry (ic-entry.js).
+ const panel=Object.freeze({surface,renderedFlags,until,norm});
+ const api={parseReference,sameSource,selectAssignmentReview,inspect,prepare,panel};root.HubIcAdapter=Object.freeze(api);
  if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(globalThis);

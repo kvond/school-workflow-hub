@@ -230,12 +230,13 @@ def record_post(environ, respond, config):
         payload = _json_body(environ, 2000)
         class_key, week, form_id = _form_args(payload)
         kind = str(payload.get("kind", ""))
-        if kind not in ledger.KINDS:
+        note = payload.get("note", "")
+        if kind not in ledger.KINDS or not isinstance(note, str) or len(note) > 500:
             raise ValueError()
         token = google.service_token(config)
         agenda = load_agenda(token, config)
         context, _, _ = _form_context(token, config, agenda, class_key, week, form_id)
-        ledger.record(token, google.service_token(config, write=True), config, kind, context)
+        ledger.record(token, google.service_token(config, write=True), config, kind, context, note)
         return respond("200 OK", {"recorded": 1, "sheet": ledger.read(token, config, form_id)})
     except (ValueError, KeyError, TypeError, AttributeError):
         return respond("400 Bad Request", {"error": "That request wasn't understood."})

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from . import google, work
 
 NAME = "Scores entered"
-HEADER = ["Recorded at", "Kind", "Class", "Week", "Assignment", "Form ID"]
+HEADER = ["Recorded at", "Kind", "Class", "Week", "Assignment", "Form ID", "Note"]
 KINDS = {"ic": "Entered in IC", "feedback": "Feedback made"}
 MAX_ROWS = 20000
 
@@ -80,8 +80,9 @@ def read(token, config, form_id):
     return out
 
 
-def record(token, write_token, config, kind, context):
-    """Add one row noting that this assignment was entered in IC or had feedback made."""
+def record(token, write_token, config, kind, context, note=""):
+    """Add one row noting that this assignment was entered in IC or had feedback
+    made; the note says how (for example what the Chrome helper entered)."""
     if kind not in KINDS:
         raise ValueError("kind")
     sheet = find(token, config)
@@ -93,7 +94,7 @@ def record(token, write_token, config, kind, context):
         raise google.GoogleError("The “%s” sheet has no tab to write to." % NAME)
     rows = [] if google.sheet_values(token, sheet["id"], tab + "!A1:B1") else [HEADER]
     rows.append([eastern_now(), KINDS[kind], context["class"], context["week"], context["assignment"],
-                 context["form_id"]])
+                 context["form_id"], " ".join(str(note or "").split())[:500]])
     try:
         google.append_rows(write_token, sheet["id"], tab + "!A1", rows)
     except google.GoogleError as error:
