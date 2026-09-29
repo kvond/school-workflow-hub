@@ -111,8 +111,13 @@ flags, excused and unsure rows alone. After her tick it types, saves, reloads
 and checks each score. On Monday the Claude extension does the clicks after her
 OK. When every section and column has read back, the Hub adds "Entered in IC"
 with the helper's counts to the Scores entered sheet. A student whose only
-turn-in was another lesson's deck is "check by hand", not a 0. The page itself
-never writes to IC. See [the helper's README](browser-extension/README.md). Each assignment card also shows where it stands for IC:
+turn-in was another lesson's deck is "check by hand", not a 0. For a whole
+class and week at once, Student work's **Copy prompt for Claude extension
+(opens IC for the Chrome helper)** sends every assignment with something to
+enter to the helper and copies a prompt. Pasted into the Claude extension, it
+opens each IC score panel, shows her the helper's plans, and after her OK
+clicks the helper's Enter. It never types scores. The page itself never
+writes to IC. See [the helper's README](browser-extension/README.md). Each assignment card also shows where it stands for IC:
 open (enter every score listed, 0s included; a 0 is replaced when the student
 turns work in), closed and
 waiting for final scores (enter every score, 0s included, then click **I entered

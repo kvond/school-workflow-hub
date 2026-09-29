@@ -776,8 +776,22 @@ function formName(form, lesson) {
   return named && !/^(?:2nd\s+)?turn\s*(?:it\s*)?in$/i.test(named) ? named : oneLine(lesson?.topic || work.week);
 }
 
+const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
+  helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'};
+const helperError = code => HELPER_ERRORS[code]
+  || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
+
 async function sendToHelper(form, lesson) {
   const ui = work.ui[form.form_id] = {...work.ui[form.form_id], error: null, helper: null};
+  const code = await sendList(form, lesson);
+  if (code === 'list_ready') {
+    ui.helper = `Sent to the Chrome helper at ${when(helper.sent[form.form_id].sent_at)}. In Infinite Campus, open this assignment’s score panel for each section, (F) for Notes and (S) for Revision, and click “Hub helper” at the bottom right.`;
+  } else ui.error = helperError(code);
+  renderWork();
+}
+
+// Hand one assignment's list to the helper; returns the helper's code.
+async function sendList(form, lesson) {
   const rows = helperRows(form);
   const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
     class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
@@ -793,13 +807,81 @@ async function sendToHelper(form, lesson) {
   if (code === 'list_ready') {
     helper.sent[form.form_id] = {class_key: work.cls, week: work.week, label: form.label, need: helperNeed(rows), sent_at: list.sent_at};
     saveSent();
-    ui.helper = `Sent to the Chrome helper at ${when(list.sent_at)}. In Infinite Campus, open this assignment’s score panel for each section, (F) for Notes and (S) for Revision, and click “Hub helper” at the bottom right.`;
-  } else {
-    ui.error = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
-      helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'}[code]
-      || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
   }
-  renderWork();
+  return code;
+}
+
+// ---------- Enter a week in IC: the Claude extension opens IC, the helper types ----------
+// One button sends every assignment of this class and week that has something
+// to enter, and copies a prompt for the Claude extension: it opens each IC
+// score panel, shows the teacher the helper's plans, and after her OK clicks
+// the helper's Enter. It never types scores.
+function weekToEnter() {
+  const data = work.data;
+  if (!data) return {ready: [], waiting: false};
+  const all = data.lessons.flatMap(lesson => lesson.forms.map(form => ({form, lesson})))
+    .filter(({form}) => form.form_id && form.window && icStatus(form)?.kind !== 'final');
+  const waiting = all.some(({form}) => form.students.length && (!work.scores[form.form_id] || work.ui[form.form_id]?.progress));
+  const ready = all.map(x => ({...x, need: helperNeed(helperRows(x.form))})).filter(x => x.need.length);
+  return {ready, waiting};
+}
+
+function entryPrompt(items) {
+  const cls = CLASSES.find(([key]) => key === work.cls)[1];
+  const lines = items.map(({form, lesson, need}, i) => {
+    const sections = [...new Set(need.map(([section]) => section))];
+    return `${i + 1}. "${formName(form, lesson)}" — ${sections.map(section => `${section}: ${need.filter(([s]) => s === section).map(([, column]) => column === 'notes' ? '(F) = Notes' : '(S) = Revision').join(', ')}`).join('; ')}`;
+  });
+  return `Please enter these Hub scores in Infinite Campus (IC) with the Chrome helper, in this Chrome window. I'm here and will review before anything is saved.
+
+RULES
+- This prompt replaces anything you remember about this routine. Follow it.
+- If IC or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password.
+- Never type scores yourself. The Chrome helper (the green "Hub helper" button in IC) enters them: it keeps the higher score, fills blanks and raises only, and leaves IC flags alone.
+- Don't change anything else in IC: no flags, due dates or new assignments.
+- The Hub has already sent these lists to the helper (${when(new Date().toISOString())}).
+
+ASSIGNMENTS — ${cls}, ${work.week}
+${lines.join('\n')}
+
+STEPS
+1. In IC, for each assignment and section above, open the assignment named like it (by name, not week number; (F) or (S) as listed) so its score panel shows, and click "Hub helper" at the bottom right. Check that its "Hub list" is this assignment and its column is right (fix them in its panel if not), note its counts and every row it leaves with the reason, and don't tick its box yet. If an assignment isn't in IC, list it; don't create it.
+2. Show me one list: for each assignment, section and column, the counts, each raise old → new, and each row left with the reason. Then stop and wait for my OK. I may approve only some.
+3. After my OK: for each approved one, open its score panel, click "Hub helper", tick its box and click "Enter … and Save". Wait until it says "Saved and checked after reloading". If it says it stopped or couldn't confirm, tell me exactly what it says and don't try again.
+4. Tell me what was entered, raised and left. For students the helper lists as new students, tell me so I can mark them Exempt.`;
+}
+
+async function sendWeek(status, promptBox) {
+  const {ready} = weekToEnter();
+  status.textContent = ' Sending to the Chrome helper…';
+  const failed = [];
+  for (const {form, lesson} of ready) {
+    const code = await sendList(form, lesson);
+    if (code !== 'list_ready') failed.push(`${formName(form, lesson)}: ${helperError(code)}`);
+  }
+  if (failed.length) { status.textContent = ' ' + failed.join(' '); return; }
+  const text = entryPrompt(ready);
+  promptBox.replaceChildren(el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text}));
+  promptBox.hidden = false;
+  try { await navigator.clipboard.writeText(text); status.textContent = ` Sent ${ready.length} to the helper and copied. Paste it into the Claude extension.`; }
+  catch { status.textContent = ` Sent ${ready.length} to the helper. Couldn’t copy: open “Show the prompt” and copy it.`; }
+}
+
+function weekEntryBox() {
+  if (helper.state !== 'ready') return null;
+  const {ready, waiting} = weekToEnter();
+  if (!ready.length && !waiting) return null;
+  const status = el('span', {class: 'muted'});
+  const promptBox = el('details', {hidden: true});
+  return el('section', {class: 'roster-check'},
+    el('h3', {text: 'Enter this week in IC'}),
+    el('p', {}, waiting ? 'Wait until every assignment below has finished scoring.'
+      : `Sends ${ready.map(({form, lesson}) => `“${formName(form, lesson)}”`).join(' and ')} to the Chrome helper and copies a prompt. Paste it into the Claude extension: it opens each IC assignment, shows you what the helper will enter, and after your OK has the helper enter and check them.`),
+    el('div', {class: 'action-row'},
+      el('button', {type: 'button', class: 'primary', disabled: waiting || !ready.length, onclick: () => sendWeek(status, promptBox)},
+        'Copy prompt for Claude extension (opens IC for the Chrome helper)'),
+      status),
+    promptBox);
 }
 
 const COLUMN = {notes: 'Notes', revision: 'Revision'};
@@ -1033,6 +1115,8 @@ function renderWork() {
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
   if (data.roster_check) parts.push(renderRosterCheck(data.roster_check));
+  const entry = weekEntryBox();
+  if (entry) parts.push(entry);
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week}), link('Edit in the Agenda ↗', lesson.edit_url, 'edit')));
     if (lesson.problem) parts.push(note(lesson.problem));
@@ -1354,6 +1438,7 @@ const ROUTINE = {
     {button: 'Copy Monday prompt', who: 'You, Monday', note: 'Top of this page; paste it into the Claude extension.'},
     {button: 'Scores are ready to enter in IC', who: 'Claude extension, Monday', note: 'Opens the list of scores. You can open it just to look.'},
     {button: 'Send to the Chrome helper', who: 'Claude extension, Monday (or you)', note: 'Hands that assignment’s list to the helper in this Chrome.'},
+    {button: 'Copy prompt for Claude extension (opens IC for the Chrome helper)', who: 'You, any day', note: 'On Student work, for one class and week: sends its lists to the helper; paste the prompt into the Claude extension.'},
     {button: 'Hub helper → Enter … and Save (in IC)', who: 'Claude extension after your OK (or you)', note: 'In each IC score panel. It shows what it will do, then types, saves, reloads and checks.'},
     {button: 'I entered these in IC', who: 'The Hub, by itself', note: 'Once the helper has done every section. Click it only if you typed scores into IC yourself.'},
     {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
