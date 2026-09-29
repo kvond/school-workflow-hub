@@ -2,9 +2,9 @@
 
 This Chrome/Edge extension enters grades in Infinite Campus from the teacher's
 own signed-in school browser. Since 0.3.0 its main job is the Teaching Hub
-v2's IC list (below). The older Page 2 path is documented after it. Code,
-synthetic tests and a mock dry run do not establish a live grade write. Test
-each authorized browser and profile separately.
+v2's IC list (below). The older Page 2 path is documented after it. The v2
+list entry has one supervised live entry (September 29, the teacher's Mac).
+Test each authorized browser and profile separately.
 
 ## Hub v2: enter the IC list (0.3.0, authorized September 28)
 
@@ -48,15 +48,22 @@ uncertain run cannot lower or duplicate a score. On Monday the Claude extension
 clicks through these steps after the teacher's OK. It never types scores
 itself.
 
-**Acceptance state (September 28).** Unit and messaging tests pass
+**Acceptance state (September 29).** Unit and messaging tests pass
 ([tests/entry.test.cjs](tests/entry.test.cjs),
-[tests/entry-runtime.test.cjs](tests/entry-runtime.test.cjs)). A dry run
-against a mock of the observed score panel filled two blanks, raised one score,
-kept higher scores, left a flagged row, then saved, reloaded and read back. A
-second review then found nothing to enter, and a change in IC after the review
-stopped the run before any typing. Typing into the real IC gradebook,
-including whether IC accepts the input events, is not yet exercised. The
-first supervised live run is the acceptance: check the reloaded scores in IC.
+[tests/entry-runtime.test.cjs](tests/entry-runtime.test.cjs)). On September 28,
+a dry run against a mock of the observed score panel filled two blanks, raised
+one score, kept higher scores, left a flagged row, then saved, reloaded and
+read back. A second review found nothing to enter, and a change made in IC
+after the review stopped the run before any typing.
+
+On September 29 the teacher ran 0.3.0 in her school Chrome profile on her Mac.
+The Hub list reached the helper, "Hub helper" appeared on the real IC score
+panel, and one score was entered, saved and read back after reload. So IC
+accepts the helper's typing and native Save. That was a single entry.
+Raises, several sections, and "Entered in IC" across a whole assignment have
+not yet been seen live, so check them the first time they happen. Her school
+Windows computer isn't installed; district policy may block unpacked
+extensions, and IT has been asked.
 
 **Install or update.** Package with the exact origins (see "Package and test"),
 then open chrome://extensions, turn on Developer mode, click Load unpacked and

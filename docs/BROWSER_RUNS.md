@@ -94,9 +94,13 @@ does these only after the teacher's OK in chat.
   lease. Each run re-reads IC and enters only what is still missing, so a repeat
   after a partial or uncertain run cannot lower or duplicate a score.
 
-Synthetic tests and a dry run against a mock score panel have passed. Live
-acceptance is still required: the first supervised run in the real Infinite
-Campus, with the teacher checking the reloaded scores.
+Synthetic tests and a dry run against a mock score panel passed on
+September 28. On September 29 the first supervised live run, in the school
+Chrome profile on the teacher's Mac, entered one score in Infinite Campus. The
+score was saved and read back after reload. Wider cases (raises, several
+sections, a whole assignment's "Entered in IC") are still to be seen live.
+The school Windows computer is not installed; district policy may block
+unpacked extensions there.
 
 ## Worker procedure
 

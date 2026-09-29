@@ -69,8 +69,10 @@ rows, excused students, "check by hand" rows and names that don't match one to
 one. It requires a 10-point score panel whose students are mostly on the list,
 all from one section. Then it uses native Save, reloads, and reads every score
 back. The Hub notes "Entered in IC" only after every section and column has read
-back. It is not a schedule, and it grants no other school write. The mock dry
-run is not live acceptance. See `docs/BROWSER_RUNS.md` and
+back. It is not a schedule, and it grants no other school write. It passed
+its first supervised live entry on September 29 in the school Chrome profile
+on the teacher's Mac. The school Windows computer is not installed; district
+policy may block unpacked extensions there. See `docs/BROWSER_RUNS.md` and
 `browser-extension/README.md`.
 
 The Python package holds no model client and makes no model call; the feedback
