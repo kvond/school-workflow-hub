@@ -769,12 +769,19 @@ function helperNeed(rows) {
   return need;
 }
 
+// The assignment's own name: its Form's "📤 Name — Turn in" label, so two lessons
+// in one week (two Forms on one Agenda row) never reach the helper under one name.
+function formName(form, lesson) {
+  const named = oneLine(String(form.label || '').replace(/^📤\s*/u, '').replace(/\s*[—–-]\s*turn\s*in\s*$/i, ''));
+  return named && !/^(?:2nd\s+)?turn\s*in$/i.test(named) ? named : oneLine(lesson?.topic || work.week);
+}
+
 async function sendToHelper(form, lesson) {
   const ui = work.ui[form.form_id] = {...work.ui[form.form_id], error: null, helper: null};
   const rows = helperRows(form);
   const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
     class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
-    assignment: oneLine(lesson?.topic || work.week), form_label: oneLine(form.label),
+    assignment: formName(form, lesson), form_label: oneLine(form.label),
     status: !startedFor(form) ? 'before' : closedFor(form) ? 'closed' : 'open',
     status_text: oneLine(icStatus(form)?.text, 400), sent_at: new Date().toISOString(), rows};
   const request_id = crypto.randomUUID();
@@ -811,8 +818,9 @@ function helperProgress(form) {
   const pairs = sent ? sent.need : done.map(r => [r.section, r.column]);
   return el('ul', {class: 'files'}, pairs.map(([section, column]) => {
     const r = done.find(d => d.section === section && d.column === column);
-    const text = r && (!sent || r.at >= sent.sent_at) ? resultText(r) : 'not entered yet';
-    return el('li', {}, el('strong', {text: `Chrome helper · ${section} ${COLUMN[column]}: `}), text);
+    const current = r && (!sent || r.at >= sent.sent_at);
+    return el('li', {}, el('strong', {text: `Chrome helper · ${section} ${COLUMN[column]}: `}),
+      current ? `${resultText(r)} in IC’s “${r.ic_title}”` : 'not entered yet');
   }));
 }
 function helperNote(sent, done) {
