@@ -1,5 +1,5 @@
 'use strict';
-importScripts('config.js','protocol.js','entry.js');
+importScripts('config.js','protocol.js','entry.js','morning.js');
 const P=globalThis.HubPostingProtocol,C=globalThis.HubPostingConfig,E=globalThis.HubIcEntry;
 // Private, memory-only bindings. Restart requires source/destination recovery.
 const pending=new Map();
@@ -182,3 +182,5 @@ chrome.runtime.onMessage.addListener((message,sender,respond)=>{
 });
 chrome.tabs.onRemoved.addListener(tabId=>{for(const [source,item]of pending)if(source===tabId||item.ic_tab_id===tabId)pending.delete(source);});
 chrome.tabs.onUpdated.addListener((tabId,change)=>{if(change.url){for(const [source,item]of pending)if(source===tabId||(item.ic_tab_id===tabId&&normalizedICURL(change.url)!==item.ic_url))pending.delete(source);}});
+
+importScripts('morning-background.js');

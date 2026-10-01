@@ -2,6 +2,21 @@
 
 Written September 30, 2026 by Claude (Cowork) for the teacher. Read `AGENTS.md` and `browser-extension/README.md` first. This document adds one teacher authorization and describes the build it allows.
 
+## Build status — October 1, 2026
+
+Implemented on `feat/helper-autosave`: the off-by-default popup setting,
+Eastern weekday alarm, exact-route entry, same score planner/executor, source
+rechecks, durable once-per-day and uncertain-save guards, and counts-only
+morning receipts shown in the Hub. See `browser-extension/README.md` for the
+runtime mapping schema, tests and deployment requirements.
+
+Two assumptions in this handoff were not present in the code: v2 has no
+verified Form-to-IC route binding, and roster sync is status-only. Missing
+bindings now hold the assignment; roster changes are explicitly reported as
+unavailable. No mapping was guessed and no roster write was enabled. No live
+extension installation, opt-in, morning grade entry or September 30 ledger
+verification is claimed by this build. The first live morning remains pending.
+
 ## The teacher's authorization (September 30, 2026)
 
 Asked whether the 7:00 a.m. score entry should wait for her approval, the teacher answered in chat: "prepare and run without my approval, I will check at schools and change scores as needed." She then chose to have the Chrome helper do the saving itself, rather than an AI assistant clicking Save.

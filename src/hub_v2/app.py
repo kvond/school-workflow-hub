@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, answers, audit, completion, feedback, google, ledger, routine, tidy, work
+from . import agenda_edit, answers, audit, completion, feedback, google, ledger, morning, routine, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -97,6 +97,13 @@ def api(sub, query, config):
     agenda = load_agenda(token, config, fresh)
     sheet = {"title": agenda.title,
              "url": "https://docs.google.com/spreadsheets/d/%s/edit" % agenda.spreadsheet_id}
+    if sub == "api/morning/catalog":
+        return morning.catalog(agenda)
+    if sub == "api/morning/reports":
+        return {"reports": morning.reports(token, config)}
+    if sub == "api/morning/list":
+        return morning.make_list(token, config, agenda, _class_key(_one(query, "class")),
+                                 _one(query, "week"), _one(query, "form"), lesson_work, _score_rows)
     if sub == "api/day":
         day = date.fromisoformat(_one(query, "date"))
         return {**agenda.day(day), "agenda": sheet}
@@ -397,6 +404,21 @@ def _json_body(environ, limit):
     return payload
 
 
+def morning_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = morning.validate_report(_json_body(environ, 100000))
+        token = google.service_token(config)
+        morning.record(token, google.service_token(config, write=True), config, payload)
+        return respond("200 OK", {"recorded": True})
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return respond("400 Bad Request", {"error": "Invalid morning report."})
+    except google.GoogleError:
+        return respond("502 Bad Gateway", {"error": "Morning summary not confirmed."})
+
+
 def application(environ, start_response, config=None):
     config = os.environ if config is None else config
     method = environ.get("REQUEST_METHOD", "GET")
@@ -409,6 +431,8 @@ def application(environ, start_response, config=None):
                                                    ("Content-Length", str(len(body)))] + list(extra))
         return [b"" if method == "HEAD" else body]
 
+    if method == "POST" and path == "/v2/api/morning/reports":
+        return morning_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/tidy":
         return tidy_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/record":

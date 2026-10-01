@@ -69,8 +69,100 @@ extensions, and IT has been asked.
 then open chrome://extensions, turn on Developer mode, click Load unpacked and
 choose the package folder. After an update, click the extension's reload
 arrow. Content-script changes only apply to IC and Hub tabs opened or
-reloaded after that. The package's only permission is `storage`, for the
-session list.
+reloaded after that. Version 0.4.0 requests `storage` and the new `alarms` permission. Update the
+Hub server and reload the extension and both tabs before using mornings.
+Session storage holds student lists; trusted-context-only local storage holds
+the opt-in, attempt date, uncertainty block and counts-only pending summary.
+No student records or credentials are stored there.
+
+## Opt-in weekday mornings (0.4.0)
+
+The September 30 authorization adds one deterministic unattended path. The
+popup's **Enter automatically on weekday mornings** is off by default. Enable
+it only in the home Mac's school profile after the runtime bindings below have
+been verified. This is a single-profile schedule; do not enable it on a second
+computer. Manual v2 entry keeps its existing confirmation.
+
+`chrome.alarms` checks once a minute against **America/New_York**, including DST.
+It runs once at or after 7 a.m. on weekdays, catches up after sleep before noon,
+and records a skipped attempt at noon or later. Missed weekdays are reported
+on the next wake (the latest ten are retained), with no makeup score entry. Chrome must be running; alarms
+do not wake the Mac. The worker recreates the alarm after a restart. A durable
+attempt stamp is written before any IC operation. Worker interruption consumes
+that day's attempt; it does not resume score entry.
+
+The worker selects exactly one open Hub tab and one open IC tab. It asks the
+Hub for all dated Agenda assignments, skips those with final entry already
+recorded or no scores, and obtains fresh `hub-ic-list/v1` lists. Unreadable
+sources, unscored decks, unsorted files and ambiguous roster rows stay held.
+The run reports roster sync as unavailable before starting scores: the existing
+roster endpoint is status-only, so no students are added, renamed or removed.
+
+The worker navigates the existing IC tab to each explicitly mapped score panel
+and makes it active. It never uses title matching. A bounded readiness check
+stops if the panel cannot be rendered or a login page appears; it never signs
+in. It verifies the resource, section, term, year, school, calendar, structure,
+score group, task marker, label code and 10-point scale against the mapping.
+Fresh source fingerprints and mappings must still agree before each panel.
+The same keep-higher planner and save/reload executor perform entry. Changing
+any IC value after the review stops before typing. A changed flag, an unsaved
+reload or incomplete readback never counts as success.
+
+A write-capable request is durably marked potentially uncertain before sending
+it to IC. A lost reply, interrupted worker or uncertain save blocks **future
+mornings**, not just that day. After checking and resolving the affected IC
+panel, the teacher can tick the recovery acknowledgement in the popup and
+choose **Allow future mornings**. This does not rerun the current day. Turning
+the setting off stops further fills/saves; an in-flight native Save cannot be
+undone. Only the extension popup can change the setting or clear the block;
+web pages cannot start an unattended run. Bounded private heartbeat messages
+keep the worker available while waiting for reads/save; they grant no authority.
+
+**Receipts.** The worker sends an “Entered in IC” note through the existing
+endpoint only after every required section/column has a confirmed result.
+Counts and reason counts are appended as “Morning helper” rows in the existing
+private **Scores entered** sheet and read back. The Hub's Routine page shows
+the latest ten summaries, including holds and failures. No student names or answers
+are in that summary. A signed-out/unreachable Hub leaves a counts-only receipt
+pending locally for later delivery. Receipt delivery may retry; score entry
+never retries automatically. The browser can only report its observations;
+the server does not independently verify an IC write.
+
+**Private binding prerequisite.** The legacy source supports explicit
+`IC_RESOURCE`/score-group/term/task/code references, but v2 currently has no
+verified Form-to-route mapping. The runtime must supply `HUB_IC_ASSIGNMENT_MAP`
+as a JSON array, curated from those verified references and actual IC panel
+URLs. Do not guess or commit live identifiers. Each entry is:
+
+```json
+{
+  "class_key": "biology",
+  "form_id": "FICTIONAL_FORM_1234",
+  "targets": [{
+    "section": "A4 Fictional", "column": "notes",
+    "section_id": "42", "term_id": "5", "year": "2027", "school_id": "7",
+    "calendar_id": "8", "structure_id": "9", "assignment_id": "123",
+    "score_group": "3", "task_id": "1", "label_code": "F",
+    "url": "https://school.example.test/campus/sis/control-center/classroom/curriculum/resource/123/view(secondaryRouteOutlet:multiscore/assignmentEditor/sectionID/42/objectSectionID/123/calendarID/8/structureID/9)?classroomSectionID=42&classroomTermID=5&year=2027&schoolID=7&calendarID=8&structureID=9"
+  }]
+}
+```
+
+Each ready Form requires exactly one target per section and score component
+(`notes` / `revision`) with something to enter. Duplicate, absent or mismatched
+bindings hold that assignment. The IC origin must equal the package's exact
+origin. The existing IAP and same-origin protections apply to the new
+`/v2/api/morning/catalog`, `/list` and `/reports` routes. No new model calls,
+credentials, live connectors or external datastore are introduced.
+
+**Build acceptance (October 1).** Unit/messaging tests and a synthetic mock
+panel cover blanks, raises, higher-score preservation, flags, excused/manual
+holds, sign-out, changed grades, noon/DST, duplicate alarms, worker restart,
+lost responses, opt-out and receipt gating. These are not live grades. The
+first enabled live morning and the teacher's subsequent IC check remain the
+acceptance. The September 30 supervised run has not been independently checked
+against the live ledger by this build, so the September 29 acceptance statement
+above remains unchanged. The 6:30 tidy and 8:00 feedback tasks are out of scope.
 
 ## Current acceptance state — September 17, 2026 (evening)
 
@@ -193,7 +285,8 @@ never repeats a grade fill or native Save.
 
 The source manifest has no host permissions and empty configuration. The
 packager adds only the two explicitly supplied exact HTTPS origins. It requests
-no cookies, debugger, native messaging, persistent storage, or broad tab access.
+no cookies, debugger, native messaging, or broad tab access. The morning path
+uses bounded persistent extension state as described above.
 
 The Hub bridge checks its exact origin and top-level window. Runtime messages
 bind the extension identity, original Hub tab, IC tab, top frame, request UUID,
@@ -204,8 +297,8 @@ fetch arbitrary resources, reserve a run, or request a grade write.
 
 Student records and claim handles stay inside the private extension channel.
 Public Page 2 replies contain only fixed status codes, bounded counts, expiry,
-and effect certainty. There is no second school datastore, local daemon, model
-call, recurring job, or background grading schedule.
+and effect certainty. There is no second student datastore, local daemon or model call. The separately
+opted-in v2 morning schedule does not activate the older Page 2 path.
 
 ## Page 2 protocol
 

@@ -93,9 +93,46 @@
  const ORDER={fill:0,raise:1,leave:2,keep:3,skip:4};
 
  let launcher=null,host=null,working=false;
+
+ // Worker-only unattended path; no window/page message can invoke it.
+ const M=globalThis.HubMorning;
+ function signedOut(){
+  const docs=[document];
+  for(const f of document.querySelectorAll('iframe#main-workspace')){
+   try{if(f.contentWindow.location.origin!==location.origin)return true;if(f.contentDocument)docs.push(f.contentDocument);}catch{return true;}
+  }
+  return docs.some(d=>[...d.querySelectorAll('input[type="password"],form[action*="login"],form[action*="signin"]')].some(e=>e.getClientRects().length));
+ }
+ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
+  if(!M||sender.id!==chrome.runtime.id||sender.tab||!['morning_session','morning_probe','morning_execute'].includes(message?.type))return;
+  if(signedOut()){reply({ok:false,code:'signed_out',not_started:true});return;}
+  if(message.type==='morning_session'){reply({ok:true});return;}
+  if(message.type==='morning_probe'){
+   try{if(document.hidden||working||host)throw Error();read(true);reply({ok:true});}catch{reply({ok:false,code:'panel_unusable'});}return;
+  }
+  if(working||host||document.hidden){reply({ok:false,code:'panel_unusable',not_started:true});return;}
+  working=true;
+  const ping=setInterval(()=>chrome.runtime.sendMessage({type:'morning_authorize',run_id:message.run_id,nonce:message.nonce}).catch(()=>{}),20000);
+  (async()=>{
+   const authorized=async()=>{
+    if(signedOut())throw Error('signed_out');
+    if(document.hidden)throw Error('panel_unusable');
+    const answer=await chrome.runtime.sendMessage({type:'morning_authorize',run_id:message.run_id,nonce:message.nonce});
+    if(!answer?.ok)throw Error('disabled');
+   };
+   await authorized();
+   const target=M.target(message.target,C.IC_ORIGIN);
+   if(location.href!==target.url)throw Error('destination_mapping_changed');
+   const initial=read(true),io=ports({context:initial.snapshot.context});
+   io.authorized=authorized;
+   io.binding=async()=>{const s=surface();return {group:s.group,structure_id:/structureID\/(\d+)/.exec(new URL(s.path).pathname)?.[1],task:[...s.score.querySelectorAll('[aria-label]')].some(e=>e.getAttribute('aria-label')===`progressScore_${target.term_id}_${target.task_id}_${target.section_id}`)};};
+   return M.run(message.list,target,io);
+  })().then(data=>reply({ok:true,data}),error=>reply({ok:false,not_started:true,code:['signed_out','disabled','destination_mapping_changed','students_dont_match','several_sections','ic_not_saved','unsupported_points_scale','unsupported_gradebook','list_expired'].includes(error.message)?error.message:'panel_unusable'})).finally(()=>{clearInterval(ping);working=false;});
+  return true;
+ });
  function hideLauncher(){launcher?.remove();launcher=null;}
  async function tick(){
-  if(host||document.hidden)return;
+  if(host||working||document.hidden)return;
   let lists=[];
   try{lists=(await ask('lists'))?.lists||[];}catch{lists=[];}
   let ready=false;

@@ -157,7 +157,7 @@
    if(!same(typedView.context,plan.context)||!same(typedView.rows.map(rowView),want))return done('stopped','typed_values_differ',true,{counts:{not_saved:plan.changes.length}});
    saving=true;await ports.save();
    const after=validateSnapshot(await ports.reload());
-   if(!same(after.context,plan.context)||!same(after.rows.map(r=>r.label),want.map(r=>r.label)))return done('uncertain','readback_incomplete',false);
+   if(!after.saved||!same(after.context,plan.context)||!same(after.rows.map(r=>[r.label,r.name,r.flags]),want.map(r=>[r.label,r.name,r.flags])))return done('uncertain','readback_incomplete',false);
    const failed=[],unexpected=[];let filled=0,raised=0;
    after.rows.forEach((row,i)=>{
     const goal=want[i],change=plan.changes.find(c=>c.label===row.label);

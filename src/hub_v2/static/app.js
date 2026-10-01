@@ -1625,3 +1625,26 @@ $('missing-sheets').addEventListener('click', missingWorkSheets);
 window.addEventListener('hashchange', showTab);
 showTab();
 sweepResearch();
+
+// The counts-only morning receipt is shared through the existing private ledger,
+// so it can be read from school even when this Mac is no longer reachable.
+async function loadMorningSummary() {
+  const box = $('morning-summary');
+  if (!box) return;
+  try {
+    const data = await getJSON('api/morning/reports');
+    const reports = data.reports || [];
+    box.replaceChildren(el('h2', {text: 'Morning score entry'}));
+    if (!reports.length) { box.append(note('No morning run recorded yet. Enable weekday mornings in the Chrome helper on your home Mac after its assignment mappings are verified.', 'info')); return; }
+    const words = value => String(value).replaceAll('_', ' ');
+    box.append(note('Roster additions and removals still need review; automatic roster sync is not available.', 'info'));
+    reports.forEach((report, i) => {
+      const lines = el('ul', {}, report.items.map(row => el('li', {}, el('strong', {text: row.assignment + ': '}),
+        `${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${row.left} left — ${words(row.code)}. `,
+        Object.entries(row.reasons).filter(([, n]) => n).map(([reason, n]) => `${n} ${words(reason)}`).join('; '))));
+      box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), lines));
+    });
+  } catch { box.replaceChildren(el('h2', {text: 'Morning score entry'}), note('The morning summary could not be read. No successful run is confirmed.')); }
+}
+loadMorningSummary();
+$('reload-routine')?.addEventListener('click', loadMorningSummary);

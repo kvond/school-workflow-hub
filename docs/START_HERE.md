@@ -199,6 +199,15 @@ until the actual normal controls pass. Windows reading/printing and Windows IC
 posting are separate checks; do not block home-Mac delivery on Windows companion
 installation or claim it works without checking.
 
+## Weekday Chrome-helper build
+
+The September 30 handoff's opt-in 7 a.m. path is implemented with synthetic
+acceptance only. See [the handoff](HELPER_AUTOSAVE_HANDOFF.md) and the
+[browser companion README](../browser-extension/README.md). Runtime deployment,
+verified Form/section/component-to-IC bindings, extension update and the first
+live morning remain pending. Roster sync is still status-only. The build does
+not activate a schedule, change grades or verify the reported September 30 run.
+
 ## Budget, ownership and durable continuation
 
 Development stays on the existing paid Claude allowance. Runtime AI calls use

@@ -1,0 +1,108 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const E=require('../entry.js');global.HubIcEntry=E;const M=require('../morning.js'),P=require('../protocol.js');
+const C={HUB_ORIGIN:'https://hub.example.test',IC_ORIGIN:'https://school.example.test'};
+const source=name=>fs.readFileSync(path.join(__dirname,'..',name),'utf8');
+const uuid=()=>crypto.randomUUID();
+function fixture(){
+ const target={section:'A4 Fictional',column:'notes',section_id:'42',term_id:'5',year:'2027',school_id:'7',calendar_id:'8',structure_id:'9',assignment_id:'123',score_group:'3',task_id:'1',label_code:'F',url:C.IC_ORIGIN+'/campus/sis/control-center/classroom/curriculum/resource/123/view(secondaryRouteOutlet:multiscore/assignmentEditor/sectionID/42/objectSectionID/123/calendarID/8/structureID/9)?classroomSectionID=42&classroomTermID=5&year=2027&schoolID=7&calendarID=8&structureID=9'};
+ const list={schema:E.SCHEMA,list_id:uuid(),class_key:'biology',class_name:'Biology',week:'Wk 05',form_id:'FICTIONAL_FORM_1234',assignment:'Matter',form_label:'Matter',status:'open',status_text:'Open',sent_at:new Date().toISOString(),rows:[{last:'Avery',first:'Ann',section:'A4 Fictional',kind:'score',notes:7,revision:null,reason:''}]};
+ return {list,target};
+}
+const settle=()=>new Promise(resolve=>setTimeout(resolve,15));
+function background(options={}){
+ const state=options.stored||{morning_enabled:options.enabled??true},messages=[],listeners={},calls=[];
+ let now=Date.parse('2026-10-01T11:00:00Z');const f=fixture();
+ const tabs={1:{id:1,url:C.HUB_ORIGIN+'/v2/',status:'complete'},2:{id:2,url:C.IC_ORIGIN+'/campus/',status:'complete'}};
+ const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
+ const invoke=(m,sender={id:'extension',url:runtime.getURL('popup.html')})=>new Promise(resolve=>{if(listeners.message(m,sender,resolve)!==true)resolve(undefined);});
+ const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:new Map(),chrome:{runtime,
+ storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>Object.assign(state,structuredClone(data)),setAccessLevel:async v=>{state.access=v.accessLevel;}}},
+ alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
+ tabs:{query:async({url})=>Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1))),get:async id=>tabs[id],update:async(id,v)=>{Object.assign(tabs[id],v);calls.push('navigate');return tabs[id];},sendMessage:async(id,m)=>{
+  messages.push(m);
+  if(m.type==='morning_session'||m.type==='morning_probe')return options.signedOut?{ok:false,code:'signed_out'}:{ok:true};
+  if(m.type==='morning_hub'){
+   calls.push(m.action);
+   if(m.action==='catalog')return {ok:true,data:{assignments:[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
+   if(m.action==='list')return {ok:true,data:{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:[f.target]}};
+   if(m.action==='report'&&options.disableDuringReport){state.morning_enabled=false;options.disableDuringReport=false;}
+   return {ok:true,data:{recorded:true}};
+  }
+  if(m.type==='morning_execute'){
+   calls.push('execute');
+   assert.equal(state.morning_state.blocked,true);assert.equal(state.morning_state.day,'2026-10-01');
+   const authorization=await invoke({type:'morning_authorize',run_id:m.run_id,nonce:m.nonce},{id:'extension',frameId:0,tab:{id:2},url:f.target.url});
+   assert.equal(authorization.ok,true);
+   if(options.lostResponse)throw Error('lost');
+   return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'entered',certain:true,counts:{filled:1,raised:0,kept:0,left:0,not_saved:0},at:new Date().toISOString()},code:'read_back',reasons:{flag:0,excused:0,check:0,name:0,missing:0}}};
+  }
+ }}}};
+ vm.runInNewContext(source('morning-background.js'),context);
+ return {state,calls,messages,invoke,tabs,advance:t=>{now=Date.parse(t);},alarm:async()=>{await settle();listeners.alarm({name:'hub-weekday-morning'});await settle();},listeners};
+}
+test('morning opt-in is off by default and only the popup can change it',async()=>{
+ const h=background({enabled:false});await h.alarm();assert.ok(!h.calls.includes('catalog'));
+ await h.invoke({type:'morning_setting',enabled:true},{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});
+ assert.equal(h.state.morning_enabled,false);
+ await h.invoke({type:'morning_setting',enabled:true});await h.alarm();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.equal(h.state.access,'TRUSTED_CONTEXTS');assert.equal(h.state.alarm.config.periodInMinutes,1);
+});
+test('morning complete path saves report, exact-route entry, then records once and never repeats that day',async()=>{
+ const h=background();await h.alarm();await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.ok(h.calls.indexOf('record')>h.calls.indexOf('execute'));
+ assert.equal(h.state.morning_state.report.code,'finished');assert.equal(h.state.morning_state.blocked,false);
+ assert.ok(!JSON.stringify(h.state).includes('Avery'));
+});
+test('lost Save response stays blocked across restart and the next weekday, without automatic retry',async()=>{
+ const first=background({lostResponse:true});await first.alarm();assert.equal(first.state.morning_state.blocked,true);assert.ok(!first.calls.includes('record'));
+ const next=background({stored:first.state});next.advance('2026-10-02T11:00:00Z');await next.alarm();
+ assert.equal(next.state.morning_state.report.code,'uncertain_blocked');assert.ok(!next.calls.includes('execute'));
+});
+test('signed-out session, missing mappings and wake at noon never type',async()=>{
+ for(const options of [{signedOut:true},{noMapping:true}]){
+  const h=background(options);await h.alarm();assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+ }
+ const h=background();h.advance('2026-10-01T16:00:00Z');await h.alarm();assert.equal(h.state.morning_state.report.code,'missed_noon');assert.ok(!h.calls.includes('execute'));
+});
+test('turning off the setting during a receipt stays off and stops the run',async()=>{
+ const h=background({disableDuringReport:true});await h.alarm();assert.equal(h.state.morning_enabled,false);assert.ok(!h.calls.includes('execute'));
+});
+test('worker restart marks an in-progress receipt interrupted without repeating IC',async()=>{
+ const h=background({stored:{morning_enabled:true,morning_state:{day:'2026-10-01',blocked:true,inflight:true,report:{day:'2026-10-01',run_id:uuid(),code:'running',roster:'unavailable',items:[]}}}});
+ await h.alarm();assert.equal(h.state.morning_state.report.code,'interrupted');assert.ok(!h.calls.includes('execute'));
+});
+test('IC content script stops at a visible sign-in page; web pages cannot send it a run',async()=>{
+ let listener;const window={};window.top=window;
+ const context={HubIcEntry:E,HubMorning:M,HubPostingConfig:C,HubPostingProtocol:P,HubIcAdapter:{panel:{norm:v=>v,surface:()=>{throw Error('must not read');}}},window,location:{origin:C.IC_ORIGIN,href:C.IC_ORIGIN+'/campus/'},
+ document:{hidden:false,querySelectorAll:selector=>selector.includes('password')?[{getClientRects:()=>[1]}]:[]},setInterval(){},chrome:{runtime:{id:'extension',sendMessage:async()=>({lists:[]}),onMessage:{addListener:fn=>listener=fn}}}};
+ vm.runInNewContext(source('ic-entry.js'),context);
+ let reply;listener({type:'morning_execute'},{id:'extension'},r=>reply=r);assert.equal(reply.code,'signed_out');
+ reply=null;listener({type:'morning_execute'},{id:'extension',tab:{id:1}},r=>reply=r);assert.equal(reply,null);
+});
+
+test('Hub bridge only accepts private worker messages and cannot fetch arbitrary URLs',async()=>{
+ const calls=[];let listener;const window={};window.top=window;
+ const context={HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,
+ chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:fn=>listener=fn}}},
+ fetch:async(url,options)=>{calls.push({url,options});return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({assignments:[]})};}};
+ vm.runInNewContext(source('morning-hub.js'),context);
+ const invoke=(message,sender={id:'extension'})=>new Promise(resolve=>{if(listener(message,sender,resolve)!==true)resolve(undefined);});
+ assert.equal(await invoke({type:'morning_hub',action:'catalog'},{id:'extension',tab:{id:1}}),undefined);
+ assert.equal(calls.length,0);
+ assert.equal((await invoke({type:'morning_hub',action:'https://evil.test'})).ok,false);
+ assert.equal(calls.length,0);
+ assert.equal((await invoke({type:'morning_hub',action:'catalog'})).ok,true);
+ assert.equal(calls[0].url,'/v2/api/morning/catalog?fresh=1');
+ assert.equal(calls[0].options.credentials,'same-origin');assert.equal(calls[0].options.redirect,'error');
+});
+
+test('Hub bridge refuses an Entered in IC receipt until every mapped panel read back',async()=>{
+ let listener;const calls=[];const window={};window.top=window;const f=fixture();
+ vm.runInNewContext(source('morning-hub.js'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:fn=>listener=fn}}},fetch:async url=>{calls.push(url);return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({recorded:1})};}});
+ const scope={class:'biology',week:'Wk 05',form:f.list.form_id};
+ const invoke=payload=>new Promise(resolve=>listener({type:'morning_hub',action:'record',payload},{id:'extension'},resolve));
+ assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[]})).ok,false);assert.equal(calls.length,0);
+ const result={list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'entered',certain:true,counts:{filled:1,raised:0,kept:0,left:0,not_saved:0},at:new Date(Date.now()+1000).toISOString()};
+ assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[{...result,certain:false}]})).ok,false);assert.equal(calls.length,0);
+ assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[result]})).ok,true);assert.deepEqual(calls,['/v2/api/record']);
+});

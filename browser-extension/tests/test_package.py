@@ -21,10 +21,10 @@ class PackageTest(unittest.TestCase):
             manifest = json.loads((one / "manifest.json").read_text())
             self.assertEqual(manifest["host_permissions"], ["https://hub.example.test/*", "https://school.example.test/*"])
             # Session storage only: the Hub's lists, in memory until the browser closes.
-            self.assertEqual(manifest["permissions"], ["storage"])
+            self.assertEqual(manifest["permissions"], ["storage", "alarms"])
             scripts = {entry["matches"][0]: entry["js"] for entry in manifest["content_scripts"]}
             self.assertEqual(scripts["https://hub.example.test/*"][-1], "hub-entry.js")
-            self.assertEqual(scripts["https://school.example.test/*"][-2:], ["entry.js", "ic-entry.js"])
+            self.assertEqual(scripts["https://school.example.test/*"][-3:], ["entry.js", "morning.js", "ic-entry.js"])
             self.assertNotIn("externally_connectable", manifest)
             self.assertNotIn("web_accessible_resources", manifest)
             with ZipFile(first) as zipped:
