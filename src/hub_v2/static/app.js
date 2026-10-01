@@ -1512,7 +1512,7 @@ function renderRoutine(data) {
     el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
       el('tbody', {}, ROUTINE.scoring.map((step, i) => el('tr', {}, el('td', {class: 'routine-when', text: `${i + 1}. ${step.when}`}),
         el('td', {text: step.what})))))),
-    el('p', {class: 'muted', text: 'Nothing is scored overnight or in the background. To see scores sooner, open that class and week on Student work: it scores them right then.'}));
+    el('p', {class: 'muted', text: 'To see scores before 7:00 a.m., open that class and week on Student work: it scores them right then.'}));
   const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
     el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
       el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
