@@ -54,3 +54,15 @@ The teacher's decision, October 1, in her words: "there should be no missing or 
 ## H. No Missing or Late flags in IC
 
 The teacher doesn't use IC's Missing or Late flags. Nothing in these runs may set either flag. The Chrome helper already leaves flagged rows alone. If it finds a Missing or Late flag, it should report it in the morning summary ("flag found, not used by this teacher"), so the teacher can clear it by hand and the score can go in the next morning. Clearing flags is not authorized for any program.
+
+## I. Lesson opener from the class growth summaries
+
+The teacher added this on October 1, after trying it by hand: "have the growth summaries evaluated for what students are tending to miss and suggest info/questions I can bring up at the start of the next lesson."
+
+After the 8:00 feedback run writes a class growth summary, read it together with the previous class growth summaries for the same class. Then write one more private Doc, in the same private course folder: "Lesson opener — <class> — <next lesson> — <date>". Use no parentheses in the name. Keep it to one page:
+
+1. **What students are tending to miss.** Two or three patterns. Base them only on the summaries' level counts, recurring ideas and "Check these yourself" lines, with counts and denominators ("6 of 10 …"). Never invent a trend.
+2. **Bring this up first.** For each pattern: one short piece of information or a contrast to show, and one or two questions to open the next lesson with. Tie them to the next lesson's topic in the Agenda when it fits. Label them as suggestions, not a plan.
+3. **No student names or quotes** in this Doc, so the teacher can project it or read from it.
+
+Add a row for it to the feedback checklist with Status "Opener", so it appears in Ready to print.
