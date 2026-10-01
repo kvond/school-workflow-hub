@@ -1,8 +1,9 @@
 """The research sheet: every Biology student's answer to every coded box,
 kept for the teacher to copy and code later.
 
-It is a Google Sheet named exactly "Student answers — Biology" at the top of
-the turn-in root (00 REAL ALL TURN IN), which the teacher makes once, blank;
+It is a Google Sheet named "Student answers — Biology", selected by the
+explicit HUB_BIOLOGY_ANSWERS_SPREADSHEET_ID when configured, or by exact title
+at the top of the turn-in root as a legacy fallback;
 the dashboard's account can edit files there but can't own new ones. When
 an assignment's two weeks have closed, its on-time answers are final, and
 opening it on the dashboard adds one row per student per coded box to the
@@ -32,21 +33,35 @@ _sweeping = threading.Lock()
 
 
 def _plain_name(name):
-    return " ".join(re.sub(r"[-–—]+", "-", str(name or "")).lower().split())
+    return " ".join(re.sub(r"[_\-–—]+", "-", str(name or "")).lower().split())
 
 
 def setup_note(class_key):
-    return ("To keep %s answers for research, make a blank Google Sheet named “%s” at the top of "
-            "00 REAL ALL TURN IN." % (class_key.capitalize(), SHEETS[class_key]))
+    return ("To keep %s answers for research, configure HUB_%s_ANSWERS_SPREADSHEET_ID with the ID of "
+            "the school-owned Google Sheet named “%s”." %
+            (class_key.capitalize(), class_key.upper(), SHEETS[class_key]))
 
 
 def find(token, config, class_key):
-    """The class's research sheet, or None. Only the exact name counts, so a
-    copy made for coding ("Copy of …", "… coded") is never written to."""
+    """The class's research sheet, or None.
+
+    An explicit ID is preferred and is verified against the expected title and
+    spreadsheet MIME type before any read/write. The exact-title root search is
+    retained for installations that have not configured a dedicated ID.
+    """
+    explicit_id = str(config.get("HUB_%s_ANSWERS_SPREADSHEET_ID" % class_key.upper(), "") or "").strip()
+    wanted = _plain_name(SHEETS[class_key])
+    if explicit_id:
+        sheet = google.drive_file(token, explicit_id)
+        if sheet.get("id") != explicit_id or sheet.get("mimeType") != google.SHEET \
+                or _plain_name(sheet.get("name")) != wanted or sheet.get("trashed"):
+            raise google.GoogleError(
+                "The configured %s research file must be an untrashed Google Sheet named “%s”." %
+                (class_key.capitalize(), SHEETS[class_key]))
+        return sheet
     root = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "") or "")
     if not root:
         return None
-    wanted = _plain_name(SHEETS[class_key])
     found = [f for f in google.files_named_in(token, "Student answers", google.SHEET, root, prefix=True)
              if _plain_name(f.get("name")) == wanted]
     found.sort(key=lambda f: f.get("createdTime", ""))

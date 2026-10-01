@@ -170,6 +170,18 @@ all-caught-up claims from incomplete coverage. Repair future routing while
 keeping recovered work and ZIP feedback usable; directory tidiness is not the
 delivery milestone.
 
+## Biology research answers archive
+
+The Biology answer writer prefers the explicitly configured
+`HUB_BIOLOGY_ANSWERS_SPREADSHEET_ID`. It verifies that the ID resolves to an
+untrashed Google Sheet with the expected “Student answers — Biology” title
+(dash, underscore and spacing variants are accepted). If unset, it retains the
+legacy exact-title search at the configured submissions root. Give the Hub
+service identity Editor access to the school-owned Sheet. The code change alone
+does not switch the hosted Hub: its Cloud Run configuration must set the new ID
+and a deployed revision must be verified before claiming the new archive is in
+use. Keep the archive in an approved restricted school Drive location.
+
 ## Screen scope and acceptance
 
 Page 02 contains the three selectors, one Student work table, and the actions
