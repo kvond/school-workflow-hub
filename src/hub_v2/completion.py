@@ -639,11 +639,15 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if upload.get("mime") not in (SLIDES, google.PPTX):
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []
-    for deck_id in lesson_decks(agenda, class_key, week_label, form_id):
+    linked_ids = lesson_decks(agenda, class_key, week_label, form_id)
+    linked_failures = []
+    for deck_id in linked_ids:
         try:
             templates.append((deck_id,) + _template(token, deck_id))
-        except (google.GoogleError, Unreadable):
-            continue
+        except (google.GoogleError, Unreadable) as error:
+            # Keep only an allowlisted reason, never a provider response or URL.
+            status = getattr(error, "status", None)
+            linked_failures.append("access" if status in (401, 403, 404) else "read")
     try:
         meta = google.drive_file(token, file_id)
         out["file_updated"] = meta.get("modifiedTime", "")
@@ -677,8 +681,20 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         best = pick_template(deck, [t[2] for t in templates])
     chosen = next((t for t in templates if t[2] is best), None)
     if chosen is None:
-        return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
-                                  "(Student copy or Teacher deck), so its boxes can't be checked."}
+        if linked_failures:
+            reason = ("The Hub's account can't access at least one linked deck."
+                      if "access" in linked_failures else
+                      "The Hub couldn't read at least one linked deck. Try Reload again.")
+            problem = "The Agenda has a deck link. " + reason
+            code = "linked_deck_unreadable"
+        elif linked_ids:
+            problem = "The Agenda's linked deck was read, but its lesson codes don't match this copy."
+            code = "linked_deck_mismatch"
+        else:
+            problem = "The Hub found no Slides deck link in this Form's Agenda row."
+            code = "deck_link_not_found"
+        return {**out, "problem_code": code,
+                "problem": problem + " Score this student's work by hand until the Hub can match the handed-out deck."}
     result = {**assess(deck, chosen[2]), "template": chosen[1].get("name", "")}
     _remember(_results, (file_id, meta.get("modifiedTime", "")),
               {"template": (chosen[0], chosen[1].get("modifiedTime", "")), "result": result}, MAX_CACHED_RESULTS)

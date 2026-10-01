@@ -1373,6 +1373,38 @@ class ScoreFileTests(unittest.TestCase):
         self.assertEqual(result["notes_score"], 2.0)  # 10 x 1 / (3 NOTES + 2 BANK)
         self.assertEqual(sorted(c.args[1] for c in read.call_args_list), ["FICTIONALDECK1234567890", "STUDENTDECK123"])
 
+    def test_linked_deck_failures_are_not_reported_as_missing_links(self):
+        for error in (google.GoogleError("private provider text", 403),
+                      google.GoogleError("private provider text", 404),
+                      google.GoogleError("private provider text", 429),
+                      completion.Unreadable("private provider text")):
+            with self.subTest(error=type(error).__name__, status=getattr(error, "status", None)):
+                completion._results.clear()
+                with patch.object(completion, "_template", side_effect=error), \
+                        patch.object(google, "drive_file", return_value={"name": "Deck", "modifiedTime": "t"}), \
+                        patch.object(completion, "_read", return_value=completion.read_deck(handout())):
+                    result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                                   "STUDENTDECK123", self.work_result())
+                self.assertEqual(result["problem_code"], "linked_deck_unreadable")
+                self.assertIn("The Agenda has a deck link", result["problem"])
+                self.assertIn("by hand", result["problem"])
+                self.assertNotIn("private provider text", result["problem"])
+                self.assertNotIn("notes_score", result)
+                self.assertNotIn("revision_score", result)
+
+    def test_missing_link_and_mismatched_link_are_distinct_holds(self):
+        for linked, expected in (([], "deck_link_not_found"),
+                                 (["FICTIONALDECK1234567890"], "linked_deck_mismatch")):
+            completion._results.clear()
+            with patch.object(completion, "lesson_decks", return_value=linked), \
+                    patch.object(completion, "_template", return_value=({}, {"slides": []})), \
+                    patch.object(google, "drive_file", return_value={"name": "Deck", "modifiedTime": "t"}), \
+                    patch.object(completion, "_read", return_value=completion.read_deck(handout())):
+                result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                               "STUDENTDECK123", self.work_result())
+            self.assertEqual(result["problem_code"], expected)
+            self.assertNotIn("notes_score", result)
+
     def test_only_files_on_the_page_can_be_scored_and_late_work_never_is(self):
         with self.assertRaises(ValueError):
             self.run_score(file_id="SOMEOTHERFILE99")
