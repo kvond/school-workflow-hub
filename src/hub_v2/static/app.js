@@ -873,8 +873,8 @@ function weekEntryBox() {
   if (!ready.length && !waiting) return null;
   const status = el('span', {class: 'muted'});
   const promptBox = el('details', {hidden: true});
-  return el('section', {class: 'roster-check'},
-    el('h3', {text: 'Enter this week in IC'}),
+  return el('details', {class: 'roster-check manual'},
+    el('summary', {text: 'If manual is needed: enter this week in IC now'}),
     el('p', {}, waiting ? 'Wait until every assignment below has finished scoring.'
       : `Sends ${ready.map(({form, lesson}) => `“${formName(form, lesson)}”`).join(' and ')} to the Chrome helper and copies a prompt. Paste it into the Claude extension: it opens each IC assignment, shows you what the helper will enter, and after your OK has the helper enter and check them.`),
     el('div', {class: 'action-row'},
@@ -1046,14 +1046,18 @@ function renderForm(form, lesson) {
   const scores = work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress;
-  box.append(el('div', {class: 'action-row'},
-    scoredAll ? el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
-      ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC') : null,
-    scoredAll ? el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
-      ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback (use Teacher Claude)') : null,
-    scoredAll && SCAN_CLASSES.includes(work.cls) ? el('button', {type: 'button', onclick: () => openPanel(form, 'answers')},
-      ui.open === 'answers' ? 'Hide answers' : 'Answers by question') : null,
-    ui.progress ? el('span', {class: 'muted', text: ui.progress}) : null));
+  box.append(...[
+    ui.progress ? el('p', {class: 'muted', text: ui.progress}) : null,
+    scoredAll ? el('details', {class: 'manual', open: Boolean(ui.open)},
+      el('summary', {text: 'If manual is needed'}),
+      el('div', {class: 'action-row'},
+        el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
+          ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC'),
+        el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
+          ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback'),
+        SCAN_CLASSES.includes(work.cls) ? el('button', {type: 'button', onclick: () => openPanel(form, 'answers')},
+          ui.open === 'answers' ? 'Hide answers' : 'Answers by question') : null)) : null,
+  ].filter(Boolean));
   if (scores) {
     box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
   }
@@ -1409,15 +1413,25 @@ const ROUTINE = {
      what: 'Saves finished Biology answers to “Student answers — Biology”.',
      needs: 'The Hub opened once that day.'},
   ],
+  // Start-up: what to open each weekday morning, in order.
+  startup: [
+    'Mac on, plugged in, and set not to sleep before 7:00.',
+    'Chrome → the SCHOOL profile (katherine.vonduyke@redclay.k12.de.us). Not your home profile.',
+    'Tab 1: the Teaching Hub, signed in.',
+    'Tab 2: Infinite Campus (through ClassLink), signed in. Any IC page is fine.',
+    'Click the IC tab last, so it is the tab in front, and leave that Chrome window on top. Don’t minimize it.',
+    'Open the ChatGPT app on a school account (AIHS or the teacher account).',
+    'Leave everything open. Don’t close Chrome or log out of IC before 8:00.',
+  ],
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
-    {when: 'Weekdays, before school', you: 'Open the school Chrome: the Hub and IC, both signed in, IC in front. Open ChatGPT on the school account.',
+    {when: 'Weekdays, before school', you: 'Do the start-up list above.',
      done: 'The 6:30, 7:00 and 8:00 runs have what they need.'},
     {when: 'At school, when a new lesson starts', you: 'Open the feedback checklist’s Ready to print tab. Skim each Doc, print, hand out, then tick Printed and Handed to student.',
      done: 'Each student gets two pages of feedback, and the checklist shows who has it.'},
     {when: 'At school', you: 'Keep the Agenda up to date.',
      done: 'The Hub finds each lesson’s deck and Turn-in Form.'},
-    {when: 'When this page lists something held', you: 'Read the reason and fix it, or ask Claude.',
+    {when: 'When “Done for you” shows something held', you: 'Read the reason. Most need a fix, not grading. If unsure, ask Claude.',
      done: 'Nothing is skipped without you knowing.'},
     {when: 'August', you: 'Make a new blank “Student answers — Biology”, have Codex point the Hub to it, update rosters.',
      done: 'The new year starts clean.'},
@@ -1431,22 +1445,24 @@ const ROUTINE = {
     {when: 'After you move or add a lesson', you: 'Click Check links (below). Schoology needs nothing: students find lessons by folder name.',
      done: 'Students’ links open the right Form and deck.'},
   ],
-  // Every button on the Hub and who clicks it.
-  buttons: [
-    {button: 'Copy Monday prompt', who: 'You, Monday', note: 'Top of this page; paste it into the Claude extension.'},
-    {button: 'Scores are ready to enter in IC', who: 'Claude extension, Monday', note: 'Opens the list of scores. You can open it just to look.'},
-    {button: 'Send to the Chrome helper', who: 'Claude extension, Monday (or you)', note: 'Hands that assignment’s list to the helper in this Chrome.'},
-    {button: 'Copy prompt for Claude extension (opens IC for the Chrome helper)', who: 'You, any day', note: 'On Student work, for one class and week: sends its lists to the helper; paste the prompt into the Claude extension.'},
-    {button: 'Hub helper → Enter … and Save (in IC)', who: 'Claude extension after your OK (or you)', note: 'In each IC score panel. It shows what it will do, then types, saves, reloads and checks.'},
-    {button: 'I entered these in IC', who: 'The Hub, by itself', note: 'Once the helper has done every section. Click it only if you typed scores into IC yourself.'},
-    {button: 'Start feedback → Copy prompt for Teacher Claude', who: 'You, Thursday', note: 'Then paste it into Teacher Claude.'},
-    {button: 'Mark feedback done', who: 'You, Thursday', note: 'Right after the feedback Doc is made.'},
-    {button: 'Tidy this week’s folders → Move and rename', who: 'You, Friday', note: 'Once per class. Puts files in the week’s folder and each student’s name and lesson at the front of their file names.'},
-    {button: 'Edit here → Save to Agenda', who: 'You, lesson planning', note: 'On Lesson plans, to plan a week.'},
-    {button: 'Copy embed-coding prompt', who: 'You, lesson planning', note: 'Right after you update a deck; paste it into Claude with the deck.'},
-    {button: 'Move · Check links', who: 'You, when a lesson moves', note: 'Move is under Edit here; Check links is on this page.'},
-    {button: 'Answers by question · Missing-work sheets', who: 'You, if you want', note: 'For reading answers and printing reminder sheets.'},
-    {button: 'Reload · ← → · Today', who: 'You, if you want', note: 'Refresh the page or change the week.'},
+  // Only when an automatic run didn't do its job. Where to go, what to click.
+  manual: [
+    {need: 'Enter scores now, without waiting for 7:00',
+     steps: 'Hub tab → Student work → pick class and week → under the assignment, open “If manual is needed” → “Scores are ready to enter in IC” → “Send to the Chrome helper”. Then IC tab, in front → that class → Curriculum → click the assignment’s TITLE (not the “Scored” number) → Score → green “Hub helper” at the bottom right → tick its box → Enter and Save. Do the (F) Notes assignment and the Revision assignment, in each section.'},
+    {need: 'Let Claude do the score entry instead',
+     steps: 'Copy the Monday prompt below → Chrome, IC tab in front → Claude extension side panel → paste → review its list → reply OK.'},
+    {need: 'You typed scores into IC yourself',
+     steps: 'Hub tab → Student work → class and week → “I entered these in IC”. Skip this if the helper did it; the Hub notes it by itself.'},
+    {need: 'IC said a save was not confirmed',
+     steps: 'Check that assignment in IC. Then Chrome toolbar → puzzle-piece icon → School Workflow Hub → tick the recovery box → “Allow future mornings”.'},
+    {need: 'Turn the 7:00 run on or off',
+     steps: 'Chrome toolbar → puzzle-piece icon → School Workflow Hub → “Enter automatically on weekday mornings”.'},
+    {need: 'Feedback by hand',
+     steps: 'Hub tab → Student work → class and week → under the assignment, open “If manual is needed” → Start feedback → Copy prompt → paste into ChatGPT (school account). Then “Mark feedback done”.'},
+    {need: 'Files are in the wrong folder',
+     steps: 'Hub tab → Student work → class and week → top “If manual is needed” → “Tidy this week’s folders” → Move and rename. Once per class.'},
+    {need: 'Reminder sheets or reading answers',
+     steps: 'Hub tab → Student work → open “If manual is needed”: “Missing-work sheets” at the top, “Answers by question” under each assignment.'},
   ],
 };
 
@@ -1477,25 +1493,34 @@ function routineStatus(key, data) {
 
 function renderRoutine(data) {
   const body = $('routine-body');
-  // The Monday run comes first: the teacher copies its prompt here each week.
-  const copied = el('span', {class: 'muted'});
-  const monday = el('section', {class: 'routine'}, el('h2', {text: 'Monday: grades and roster'}),
-    el('p', {text: 'In Chrome, signed in to Infinite Campus and the Hub: copy the prompt, paste it into the Claude extension’s side panel, review its list and reply OK. The extension checks rosters and clicks through; the Chrome helper does the score entry and checks it. Any Claude account signed in to the extension works; the Claude app isn’t needed.'}),
-    helperLine(),
-    el('div', {class: 'action-row'},
-      el('button', {type: 'button', class: 'primary', onclick: () => copyText(mondayPrompt(), copied)}, 'Copy Monday prompt (Claude extension)'),
-      copied),
-    el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: mondayPrompt()})),
-    data ? routineStatus('monday_run', data) : null);
-  // Folded by default so the teacher's own tasks come first.
-  const scheduled = el('details', {class: 'routine routine-scheduled', open: store.get('routine-scheduled-open') === '1',
-    ontoggle: e => store.set('routine-scheduled-open', e.target.open ? '1' : '0')},
-    el('summary', {}, el('h2', {text: 'Done for you'})),
+  const startup = el('section', {class: 'routine'}, el('h2', {text: 'Every weekday morning: open these'}),
+    el('ol', {}, ROUTINE.startup.map(s => el('li', {text: s}))),
+    helperLine());
+  const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
+        el('td', {text: t.you}), el('td', {text: t.done})))))));
+  const scheduled = el('section', {class: 'routine routine-scheduled'}, el('h2', {text: 'Done for you'}),
     ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
       el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
       el('p', {text: t.what}),
       el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
       t.key ? routineStatus(t.key, data) : null)));
+  const copied = el('span', {class: 'muted'});
+  const manual = el('details', {class: 'routine', open: store.get('routine-manual-open') === '1',
+    ontoggle: e => store.set('routine-manual-open', e.target.open ? '1' : '0')},
+    el('summary', {}, el('h2', {text: 'If manual is needed'})),
+    el('p', {class: 'muted', text: 'Only when a morning run didn’t do its job. Everything here is in the school Chrome profile.'}),
+    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
+      el('thead', {}, el('tr', {}, ['When you need to', 'Where and what to click'].map(h => el('th', {text: h})))),
+      el('tbody', {}, ROUTINE.manual.map(m => el('tr', {}, el('td', {class: 'routine-when', text: m.need}),
+        el('td', {text: m.steps})))))),
+    el('div', {class: 'action-row'},
+      el('button', {type: 'button', onclick: () => copyText(mondayPrompt(), copied)}, 'Copy Monday prompt (Claude extension)'),
+      copied),
+    el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: mondayPrompt()})),
+    data ? routineStatus('monday_run', data) : null);
   const embed = data?.embed_prompt;
   const embedCopied = el('span', {class: 'muted'});
   const planning = el('section', {class: 'routine'}, el('h2', {text: 'Lesson planning (before Friday, or Sunday night)'}),
@@ -1508,30 +1533,15 @@ function renderRoutine(data) {
       link('Edit it in the Agenda ↗', embed.url), embedCopied) : null,
     embed?.problem ? note(embed.problem, 'info') : null,
     embed?.text ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: embed.text})) : null);
-  const scoring = el('section', {class: 'routine'}, el('h2', {text: 'When completion scores happen'}),
-    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
-      el('tbody', {}, ROUTINE.scoring.map((step, i) => el('tr', {}, el('td', {class: 'routine-when', text: `${i + 1}. ${step.when}`}),
-        el('td', {text: step.what})))))),
-    el('p', {class: 'muted', text: 'To see scores before 7:00 a.m., open that class and week on Student work: it scores them right then.'}));
-  const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
-    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
-      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
-        el('td', {text: t.you}), el('td', {text: t.done})))))));
-  const buttons = el('section', {class: 'routine'}, el('h2', {text: 'Who clicks which button'}),
-    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
-      el('thead', {}, el('tr', {}, ['Button', 'Who', ''].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.buttons.map(b => el('tr', {}, el('td', {class: 'routine-when', text: b.button}),
-        el('td', {text: b.who}), el('td', {class: 'muted', text: b.note})))))));
   const sheet = data?.scores_entered;
   const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
     el('ul', {class: 'files'},
       el('li', {}, sheet && !sheet.problem
         ? [link(`“${sheet.name}” ↗`, sheet.url), ` — a row for each IC entry and feedback round${sheet.last ? ` (last: ${sheet.last})` : ''}.`]
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
-      el('li', {}, 'Feedback and growth Docs: in each week’s 📥 folder.'),
-      el('li', {}, 'Monday run Docs and Prompt 3 summaries: at the top of 00 REAL ALL TURN IN.')));
-  body.replaceChildren(monday, planning, scoring, mine, buttons, scheduled, sheets);
+      el('li', {}, 'Feedback, growth records, class summaries and the feedback checklist: in My Drive → Student Feedback — Private 2026–27 (only you can open it).'),
+      el('li', {}, '“Student answers — Biology”: in the same private folder.')));
+  body.replaceChildren(startup, mine, scheduled, manual, planning, sheets);
 }
 
 // ---------- Link check ----------
