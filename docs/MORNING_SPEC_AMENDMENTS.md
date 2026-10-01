@@ -42,3 +42,15 @@ The spec's title includes the roster, but no step adds students, and the Hub's r
 - **Once:** this file.
 - **Each school morning:** the checklist's Ready to print tab. Before printing, she skims each feedback Doc. Copying flags and "Check these yourself" lines in the class summary come first. She ticks Printed and Handed to student herself.
 - **When something is held:** the Routine page lists it with its reason, for example an ambiguous match, a missing deck or a sharing problem.
+
+## G. Missing and late work get the commitment feedback, without asking first
+
+The teacher's decision, October 1, in her words: "there should be no missing or late - in both cases students will get feedback that asks them to sign a contract."
+
+- Prompt 2's section "IF I ASK FOR FEEDBACK FOR A STUDENT WITH NO WORK FOR THIS LESSON" now applies automatically. It applies to every student on the roster who turned in nothing for the latest closed lesson. It also applies to students whose only file arrived after the two-week window, which is late work and isn't graded. Drop the "only after I confirm" condition. Use that section's exact wording and its "My commitment for next time" contract.
+- Put these students on the checklist like anyone else, with Status "Commitment — missing" or "Commitment — late", so they are printed and handed out with the rest.
+- Don't invent levels, quotes or growth for them, and don't add growth record rows.
+
+## H. No Missing or Late flags in IC
+
+The teacher doesn't use IC's Missing or Late flags. Nothing in these runs may set either flag. The Chrome helper already leaves flagged rows alone. If it finds a Missing or Late flag, it should report it in the morning summary ("flag found, not used by this teacher"), so the teacher can clear it by hand and the score can go in the next morning. Clearing flags is not authorized for any program.
