@@ -947,6 +947,8 @@ window.addEventListener('message', event => {
   if (data.type === 'status') {
     helper.state = data.code === 'helper_ready' ? 'ready' : data.code;
     helper.version = data.helper_version || '';
+    helper.morning = data.morning || null;
+    renderMorningAlert();
     (data.results || []).forEach(noteResult);
     Object.keys(helper.sent).forEach(maybeRecord);  // finished while this page was closed
   } else if (data.type === 'entered' && data.result) {
@@ -1636,6 +1638,30 @@ window.addEventListener('hashchange', showTab);
 showTab();
 sweepResearch();
 
+let morningReports = [], morningRecovery = [];
+function renderMorningAlert() {
+  const box = $('morning-alert');
+  if (!box) return;
+  const live = helper.morning, latest = morningReports[0];
+  const uncertain = new Set(['readback_incomplete', 'save_unconfirmed', 'readback_mismatch', 'uncertain_blocked']);
+  const affected = latest?.code === 'uncertain_blocked' ? morningReports.find(r => r.items.some(i => uncertain.has(i.code))) || latest : latest;
+  const verified = affected && morningRecovery.find(r => r.type === 'verified' && r.run_id === affected.run_id);
+  const held = affected?.items.filter(i => uncertain.has(i.code)).map(i => i.assignment) || [];
+  box.replaceChildren(); box.hidden = false;
+  if (live?.blocked || (!live && latest && !verified && (held.length || uncertain.has(latest.code)))) {
+    const names = live?.assignments?.length ? live.assignments : held;
+    box.append(note(`Automatic score entry is blocked${names.length ? ': ' + names.join('; ') : ''}. Check IC, then use “Mark verified” in the helper popup. No further automatic entry will run until the block is cleared.`));
+    if (live?.session === 'signed_out') box.append(note('Infinite Campus is also signed out. Sign in to IC in this school Chrome profile.'));
+  } else if (live?.session === 'signed_out' || (!live && latest?.code === 'signed_out' && !verified)) {
+    box.append(note('Infinite Campus is signed out. Sign in to IC in this school Chrome profile before the morning run.'));
+  } else if (live && live.session !== 'ready') {
+    box.append(note('Infinite Campus connection is unavailable. Keep one signed-in IC tab open in this school Chrome profile.', 'info'));
+  } else if ((live?.verified && (live.verified.run_id === live.run_id || latest?.code === 'uncertain_blocked')) || verified) {
+    const v = live?.verified || verified;
+    box.append(note(`Manually verified by ${v.by} at ${new Date(v.at).toLocaleString()}. ${live?.enabled === false ? 'Automatic mornings are off.' : 'The readback block is cleared.'}`, 'info'));
+  } else box.hidden = true;
+}
+
 // The counts-only morning receipt is shared through the existing private ledger,
 // so it can be read from school even when this Mac is no longer reachable.
 async function loadMorningSummary() {
@@ -1644,6 +1670,7 @@ async function loadMorningSummary() {
   try {
     const data = await getJSON('api/morning/reports');
     const reports = data.reports || [];
+    morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
     box.replaceChildren(el('h2', {text: 'Morning score entry'}));
     if (!reports.length) { box.append(note('No morning run recorded yet. Enable weekday mornings in the Chrome helper on your home Mac after its assignment mappings are verified.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
@@ -1652,7 +1679,10 @@ async function loadMorningSummary() {
       const lines = el('ul', {}, report.items.map(row => el('li', {}, el('strong', {text: row.assignment + ': '}),
         `${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${row.left} left — ${words(row.code)}. `,
         Object.entries(row.reasons).filter(([, n]) => n).map(([reason, n]) => `${n} ${words(reason)}`).join('; '))));
-      box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), lines));
+      const details = morningRecovery.filter(r => r.run_id === report.run_id).map(r =>
+        r.type === 'verified' ? el('p', {text: `Manually verified by ${r.by} at ${new Date(r.at).toLocaleString()}: ${r.note}`})
+          : el('p', {text: `${r.assignment} · ${r.section} · ${words(r.column)} — students requiring readback: ${r.names.length ? r.names.join('; ') : 'details unavailable; check the full panel'}.`}));
+      box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), lines, ...details));
     });
   } catch { box.replaceChildren(el('h2', {text: 'Morning score entry'}), note('The morning summary could not be read. No successful run is confirmed.')); }
 }

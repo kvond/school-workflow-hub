@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, answers, audit, completion, feedback, google, ledger, morning, routine, tidy, work
+from . import agenda_edit, answers, audit, completion, feedback, google, ledger, morning, recovery, routine, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -100,7 +100,7 @@ def api(sub, query, config):
     if sub == "api/morning/catalog":
         return morning.catalog(agenda)
     if sub == "api/morning/reports":
-        return {"reports": morning.reports(token, config)}
+        return {"reports": morning.reports(token, config), "recovery": recovery.records(token, config)}
     if sub == "api/morning/list":
         return morning.make_list(token, config, agenda, _class_key(_one(query, "class")),
                                  _one(query, "week"), _one(query, "form"), lesson_work, _score_rows)
@@ -419,6 +419,22 @@ def morning_post(environ, respond, config):
         return respond("502 Bad Gateway", {"error": "Morning summary not confirmed."})
 
 
+def recovery_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = recovery.validate(_json_body(environ, 100000))
+        actor = google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        token = google.service_token(config)
+        saved = recovery.record(token, google.service_token(config, write=True), config, payload, actor)
+        return respond('200 OK', {'recorded': True, 'record': saved})
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return respond('400 Bad Request', {'error': 'Invalid recovery record.'})
+    except google.GoogleError:
+        return respond('502 Bad Gateway', {'error': 'Recovery record not confirmed; the block remains.'})
+
+
 def application(environ, start_response, config=None):
     config = os.environ if config is None else config
     method = environ.get("REQUEST_METHOD", "GET")
@@ -431,6 +447,8 @@ def application(environ, start_response, config=None):
                                                    ("Content-Length", str(len(body)))] + list(extra))
         return [b"" if method == "HEAD" else body]
 
+    if method == "POST" and path == "/v2/api/morning/recovery":
+        return recovery_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/morning/reports":
         return morning_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/tidy":

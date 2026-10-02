@@ -23,6 +23,7 @@
   (async()=>{
    const p=message.payload;
    if(message.action==='catalog')return call('morning/catalog?fresh=1');
+   if(message.action==='recovery')return call('morning/recovery',p);
    if(message.action==='report')return call('morning/reports',p);
    if(message.action==='list'&&scope(p))return call('morning/list?'+new URLSearchParams(p));
    if(message.action==='record'&&scope(p?.scope)){

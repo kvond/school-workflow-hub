@@ -66,7 +66,7 @@
   },save:async()=>{await ports.authorized();verify(plan,binding,await ports.binding());return ports.save();},fill:async change=>{await ports.authorized();return ports.fill(change);}};
   await ports.authorized();
   const result=await E.execute(plan,checked);
-  return {result:E.hubResult(plan,result,plan.context.title),code:result.code,reasons:reasons(plan)};
+  return {result:E.hubResult(plan,result,plan.context.title),code:result.code,reasons:reasons(plan),diagnostics:[...new Set([...result.failed,...result.unexpected])]};
  }
  const api={clock,due,missed,need,target,targets,verify,reasons,run};root.HubMorning=Object.freeze(api);
  if(typeof module!=='undefined'&&module.exports)module.exports=api;

@@ -1,5 +1,5 @@
 /* At most one morning attempt per Eastern weekday. Persistent state is opt-in,
- * dates and counts only; student lists remain in memory/session storage.
+ * dates, counts and verification attribution; student lists remain in memory/session storage.
  * Reserve each destination before contacting IC. A restart never repeats it. */
 (() => {
  'use strict';
@@ -74,6 +74,7 @@
    const due=manual?{day:M.clock().day,skip:false}:M.due(s);if(!due)return;
    if(s.report_pending&&s.report)s.outbox.push(s.report);
    if(s.outbox.length>10)s.outbox=s.outbox.slice(-10);
+   if(s.blocked&&!s.blocked_run_id){s.blocked_run_id=s.report?.run_id;s.blocked_assignments=s.report?.items?.filter(i=>['readback_incomplete','save_unconfirmed','readback_mismatch'].includes(i.code)).map(i=>i.assignment)||[];}
    s.day=due.day;
    s.report={day:due.day,run_id:crypto.randomUUID(),code:due.skip?'missed_noon':s.blocked?'uncertain_blocked':'running',roster:'unavailable',items:[]};
    s.report_pending=true;s.execution_started=false;
@@ -117,7 +118,7 @@
       await usable(destination,binding.url);
       active={run_id:s.report.run_id,nonce:crypto.randomUUID(),tab:destination,url:binding.url};
       // Mark potentially uncertain BEFORE sending a write-capable request.
-      s.blocked=true;s.inflight=true;s.execution_started=true;await write(s);
+      s.blocked=true;s.blocked_run_id=s.report.run_id;s.blocked_assignments=[summary.assignment];s.inflight=true;s.execution_started=true;await write(s);
       let response;
       try{response=await deadline(chrome.tabs.sendMessage(destination,{type:'morning_execute',run_id:active.run_id,nonce:active.nonce,list,target:binding},{frameId:0}),120000);}catch{response=null;}
       active=null;s.inflight=false;
@@ -125,6 +126,10 @@
       const result=E.validateResult(response.data.result);
       if(result.list_id!==list.list_id||result.form_id!==list.form_id||result.section!==binding.section||result.column!==binding.column)throw Error('panel_unusable');
       summary.code=response.data.code;
+      if(['readback_incomplete','readback_mismatch','save_unconfirmed'].includes(summary.code)){
+       // Student names are sent only to the private ledger, never local storage.
+       try{await hub(source,'recovery',{event_id:crypto.randomUUID(),run_id:s.report.run_id,type:'readback',assignment:summary.assignment,section:binding.section,column:binding.column,code:summary.code,names:response.data.diagnostics||[]});}catch{/* The uncertainty block stays in place even if diagnostics cannot be saved. */}
+      }
       for(const k of ['filled','raised','kept','left'])summary[k]+=result.counts[k];
       for(const k of Object.keys(summary.reasons))summary.reasons[k]+=response.data.reasons[k]||0;
       results.push(result);
@@ -150,11 +155,33 @@
   locked(async()=>{
    const s=await read();
    if(m.type==='morning_setting'&&typeof m.enabled==='boolean'){const enabling=m.enabled&&!s.enabled;s.enabled=m.enabled;await chrome.storage.local.set({morning_enabled:m.enabled,...(enabling?{morning_enabled_day:M.clock().day}:{})});await ensureAlarm();}
-   if(m.type==='morning_clear'&&m.confirmed===true&&!busy){s.blocked=false;await write(s);}
+   let recovery_error='';
+   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&s.blocked&&s.report){
+    const note=typeof m.note==='string'?m.note.trim():'';
+    if(!note||note.length>500)recovery_error='Add a short verification note.';
+    else try{
+     const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
+     if(hubs.length!==1)throw Error();
+     const run_id=s.blocked_run_id||s.report.run_id,event_id=crypto.randomUUID();
+     const saved=await hub(hubs[0].id,'recovery',{event_id,run_id,type:'verified',note});
+     if(!saved?.recorded||saved.record?.run_id!==run_id||saved.record?.event_id!==event_id||saved.record?.type!=='verified'||!saved.record?.by||!Number.isFinite(Date.parse(saved.record?.at)))throw Error();
+     const fresh=await read();
+     if(busy||fresh.report?.run_id!==s.report.run_id)throw Error();
+     Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by}});
+     await write(s);
+    }catch{recovery_error='Verification could not be saved. The block remains. Keep one signed-in Hub tab open and try again.';}
+   }
    if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,can_retry:!busy&&retryable(s)};
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
+ globalThis.HubMorningStatus=async()=>{
+  const s=await read(),tabs=await chrome.tabs.query({url:C.IC_ORIGIN+'/*'});
+  let session='unavailable';
+  if(tabs.length===1){const reply=await chrome.tabs.sendMessage(tabs[0].id,{type:'morning_session'},{frameId:0}).catch(()=>null);session=reply?.ok?'ready':reply?.code==='signed_out'?'signed_out':'unavailable';}
+  return {enabled:s.enabled,blocked:s.blocked,busy,code:s.report?.code||'',run_id:(s.blocked?s.blocked_run_id:null)||s.report?.run_id||'',session,verified:s.verified||null,
+   assignments:s.blocked_assignments||s.report?.items?.filter(i=>['readback_incomplete','save_unconfirmed','readback_mismatch'].includes(i.code)).map(i=>i.assignment)||[]};
+ };
  async function ensureAlarm(){
   if(!(await chrome.alarms.get(ALARM)))await chrome.alarms.create(ALARM,{periodInMinutes:1});
  }

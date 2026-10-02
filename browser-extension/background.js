@@ -121,7 +121,7 @@ async function entryLoad(){
 const entrySave=lists=>chrome.storage.session.set({ic_lists:lists});
 async function entryHub(message,sender){
  if(!E||!configured())return {ok:false,code:'helper_not_configured'};
- if(message.op==='status')return entryLocked(async()=>({ok:true,code:'helper_ready',helper_version:chrome.runtime.getManifest().version,results:(await entryLoad()).flatMap(item=>item.done)}));
+ if(message.op==='status')return entryLocked(async()=>({ok:true,code:'helper_ready',helper_version:chrome.runtime.getManifest().version,morning:await globalThis.HubMorningStatus?.()||null,results:(await entryLoad()).flatMap(item=>item.done)}));
  if(message.op!=='send')return {ok:false,code:'invalid_request'};
  let list;
  try{list=E.validateList(message.list);}catch(error){return {ok:false,code:error.message==='list_expired'?'list_expired':'invalid_list'};}

@@ -25,6 +25,7 @@ function background(options={}){
    calls.push(m.action);
    if(m.action==='catalog')return {ok:true,data:{assignments:[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
    if(m.action==='list')return {ok:true,data:{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:[f.target]}};
+   if(m.action==='recovery'){if(options.recoveryFail)throw Error('unavailable');return {ok:true,data:{recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}}};}
    if(m.action==='report'&&options.disableDuringReport){state.morning_enabled=false;options.disableDuringReport=false;}
    return {ok:true,data:{recorded:true}};
   }
@@ -34,6 +35,7 @@ function background(options={}){
    const authorization=await invoke({type:'morning_authorize',run_id:m.run_id,nonce:m.nonce},{id:'extension',frameId:0,tab:{id:2},url:f.target.url});
    assert.equal(authorization.ok,true);
    if(options.lostResponse)throw Error('lost');
+   if(options.readbackFailure)return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'uncertain',certain:false,counts:{filled:0,raised:0,kept:0,left:0,not_saved:0},at:new Date().toISOString()},code:'readback_incomplete',diagnostics:['Avery, Ann'],reasons:{missing:1}}};
    return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'entered',certain:true,counts:{filled:1,raised:0,kept:0,left:0,not_saved:0},at:new Date().toISOString()},code:'read_back',reasons:{flag:0,excused:0,check:0,name:0,missing:0}}};
   }
  }}}};
@@ -165,4 +167,38 @@ test('legacy preflight failure can retry only when no write-capable request was 
   const h=background({stored:{morning_enabled:true,morning_state:{day:report.day,report,...extra}}});await settle();
   assert.equal((await h.invoke({type:'morning_status'})).can_retry,allowed);
  }
+});
+
+function blockedState(){return {morning_enabled:true,morning_state:{day:'2026-10-01',blocked:true,inflight:false,execution_started:true,report:{day:'2026-10-01',run_id:uuid(),code:'panel_unusable',roster:'unavailable',items:[{assignment:'Matter',code:'readback_incomplete',filled:0,raised:0,kept:0,left:0,reasons:{missing:1}}]}}};}
+test('manual recovery is popup-only and requires a note and matching read-back audit',async()=>{
+ for(const options of [{recoveryFail:true},{wrongReceipt:true}]){
+  const h=background({...options,stored:blockedState()});await settle();
+  await h.invoke({type:'morning_clear',confirmed:true,note:'Checked and reconciled in IC.'});
+  assert.equal(h.state.morning_state.blocked,true);assert.ok(!h.calls.includes('execute'));
+ }
+ const h=background({stored:blockedState()});await settle();
+ await h.invoke({type:'morning_clear',confirmed:true,note:'Checked.'},{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});
+ await h.invoke({type:'morning_clear',confirmed:true});
+ assert.ok(!h.calls.includes('recovery'));assert.equal(h.state.morning_state.blocked,true);
+ const response=await h.invoke({type:'morning_clear',confirmed:true,note:'Checked and reconciled in IC.'});
+ assert.equal(response.blocked,false);assert.equal(response.verified.by,'teacher@example.test');
+ assert.equal(response.can_retry,false);assert.ok(!JSON.stringify(h.state).includes('Checked and reconciled'));
+ await h.alarm();await h.invoke({type:'morning_retry'});await settle();assert.ok(!h.calls.includes('execute'));
+});
+test('a later blocked day retains the original uncertain assignment and audit run',async()=>{
+ const stored=blockedState(),original=stored.morning_state.report.run_id;
+ const h=background({stored});h.advance('2026-10-02T11:00:00Z');await h.alarm();
+ assert.equal(h.state.morning_state.report.code,'uncertain_blocked');
+ assert.equal(h.state.morning_state.blocked_run_id,original);
+ assert.deepEqual(h.state.morning_state.blocked_assignments,['Matter']);
+ const response=await h.invoke({type:'morning_clear',confirmed:true,note:'Checked in IC.'});
+ assert.equal(response.blocked,false);assert.equal(response.verified.run_id,original);
+ assert.ok(!h.calls.includes('execute'));
+});
+test('readback names go to the private recovery endpoint, never persistent local state',async()=>{
+ const h=background({readbackFailure:true});await h.alarm();
+ assert.equal(h.state.morning_state.blocked,true);
+ const diagnostic=h.messages.find(m=>m.action==='recovery');
+ assert.deepEqual(Array.from(diagnostic.payload.names),['Avery, Ann']);
+ assert.ok(!JSON.stringify(h.state).includes('Avery'));assert.ok(!h.calls.includes('record'));
 });
