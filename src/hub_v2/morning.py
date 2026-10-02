@@ -158,8 +158,9 @@ def reports(token, config):
             value = validate_report(json.loads(row[6]))
         except (ValueError, TypeError, KeyError, AttributeError):
             continue
+        latest.pop(value["run_id"], None)
         latest[value["run_id"]] = value
-    return sorted(latest.values(), key=lambda r: r["day"], reverse=True)[:10]
+    return sorted(reversed(list(latest.values())), key=lambda r: r["day"], reverse=True)[:10]
 
 
 def record(token, write_token, config, report):

@@ -112,7 +112,10 @@ A write-capable request is durably marked potentially uncertain before sending
 it to IC. A lost reply, interrupted worker or uncertain save blocks **future
 mornings**, not just that day. After checking and resolving the affected IC
 panel, the teacher can tick the recovery acknowledgement in the popup and
-choose **Allow future mornings**. This does not rerun the current day. Turning
+add a verification note and choose **Mark verified — allow future mornings**
+(0.5.0). The authenticated teacher identity, server timestamp and note are
+appended to the private ledger and read back before the lock is released.
+If that fails, the block remains. This does not rerun the current day. Turning
 the setting off stops further fills/saves; an in-flight native Save cannot be
 undone. Only the extension popup can change the setting or clear the block;
 web pages cannot start an unattended run. Bounded private heartbeat messages
@@ -123,7 +126,11 @@ endpoint only after every required section/column has a confirmed result.
 Counts and reason counts are appended as “Morning helper” rows in the existing
 private **Scores entered** sheet and read back. The Hub's Routine page shows
 the latest ten summaries, including holds and failures. No student names or answers
-are in that summary. A signed-out/unreachable Hub leaves a counts-only receipt
+are in that counts-only summary. Since 0.5.0, readback failures additionally
+record the affected names in separate private ledger rows, never in persistent
+extension storage. The Hub shows those details with the run, and displays a
+locked-assignment or signed-out IC notice at the top. Earlier runs cannot
+retroactively supply missing names. A signed-out/unreachable Hub leaves a counts-only receipt
 pending locally for later delivery. Receipt delivery may retry; score entry
 never retries automatically. The browser can only report its observations;
 the server does not independently verify an IC write.

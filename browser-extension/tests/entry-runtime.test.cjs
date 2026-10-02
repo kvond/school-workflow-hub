@@ -19,7 +19,7 @@ function harness(){
  const page={};
  const window={addEventListener:(type,fn)=>{page.listener=fn;},postMessage:(value,origin)=>state.posted.push({value,origin})};window.top=window;
  const runtime={...runtimeBase,onMessage:{addListener:fn=>listeners[40]=fn},sendMessage:message=>invoke(listeners.background,message,sender(40))};
- vm.runInNewContext(script('hub-entry.js'),{HubPostingProtocol:P,HubPostingConfig:C,HubIcEntry:E,chrome:{runtime},window,location:{origin:C.HUB_ORIGIN},console});
+ vm.runInNewContext(script('hub-entry.js'),{HubPostingProtocol:P,HubPostingConfig:C,HubIcEntry:E,chrome:{runtime},window,location:{origin:C.HUB_ORIGIN},console,setInterval(){}});
  const fromPage=data=>page.listener({source:window,origin:C.HUB_ORIGIN,data:{channel:E.CHANNEL,version:E.VERSION,request_id:crypto.randomUUID(),...data}});
  const plain=value=>JSON.parse(JSON.stringify(value??null));
  const fromIC=async(message,id=50)=>plain(await invoke(listeners.background,{type:'entry_ic',...message},sender(id)));

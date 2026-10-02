@@ -13,7 +13,7 @@
   let reply;
   try{reply=await chrome.runtime.sendMessage({type:'entry_hub',op:'status'});}catch{reply=null;}
   const id=request_id?{request_id}:{};
-  if(reply?.ok)post({type:'status',...id,code:'helper_ready',helper_version:version(reply.helper_version),results:safeResults(reply.results)});
+  if(reply?.ok)post({type:'status',...id,code:'helper_ready',helper_version:version(reply.helper_version),results:safeResults(reply.results),morning:reply.morning||null});
   else post({type:'status',...id,code:reply?.code==='helper_not_configured'?'helper_not_configured':'helper_unavailable'});
  }
  window.addEventListener('message',async event=>{
@@ -32,4 +32,5 @@
  });
  // Say hello, so the page learns the helper is here even if it asked before this loaded.
  status(null);
+ setInterval(()=>status(null),15000);
 })();

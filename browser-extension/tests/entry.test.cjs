@@ -121,3 +121,17 @@ test('the Hub gets counts only, never names',()=>{
  assert.ok(!JSON.stringify(result).includes('Avery'));
  assert.throws(()=>E.validateResult({...result,names:['Avery']}),/invalid_result/);
 });
+
+test('readback follows stable row labels when IC reorders students',async()=>{
+ const p=plan(base(),icRows());
+ const result=await E.execute(p,ports(p,{afterReload:rows=>rows.reverse()}).ports);
+ assert.equal(result.outcome,'entered');assert.equal(result.certain,true);
+ assert.deepEqual(result.counts,{filled:2,raised:1,kept:1,left:0,not_saved:0});
+});
+test('incomplete readback identifies missing rows; failed Save identifies attempted rows',async()=>{
+ const p=plan(base(),icRows());
+ const missing=await E.execute(p,ports(p,{afterReload:rows=>rows.filter(r=>r.name!=='Brook, Ben')}).ports);
+ assert.equal(missing.code,'readback_incomplete');assert.deepEqual(missing.failed,['Brook, Ben']);
+ const save=await E.execute(p,ports(p,{saveFails:true}).ports);
+ assert.equal(save.code,'save_unconfirmed');assert.deepEqual(save.failed,p.changes.map(c=>c.name));
+});

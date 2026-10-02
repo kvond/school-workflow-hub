@@ -157,10 +157,12 @@
    if(!same(typedView.context,plan.context)||!same(typedView.rows.map(rowView),want))return done('stopped','typed_values_differ',true,{counts:{not_saved:plan.changes.length}});
    saving=true;await ports.save();
    const after=validateSnapshot(await ports.reload());
-   if(!after.saved||!same(after.context,plan.context)||!same(after.rows.map(r=>[r.label,r.name,r.flags]),want.map(r=>[r.label,r.name,r.flags])))return done('uncertain','readback_incomplete',false);
+   const afterByLabel=new Map(after.rows.map(r=>[r.label,r]));
+   const unread=want.filter(r=>{const got=afterByLabel.get(r.label);return !got||got.name!==r.name||!same(got.flags,r.flags);}).map(r=>r.name);
+   if(!after.saved||!same(after.context,plan.context)||unread.length||after.rows.length!==want.length)return done('uncertain','readback_incomplete',false,{failed:unread.length?unread:plan.changes.map(r=>r.name)});
    const failed=[],unexpected=[];let filled=0,raised=0;
    after.rows.forEach((row,i)=>{
-    const goal=want[i],change=plan.changes.find(c=>c.label===row.label);
+    const goal=want.find(r=>r.label===row.label),change=plan.changes.find(c=>c.label===row.label);
     if(change){if(sameScore(row.score,goal.score)&&row.other===null){if(change.action==='fill')filled++;else raised++;}else failed.push(row.name);}
     else if(!sameScore(row.score,goal.score)||row.other!==goal.other)unexpected.push(row.name);
    });
@@ -169,7 +171,7 @@
   }catch(error){
    // Before Save, anything typed is unsaved; after it, IC may hold some of it.
    if(!saving)return done('stopped',typed?'typing_stopped':'ic_unreadable',true,{counts:{not_saved:plan.changes.length}});
-   return done('uncertain','save_unconfirmed',false);
+   return done('uncertain','save_unconfirmed',false,{failed:plan.changes.map(r=>r.name)});
   }
  }
 
