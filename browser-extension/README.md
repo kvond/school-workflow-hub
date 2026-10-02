@@ -420,3 +420,7 @@ never log provider responses, raw records, credentials, or student identities.
 
 Official references: [Chrome content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
 and [Edge local extension testing](https://learn.microsoft.com/en-us/microsoft-edge/extensions/getting-started/extension-sideloading).
+
+### Retry before any assignment starts (0.4.1)
+
+The popup offers **Retry interrupted morning** only for today's stopped attempt before any assignment was processed, while morning entry is enabled and it is 7 a.m.–noon Eastern on a weekday. The previous report must be delivered, with no outstanding report, in-flight action, pending grade review or uncertainty block. The explicit popup action starts a new attributed report and repeats all source, mapping and destination checks. Automatic attempts remain once per day. Partially processed or uncertain runs cannot use this retry.

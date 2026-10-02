@@ -106,3 +106,33 @@ test('Hub bridge refuses an Entered in IC receipt until every mapped panel read 
  assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[{...result,certain:false}]})).ok,false);assert.equal(calls.length,0);
  assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[result]})).ok,true);assert.deepEqual(calls,['/v2/api/record']);
 });
+
+test('explicit popup retry restarts only a same-day interrupted attempt with no assignments',async()=>{
+ const prior={day:'2026-10-01',run_id:uuid(),code:'interrupted',roster:'unavailable',items:[]};
+ const h=background({stored:{morning_enabled:true,morning_state:{day:prior.day,blocked:false,report_pending:false,report:prior}}});
+ await h.alarm();assert.ok(!h.calls.includes('execute'));
+ assert.equal((await h.invoke({type:'morning_status'})).can_retry,true);
+ await h.invoke({type:'morning_retry'},{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});
+ assert.ok(!h.calls.includes('execute'));
+ await Promise.all([h.invoke({type:'morning_retry'}),h.invoke({type:'morning_retry'})]);await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.notEqual(h.state.morning_state.report.run_id,prior.run_id);
+ assert.equal(h.state.morning_state.report.code,'finished');
+ await h.invoke({type:'morning_retry'});await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+
+test('retry refuses uncertain, partially processed, undelivered, disabled or out-of-window attempts',async()=>{
+ const report={day:'2026-10-01',run_id:uuid(),code:'interrupted',roster:'unavailable',items:[]};
+ for(const changes of [{blocked:true},{inflight:true},{report_pending:true},{outbox:[report]},
+  {report:{...report,items:[{code:'running'}]}},{report:{...report,code:'finished'}},{day:'2026-09-30'}]){
+  const h=background({stored:{morning_enabled:true,morning_state:{day:report.day,report,...changes}}});
+  await settle();assert.equal((await h.invoke({type:'morning_status'})).can_retry,false);
+  await h.invoke({type:'morning_retry'});await settle();assert.ok(!h.calls.includes('execute'));
+ }
+ for(const [enabled,at]of [[false,'2026-10-01T11:00:00Z'],[true,'2026-10-01T16:00:00Z'],[true,'2026-10-01T10:00:00Z']]){
+  const h=background({stored:{morning_enabled:enabled,morning_state:{day:report.day,report}}});h.advance(at);
+  await settle();assert.equal((await h.invoke({type:'morning_status'})).can_retry,false);
+  await h.invoke({type:'morning_retry'});await settle();assert.ok(!h.calls.includes('execute'));
+ }
+});
