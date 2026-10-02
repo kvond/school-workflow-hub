@@ -36,8 +36,7 @@
   const end=Date.now()+30000;
   while(Date.now()<end){
    const current=await chrome.tabs.get(tab);
-   if(current.status==='complete'){
-    if(current.url!==url)throw Error('signed_out');
+   if(current.status==='complete'&&current.url===url){
     try{const r=await chrome.tabs.sendMessage(tab,{type:'morning_probe'},{frameId:0});if(r?.ok)return;if(r?.code==='signed_out')throw Error('signed_out');}catch(e){if(e.message==='signed_out')throw e;}
    }
    await new Promise(r=>setTimeout(r,250));
@@ -46,9 +45,13 @@
  }
  function retryable(s){
   const t=M.clock();
+  // Before 0.4.2, inflight was created before the first write-capable request
+  // and never deleted. Its absence proves a legacy run never sent one.
+  const neverExecuted=s.execution_started===false||(!Object.hasOwn(s,'execution_started')&&!Object.hasOwn(s,'inflight'));
+  const untouched=Array.isArray(s.report?.items)&&s.report.items.every(i=>['signed_out','panel_unusable','mapping_required','coverage_incomplete'].includes(i.code)&&['filled','raised','kept','left'].every(k=>i[k]===0));
   return s.enabled&&t.weekday&&t.minutes>=420&&t.minutes<720&&s.day===t.day
-   &&s.report?.day===t.day&&['interrupted','hub_unavailable','receipt_unconfirmed','signed_out','ic_unavailable'].includes(s.report.code)
-   &&Array.isArray(s.report.items)&&s.report.items.length===0&&!s.blocked&&!s.inflight
+   &&s.report?.day===t.day&&['interrupted','hub_unavailable','receipt_unconfirmed','signed_out','ic_unavailable','panel_unusable'].includes(s.report.code)
+   &&Array.isArray(s.report.items)&&(s.report.items.length===0||neverExecuted&&untouched)&&!s.blocked&&!s.inflight
    &&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
  async function run(manual=false){
@@ -73,7 +76,7 @@
    if(s.outbox.length>10)s.outbox=s.outbox.slice(-10);
    s.day=due.day;
    s.report={day:due.day,run_id:crypto.randomUUID(),code:due.skip?'missed_noon':s.blocked?'uncertain_blocked':'running',roster:'unavailable',items:[]};
-   s.report_pending=true;
+   s.report_pending=true;s.execution_started=false;
    // A durable stamp BEFORE any network or tab action enforces once per day.
    await write(s);
    if(hubs.length!==1){s.report.code='hub_unavailable';await write(s);return;}
@@ -114,7 +117,7 @@
       await usable(destination,binding.url);
       active={run_id:s.report.run_id,nonce:crypto.randomUUID(),tab:destination,url:binding.url};
       // Mark potentially uncertain BEFORE sending a write-capable request.
-      s.blocked=true;s.inflight=true;await write(s);
+      s.blocked=true;s.inflight=true;s.execution_started=true;await write(s);
       let response;
       try{response=await deadline(chrome.tabs.sendMessage(destination,{type:'morning_execute',run_id:active.run_id,nonce:active.nonce,list,target:binding},{frameId:0}),120000);}catch{response=null;}
       active=null;s.inflight=false;

@@ -424,3 +424,7 @@ and [Edge local extension testing](https://learn.microsoft.com/en-us/microsoft-e
 ### Retry before any assignment starts (0.4.1)
 
 The popup offers **Retry interrupted morning** only for today's stopped attempt before any assignment was processed, while morning entry is enabled and it is 7 a.m.–noon Eastern on a weekday. The previous report must be delivered, with no outstanding report, in-flight action, pending grade review or uncertainty block. The explicit popup action starts a new attributed report and repeats all source, mapping and destination checks. Automatic attempts remain once per day. Partially processed or uncertain runs cannot use this retry.
+
+### IC navigation readiness (0.4.2)
+
+Wait for the exact destination URL after navigation, then for a readable IC workspace frame. A loading, inaccessible or cross-origin frame remains unavailable and cannot authorize entry; only a visible login form is labeled signed out. An explicit retry can also cover zero-count preflight failures when durable state proves no write-capable request was ever sent. Legacy state qualifies only if the old inflight property was never created. Uncertain and previously executed attempts remain excluded.
