@@ -170,17 +170,15 @@ all-caught-up claims from incomplete coverage. Repair future routing while
 keeping recovered work and ZIP feedback usable; directory tidiness is not the
 delivery milestone.
 
-## Biology research answers archive
+## Retired Biology answers spreadsheet
 
-The Biology answer writer prefers the explicitly configured
-`HUB_BIOLOGY_ANSWERS_SPREADSHEET_ID`. It verifies that the ID resolves to an
-untrashed Google Sheet with the expected “Student answers — Biology” title
-(dash, underscore and spacing variants are accepted). If unset, it retains the
-legacy exact-title search at the configured submissions root. Give the Hub
-service identity Editor access to the school-owned Sheet. The code change alone
-does not switch the hosted Hub: its Cloud Run configuration must set the new ID
-and a deployed revision must be verified before claiming the new archive is in
-use. Keep the archive in an approved restricted school Drive location.
+On October 2 the teacher removed the redundant “Student answers — Biology”
+spreadsheet. Do not restore or recreate it. The Hub no longer searches for it,
+writes final answers to it, or runs an archive sweep when opened. Retired archive
+POST endpoints reject stale clients without requesting Google read/write access.
+An old `HUB_BIOLOGY_ANSWERS_SPREADSHEET_ID` value has no effect. Individual feedback,
+private growth records, class summaries and the class-matrix checklist continue
+under their existing contracts.
 
 ## Screen scope and acceptance
 

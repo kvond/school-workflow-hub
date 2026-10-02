@@ -7,7 +7,7 @@ import zipfile
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
-from hub_v2 import agenda, agenda_edit, answers, app, audit, completion, feedback, google, ledger, roster, routine, tidy, work
+from hub_v2 import agenda, agenda_edit, app, audit, completion, feedback, google, ledger, roster, routine, tidy, work
 
 DIRECT = "https://docs.google.com/forms/d/FICTIONALFORMID1234567890abc/viewform"
 SECOND = "https://docs.google.com/forms/d/FICTIONALFORMID0987654321xyz/viewform"
@@ -1612,15 +1612,14 @@ class AgendaEditTests(unittest.TestCase):
 
 
 class RoutineTests(unittest.TestCase):
-    CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT"}
+    CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_BIOLOGY_ANSWERS_SPREADSHEET_ID": "REMOVED_ARCHIVE"}
 
     def status(self, fail=None):
         found = {
             "Monday run": [{"id": "OLDRUN", "name": "Monday run — 2026-09-28", "createdTime": "2026-09-28T12:00:00Z"},
                            {"id": "NEWRUN", "name": "Monday run — 2026-10-05", "createdTime": "2026-10-05T12:00:00Z"},
                            {"id": "NOTE", "name": "Notes about the Monday run", "createdTime": "2026-10-06T00:00:00Z"}],
-            "Scores entered": [{"id": "LEDGER", "name": "Scores entered (On Dashboard)", "createdTime": "2026-09-26T00:00:00Z"}],
-            "Student answers": [{"id": "ANSWERS", "name": "Student answers — Biology", "createdTime": "2026-09-26T00:00:00Z"}]}
+            "Scores entered": [{"id": "LEDGER", "name": "Scores entered (On Dashboard)", "createdTime": "2026-09-26T00:00:00Z"}]}
 
         def search(token, name, mime, parent, prefix=False, order=None):
             if fail == name:
@@ -1638,7 +1637,7 @@ class RoutineTests(unittest.TestCase):
         self.assertTrue(out["monday_run"]["url"].endswith("/document/d/NEWRUN/edit"))
         self.assertEqual((out["scores_entered"]["name"], out["scores_entered"]["last"]),
                          ("Scores entered (On Dashboard)", "2026-10-05 08:05"))
-        self.assertEqual(out["research"]["last"], "2026-10-05 08:05")
+        self.assertNotIn("research", out)
 
     def test_the_routine_endpoint_carries_the_embed_coding_prompt(self):
         with patch.object(app, "load_agenda", return_value=fixture()), \
@@ -1658,33 +1657,28 @@ class RoutineTests(unittest.TestCase):
         self.assertIn("not shared", out["monday_run"]["problem"])
         self.assertEqual(out["scores_entered"]["name"], "Scores entered (On Dashboard)")
         with patch.object(google, "files_named_in", return_value=[]):
-            self.assertEqual(routine.status("token", {}), {"monday_run": None, "scores_entered": None, "research": None})
+            self.assertEqual(routine.status("token", {}), {"monday_run": None, "scores_entered": None})
 
 
-class SweepEndpointTests(unittest.TestCase):
-    def post(self, origin, payload):
-        body = json.dumps(payload).encode()
-        environ = {"PATH_INFO": "/v2/api/answers/sweep", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
-                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
-                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
-        seen = {}
-        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
-        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
-                patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
-                patch.object(answers, "sweep", return_value={"configured": True, "saved": 0, "more": False}) as sweep:
-            b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
-        return seen["status"], sweep
-
-    def test_the_sweep_needs_the_dashboard_page_and_a_research_class(self):
-        status, sweep = self.post("https://elsewhere.example", {"class": "biology"})
-        self.assertEqual(status, "403 Forbidden")
-        sweep.assert_not_called()
-        status, sweep = self.post("https://hub.fictional.example", {"class": "biology"})
-        self.assertEqual((status, sweep.call_args.args[4]), ("200 OK", "biology"))
-        status, sweep = self.post("https://hub.fictional.example", {"class": "forensics"})
-        self.assertEqual(status, "400 Bad Request")
-        sweep.assert_not_called()
+class RetiredAnswersEndpointTests(unittest.TestCase):
+    def test_stale_archive_clients_cannot_request_google_access_or_writes(self):
+        for path in ("/v2/api/answers", "/v2/api/answers/sweep"):
+            for origin, expected in (("https://elsewhere.example", "403 Forbidden"),
+                                     ("https://hub.fictional.example", "410 Gone")):
+                with self.subTest(path=path, origin=origin):
+                    environ = {"PATH_INFO": path, "REQUEST_METHOD": "POST", "QUERY_STRING": "",
+                               "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
+                               "CONTENT_LENGTH": "2", "wsgi.input": io.BytesIO(b"{}"), "HTTP_ORIGIN": origin}
+                    seen = {}
+                    config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example",
+                              "HUB_BIOLOGY_ANSWERS_SPREADSHEET_ID": "REMOVED_ARCHIVE"}
+                    with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
+                            patch.object(google, "service_token") as token:
+                        body = b"".join(app.application(environ, lambda status, headers: seen.setdefault("status", status), config=config))
+                    self.assertEqual(seen["status"], expected)
+                    token.assert_not_called()
+                    if expected == "410 Gone":
+                        self.assertIn("retired", json.loads(body)["error"])
 
 
 class LinkCheckTests(unittest.TestCase):
@@ -1991,170 +1985,6 @@ class AgendaEndpointTests(unittest.TestCase):
         for bad in ({**payload, "row": "5"}, {**payload, "row": True}, {**payload, "changes": {"topic": {"to": "x"}}}):
             status, _, _ = self.post("https://hub.fictional.example", bad)
             self.assertEqual(status, "400 Bad Request")
-
-
-class ResearchSheetTests(unittest.TestCase):
-    CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}
-    FORM = "FICTIONALFORMID1234567890abc"
-    CONTEXT = {"class": "🧬 Biology", "week": "Wk 03", "assignment": "Energy flow — Turn in", "form_id": FORM}
-    CLOSED = {"window": {"at": "2026-09-20T03:59:00Z", "label": "Sat Sep 19, 11:59 PM"}}
-    NOW = datetime(2026, 9, 24, 14, 0, tzinfo=timezone.utc)
-
-    def scored(self):
-        row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A4 Biology",
-               "submitted_at": "2026-09-15T14:30:00Z",
-               "files": [{"id": "DECK1", "url": "https://docs.google.com/presentation/d/DECK1/edit"}]}
-        result = {"file_id": "DECK1", "problem": None, "file_updated": "2026-09-16T01:00:00Z", "items": [
-            {"category": "NOTES", "id": "CA1", "status": "done", "answer": "=Energy flows one way", "at": 4,
-             "question": "Your answer — Critical Aspect 1 · Energy flow"},
-            {"category": "DRAFT", "id": "CA1", "status": "blank", "answer": "", "at": 4,
-             "question": "Your answer — Critical Aspect 1 · Energy flow"}]}
-        unscorable = ({**row, "last": "Lee", "first": "Bo", "files": [{"id": "DECK2"}]},
-                      {"file_id": "DECK2", "problem": "Couldn't read this deck."})
-        return [(row, result), unscorable]
-
-    def run_save(self, header, keys, form=None, sheets=None):
-        sheets = sheets if sheets is not None else [{"id": "SHEETID", "name": "Student answers — Biology"}]
-        values = lambda token, sid, cell_range: header if cell_range.endswith("!1:1") else keys
-        with patch.object(google, "files_named_in", return_value=sheets) as search, \
-                patch.object(google, "sheet_tabs", return_value=("Student answers", {"Answers": 0})), \
-                patch.object(google, "sheet_values", side_effect=values) as read, \
-                patch.object(google, "append_rows") as append:
-            out = answers.save("token", "write", self.CONFIG, "biology", self.CONTEXT, "Energy flow",
-                               form or self.CLOSED, self.scored(), now=self.NOW)
-        return out, append, read, search
-
-    def test_a_closed_assignment_adds_one_row_per_box_and_never_twice(self):
-        out, append, _, _ = self.run_save([], [])
-        self.assertEqual((out["saved"], out["already"]), (2, 0))
-        self.assertEqual(append.call_args.args[0], "write")  # only the write token writes
-        written = append.call_args.args[3]
-        self.assertEqual(written[0], answers.HEADER)
-        first = dict(zip(answers.HEADER, written[1]))
-        self.assertEqual(first["Student"], "Rivera, Ana")
-        self.assertEqual((first["Section"], first["Week"], first["Lesson"]), ("A4 Biology", "Wk 03", "Energy flow"))
-        self.assertEqual((first["Slide"], first["Type"], first["Code"]), (4, "NOTES", "CA1"))
-        self.assertEqual(first["Answer"], "=Energy flows one way")  # written as text, never run
-        self.assertEqual((first["Status"], first["Turned in"]), ("answered", "2026-09-15 10:30"))
-        self.assertEqual(dict(zip(answers.HEADER, written[2]))["Status"], "blank")
-        self.assertEqual(len(written), 3)  # the deck that couldn't be scored adds nothing
-        keys = [[r[-1]] for r in written[1:]]
-        out, append, _, _ = self.run_save([answers.HEADER], keys)
-        self.assertEqual((out["saved"], out["already"]), (0, 2))
-        append.assert_not_called()
-
-    def test_keys_are_found_by_their_heading_if_a_column_was_added(self):
-        _, _, read, _ = self.run_save([["Code it"] + answers.HEADER], [])
-        self.assertIn("!R2:R200000", read.call_args_list[-1].args[2])
-
-    def test_an_open_assignment_waits_and_touches_nothing(self):
-        form = {"window": {"at": "2026-09-29T03:59:00Z", "label": "Mon Sep 28, 11:59 PM"}}
-        out, append, read, search = self.run_save([], [], form=form)
-        self.assertEqual(out["waiting"], "Mon Sep 28, 11:59 PM")
-        search.assert_not_called()
-        read.assert_not_called()
-        append.assert_not_called()
-
-    def test_only_the_sheet_with_the_exact_name_is_written_to(self):
-        sheets = [{"id": "COPY", "name": "Copy of Student answers — Biology", "createdTime": "2026-09-01T00:00:00Z"},
-                  {"id": "CODED", "name": "Student answers — Biology coded", "createdTime": "2026-09-02T00:00:00Z"},
-                  {"id": "HERS", "name": "student answers - Biology", "createdTime": "2026-09-03T00:00:00Z"}]
-        with patch.object(google, "files_named_in", return_value=sheets):
-            self.assertEqual(answers.find("token", self.CONFIG, "biology")["id"], "HERS")
-        out, append, _, _ = self.run_save([], [], sheets=sheets[:2])
-        self.assertEqual(out["configured"], False)
-        self.assertIn("Student answers — Biology", out["setup"])
-        append.assert_not_called()
-
-    def test_rows_are_appended_as_plain_text(self):
-        with patch.object(google, "get_json") as call_google:
-            google.append_rows("write", "SHEETID", "'Answers'!A1", [["=1+1"]])
-        self.assertEqual(call_google.call_args.args[2]["valueInputOption"], "RAW")
-
-    def run_sweep(self, keys, now, form_window=None, clock=None):
-        form = {"form_id": self.FORM, "label": "Turn in", "window": form_window or self.CLOSED["window"]}
-        found = {"lessons": [{"topic": "Fictional topic", "forms": [form]}]}
-        load = unittest.mock.Mock(return_value=found)
-        score = unittest.mock.Mock(return_value=self.scored())
-        header = [answers.HEADER] if keys else []
-        values = lambda token, sid, cell_range: header if cell_range.endswith("!1:1") else keys
-        with patch.object(google, "files_named_in", return_value=[{"id": "SHEETID", "name": "Student answers — Biology"}]), \
-                patch.object(google, "sheet_tabs", return_value=("Student answers", {"Answers": 0})), \
-                patch.object(google, "sheet_values", side_effect=values), \
-                patch.object(google, "append_rows") as append:
-            out = answers.sweep("token", "write", self.CONFIG, fixture(), "biology", load, score, now=now,
-                                **({"clock": clock} if clock else {}))
-        return out, load, score, append
-
-    def test_the_daily_sweep_adds_closed_assignments_without_opening_each_week(self):
-        out, load, score, append = self.run_sweep([], self.NOW.replace(month=10, day=10))
-        load.assert_called_once_with("Wk 04")  # Wk 03 has no Form, so Drive isn't read for it
-        self.assertEqual(score.call_args.args[0], "Wk 04")
-        written = append.call_args.args[3]
-        self.assertEqual(written[0], answers.HEADER)
-        self.assertEqual(dict(zip(answers.HEADER, written[1]))["Week"], "Wk 04")
-        self.assertEqual((out["saved"], out["more"]), (2, False))
-        self.assertEqual(out["forms"], [{"week": "Wk 04", "assignment": "Turn in", "saved": 2}])
-        # Next day: this Form already has rows, so nothing is read or written.
-        keys = [[r[-1]] for r in written[1:]]
-        out, load, _, append = self.run_sweep(keys, self.NOW.replace(month=10, day=11))
-        load.assert_not_called()
-        append.assert_not_called()
-        self.assertEqual(out["saved"], 0)
-
-    def test_the_sweep_skips_weeks_not_started_and_waits_for_open_assignments(self):
-        _, load, _, append = self.run_sweep([], datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc))
-        load.assert_not_called()  # Wk 04 starts Monday Sep 21
-        open_window = {"at": "2026-10-09T03:59:00Z", "label": "Thu Oct 8, 11:59 PM"}
-        out, load, score, append = self.run_sweep([], self.NOW, form_window=open_window)
-        load.assert_called_once_with("Wk 04")
-        score.assert_not_called()
-        self.assertEqual(out["saved"], 0)
-        # The Routine page says which assignment's answers come next, and when.
-        self.assertEqual(out["next"], {"week": "Wk 04", "assignment": "Fictional topic",
-                                       "label": "Thu Oct 8, 11:59 PM", "at": "2026-10-09T03:59:00Z"})
-
-    def test_the_sweep_stops_at_its_time_limit_and_asks_to_be_called_again(self):
-        ticks = iter([0, answers.SWEEP_SECONDS + 1])
-        out, load, _, _ = self.run_sweep([], self.NOW.replace(month=10, day=10), clock=lambda: next(ticks))
-        self.assertTrue(out["more"])
-        load.assert_not_called()
-
-    def test_only_biology_has_a_research_sheet(self):
-        with self.assertRaises(ValueError):
-            answers.save("token", "write", self.CONFIG, "forensics", self.CONTEXT, "", self.CLOSED, [], now=self.NOW)
-
-
-class AnswersEndpointTests(unittest.TestCase):
-    def post(self, origin, body):
-        environ = {"PATH_INFO": "/v2/api/answers", "REQUEST_METHOD": "POST", "QUERY_STRING": "",
-                   "HTTP_X_GOOG_IAP_JWT_ASSERTION": "signed", "CONTENT_TYPE": "application/json",
-                   "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body), "HTTP_ORIGIN": origin}
-        seen = {}
-        config = {"HUB_STATE_PROBE_ORIGINS": "https://hub.fictional.example", "HUB_AGENDA_SPREADSHEET_ID": "X"}
-        form_id = "FICTIONALFORMID1234567890abc"
-        found = {"lessons": [{"topic": "Energy flow", "forms": [{"form_id": form_id}]}]}
-        with patch.object(google, "verify_teacher", return_value="teacher@fictional.example"), \
-                patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
-                patch.object(app, "_form_context", return_value=({"form_id": form_id}, {}, found)), \
-                patch.object(answers, "closed", return_value=True), \
-                patch.object(app, "_score_rows", return_value=[]), \
-                patch.object(answers, "save", return_value={"configured": True, "saved": 0}) as save:
-            b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
-        return seen["status"], save
-
-    def test_saving_answers_needs_the_dashboard_page_and_a_research_class(self):
-        body = json.dumps({"class": "biology", "week": "Wk 03", "form": "FICTIONALFORMID1234567890abc"}).encode()
-        status, save = self.post("https://elsewhere.example", body)
-        self.assertEqual(status, "403 Forbidden")
-        save.assert_not_called()
-        status, save = self.post("https://hub.fictional.example", body)
-        self.assertEqual(status, "200 OK")
-        self.assertEqual(save.call_args.args[3:6], ("biology", {"form_id": "FICTIONALFORMID1234567890abc"}, "Energy flow"))
-        status, save = self.post("https://hub.fictional.example", body.replace(b"biology", b"forensics"))
-        self.assertEqual(status, "400 Bad Request")
-        save.assert_not_called()
 
 
 def bank_deck(**changes):
