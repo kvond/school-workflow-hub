@@ -11,9 +11,17 @@ function morningShow(s){
  morningBox.checked=s.enabled;
  morningText.textContent=(s.enabled?'Weekday mornings enabled. ':'Weekday mornings off. ')+(s.report?`Last attempt: ${s.report.day}, ${s.report.code.replaceAll('_',' ')}. See the Hub morning summary.`:'No morning attempt yet.');
  document.getElementById('morning-recovery').hidden=!s.blocked;
+ const retry=document.getElementById('morning-retry');retry.hidden=!s.can_retry;retry.disabled=!!s.busy;
+ if(s.busy)morningText.textContent='Morning attempt is running. Keep the Hub and Infinite Campus tabs open.';
 }
 chrome.runtime.sendMessage({type:'morning_status'}).then(morningShow).catch(()=>morningShow({error:true}));
 morningBox.addEventListener('change',async e=>{if(!e.isTrusted)return;morningBox.disabled=true;try{morningShow(await chrome.runtime.sendMessage({type:'morning_setting',enabled:morningBox.checked}));}finally{morningBox.disabled=false;}});
 const checked=document.getElementById('morning-checked'),clear=document.getElementById('morning-clear');
 checked.addEventListener('change',e=>{if(e.isTrusted)clear.disabled=!checked.checked;});
 clear.addEventListener('click',async e=>{if(!e.isTrusted||!checked.checked)return;clear.disabled=true;morningShow(await chrome.runtime.sendMessage({type:'morning_clear',confirmed:true}));checked.checked=false;});
+
+document.getElementById('morning-retry').addEventListener('click',async e=>{
+ if(!e.isTrusted)return;e.target.disabled=true;
+ try{morningShow(await chrome.runtime.sendMessage({type:'morning_retry'}));}catch{morningShow({error:true});}
+});
+setInterval(()=>chrome.runtime.sendMessage({type:'morning_status'}).then(morningShow).catch(()=>{}),2000);

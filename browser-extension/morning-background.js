@@ -44,10 +44,18 @@
   }
   throw Error('panel_unusable');
  }
- async function run(){
+ function retryable(s){
+  const t=M.clock();
+  return s.enabled&&t.weekday&&t.minutes>=420&&t.minutes<720&&s.day===t.day
+   &&s.report?.day===t.day&&['interrupted','hub_unavailable','receipt_unconfirmed','signed_out','ic_unavailable'].includes(s.report.code)
+   &&Array.isArray(s.report.items)&&s.report.items.length===0&&!s.blocked&&!s.inflight
+   &&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
+ }
+ async function run(manual=false){
   if(busy)return;busy=true;
   try{
    let s=await read();
+   if(manual&&!retryable(s))return;
    const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
    s.outbox=s.outbox||[];
    for(const day of M.missed(s)){
@@ -60,7 +68,7 @@
    }
    // Summary delivery may retry; no IC operation is repeated.
    if(s.report_pending&&hubs.length===1)await publish(s,hubs[0].id);
-   const due=M.due(s);if(!due)return;
+   const due=manual?{day:M.clock().day,skip:false}:M.due(s);if(!due)return;
    if(s.report_pending&&s.report)s.outbox.push(s.report);
    if(s.outbox.length>10)s.outbox=s.outbox.slice(-10);
    s.day=due.day;
@@ -71,7 +79,8 @@
    if(hubs.length!==1){s.report.code='hub_unavailable';await write(s);return;}
    const source=hubs[0].id;sourceTab=source;
    await publish(s,source);
-   if(due.skip||s.blocked||s.report_pending||s.outbox.length)return;
+   if(due.skip||s.blocked)return;
+   if(s.report_pending||s.outbox.length){s.report.code='receipt_unconfirmed';s.report_pending=true;await write(s);return;}
    try{
     if(pending.size)throw Error('panel_unusable');
     const catalog=await hub(source,'catalog');
@@ -134,12 +143,13 @@
   if(m?.type==='morning_keepalive'&&busy&&sender.id===chrome.runtime.id&&sender.frameId===0&&sender.tab?.id===sourceTab){reply({ok:true});return;}
   if(m?.type==='morning_authorize'){authorize(m,sender).then(reply,()=>reply({ok:false}));return true;}
   const popup=sender.id===chrome.runtime.id&&sender.url===chrome.runtime.getURL('popup.html')&&!sender.tab;
-  if(!popup||!['morning_status','morning_setting','morning_clear'].includes(m?.type))return;
+  if(!popup||!['morning_status','morning_setting','morning_clear','morning_retry'].includes(m?.type))return;
   locked(async()=>{
    const s=await read();
    if(m.type==='morning_setting'&&typeof m.enabled==='boolean'){const enabling=m.enabled&&!s.enabled;s.enabled=m.enabled;await chrome.storage.local.set({morning_enabled:m.enabled,...(enabling?{morning_enabled_day:M.clock().day}:{})});await ensureAlarm();}
    if(m.type==='morning_clear'&&m.confirmed===true&&!busy){s.blocked=false;await write(s);}
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null};
+   if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,can_retry:!busy&&retryable(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
  async function ensureAlarm(){
