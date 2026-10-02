@@ -327,6 +327,17 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
     out, exact = [], {}
     for unit in student_slide["units"]:
         before = base.get(unit["key"])
+        if template_slide and unit["box"]:
+            # Google export renumbers shape names after a copy gains a box.
+            # The same name can then refer to an unrelated heading or prompt.
+            # Prefer an unambiguous unchanged rectangle, including empty boxes.
+            same_place = [u for u in template_slide["units"] if u["box"] and
+                          max(abs(a - b) for a, b in zip(u["box"], unit["box"])) <= 0.001 * max(size)]
+            if len(same_place) == 1:
+                before = same_place[0]
+            elif before and before["box"] and before["box"] != unit["box"] and \
+                    _plain(before["text"]) != _plain(unit["text"]):
+                before = None
         if before is None and template_slide:
             # A box the export renamed: compare with the most similar box on the slide.
             scored = [(difflib.SequenceMatcher(None, _plain(u["text"]), _plain(unit["text"])).ratio(), u)
@@ -416,8 +427,11 @@ def _assign(slide_markers, written, template_slide, size):
     ordered = sorted(remaining, key=lambda item: (_center(item[0]["box"])[1], _center(item[0]["box"])[0])
                      if item[0]["box"] else (0, 0))
     if drafts and notes:
-        first = next((u for u in template_units if re.search(r"\bfirst\b", u["text"], re.I)), None)
-        revised = next((u for u in template_units if re.search(r"\brevis", u["text"], re.I)), None)
+        # Use answer labels, including labels that contain their own marker.
+        # Directions often mention both first and revised and are not labels.
+        labels = [u for u in (template_slide or {}).get("units", []) if u["box"]]
+        first = next((u for u in labels if re.match(r"\s*(?:your\s+)?first\s+answer\b", u["text"], re.I)), None)
+        revised = next((u for u in labels if re.match(r"\s*(?:your\s+)?revised\s+answer\b", u["text"], re.I)), None)
         for item in ordered:
             if first and revised and item[0]["box"]:
                 c = _center(item[0]["box"])
@@ -426,6 +440,10 @@ def _assign(slide_markers, written, template_slide, size):
                 target = notes[0] if ordered.index(item) == 0 else drafts[0]
             result[(target["category"], target["id"])].append(item)
         return result, uncoded, "box labels"
+    if len(slide_markers) == 1:
+        m = slide_markers[0]
+        result[(m["category"], m["id"])].extend(ordered)
+        return result, uncoded, "one question on the slide"
     for m, item in zip(notes + drafts, ordered):
         result[(m["category"], m["id"])].append(item)
     return result, uncoded, "order on the slide"

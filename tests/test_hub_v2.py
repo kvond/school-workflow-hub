@@ -1272,6 +1272,52 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual((result["notes_score"], result["revision_score"]), (0.0, 0.0))
         self.assertEqual(result["uncoded"], [])
 
+    def test_google_export_shape_name_collisions_do_not_turn_headings_into_answers(self):
+        def deck(answer, offset):
+            return completion.read_deck(pptx([[
+                (f"Google Shape;{1 + offset};p1", "Observe how living things use energy", (20, 10, 900, 30)),
+                (f"Google Shape;{2 + offset};p1", "Explain the pattern [[NOTES:C09:Q]]", (20, 70, 900, 60)),
+                (f"Google Shape;{3 + offset};p1", "", (20, 150, 900, 300)),
+                (f"Google Shape;{4 + offset};p1", "Think first, then write your own explanation.", (20, 500, 900, 30)),
+                (f"Google Shape;{5 + offset};p1", answer, (30, 170, 850, 100)),
+            ]]))
+        template = deck("", 0)
+        for answer, status in [("", "blank"), ("Plants capture sunlight.", "done"),
+                               ("Observe how living things use energy", "copied")]:
+            with self.subTest(answer=answer):
+                result = completion.assess(deck(answer, 1), template)
+                self.assertEqual(result["items"][0]["status"], status)
+                if status == "done":
+                    self.assertEqual(result["items"][0]["answer"], answer)
+
+    def test_coded_first_and_revision_labels_win_over_directions_mentioning_both(self):
+        def deck(first="", revised=""):
+            return completion.read_deck(pptx([[
+                ("INSTRUCTIONS", "Write your first answer now and your revised answer later.", (20, 10, 900, 50)),
+                ("L1", "Your first answer [[NOTES:C09:Q]]", (20, 90, 900, 30)),
+                ("A1", first, (20, 125, 900, 150)),
+                ("L2", "Your revised answer [[DRAFT:C09:Q]]", (20, 320, 900, 30)),
+                ("A2", revised, (20, 355, 900, 150)),
+            ]]))
+        for first, revised in [("Only plants use sunlight.", ""), ("", "Plants capture energy in sugars.")]:
+            with self.subTest(first=first):
+                result = completion.assess(deck(first, revised), deck())
+                items = {i["category"]: i for i in result["items"]}
+                self.assertEqual(items["NOTES"]["answer"], first)
+                self.assertEqual(items["DRAFT"]["answer"], revised)
+                self.assertEqual(items["NOTES"]["status"], "done" if first else "blank")
+                self.assertEqual(items["DRAFT"]["status"], "done" if revised else "blank")
+
+    def test_one_question_collects_all_response_fragments(self):
+        def deck(a="", b=""):
+            return completion.read_deck(pptx([[
+                ("QUESTION", "Explain the pattern [[NOTES:C09:Q]]", (20, 20, 900, 50)),
+                ("A", a, (20, 100, 900, 100)), ("B", b, (20, 250, 900, 100)),
+            ]]))
+        result = completion.assess(deck("Plants capture sunlight.", "They store its energy in sugars."), deck())
+        self.assertEqual(result["items"][0]["answer"],
+                         "Plants capture sunlight. They store its energy in sugars.")
+
     def test_boxes_the_student_wrote_in_count_and_nothing_else(self):
         result = self.score(RULE="Energy enters through producers", COUNT="Producers Count: 12",
                             B2="Plants catch light and make sugar", T1="Producer  makes its own food")
