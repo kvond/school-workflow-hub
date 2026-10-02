@@ -3,8 +3,10 @@
 and when she last made its feedback. She never needs to open the sheet.
 
 It is a Google Sheet whose name starts with "Scores entered" (for example
-"Scores entered (school workflow-hub)") inside the turn-in root, which is
-shared with the dashboard's account as an Editor. Each click of "I entered
+"Scores entered (school workflow-hub)"), selected by the explicit
+HUB_SCORES_ENTERED_SPREADSHEET_ID when configured, or inside the turn-in root
+as a legacy fallback. It is shared with the dashboard's account as an Editor.
+Each click of "I entered
 these in IC" or "Mark feedback done" adds one row for that class and
 assignment to its first tab; rows are never edited or deleted.
 """
@@ -20,6 +22,16 @@ MAX_ROWS = 20000
 
 
 def find(token, config):
+    explicit_id = str(config.get("HUB_SCORES_ENTERED_SPREADSHEET_ID", "") or "").strip()
+    if explicit_id:
+        sheet = google.drive_file(token, explicit_id)
+        if (sheet.get("id") != explicit_id or sheet.get("mimeType") != google.SHEET
+                or sheet.get("trashed")
+                or not sheet.get("name", "").strip().lower().startswith(NAME.lower())):
+            raise google.GoogleError(
+                "The configured Scores entered file must be an untrashed Google Sheet "
+                "whose name starts with “Scores entered”.")
+        return sheet
     root = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "") or "")
     if not root:
         return None
