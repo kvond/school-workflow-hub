@@ -32,7 +32,7 @@ On weekdays (Monday to Friday) the teacher's Mac is on, with Chrome open in the 
 1. The Hub sends every assignment whose scores are ready ("Scores are ready to enter in IC") to the helper. This is the same `hub-ic-list/v1` message that "Send to the Chrome helper" sends now.
 2. The helper opens each matching assignment's score panel in IC itself. Today she opens the panel by hand, so this step is new. It needs the IC section and assignment for each list, taken from the Hub's existing assignment mapping and not guessed from titles alone.
 3. The helper runs the same review it shows now, then enters and saves without the checkbox or the trusted click. Unattended entry happens only when the teacher has turned on a setting in the helper's popup ("Enter automatically on weekday mornings"). That setting is off by default.
-4. Results go back to the Hub as they do now. The "Entered in IC" rows reach the "Scores entered" sheet only after every section and column reads back.
+4. Results go back to the Hub as they do now. The "Entered in IC" rows reach the "Scores entered" sheet only after every section and column reads back. Set `HUB_SCORES_ENTERED_SPREADSHEET_ID` to the existing private ledger's ID so moving it out of the turn-in folder does not break receipts. The configured file must be an untrashed Google Sheet whose name starts with "Scores entered", shared with the runtime account as Editor. A bad configured ID fails closed; the legacy folder search applies only when the setting is absent.
 5. The Hub shows a morning summary she can read at school, one line per assignment: what was entered, what was left, and why it was left (flag, excused, check by hand, name not matched, changed since the review, Save not confirmed).
 
 ## Rules that do not change
