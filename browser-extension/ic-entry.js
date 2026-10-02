@@ -96,16 +96,16 @@
 
  // Worker-only unattended path; no window/page message can invoke it.
  const M=globalThis.HubMorning;
- function signedOut(){
+ function sessionProblem(){
   const docs=[document];
   for(const f of document.querySelectorAll('iframe#main-workspace')){
-   try{if(f.contentWindow.location.origin!==location.origin)return true;if(f.contentDocument)docs.push(f.contentDocument);}catch{return true;}
+   try{if(f.contentWindow.location.origin!==location.origin)return 'panel_unusable';if(f.contentDocument)docs.push(f.contentDocument);else return 'panel_unusable';}catch{return 'panel_unusable';}
   }
-  return docs.some(d=>[...d.querySelectorAll('input[type="password"],form[action*="login"],form[action*="signin"]')].some(e=>e.getClientRects().length));
+  return docs.some(d=>[...d.querySelectorAll('input[type="password"],form[action*="login"],form[action*="signin"]')].some(e=>e.getClientRects().length))?'signed_out':null;
  }
  chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(!M||sender.id!==chrome.runtime.id||sender.tab||!['morning_session','morning_probe','morning_execute'].includes(message?.type))return;
-  if(signedOut()){reply({ok:false,code:'signed_out',not_started:true});return;}
+  const problem=sessionProblem();if(problem){reply({ok:false,code:problem,not_started:true});return;}
   if(message.type==='morning_session'){reply({ok:true});return;}
   if(message.type==='morning_probe'){
    try{if(document.hidden||working||host)throw Error();read(true);reply({ok:true});}catch{reply({ok:false,code:'panel_unusable'});}return;
@@ -115,7 +115,7 @@
   const ping=setInterval(()=>chrome.runtime.sendMessage({type:'morning_authorize',run_id:message.run_id,nonce:message.nonce}).catch(()=>{}),20000);
   (async()=>{
    const authorized=async()=>{
-    if(signedOut())throw Error('signed_out');
+    const problem=sessionProblem();if(problem)throw Error(problem);
     if(document.hidden)throw Error('panel_unusable');
     const answer=await chrome.runtime.sendMessage({type:'morning_authorize',run_id:message.run_id,nonce:message.nonce});
     if(!answer?.ok)throw Error('disabled');

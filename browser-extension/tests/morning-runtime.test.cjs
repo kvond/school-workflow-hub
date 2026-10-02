@@ -18,7 +18,7 @@ function background(options={}){
  const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:new Map(),chrome:{runtime,
  storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>Object.assign(state,structuredClone(data)),setAccessLevel:async v=>{state.access=v.accessLevel;}}},
  alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
- tabs:{query:async({url})=>Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1))),get:async id=>tabs[id],update:async(id,v)=>{Object.assign(tabs[id],v);calls.push('navigate');return tabs[id];},sendMessage:async(id,m)=>{
+ tabs:{query:async({url})=>Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1))),get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{Object.assign(tabs[id],v);calls.push('navigate');return tabs[id];},sendMessage:async(id,m)=>{
   messages.push(m);
   if(m.type==='morning_session'||m.type==='morning_probe')return options.signedOut?{ok:false,code:'signed_out'}:{ok:true};
   if(m.type==='morning_hub'){
@@ -134,5 +134,35 @@ test('retry refuses uncertain, partially processed, undelivered, disabled or out
   const h=background({stored:{morning_enabled:enabled,morning_state:{day:report.day,report}}});h.advance(at);
   await settle();assert.equal((await h.invoke({type:'morning_status'})).can_retry,false);
   await h.invoke({type:'morning_retry'});await settle();assert.ok(!h.calls.includes('execute'));
+ }
+});
+
+
+test('navigation waits past a stale complete tab before probing the exact assignment',async()=>{
+ const h=background({staleNavigation:true});await h.alarm();await new Promise(r=>setTimeout(r,300));
+ assert.equal(h.state.morning_state.report.code,'finished');
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+
+test('a loading or inaccessible IC workspace frame is unavailable, not falsely signed out',()=>{
+ for(const frame of [{contentWindow:{location:{origin:'null'}}},
+  {get contentWindow(){throw Error('frame loading');}},
+  {contentWindow:{location:{origin:C.IC_ORIGIN}},contentDocument:null}]){
+  let listener;const window={};window.top=window;
+  vm.runInNewContext(source('ic-entry.js'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,HubPostingProtocol:P,
+   HubIcAdapter:{panel:{norm:v=>v,surface:()=>{throw Error('must not read');}}},window,
+   location:{origin:C.IC_ORIGIN,href:C.IC_ORIGIN+'/campus/'},
+   document:{hidden:false,querySelectorAll:selector=>selector==='iframe#main-workspace'?[frame]:[]},
+   setInterval(){},chrome:{runtime:{id:'extension',sendMessage:async()=>({lists:[]}),onMessage:{addListener:fn=>listener=fn}}}});
+  let reply;listener({type:'morning_probe'},{id:'extension'},r=>reply=r);
+  assert.equal(reply.code,'panel_unusable');assert.equal(reply.not_started,true);
+ }
+});
+
+test('legacy preflight failure can retry only when no write-capable request was ever reserved',async()=>{
+ const report={day:'2026-10-01',run_id:uuid(),code:'signed_out',roster:'unavailable',items:[{assignment:'Matter',code:'signed_out',filled:0,raised:0,kept:0,left:0}]};
+ for(const [extra,allowed]of [[{},true],[{inflight:false},false],[{execution_started:true},false],[{execution_started:false},true]]){
+  const h=background({stored:{morning_enabled:true,morning_state:{day:report.day,report,...extra}}});await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_retry,allowed);
  }
 });
