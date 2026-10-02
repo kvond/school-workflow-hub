@@ -1,9 +1,9 @@
 """What the Routine page shows is actually running, read only: the newest
 "Monday run — <date>" Doc that school Claude leaves at the top of the
-turn-in root, and the last row of the Scores entered and research sheets.
+turn-in root, and the last row of the Scores entered sheet.
 A problem with one of them is shown on its own line, never a failed page.
 """
-from . import answers, google, ledger
+from . import google, ledger
 
 MONDAY_RUN = "Monday run"
 
@@ -39,8 +39,7 @@ def monday_run(token, config):
 def status(token, config):
     out = {}
     checks = (("monday_run", lambda: monday_run(token, config)),
-              ("scores_entered", lambda: ledger.find(token, config)),
-              ("research", lambda: answers.find(token, config, "biology")))
+              ("scores_entered", lambda: ledger.find(token, config)))
     for key, check in checks:
         try:
             found = check()

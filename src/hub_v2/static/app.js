@@ -3,11 +3,9 @@
 // counted from each deck's coded boxes. Scores go into Infinite Campus through
 // the Chrome helper (the browser companion extension) in the teacher's own
 // Chrome, after her OK there, or by her own typing; never by this page.
-// Biology answers are copied into the teacher's research sheet once an assignment closes.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
 const SCAN_CLASSES = ['biology', 'anatomy'];  // with an "Answers by question" view
-const RESEARCH_CLASSES = ['biology'];         // whose final answers go to the research sheet
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 const FULL_DAY = {Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday'};
 const TZ = 'America/New_York';
@@ -424,57 +422,6 @@ async function scoreForm(form) {
   if (seq !== work.seq) return;
   work.ui[form.form_id].progress = '';
   renderWork();
-  if (RESEARCH_CLASSES.includes(work.cls) && closedFor(form)) saveAnswers(form, seq);
-}
-
-// ---------- The research sheet (Biology) ----------
-// Once an assignment's two weeks close, its answers are final: the server adds
-// any not already in the sheet, so opening the week again adds nothing twice.
-async function saveAnswers(form, seq) {
-  const ui = work.ui[form.form_id] = work.ui[form.form_id] || {};
-  ui.research = {saving: true};
-  renderWork();
-  try {
-    const done = await postJSON('api/answers', {class: work.cls, week: work.week, form: form.form_id});
-    if (seq === work.seq) ui.research = done;
-  } catch (error) {
-    if (seq === work.seq) ui.research = {error: error.message};
-  }
-  if (seq === work.seq) renderWork();
-}
-
-// Once a day, in the background, the dashboard adds any closed assignment's
-// answers the research sheet doesn't have yet, so no week has to be opened.
-async function sweepResearch() {
-  const today = todayISO();
-  if (store.get('research-sweep') === today) return;
-  let next = null;
-  for (const cls of RESEARCH_CLASSES) {
-    for (let round = 0; round < 8; round++) {
-      let done;
-      try { done = await postJSON('api/answers/sweep', {class: cls}); } catch { return; }  // try again next load
-      if (done.next && (!next || done.next.at < next.at)) next = done.next;
-      if (!done.more) break;
-      if (done.busy) await new Promise(resolve => setTimeout(resolve, 5000));
-    }
-  }
-  store.set('research-sweep', today);
-  store.set('research-next', JSON.stringify(next));
-}
-
-function researchLine(form) {
-  if (!RESEARCH_CLASSES.includes(work.cls) || !form.window) return null;
-  if (!closedFor(form)) {
-    return el('p', {class: 'muted', text: `Answers go to the research sheet when the two weeks close (${form.window.label}).`});
-  }
-  const r = work.ui[form.form_id]?.research;
-  if (!r) return null;
-  if (r.saving) return el('p', {class: 'muted', text: 'Saving answers to the research sheet…'});
-  if (r.error) return note(`The answers couldn’t be saved to the research sheet: ${r.error}`);
-  if (r.configured === false) return note(r.setup, 'info');
-  return el('p', {class: 'muted'}, r.saved
-    ? `Research sheet: added ${r.saved} answer${r.saved === 1 ? '' : 's'}. `
-    : 'Research sheet: every answer is already saved. ', r.url ? link('Open it ↗', r.url) : null);
 }
 
 // ---------- Answers by question (Biology and A&P) ----------
@@ -1042,8 +989,6 @@ function renderForm(form, lesson) {
   if (marks) box.append(marks);
   const standing = icStatus(form);
   if (standing) box.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
-  const research = researchLine(form);
-  if (research) box.append(research);
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
   const scores = work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
@@ -1403,17 +1348,14 @@ const ROUTINE = {
   // What runs without you. "needs" is what has to be open for it to run.
   scheduled: [
     {when: '6:30 a.m. weekdays', who: 'School ChatGPT (Codex)',
-     what: 'Tidies student work into each lesson’s turn-in folder.',
+     what: 'Checks rosters and tidies verified student work into each lesson’s turn-in folder before 7:00.',
      needs: 'Nothing to click.'},
     {when: '7:00 a.m. weekdays', who: 'Chrome helper',
-     what: 'Adds new students to the roster, then enters every class’s scores in IC and checks them.',
+     what: 'Enters eligible scores in IC and checks them. Roster additions and removals still need review.',
      needs: 'The Mac awake, school Chrome open with the Hub and IC tabs signed in, and the helper’s morning setting on.'},
-    {when: '8:00 a.m. weekdays', who: 'School ChatGPT (Codex)',
+    {when: '7:30 a.m. weekdays', who: 'School ChatGPT (Codex)',
      what: 'Writes feedback for the latest closed lesson, saves it privately and adds it to the feedback checklist. Then reads the class growth summaries and writes a one-page Lesson opener: what students are tending to miss, plus information and questions to bring up at the start of the next lesson.',
      needs: 'Nothing to click.'},
-    {when: 'Daily', who: 'Teaching Hub', key: 'research',
-     what: 'Saves finished Biology answers to “Student answers — Biology”.',
-     needs: 'The Hub opened once that day.'},
   ],
   // Start-up: what to open each weekday morning, in order.
   startup: [
@@ -1428,17 +1370,15 @@ const ROUTINE = {
   // What the teacher does (you) and what that gets done (done). One line each.
   mine: [
     {when: 'Weekdays, before school', you: 'Do the start-up list above.',
-     done: 'The 6:30, 7:00 and 8:00 runs have what they need.'},
-    {when: 'At school, when a new lesson starts', you: 'Open the feedback checklist’s Ready to print tab. Skim each Doc, print, hand out, then tick Printed and Handed to student.',
+     done: 'The 6:30, 7:00 and 7:30 runs have what they need.'},
+    {when: 'At school, when a new lesson starts', you: 'Open your class tab in the feedback checklist. Print the latest Made entries with unchecked Printed and Handed out boxes, then tick each box as you finish that step.',
      done: 'Each student gets two pages of feedback, and the checklist shows who has it.'},
-    {when: 'At school, before the next lesson', you: 'Open the Lesson opener (Ready to print tab, or the private course folder). Start class with its information and questions.',
+    {when: 'At school, before the next lesson', you: 'Open the Lesson opener in the private course folder. Start class with its information and questions.',
      done: 'The class goes back over what most students missed, before new material.'},
     {when: 'At school', you: 'Keep the Agenda up to date.',
      done: 'The Hub finds each lesson’s deck and Turn-in Form.'},
     {when: 'When “Done for you” shows something held', you: 'Read the reason. Most need a fix, not grading. If unsure, ask Claude.',
      done: 'Nothing is skipped without you knowing.'},
-    {when: 'August', you: 'Make a new blank “Student answers — Biology”, have Codex point the Hub to it, update rosters.',
-     done: 'The new year starts clean.'},
   ],
   // Lesson planning, usually before Friday or on Sunday night.
   planning: [
@@ -1480,17 +1420,6 @@ function routineStatus(key, data) {
     const days = (Date.now() - new Date(found.at)) / 86400000;
     return el('p', {class: days > 8 ? 'note warn' : 'muted'}, `Last run: ${when(found.at)}. `, link(found.name + ' ↗', found.url),
       days > 8 ? ' That’s more than a week ago: run the Monday prompt.' : '');
-  }
-  if (key === 'research') {
-    const checked = store.get('research-sweep');
-    let next = null;
-    try { next = JSON.parse(store.get('research-next') || 'null'); } catch { /* none noted */ }
-    if (!found) return note('No “Student answers — Biology” sheet was found at the top of 00 REAL ALL TURN IN.', 'info');
-    const coming = next && new Date(next.at) > new Date()
-      ? `Next to close: ${next.week} · ${next.assignment}, ${next.label}. Its answers are added the first time the Hub is opened after that. ` : '';
-    return el('p', {class: 'muted'},
-      found.last ? `Answers last added ${found.last}. ` : 'No answers added yet: an assignment’s answers are added once its two weeks close. ',
-      coming, checked ? `Checked in this browser on ${checked}. ` : '', link('Open the sheet ↗', found.url));
   }
   return null;
 }
@@ -1543,8 +1472,7 @@ function renderRoutine(data) {
       el('li', {}, sheet && !sheet.problem
         ? [link(`“${sheet.name}” ↗`, sheet.url), ` — a row for each IC entry and feedback round${sheet.last ? ` (last: ${sheet.last})` : ''}.`]
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
-      el('li', {}, 'Feedback, growth records, class summaries and the feedback checklist: in My Drive → Student Feedback — Private 2026–27 (only you can open it).'),
-      el('li', {}, '“Student answers — Biology”: in the same private folder.')));
+      el('li', {}, 'Feedback, growth records, class summaries and the feedback checklist: in My Drive → Student Feedback — Private 2026–27.')));
   body.replaceChildren(startup, mine, scheduled, manual, planning, sheets);
 }
 
@@ -1636,7 +1564,6 @@ $('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); }
 $('missing-sheets').addEventListener('click', missingWorkSheets);
 window.addEventListener('hashchange', showTab);
 showTab();
-sweepResearch();
 
 let morningReports = [], morningRecovery = [];
 function renderMorningAlert() {
