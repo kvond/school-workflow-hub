@@ -8,8 +8,8 @@ from .dated_agenda import grid, value
 from .google_sheets import SheetsReadError
 
 TAB = 'Workflow Prompts'
-ROWS = {'completion': (6, 'Completion — Prompt 1'), 'feedback': (7, 'Feedback — Prompt 2'),
-        'summary': (8, 'Class summary — Prompt 3')}
+ROWS = {'completion': (7, 'Completion — Prompt 1'), 'feedback': (8, 'Feedback — Prompt 2'),
+        'summary': (9, 'Class summary — Prompt 3')}
 
 
 def read_prompts(assertion, config=None):
