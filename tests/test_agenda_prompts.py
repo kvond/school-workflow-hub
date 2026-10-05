@@ -37,8 +37,8 @@ class AgendaPromptsTests(unittest.TestCase):
         r=self.read(fixture())
         self.assertTrue(all(r['bundled_matches'].values()))
         self.assertFalse(r['alignment_review_needed'])
-        self.assertTrue(r['links']['feedback'].endswith('gid=123&range=B9'))
-        self.assertTrue(r['links']['summary'].endswith('gid=123&range=B8'))
+        self.assertTrue(r['links']['feedback'].endswith('gid=123&range=B8'))
+        self.assertTrue(r['links']['summary'].endswith('gid=123&range=B9'))
         self.assertEqual(r['external_writes'],0)
     def test_agenda_edit_is_returned_and_drift_marked(self):
         data=fixture();data['sheets'][0]['data'][0]['rowData'][7]['values'][1]['formattedValue']+='\nTeacher-approved edit.'
