@@ -9,6 +9,11 @@ from tests.test_assessment_records import SOURCE, CAPTURE, packet
 from tests.test_cloud_state import MemoryCAS
 
 CONFIG = {"HUB_ANTHROPIC_API_KEY": "sk-ant-" + "x" * 40}
+OPENAI_CONFIG = {
+    "HUB_AI_PROVIDER": "openai",
+    "HUB_OPENAI_API_KEY": "sk-proj-" + "x" * 40,
+    "HUB_ASSESSMENT_MODEL": "gpt-6-luna",
+}
 
 
 class drafting:
@@ -70,6 +75,80 @@ class ProviderTests(unittest.TestCase):
         self.assertTrue(provider.configured(CONFIG))
         pasted = {"HUB_ANTHROPIC_API_KEY": CONFIG["HUB_ANTHROPIC_API_KEY"] + "\n"}
         self.assertTrue(provider.configured(pasted))
+        self.assertEqual(provider.provider_name(CONFIG), "anthropic")
+        self.assertEqual(provider.provider_name(OPENAI_CONFIG), "openai")
+        self.assertTrue(provider.configured(OPENAI_CONFIG))
+        self.assertFalse(provider.configured({
+            "HUB_AI_PROVIDER": "openai", "HUB_OPENAI_API_KEY": "wrong"
+        }))
+        self.assertEqual(provider.model_name(OPENAI_CONFIG), "gpt-6-luna")
+        with self.assertRaises(ConnectionError):
+            provider.provider_name({"HUB_AI_PROVIDER": "unknown"})
+
+
+    def test_openai_response_uses_store_false_structured_output_and_cache_breakpoint(self):
+        import json
+
+        class FakeResponse:
+            status_code = 200
+            def json(self):
+                return {
+                    "model": "gpt-6-luna-2026-09-01",
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": json.dumps({
+                            "responses": [], "feedback": "Synthetic feedback."
+                        })}],
+                    }],
+                    "usage": {
+                        "input_tokens": 1200,
+                        "input_tokens_details": {"cached_tokens": 900},
+                        "cache_write_tokens": 200,
+                        "output_tokens": 80,
+                    },
+                }
+
+        seen = {}
+        def fake_request(http, url, *, body, headers):
+            seen.update(url=url, body=body, headers=headers)
+            return FakeResponse()
+
+        with patch.object(provider, "_request", fake_request):
+            output, usage = provider._call(
+                OPENAI_CONFIG, "stable teacher instructions", "student evidence"
+            )
+
+        self.assertEqual(seen["url"], provider.OPENAI_API_URL)
+        self.assertFalse(seen["body"]["store"])
+        self.assertEqual(seen["body"]["model"], "gpt-6-luna")
+        self.assertEqual(
+            seen["body"]["input"][0]["content"][0]["prompt_cache_breakpoint"],
+            {"mode": "explicit"},
+        )
+        self.assertEqual(seen["body"]["text"]["format"]["type"], "json_schema")
+        self.assertEqual(
+            seen["body"]["prompt_cache_options"], {"mode": "explicit", "ttl": "30m"}
+        )
+        self.assertTrue(seen["headers"]["Authorization"].startswith("Bearer sk-proj-"))
+        self.assertEqual(json.loads(output)["feedback"], "Synthetic feedback.")
+        self.assertEqual(usage["provider"], "openai")
+        self.assertEqual(usage["cached_input_tokens"], 900)
+        self.assertEqual(usage["cache_write_tokens"], 200)
+
+    def test_openai_provider_errors_are_fixed_codes_and_never_echo_bodies(self):
+        class FakeResponse:
+            def __init__(self, status_code):
+                self.status_code = status_code
+
+        for status, code in ((401, "provider_auth_failed"),
+                             (429, "provider_rate_limited"),
+                             (400, "provider_request_refused"),
+                             (403, "provider_request_refused"),
+                             (500, "provider_unavailable")):
+            with self.subTest(status=status):
+                with self.assertRaises(ConnectionError) as caught:
+                    provider._provider_error(FakeResponse(status))
+                self.assertEqual(str(caught.exception), code)
 
     def test_draft_builds_a_validated_packet_and_persists_it(self):
         base = packet()
