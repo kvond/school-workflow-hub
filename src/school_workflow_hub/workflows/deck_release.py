@@ -285,13 +285,16 @@ def validate_release(
 
     stale_status = ""
     if prior_receipt and not issues:
-        if str(prior_receipt.get("revision") or "") != current_receipt["revision"]:
-            stale_status = "STALE"
-        elif (
+        if (
             prior_receipt.get("prompt0_sha256") != prompt0_sha
             or prior_receipt.get("prompt2_sha256") != prompt2_sha
         ):
             stale_status = "PROMPT_STALE"
+        elif prior_receipt.get("deck_sha256") != current_receipt["deck_sha256"]:
+            stale_status = "STALE"
+        # A new Drive revision with identical contract-bearing text is a cheap
+        # fast re-certification after visual-only edits. The returned receipt
+        # binds READY to the new revision without another model call.
 
     status = "NOT_READY" if issues else (stale_status or "READY")
     return {
