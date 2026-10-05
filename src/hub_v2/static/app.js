@@ -174,6 +174,23 @@ function renderTodayLessons(day, audits) {
       : el('p', {class: 'muted', text: day?.weekday ? `No lessons are listed for ${FULL_DAY[day.weekday] || day.weekday}.` : 'No lesson data was returned.'}));
 }
 
+function renderFeedbackCockpit(delivery) {
+  const ready = delivery?.ready || [], printed = delivery?.printed || [], handed = delivery?.handed_out || [];
+  const sample = items => el('ul', {class: 'attention-list'}, ...items.slice(0, 8).map(item =>
+    el('li', {}, el('strong', {text: item.display_name || 'Student'}),
+      ' · ' + (item.assignment_title || item.assignment_key) + ' · ' + (item.section_name || item.section_id))));
+  return cockpitPanel('Feedback',
+    el('div', {class: 'feedback-counts'},
+      el('div', {}, el('strong', {text: String(ready.length)}), el('span', {text: 'Ready to print'})),
+      el('div', {}, el('strong', {text: String(printed.length)}), el('span', {text: 'Printed · hand out'})),
+      el('div', {}, el('strong', {text: String(handed.length)}), el('span', {text: 'Handed out'}))),
+    ready.length ? el('details', {open: true}, el('summary', {text: 'Ready now'}), sample(ready)) : null,
+    printed.length ? el('details', {}, el('summary', {text: 'Printed but not marked handed out'}), sample(printed)) : null,
+    el('div', {class: 'action-row'},
+      el('button', {type: 'button', onclick: () => { window.location.href = '/#feedback'; }}, 'Open Feedback workspace')),
+    el('p', {class: 'muted', text: 'A newly saved assessment version becomes a new Ready item automatically; prior handed-out feedback stays in history.'}));
+}
+
 function renderNextLessons(audits) {
   const rows = allReleaseRows(audits);
   if (!rows.length) return cockpitPanel('Next from Agenda',
@@ -200,11 +217,12 @@ async function loadToday(force = false) {
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   try {
     if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
-    const [day, reportsData, routineData, audits] = await Promise.all([
+    const [day, reportsData, routineData, audits, delivery] = await Promise.all([
       getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
       getJSON('api/morning/reports'),
       getJSON('api/routine'),
       loadAudits(force),
+      getJSON('/api/feedback-delivery'),
     ]);
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
@@ -216,10 +234,7 @@ async function loadToday(force = false) {
         renderNeedsYou(report, releaseRows)),
       renderTodayLessons(day, audits),
       renderNextLessons(audits),
-      cockpitPanel('Feedback',
-        el('p', {text: 'Saved feedback still prints from Student work. The automatic Ready to print / Handed out / Needs new feedback queue is the next v3 slice.'}),
-        el('div', {class: 'action-row'},
-          el('button', {type: 'button', onclick: () => { location.hash = '#work'; }}, 'Open Student work'))));
+      renderFeedbackCockpit(delivery));
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
