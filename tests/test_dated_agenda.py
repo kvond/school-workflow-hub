@@ -71,6 +71,24 @@ class DatedTests(unittest.TestCase):
         self.assertEqual([l['plan'] for l in result['lessons']],['Plan','Plan',''])
         self.assertEqual(result['lessons'][1]['origin'],'Weekly Agenda')
 
+    def test_course_header_and_week_rows_are_discovered_per_class(self):
+        meta,mapping,data=fixtures()
+        shifts={'🔬 Forensics':(4,10),'🫀 A&P':(4,12)}
+        for course in data['sheets']:
+            title=course['properties']['title']
+            if title not in shifts:
+                continue
+            header_row, lesson_row=shifts[title]
+            course['data'][0]['startRow']=header_row-1
+            course['data'][1]['startRow']=lesson_row-1
+        result=self.run_day(data=(meta,mapping,data))
+        by_class={lesson['class_key']:lesson for lesson in result['lessons']}
+        self.assertEqual(by_class['biology']['source_reference'],'🌿 Biology!A4:U4')
+        self.assertEqual(by_class['forensics']['source_reference'],'🔬 Forensics!A10:U10')
+        self.assertEqual(by_class['anatomy']['source_reference'],'🫀 A&P!A12:U12')
+        self.assertEqual(by_class['forensics']['plan'],'Example override')
+        self.assertEqual(by_class['anatomy']['plan'],'')
+
     def test_stale_dashboard_tab_is_ignored(self):
         meta,mapping,data=fixtures()
         mapping['sheets'][1]['data'][0]['rowData'][0]['values'][1]={'formattedValue':'Mon 12/29'}

@@ -136,6 +136,20 @@ def assignment_source_links(cells, row, deck_bindings):
     return sources, issues
 
 
+def agenda_header_row(cells):
+    """Return the one weekly lesson header row without assuming it is row 3.
+
+    Some live course tabs carry an instruction row above the headers while
+    others do not. The machine columns are the stable contract; their physical
+    row is not.
+    """
+    matches = [r for r in range(1, 13)
+               if value(cells, r, 16) == '_studentURL']
+    if len(matches) != 1:
+        raise ConnectionError('agenda_layout_changed')
+    return matches[0]
+
+
 def _form_link_label(cell, target):
     """Rich-text labels are display only; Sheets offsets use UTF-16 units."""
     text = cell.get('formattedValue', '')
@@ -182,8 +196,8 @@ def explicit_assignment_forms(cells, row, title, entries, deck_bindings, form_bi
         result['error'] = 'assignment_form_turn_in_link_invalid'
     elif len(set(keys)) < 2:
         result['error'] = 'assignment_form_turn_in_links_disagree'
-    elif (re.sub(r'[^a-z ]', '', value(cells, 3, 20).lower()).strip() != 'turn it in'
-          or value(cells, 3, 21) != '_turnInURL'):
+    elif (re.sub(r'[^a-z ]', '', value(cells, agenda_header_row(cells), 20).lower()).strip() != 'turn it in'
+          or value(cells, agenda_header_row(cells), 21) != '_turnInURL'):
         result['error'] = 'assignment_form_layout_changed'
     elif (len(keys) != len(set(keys)) or not primary
           or [entry['source_deck_id'] for entry in entries] != [source['source_deck_id'] for source in sources]
@@ -275,15 +289,14 @@ def read_day(assertion, selected, config=None):
     if len(matches) != 1:
         raise ConnectionError('date_not_mapped')
     wr = matches[0]
-    try:
-        row = int(value(weeks, wr, 2))
-        if not 4 <= row <= 60:
-            raise ValueError()
-    except ValueError:
-        raise ConnectionError('agenda_layout_changed') from None
     week = value(weeks, wr, 3)
+    closures = value(weeks, wr, 5)
     current = value(weeks, wr, 4) == value(weeks, 5, 7)
-    ranges = tuple("'%s'!A3:U%d" % (title, row) for _, title in COURSES)
+    # Course tabs do not share a physical lesson-row number: Biology begins
+    # immediately under its headers, while Forensics/A&P currently include
+    # extra instructional/setup rows. Read a bounded weekly area and resolve
+    # each class row from the stable week label + closure text below.
+    ranges = tuple("'%s'!A1:U60" % title for _, title in COURSES)
     if '🗂 TurnIn Map' in titles:
         ranges += ("'🗂 TurnIn Map'!A1:D160",)
     data = reader.read(source, ranges)
@@ -293,12 +306,21 @@ def read_day(assertion, selected, config=None):
     weekday = ('Mon','Tue','Wed','Thu','Fri','Sat','Sun')[day.weekday()]
     for key, title in COURSES:
         cells = grid(data, title)
-        if value(cells, row, 1) != week or [value(cells,3,c) for c in (3,16,17,18,21)] != ['Topic','_studentURL','_teacherURL','_folderURL','_turnInURL']:
+        header = agenda_header_row(cells)
+        if [value(cells,header,c) for c in (3,16,17,18,21)] != ['Topic','_studentURL','_teacherURL','_folderURL','_turnInURL']:
+            raise ConnectionError('agenda_layout_changed')
+        candidates = [r for r in range(header + 1, 61) if value(cells, r, 1) == week]
+        exact = [r for r in candidates if value(cells, r, 2) == closures]
+        if len(exact) == 1:
+            row = exact[0]
+        elif len(candidates) == 1:
+            row = candidates[0]
+        else:
             raise ConnectionError('agenda_layout_changed')
         expected_days = ('Tue', 'Thu', 'Fri') if key == 'anatomy' else ('Mon', 'Wed', 'Fri')
-        if [value(cells,3,c) for c in (4,6,8)] != [d + ' — plan' for d in expected_days]:
+        if [value(cells,header,c) for c in (4,6,8)] != [d + ' — plan' for d in expected_days]:
             raise ConnectionError('agenda_layout_changed')
-        cols = [c for c in (4,6,8) if value(cells,3,c) == weekday + ' — plan']
+        cols = [c for c in (4,6,8) if value(cells,header,c) == weekday + ' — plan']
         if len(cols) > 1:
             raise ConnectionError('agenda_layout_changed')
         col = cols[0] if cols else None
@@ -369,6 +391,6 @@ def read_day(assertion, selected, config=None):
             'todo':value(cells,row,10),'prep':value(cells,row,11),
             'source_reference':f'{title}!A{row}:U{row}'})
     return {'schema_version':'hub-agenda-day/v1','status':'source_read','date':selected,
-        'week':week,'closures':value(weeks,wr,5),'lessons':lessons,
+        'week':week,'closures':closures,'lessons':lessons,
         'checked_at':datetime.now(timezone.utc).isoformat(),'save_enabled':False,
         'run_enabled':False,'external_writes':0}

@@ -10,7 +10,7 @@ from hashlib import sha256
 from urllib.parse import urlsplit
 
 from .dated_agenda import (COURSES, DECK_URL, grid, value, link, turnin_form,
-                           explicit_assignment_forms, assignment_source_links)
+                           agenda_header_row, explicit_assignment_forms, assignment_source_links)
 from .agenda_rows import cell_links
 from .hosted_agenda import authenticated_reader, service_token, ConnectionError
 from .forms_submissions import FormsReader, FORMS_SCOPE, response_file_refs, FORM_ID
@@ -173,11 +173,12 @@ def _catalog_form(entry, row_entries, cells, row, title, turnins, map_valid,
               "form_visible_url": visible, "form_raw_url": hidden,
               "form_review_reason": "", "assignment_label": label}
     reason = ""
+    header = agenda_header_row(cells)
     if link_error:
         reason = link_error
-    elif ((visible and _norm(value(cells, 3, 20)) != "turn it in")
-          or (hidden and value(cells, 3, 21) != "_turnInURL")
-          or (not visible and value(cells, 3, 21) != "_turnInURL")):
+    elif ((visible and _norm(value(cells, header, 20)) != "turn it in")
+          or (hidden and value(cells, header, 21) != "_turnInURL")
+          or (not visible and value(cells, header, 21) != "_turnInURL")):
         reason = "assignment_form_layout_changed"
     elif not form_url:
         reason = "assignment_form_missing" if not raw else "assignment_form_invalid"
@@ -288,9 +289,8 @@ def agenda_catalog(assertion, config, records, *, class_key=None, discovery=Fals
     registry, by_deck, by_assignment, form_evidence, catalog_issues = [], {}, {}, {}, []
     for course, title in courses:
         cells = grid(data, title)
-        if value(cells, 3, 16) != "_studentURL":
-            raise ConnectionError("agenda_layout_changed")
-        for row in range(4, 61):
+        header = agenda_header_row(cells)
+        for row in range(header + 1, 61):
             week, topic = value(cells, row, 1), value(cells, row, 3)
             row_entries = []
             sources, source_issues = assignment_source_links(cells, row, bindings)
