@@ -103,7 +103,7 @@ class DeckReleaseTests(unittest.TestCase):
         )
         self.assertEqual(second["status"], "PROMPT_STALE")
 
-    def test_visual_only_revision_fast_recetifies_without_model_work(self):
+    def test_visual_only_revision_fast_recertifies_without_model_work(self):
         first = validate_release(
             good_slides(), revision="1", prompt0="p0", prompt2="p2"
         )
