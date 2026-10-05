@@ -315,7 +315,7 @@ def _legacy_compact_manifest(source_text, inventory, lines):
             raise ValueError("assessment_manifest_unparsed")
 
     observed = census_manifest(source_text)
-    if any(sections[key] != observed[key] for key in
+    if any(set(sections[key]) != set(observed[key]) for key in
            ("notes_ids", "bank_ids", "draft_ids", "optional_ids")):
         raise ValueError("assessment_manifest_unparsed")
     return {"inventory_line": inventory.group(0),
