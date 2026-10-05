@@ -1485,21 +1485,33 @@ function linkCheckResult(name, data) {
   const problems = data.flags.filter(f => !QUIET.has(f.kind));
   const shared = data.flags.filter(f => f.kind === 'shared-form');
   const decks = data.flags.filter(f => f.kind === 'deck-unreadable');
+  const releases = data.rows.filter(r => r.release);
+  const notReady = releases.filter(r => r.release.status !== 'READY');
+  const releaseText = release => {
+    if (!release) return '—';
+    if (release.status === 'READY') return `READY · revision ${release.revision || 'verified'}`;
+    const first = (release.issues || [])[0];
+    return `${release.status}${first ? ' · ' + first.replaceAll('_', ' ') : ''}`;
+  };
   return [
     data.problem ? note(data.problem) : null,
     problems.length
       ? el('ul', {class: 'link-flags'}, problems.map(f => el('li', {}, el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
       : el('p', {class: 'ok', text: `✓ Every ${name} lesson links a Turn-in Form for its own week.`}),
+    releases.length ? (notReady.length
+      ? el('p', {class: 'muted', text: `Deck release gate: ${releases.length - notReady.length} READY · ${notReady.length} needs attention in the current/upcoming window.`})
+      : el('p', {class: 'ok', text: `✓ Current/upcoming ${name} decks passed the deterministic content/code gate.`})) : null,
     shared.length ? el('details', {class: 'muted'},
       el('summary', {text: `${shared.length} Form${shared.length === 1 ? ' is' : 's are'} used for more than one week (fine when a lesson spans those weeks)`}),
       el('ul', {class: 'link-flags'}, shared.map(f => el('li', {}, el('strong', {text: `${f.week}: `}), f.message)))) : null,
     decks.length ? el('p', {class: 'muted', text: `${decks.length} deck link${decks.length === 1 ? '' : 's'} couldn’t be checked: the Hub can’t open ${decks.length === 1 ? 'it' : 'them'}.`}) : null,
     el('details', {}, el('summary', {text: `See every ${name} lesson’s Forms and decks`}),
       el('div', {class: 'table-wrap'}, el('table', {},
-        el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks'].map(h => el('th', {text: h})))),
+        el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks', 'Release'].map(h => el('th', {text: h})))),
         el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
           el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
-          el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'})))))))];
+          el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}),
+          el('td', {text: releaseText(r.release)})))))))];
 }
 
 async function runLinkCheck() {
