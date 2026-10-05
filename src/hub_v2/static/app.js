@@ -96,7 +96,10 @@ async function loadAudits(force = false) {
 
 function releaseFor(audits, classKey, lesson) {
   const rows = audits?.[classKey]?.data?.rows || [];
-  return rows.find(row => row.topic === lesson.topic || (lesson.week && row.week === lesson.week))?.release || null;
+  const exact = rows.find(row => row.topic === lesson.topic);
+  if (exact) return exact.release || null;
+  const sameWeek = lesson.week ? rows.filter(row => row.week === lesson.week) : [];
+  return sameWeek.length === 1 ? (sameWeek[0].release || null) : null;
 }
 
 function allReleaseRows(audits) {
