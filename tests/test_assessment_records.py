@@ -208,6 +208,28 @@ class CompletionTests(unittest.TestCase):
             ar.derive_manifest(broken)
         self.assertEqual(str(caught.exception), "assessment_manifest_unparsed")
 
+    def test_legacy_compact_manifest_is_accepted_only_when_marker_census_matches(self):
+        compact = (
+            "[[MARKER-INVENTORY:F06b]] NOTES=2 DRAFT=1 OPTIONAL=0 BANK_TERMS=0 "
+            "NOTES_IDS=Q-ONE,Q-TWO DRAFT_IDS=Q-ONE OPTIONAL_IDS=-\n"
+            "[[NOTES:F06b:Q-ONE]] first words\n"
+            "[[DRAFT:F06b:Q-ONE]] revised words\n"
+            "[[NOTES:F06b:Q-TWO]] second words\n"
+        )
+        manifest = ar.derive_manifest(compact)
+        self.assertEqual(manifest["inventory_basis"], "marker_census")
+        self.assertEqual(manifest["version_label"], "legacy-compact-manifest")
+        self.assertEqual(manifest["notes_ids"], ["Q-ONE", "Q-TWO"])
+        self.assertEqual(manifest["draft_ids"], ["Q-ONE"])
+        self.assertEqual(manifest["optional_ids"], [])
+        self.assertEqual(manifest["bank_ids"], [])
+        self.assertIn("verified exactly", manifest["reconciliation_note"])
+
+        broken = compact.replace("NOTES=2", "NOTES=3", 1)
+        with self.assertRaises(ValueError) as caught:
+            ar.derive_manifest(broken)
+        self.assertEqual(str(caught.exception), "assessment_manifest_unparsed")
+
 
 class RowTests(unittest.TestCase):
     def test_rows_carry_fresh_capture_metadata_and_policy_fields(self):

@@ -285,14 +285,56 @@ def census_manifest(source_text):
             "draft_ids": seen["DRAFT"], "optional_ids": seen["OPTIONAL"]}
 
 
+def _legacy_compact_manifest(source_text, inventory, lines):
+    """Read the older one-line manifest only when the deck's marker census agrees.
+
+    Early distributed decks put counts and *_IDS fields on the same line and
+    carried no VERSION label. They remain safe to assess when every declared
+    count/id exactly matches the literal marker fields in that same capture.
+    This is a compatibility path, not permission to guess a broken header.
+    """
+    header = next((line for line in lines if line.startswith(inventory.group(0))), "")
+    if not header:
+        raise ValueError("assessment_manifest_unparsed")
+    counts = dict(re.findall(r"\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=(\d+)\b", header))
+    if set(counts) != {"NOTES", "DRAFT", "OPTIONAL", "BANK_TERMS"}:
+        raise ValueError("assessment_manifest_unparsed")
+
+    fields = {}
+    names = tuple(MANIFEST_SECTIONS)
+    pattern = r"\b(" + "|".join(names) + r")=(.*?)(?=\s+(?:" + "|".join(names) + r")=|$)"
+    for name, body in re.findall(pattern, header):
+        values = [part.strip() for part in body.split(",") if part.strip() and part.strip() != "-"]
+        fields[MANIFEST_SECTIONS[name]] = values
+    sections = {name: list(fields.get(name, [])) for name in MANIFEST_SECTIONS.values()}
+    expected = {"notes_ids": int(counts["NOTES"]), "draft_ids": int(counts["DRAFT"]),
+                "optional_ids": int(counts["OPTIONAL"]), "bank_ids": int(counts["BANK_TERMS"])}
+    for key, want in expected.items():
+        ids = sections[key]
+        if len(ids) != want or len(set(ids)) != len(ids) or any(not _question_id(qid) for qid in ids):
+            raise ValueError("assessment_manifest_unparsed")
+
+    observed = census_manifest(source_text)
+    if any(sections[key] != observed[key] for key in
+           ("notes_ids", "bank_ids", "draft_ids", "optional_ids")):
+        raise ValueError("assessment_manifest_unparsed")
+    return {"inventory_line": inventory.group(0),
+            "version_label": "legacy-compact-manifest",
+            "inventory_basis": "marker_census",
+            "reconciliation_note": (
+                "Legacy compact manifest had no VERSION line; its declared counts and IDs "
+                "were verified exactly against this deck's observed marker fields."),
+            "notes_ids": sections["notes_ids"], "bank_ids": sections["bank_ids"],
+            "draft_ids": sections["draft_ids"], "optional_ids": sections["optional_ids"]}
+
+
 def derive_manifest(source_text):
     """The distributed requirement read from the deck's own manifest header.
 
-    The header is the teacher's distributed contract: the marker-inventory tag,
-    a VERSION label, per-category counts, and one id per line under each
-    section. A deck without the header falls back to the teacher's documented
-    census reconciliation over the deck's own marker fields; a header whose
-    lists disagree with its own counts is never guessed at.
+    The current header uses VERSION plus line-by-line ID sections. Older
+    distributed decks used a compact one-line header; those are accepted only
+    when their counts/IDs exactly match the marker census in the captured deck.
+    A deck without a header falls back to the documented census reconciliation.
     """
     if not isinstance(source_text, str) or not source_text:
         raise ValueError("invalid_assessment_source")
@@ -302,6 +344,8 @@ def derive_manifest(source_text):
     lines = [line.strip() for line in
              source_text[inventory.start():inventory.start() + 4000].splitlines()]
     version = next((line for line in lines if line.startswith("VERSION=")), "")
+    if not version:
+        return _legacy_compact_manifest(source_text, inventory, lines)
     counts_line = next((line for line in lines if re.match(r"NOTES=\d+", line)), "")
     counts = dict(re.findall(r"([A-Z_]+)=(\d+)", counts_line))
     sections = {name: [] for name in MANIFEST_SECTIONS.values()}
@@ -325,7 +369,7 @@ def derive_manifest(source_text):
         ids = sections[key]
         if want is None or len(ids) != int(want) or len(set(ids)) != len(ids):
             raise ValueError("assessment_manifest_unparsed")
-    if not version or len(version) > 160:
+    if len(version) > 160:
         raise ValueError("assessment_manifest_unparsed")
     return {"inventory_line": inventory.group(0), "version_label": version,
             "inventory_basis": "deck_header",
