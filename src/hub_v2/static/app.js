@@ -72,8 +72,8 @@ function releaseIssue(value) {
   if (!value) return '';
   const [code, aspect, phase] = String(value).split(':');
   const words = code.replaceAll('_', ' ');
-  if (code === 'critical_aspect_block_missing') return \`Missing critical-aspect block: \${aspect}\`;
-  if (code === 'critical_aspect_phase_missing') return \`\${aspect}: missing \${String(phase || '').replaceAll('_', ' ')}\`;
+  if (code === 'critical_aspect_block_missing') return `Missing critical-aspect block: ${aspect}`;
+  if (code === 'critical_aspect_phase_missing') return `${aspect}: missing ${String(phase || '').replaceAll('_', ' ')}`;
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
@@ -86,7 +86,7 @@ function releaseBadge(release) {
 async function loadAudits(force = false) {
   if (!force && cockpit.audits && Date.now() - cockpit.auditsAt < 60_000) return cockpit.audits;
   const entries = await Promise.all(CLASSES.map(async ([key, name]) => {
-    try { return [key, name, await getJSON(\`api/audit?class=\${encodeURIComponent(key)}\`)]; }
+    try { return [key, name, await getJSON(`api/audit?class=${encodeURIComponent(key)}`)]; }
     catch (error) { return [key, name, {rows: [], flags: [], problem: error.message}]; }
   }));
   cockpit.audits = Object.fromEntries(entries.map(([key, name, data]) => [key, {name, data}]));
@@ -125,12 +125,12 @@ function renderMorningCockpit(report, routineData) {
   const handled = totals.filled + totals.raised + totals.kept;
   const detail = (report.items || []).map(item =>
     el('li', {}, el('strong', {text: item.assignment + ': '}),
-      \`\${item.filled} entered · \${item.raised} raised · \${item.kept} kept · \${item.left} left\`));
+      `${item.filled} entered · ${item.raised} raised · ${item.kept} kept · ${item.left} left`));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
     el('p', {class: 'cockpit-label', text: 'grade rows handled or preserved by the morning run'}),
     el('p', {class: totals.left ? 'needs' : 'ok', text: totals.left
-      ? \`\${totals.left} row\${totals.left === 1 ? '' : 's'} left for review.\`
+      ? `${totals.left} row${totals.left === 1 ? '' : 's'} left for review.`
       : '✓ Nothing from this receipt was left unresolved.'}),
     el('details', {}, el('summary', {text: 'Morning assignment details'}), el('ul', {}, ...detail)));
 }
@@ -141,10 +141,10 @@ function renderNeedsYou(report, releaseRows) {
     const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
     if (!row.left && !reasons.length) continue;
     items.push(el('li', {}, el('strong', {text: row.assignment + ': '}),
-      reasons.length ? reasons.map(([reason, n]) => \`\${n} \${reason.replaceAll('_', ' ')}\`).join(' · ') : \`\${row.left} left\`));
+      reasons.length ? reasons.map(([reason, n]) => `${n} ${reason.replaceAll('_', ' ')}`).join(' · ') : `${row.left} left`));
   }
   for (const row of releaseRows.filter(row => row.release.status !== 'READY')) {
-    items.push(el('li', {}, el('strong', {text: \`\${row.className} · \${row.week} · \${row.topic}: \`}),
+    items.push(el('li', {}, el('strong', {text: `${row.className} · ${row.week} · ${row.topic}: `}),
       releaseIssue(row.release.issues?.[0]) || row.release.status.replaceAll('_', ' ')));
   }
   return cockpitPanel('Needs you',
@@ -171,7 +171,7 @@ function renderTodayLessons(day, audits) {
   }
   return cockpitPanel("Today's lessons",
     rows.length ? el('div', {class: 'today-lessons'}, ...rows)
-      : el('p', {class: 'muted', text: day?.weekday ? \`No lessons are listed for \${FULL_DAY[day.weekday] || day.weekday}.\` : 'No lesson data was returned.'}));
+      : el('p', {class: 'muted', text: day?.weekday ? `No lessons are listed for ${FULL_DAY[day.weekday] || day.weekday}.` : 'No lesson data was returned.'}));
 }
 
 function renderNextLessons(audits) {
@@ -197,7 +197,7 @@ async function loadToday(force = false) {
   try {
     if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
     const [day, reportsData, routineData, audits] = await Promise.all([
-      getJSON(\`api/day?date=\${encodeURIComponent(todayISO())}\${force ? '&fresh=1' : ''}\`),
+      getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
       getJSON('api/morning/reports'),
       getJSON('api/routine'),
       loadAudits(force),
@@ -216,7 +216,7 @@ async function loadToday(force = false) {
         el('p', {text: 'Saved feedback still prints from Student work. The automatic Ready to print / Handed out / Needs new feedback queue is the next v3 slice.'}),
         el('div', {class: 'action-row'},
           el('button', {type: 'button', onclick: () => { location.hash = '#work'; }}, 'Open Student work'))));
-    setStatus('today-status', \`Updated \${when(new Date().toISOString())}.\`);
+    setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
     setStatus('today-status', error.message, true);
@@ -241,7 +241,7 @@ async function loadLessonReadiness(force = false) {
         el('span', {class: 'muted', text: 'Actual final deck + live Prompt 0 / Prompt 2'})),
       el('div', {class: 'release-row'}, ...rows.map(row =>
         el('div', {class: 'release-item'},
-          el('span', {text: \`\${row.className} · \${row.week}\`}),
+          el('span', {text: `${row.className} · ${row.week}`}),
           releaseBadge(row.release),
           el('small', {text: row.release.status === 'READY' ? row.topic : (releaseIssue(row.release.issues?.[0]) || row.topic)})))));
   } catch (error) {
