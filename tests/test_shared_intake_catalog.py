@@ -142,6 +142,14 @@ class MultiAssignmentCatalogTests(unittest.TestCase):
             with self.assertRaisesRegex(ConnectionError, "agenda_layout_changed"):
                 intake.agenda_catalog(None, config, registry())
 
+    def test_selected_class_accepts_instruction_row_above_headers(self):
+        data=agenda(additional=url(ADDITIONAL))
+        forensic=next(s for s in data['sheets'] if s['properties']['title']=='🔬 Forensics')
+        forensic['data'][0]['startRow']=3
+        result=catalog(data=data)
+        self.assertEqual([row['assignment_key'] for row in result],[KEY_A,KEY_B])
+        self.assertEqual({row['week'] for row in result},{'Wk 03'})
+
     def test_invalid_selected_class_is_rejected_before_reading(self):
         with patch.object(intake, "authenticated_reader") as reader:
             with self.assertRaisesRegex(ConnectionError, "invalid_submission_scope"):
