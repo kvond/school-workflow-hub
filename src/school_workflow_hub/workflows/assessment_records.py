@@ -136,7 +136,7 @@ def validate_packet(packet, source_text):
         # documented reconciliation note travels with the record.
         _text(manifest.get("reconciliation_note", ""), 400, required=True)
         observed = census_manifest(source_text)
-        if any(list(manifest[key]) != observed[key] for key in
+        if any(set(manifest[key]) != set(observed[key]) for key in
                ("notes_ids", "bank_ids", "draft_ids", "optional_ids")):
             raise ValueError("assessment_manifest_not_in_source")
     # The inventory line and version label bind the packet to the distributed
