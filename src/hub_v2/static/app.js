@@ -178,17 +178,21 @@ function renderNextLessons(audits) {
   const rows = allReleaseRows(audits);
   if (!rows.length) return cockpitPanel('Next from Agenda',
     note('No current/upcoming final deck was release-checked. Open Lessons / VT to inspect the Agenda and link audit.', 'info'));
-  return cockpitPanel('Next from Agenda',
-    el('div', {class: 'table-wrap'}, el('table', {class: 'cockpit-table'},
-      el('thead', {}, el('tr', {}, ['Class', 'Week', 'Lesson', 'Release', 'Next'].map(text => el('th', {text})))),
-      el('tbody', {}, ...rows.map(row => el('tr', {},
-        el('td', {text: row.className}),
-        el('td', {text: row.week}),
-        el('td', {text: row.topic}),
-        el('td', {}, releaseBadge(row.release)),
-        el('td', {text: row.release.status === 'READY'
-          ? 'Teach; visual-only edits get a fast recheck.'
-          : releaseIssue(row.release.issues?.[0]) || 'Revalidate before teaching.'}))))));
+  const bodyRows = rows.map(row => {
+    const next = row.release.status === 'READY'
+      ? 'Teach; visual-only edits get a fast recheck.'
+      : (releaseIssue(row.release.issues?.[0]) || 'Revalidate before teaching.');
+    return el('tr', {},
+      el('td', {text: row.className}),
+      el('td', {text: row.week}),
+      el('td', {text: row.topic}),
+      el('td', {}, releaseBadge(row.release)),
+      el('td', {text: next}));
+  });
+  const table = el('table', {class: 'cockpit-table'},
+    el('thead', {}, el('tr', {}, ...['Class', 'Week', 'Lesson', 'Release', 'Next'].map(text => el('th', {text})))),
+    el('tbody', {}, ...bodyRows));
+  return cockpitPanel('Next from Agenda', el('div', {class: 'table-wrap'}, table));
 }
 
 async function loadToday(force = false) {
