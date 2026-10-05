@@ -1,4 +1,4 @@
-"""Draft assessment packets from the configured Anthropic runtime provider.
+"""Draft assessment packets from the configured runtime AI provider.
 
 The provider only judges and writes feedback: it receives the teacher's own
 packaged prompts, the fresh server-side capture and the distributed manifest,
@@ -17,9 +17,10 @@ from . import assessment_save, assessment_target
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize)
 from ..workflows import assessment_records
 
-API_URL = "https://api.anthropic.com/v1/messages"
-API_VERSION = "2023-06-01"
-DEFAULT_MODEL = "claude-sonnet-5"
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_VERSION = "2023-06-01"
+OPENAI_API_URL = "https://api.openai.com/v1/responses"
+DEFAULT_MODELS = {"anthropic": "claude-sonnet-5", "openai": "gpt-6-luna"}
 MAX_OUTPUT_TOKENS = 8000
 REQUEST_KEYS = {"file_id", "class_key", "stage", "stage_reference",
                 "assignment_key", "section_id", "section_name", "identity"}
@@ -99,19 +100,36 @@ Return ONLY one JSON object, no prose, of this shape:
 """
 
 
+def provider_name(config):
+    """Runtime provider; omitted keeps the currently deployed Anthropic path."""
+    name = str(config.get("HUB_AI_PROVIDER", "") or "anthropic").strip().lower()
+    if name not in DEFAULT_MODELS:
+        raise ConnectionError("provider_invalid")
+    return name
+
+
 def _key(config):
-    # Console-pasted secrets often carry a trailing newline; a key never
-    # contains whitespace, so stripping cannot corrupt a real one.
-    return (config.get("HUB_ANTHROPIC_API_KEY") or "").strip()
+    # Console-pasted secrets often carry a trailing newline; API keys never
+    # contain whitespace, so stripping cannot corrupt a real one.
+    provider = provider_name(config)
+    variable = "HUB_OPENAI_API_KEY" if provider == "openai" else "HUB_ANTHROPIC_API_KEY"
+    return (config.get(variable) or "").strip()
 
 
 def configured(config):
-    return bool(re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{20,200}", _key(config)))
+    key = _key(config)
+    if provider_name(config) == "openai":
+        # OpenAI project/service-account keys are intentionally validated only
+        # for a secret-key prefix and bounded ASCII shape. Exact prefixes may
+        # evolve; authentication is still verified by the provider.
+        return bool(re.fullmatch(r"sk-[A-Za-z0-9_-]{20,240}", key))
+    return bool(re.fullmatch(r"sk-ant-[A-Za-z0-9_-]{20,200}", key))
 
 
 def model_name(config):
-    name = config.get("HUB_ASSESSMENT_MODEL", "") or DEFAULT_MODEL
-    if not re.fullmatch(r"[a-z0-9.-]{5,60}", name):
+    provider = provider_name(config)
+    name = config.get("HUB_ASSESSMENT_MODEL", "") or DEFAULT_MODELS[provider]
+    if not re.fullmatch(r"[a-z0-9.-]{3,80}", name):
         raise ConnectionError("provider_model_invalid")
     return name
 
@@ -119,6 +137,7 @@ def model_name(config):
 def status(assertion, config):
     audience, allowed = _identity_configuration(config)
     authorize(assertion, audience, allowed)
+    provider = provider_name(config)
     ready = configured(config)
     # A fixed dependency code, never the key or its length: absent means the
     # secret binding did not reach the runtime; malformed means it did but the
@@ -127,6 +146,7 @@ def status(assertion, config):
         "runtime_key_missing" if not _key(config) else "runtime_key_malformed")
     return {"schema_version": "hub-assessment-provider/v1",
             "configured": ready, "dependency": dependency,
+            "provider": provider,
             "model": model_name(config) if ready else None,
             "external_writes": 0}
 
@@ -151,39 +171,151 @@ def _teacher_prompts(assertion, config):
              "bundled_matches": live.get("bundled_matches", {})})
 
 
-def _call(config, system, user):
-    import requests as http
-    body = {"model": model_name(config), "max_tokens": MAX_OUTPUT_TOKENS,
-            "temperature": 0, "system": system,
-            "messages": [{"role": "user", "content": user}]}
+OPENAI_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "responses": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question_id": {"type": "string"},
+                    "category": {"type": "string", "enum": ["NOTES", "BANK", "DRAFT"]},
+                    "judgment": {"type": "string", "enum": [
+                        "meaningful_attempt", "blank", "printed_copy", "review"
+                    ]},
+                    "response_excerpt": {"type": "string"},
+                    "evidence_note": {"type": "string", "maxLength": 400},
+                    "conceptual_level": {"type": "string", "enum": [
+                        "Beginning", "Developing", "Proficient", "Extending",
+                        "Evidence unavailable"
+                    ]},
+                    "explanation_level": {"type": "string"},
+                    "critical_aspect": {"type": "string", "maxLength": 200},
+                    "rubric_version": {"type": "string", "enum": ["critical-aspect-4/v1"]},
+                    "conceptual_feedback": {"type": "string", "maxLength": 1200},
+                    "prompt": {"type": "string"},
+                    "prompt_basis": {"type": "string"},
+                    "slide_number": {"type": "string"},
+                    "optional": {"type": "boolean"},
+                },
+                "required": [
+                    "question_id", "category", "judgment", "response_excerpt",
+                    "evidence_note", "conceptual_level", "explanation_level",
+                    "critical_aspect", "rubric_version", "conceptual_feedback",
+                    "prompt", "prompt_basis", "slide_number", "optional",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "feedback": {"type": "string"},
+    },
+    "required": ["responses", "feedback"],
+    "additionalProperties": False,
+}
+
+
+def _request(http, url, *, body, headers):
     try:
         with http.Session() as session:
             session.trust_env = False
-            response = session.post(API_URL, json=body, timeout=(5, 240),
-                                    allow_redirects=False, headers={
-                                        "x-api-key": _key(config),
-                                        "anthropic-version": API_VERSION})
+            return session.post(url, json=body, timeout=(5, 240),
+                                allow_redirects=False, headers=headers)
     except Exception:
         raise ConnectionError("provider_unavailable") from None
+
+
+def _provider_error(response):
     if response.status_code == 401:
         raise ConnectionError("provider_auth_failed")
     if response.status_code == 429:
         raise ConnectionError("provider_rate_limited")
-    if response.status_code == 400:
-        # A low credit balance surfaces as a 400; never echo the body.
+    if response.status_code in (400, 402, 403):
+        # Billing, account limits and rejected requests are intentionally
+        # collapsed to a fixed code; never echo a provider response body.
         raise ConnectionError("provider_request_refused")
     if response.status_code != 200:
         raise ConnectionError("provider_unavailable")
+
+
+def _call_anthropic(config, system, user):
+    import requests as http
+    body = {"model": model_name(config), "max_tokens": MAX_OUTPUT_TOKENS,
+            "temperature": 0, "system": system,
+            "messages": [{"role": "user", "content": user}]}
+    response = _request(
+        http, ANTHROPIC_API_URL, body=body,
+        headers={"x-api-key": _key(config), "anthropic-version": ANTHROPIC_API_VERSION},
+    )
+    _provider_error(response)
     try:
         data = response.json()
         text = "".join(block.get("text", "") for block in data.get("content", [])
                        if isinstance(block, dict))
         usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
         return text, {"input_tokens": usage.get("input_tokens"),
+                      "cached_input_tokens": usage.get("cache_read_input_tokens"),
+                      "cache_write_tokens": usage.get("cache_creation_input_tokens"),
                       "output_tokens": usage.get("output_tokens"),
-                      "model": data.get("model")}
+                      "provider": "anthropic", "model": data.get("model")}
     except Exception:
         raise ConnectionError("provider_response_invalid") from None
+
+
+def _call_openai(config, system, user):
+    import requests as http
+    # Stable teacher instructions precede per-student evidence and get an
+    # explicit cache breakpoint. Responses storage is disabled for school work.
+    body = {
+        "model": model_name(config),
+        "store": False,
+        "input": [
+            {"role": "developer", "content": [{
+                "type": "input_text", "text": system,
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }]},
+            {"role": "user", "content": user},
+        ],
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
+        "text": {"format": {
+            "type": "json_schema", "name": "assessment_packet",
+            "strict": True, "schema": OPENAI_RESPONSE_SCHEMA,
+        }},
+    }
+    response = _request(
+        http, OPENAI_API_URL, body=body,
+        headers={"Authorization": "Bearer " + _key(config),
+                 "Content-Type": "application/json"},
+    )
+    _provider_error(response)
+    try:
+        data = response.json()
+        parts = []
+        for item in data.get("output", []) or []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for block in item.get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "output_text":
+                    parts.append(block.get("text", ""))
+        text = "".join(parts)
+        usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
+        details = (usage.get("input_tokens_details", {})
+                   if isinstance(usage.get("input_tokens_details"), dict) else {})
+        return text, {
+            "input_tokens": usage.get("input_tokens"),
+            "cached_input_tokens": details.get("cached_tokens"),
+            "cache_write_tokens": usage.get("cache_write_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "provider": "openai", "model": data.get("model"),
+        }
+    except Exception:
+        raise ConnectionError("provider_response_invalid") from None
+
+
+def _call(config, system, user):
+    if provider_name(config) == "openai":
+        return _call_openai(config, system, user)
+    return _call_anthropic(config, system, user)
 
 
 def _extract_json(text):
@@ -375,14 +507,19 @@ def draft(assertion, request, config):
         if stored is not None:
             assessment_target.check_cached(stored["packet"], request, identity)
             return _draft_reply(stored, cached=True)
-    user = ("TEACHER COMPLETION INSTRUCTIONS:\n" + completion_prompt
-            + "\n\nTEACHER FEEDBACK INSTRUCTIONS:\n" + feedback_prompt
-            + "\n\nDISTRIBUTED MANIFEST (required items):\n"
+    # Keep the long, stable teacher instructions before per-student evidence
+    # so provider prompt caching can reuse them across a class batch.
+    stable_instructions = (
+        SYSTEM
+        + "\n\nTEACHER COMPLETION INSTRUCTIONS:\n" + completion_prompt
+        + "\n\nTEACHER FEEDBACK INSTRUCTIONS:\n" + feedback_prompt
+    )
+    user = ("DISTRIBUTED MANIFEST (required items):\n"
             + json.dumps(manifest, sort_keys=True)
             + "\n\nASSESSMENT STAGE: " + str(request["stage"])
             + "\n\nSTUDENT SUBMISSION TEXT (verbatim export):\n" + capture["text"])
     try:
-        text, usage = _call(config, SYSTEM, user)
+        text, usage = _call(config, stable_instructions, user)
         result = _extract_json(text)
         packet = {"schema_version": assessment_records.PACKET_VERSION,
                   "class_key": request["class_key"], "section_id": request["section_id"],
