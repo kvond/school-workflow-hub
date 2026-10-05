@@ -117,26 +117,37 @@ function morningTotals(report) {
   return out;
 }
 
+function morningProblem(report) {
+  if (!report) return '';
+  if (report.code !== 'finished') return 'Morning run: ' + String(report.code || 'status unavailable').replaceAll('_', ' ') + '. Completion is not verified.';
+  const held = (report.items || []).filter(item => !['read_back', 'nothing_to_enter', 'no_scores'].includes(item.code));
+  return held.length ? `${held.length} assignment${held.length === 1 ? '' : 's'} did not finish: ` +
+    [...new Set(held.map(item => String(item.code || 'status unavailable').replaceAll('_', ' ')))].join(', ') + '.' : '';
+}
+
 function renderMorningCockpit(report, routineData) {
   if (!report) return cockpitPanel('What ran',
     note('No 7:00 a.m. score-entry receipt is recorded for today. This does not mean grades failed; it means no completed morning receipt is available.', 'info'),
     routineData?.scores_entered?.last ? el('p', {class: 'muted', text: 'Latest Scores entered record: ' + routineData.scores_entered.last}) : null);
   const totals = morningTotals(report);
   const handled = totals.filled + totals.raised + totals.kept;
+  const problem = morningProblem(report);
   const detail = (report.items || []).map(item =>
     el('li', {}, el('strong', {text: item.assignment + ': '}),
-      `${item.filled} entered · ${item.raised} raised · ${item.kept} kept · ${item.left} left`));
+      `${item.filled} entered · ${item.raised} raised · ${item.kept} kept · ${item.left} left · ${String(item.code || 'status unavailable').replaceAll('_', ' ')}`));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
     el('p', {class: 'cockpit-label', text: 'grade rows handled or preserved by the morning run'}),
-    el('p', {class: totals.left ? 'needs' : 'ok', text: totals.left
+    el('p', {class: problem || totals.left ? 'needs' : 'ok', text: problem || (totals.left
       ? `${totals.left} row${totals.left === 1 ? '' : 's'} left for review.`
-      : '✓ Nothing from this receipt was left unresolved.'}),
+      : '✓ Nothing from this completed receipt was left unresolved.')}),
     el('details', {}, el('summary', {text: 'Morning assignment details'}), el('ul', {}, ...detail)));
 }
 
 function renderNeedsYou(report, releaseRows) {
   const items = [];
+  const problem = morningProblem(report);
+  if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
     const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
     if (!row.left && !reasons.length) continue;
@@ -693,16 +704,17 @@ async function postJSON(url, body) {
 }
 
 async function openPanel(form, which) {
+  const seq = work.seq;
   const ui = work.ui[form.form_id] = {...work.ui[form.form_id]};
   if (ui.open === which) { ui.open = null; renderWork(); return; }
   ui.open = which; ui.error = null; ui.busy = which === 'feedback' ? 'Finding students with revised answers…' : null;
   renderWork();
   if (which !== 'feedback') return;
   try {
-    ui.feedback = await getJSON(`api/feedback?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`);
+    ui.feedback = await getJSON(`api/feedback/native?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`);
   } catch (error) { ui.error = error.message; }
   ui.busy = null;
-  renderWork();
+  if (seq === work.seq && work.ui[form.form_id] === ui) renderWork();
 }
 
 async function loadMarks(forms, seq) {
@@ -1100,34 +1112,51 @@ window.addEventListener('message', event => {
 });
 window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 
+async function feedbackAction(form, student, action) {
+  const ui = work.ui[form.form_id];
+  const scope = {class: work.cls, week: work.week, form: form.form_id, file: student.file_id};
+  const seq = work.seq;
+  ui.busy = action === 'draft' ? `Generating feedback for ${student.name}…` : 'Saving the private draft…';
+  ui.error = null; renderWork();
+  try {
+    const body = action === 'draft' ? scope : {...scope, id: student.draft.id};
+    const result = await postJSON(`api/feedback/${action}`, body);
+    if (seq !== work.seq || ui !== work.ui[form.form_id]) return;
+    student.draft = result;
+  } catch (error) {
+    if (seq === work.seq && ui === work.ui[form.form_id]) ui.error = error.message;
+  } finally {
+    if (seq === work.seq && ui === work.ui[form.form_id]) { ui.busy = null; renderWork(); }
+  }
+}
+
 function feedbackPanel(form) {
-  const ui = work.ui[form.form_id] || {};
-  const data = ui.feedback;
-  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Start feedback (use Teacher Claude)'}));
-  if (ui.busy) { panel.append(el('p', {class: 'muted', text: ui.busy})); return panel; }
+  const ui = work.ui[form.form_id] || {}, data = ui.feedback;
+  const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Student feedback'}));
+  if (ui.busy) { panel.append(el('p', {role: 'status', text: ui.busy})); return panel; }
   if (ui.error) panel.append(note(ui.error));
   if (!data) return panel;
-  if (!data.sheet?.configured) panel.append(note(data.sheet?.setup || '', 'info'));
   if (data.problem) panel.append(note(data.problem));
-  const since = data.sheet?.feedback_at ? markDate(data.sheet.feedback_at) : '';
-  const counts = [data.done_before ? `${data.done_before} turned in before the last feedback (${since})` : '',
-    data.no_revision ? `${data.no_revision} have no revised answers yet` : ''].filter(Boolean).join(' · ');
-  if (!data.students.length) {
-    panel.append(note('Nobody new has revised answers to give feedback on.' + (counts ? ` (${counts}.)` : ''), 'info'));
-    return panel;
+  panel.append(el('p', {class: 'muted', text: 'Generate a one-page draft, review it, then save and open its PDF. Drafts stay private in the Hub. Grades and delivery checkboxes do not change. Reopening or printing saved feedback makes no new AI call.'}));
+  if (!data.students.length) panel.append(note('No current, roster-matched submissions are available for this lesson.', 'info'));
+  for (const student of data.students) {
+    const d = student.draft;
+    const card = el('section', {class: 'surface'}, el('h4', {text: `${student.name} · ${student.section}`}));
+    if (student.hold) card.append(note(student.hold));
+    if (d) {
+      card.append(el('p', {text: d.report.student_summary}), el('p', {}, el('strong', {text: 'One question: '}), d.report.question),
+        el('ul', {}, d.report.aspects.map(a => el('li', {text: `${a.name}: ${a.current_level}`}))),
+        el('p', {class: 'muted', text: `Draft based on work modified ${when(d.source_modified)}. ${d.saved_at ? 'Saved privately in the Hub.' : 'Ready to review and save.'}`}));
+      if (d.report.teacher_notes.length) card.append(el('details', {}, el('summary', {text: 'Teacher notes — excluded from the student PDF'}),
+        el('ul', {}, d.report.teacher_notes.map(n => el('li', {text: n})))));
+    }
+    const actions = el('div', {class: 'action-row'});
+    if (!student.hold) actions.append(el('button', {type: 'button', onclick: () => feedbackAction(form, student, 'draft')},
+      d ? 'Check current work / reuse draft' : 'Generate feedback'));
+    if (d && !d.saved_at && !student.hold) actions.append(el('button', {type: 'button', class: 'primary', onclick: () => feedbackAction(form, student, 'save')}, 'Save private draft'));
+    if (d?.pdf_url) actions.append(link('Open saved PDF / print', d.pdf_url, 'primary'));
+    card.append(actions); panel.append(card);
   }
-  const status = el('span', {class: 'muted'});
-  panel.append(
-    el('p', {}, `Feedback for ${data.students.length} student(s) with revised answers${since ? ` turned in since ${since}` : ''}${counts ? ` (${counts})` : ''}. Copy the prompt, paste it into Teacher Claude, and it will make one Google Doc with two pages per student for printing double-sided. Students are named by first name and last initial.`),
-    el('ul', {class: 'files'}, data.students.map(s => el('li', {text: `${s.name} — ${s.section} — revised ${s.draft_done} of ${s.draft_required}`}))),
-    el('div', {class: 'action-row'},
-      data.prompt ? el('button', {type: 'button', class: 'primary', onclick: () => copyText(data.prompt, status)}, 'Copy prompt for Teacher Claude') : null,
-      data.sheet?.configured ? el('button', {type: 'button', onclick: () => recordMark(form, 'feedback')},
-        'Mark feedback done (click adds to Scores entered)') : null,
-      data.prompt_url ? link('Edit the prompt in the Agenda ↗', data.prompt_url) : null, status),
-    data.sheet?.configured ? el('p', {class: 'muted'}, 'Click “Mark feedback done” right after the feedback Doc is made. It adds a dated row to ',
-      link(`“${data.sheet.name || 'Scores entered'}”`, data.sheet.url), '. Next time, only students who turn in something new after that are listed, so nobody’s feedback is printed twice.') : null,
-    data.prompt ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'for-claude', text: data.prompt})) : null);
   return panel;
 }
 
@@ -1186,6 +1215,9 @@ function renderForm(form, lesson) {
   const scores = work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress;
+  box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
+    ui.open === 'feedback' ? 'Hide feedback' : 'Student feedback')));
+  if (ui.open === 'feedback') box.append(feedbackPanel(form));
   box.append(...[
     ui.progress ? el('p', {class: 'muted', text: ui.progress}) : null,
     scoredAll ? el('details', {class: 'manual', open: Boolean(ui.open)},
@@ -1193,8 +1225,6 @@ function renderForm(form, lesson) {
       el('div', {class: 'action-row'},
         el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
           ui.open === 'ic' ? 'Hide IC scores' : 'Scores are ready to enter in IC'),
-        el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
-          ui.open === 'feedback' ? 'Hide feedback' : 'Start feedback'),
         SCAN_CLASSES.includes(work.cls) ? el('button', {type: 'button', onclick: () => openPanel(form, 'answers')},
           ui.open === 'answers' ? 'Hide answers' : 'Answers by question') : null)) : null,
   ].filter(Boolean));
@@ -1215,7 +1245,6 @@ function renderForm(form, lesson) {
         coding.extra.length ? ` A box has a code that isn’t on the list — ${coding.extra.join(', ')}.` : ''].join(''), 'info'));
     }
     if (ui.open === 'ic') box.append(icPanel(form, scores, lesson));
-    if (ui.open === 'feedback') box.append(feedbackPanel(form));
     if (ui.open === 'answers') box.append(answersPanel(form, scores));
   }
   const listed = [...matched, ...unmatched];

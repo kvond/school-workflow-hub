@@ -697,7 +697,8 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if chosen is None:
         return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
                                   "(Student copy or Teacher deck), so its boxes can't be checked."}
-    result = {**assess(deck, chosen[2]), "template": chosen[1].get("name", "")}
+    result = {**assess(deck, chosen[2]), "template": chosen[1].get("name", ""),
+              "template_id": chosen[0], "template_updated": chosen[1].get("modifiedTime", "")}
     _remember(_results, (file_id, meta.get("modifiedTime", "")),
               {"template": (chosen[0], chosen[1].get("modifiedTime", "")), "result": result}, MAX_CACHED_RESULTS)
     return {**out, **result}

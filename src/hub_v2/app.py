@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, audit, completion, feedback, google, ledger, morning, recovery, routine, tidy, work
+from . import agenda_edit, audit, completion, feedback, google, ledger, morning, native_feedback, recovery, routine, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -140,6 +140,10 @@ def api(sub, query, config):
                 "embed_prompt": {"text": prompt, "url": where} if prompt else {"problem": where}}
     if sub == "api/audit":
         return audit.check(token, agenda, _class_key(_one(query, "class")))
+    if sub == "api/feedback/native":
+        class_key, week, form_id = _form_args(query)
+        found = lesson_work(token, config, agenda, class_key, week, fresh=True)
+        return native_feedback.listing(config, native_feedback.target(class_key, week, form_id, ''), found)
     if sub in ("api/ledger", "api/feedback"):
         class_key, week, form_id = _form_args(query)
         if sub == "api/ledger":
@@ -226,6 +230,52 @@ def feedback_list(token, config, agenda, class_key, week, form_id):
             "prompt": feedback.build(context, students, prompt) if prompt and students else None,
             "problem": None if prompt else where, "prompt_url": where if prompt else None,
             "done_before": done_before, "no_revision": no_revision, "sheet": sheet}
+
+
+def native_feedback_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
+    from school_workflow_hub.adapters.hosted_agenda import ConnectionError
+    try:
+        payload = _json_body(environ, 2000)
+        assertion = environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION')
+        if environ['PATH_INFO'].endswith('/save'):
+            if set(payload) != {'id', 'class', 'week', 'form', 'file'}:
+                raise ValueError()
+            saved = native_feedback.get_saved(config, payload['id']).value
+            _form_args(payload)
+            scope = {k: payload[k] for k in ('class', 'week', 'form', 'file')}
+            if any(scope[k] != saved['scope'][k] for k in ('class', 'form', 'file')):
+                raise ValueError()
+            token = google.service_token(config)
+            agenda = load_agenda(token, config, fresh=True)
+            found = lesson_work(token, config, agenda, scope['class'], scope['week'], fresh=True)
+            inputs = native_feedback.evidence(assertion, token, config, agenda, scope, found)
+            return respond('200 OK', native_feedback.save(config, payload['id'], inputs))
+        if set(payload) != {'class', 'week', 'form', 'file'}:
+            raise ValueError()
+        cls, week, form_id = _form_args(payload)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{20,128}', str(payload.get('file', ''))):
+            raise ValueError()
+        token = google.service_token(config)
+        agenda = load_agenda(token, config, fresh=True)
+        found = lesson_work(token, config, agenda, cls, week, fresh=True)
+        inputs = native_feedback.evidence(assertion, token, config, agenda, payload, found)
+        return respond('200 OK', native_feedback.generate(config, inputs))
+    except native_feedback.Held as error:
+        return respond('409 Conflict', {'error': str(error)})
+    except Conflict:
+        return respond('409 Conflict', {'error': 'This feedback is already being prepared. Reopen the saved draft before retrying.'})
+    except (StoreUnavailable, ConnectionError):
+        return respond('503 Service Unavailable', {'error': 'The private feedback source or storage is unavailable. No grades changed.'})
+    except google.GoogleError as error:
+        return respond('502 Bad Gateway', {'error': str(error)})
+    except (ValueError, KeyError, TypeError):
+        return respond('400 Bad Request', {'error': 'That feedback request was not understood.'})
+    except Exception:
+        return respond('503 Service Unavailable', {'error': 'Feedback could not finish. Reopen the draft before retrying; no grades changed.'})
 
 
 def record_post(environ, respond, config):
@@ -414,6 +464,8 @@ def application(environ, start_response, config=None):
         return tidy_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/record":
         return record_post(environ, respond, config)
+    if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save'):
+        return native_feedback_post(environ, respond, config)
     if method == "POST" and path in ("/v2/api/answers", "/v2/api/answers/sweep"):
         return retired_answers_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda":
@@ -440,7 +492,18 @@ def application(environ, start_response, config=None):
         return respond("401 Unauthorized", {"error": "Please sign in again: reload this page."})
     try:
         query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=10)
+        if sub == 'api/feedback/pdf':
+            if set(query) != {'id'}:
+                raise ValueError()
+            saved = native_feedback.get_saved(config, _one(query, 'id')).value
+            if not saved['saved_at']:
+                raise native_feedback.Held('Save this private draft before printing it.')
+            from .feedback_pdf import render
+            return respond('200 OK', render(saved), 'application/pdf',
+                           [('Content-Disposition', 'inline; filename="student-feedback-draft.pdf"')])
         body = api(sub, query, config)
+    except native_feedback.Held as error:
+        return respond('409 Conflict', {'error': str(error)})
     except ValueError:
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
     except google.GoogleError as error:
