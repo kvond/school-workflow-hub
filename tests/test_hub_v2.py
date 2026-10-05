@@ -1,6 +1,7 @@
 """Teaching Hub v2 on fictional data only; no Google call is made."""
 import io
 import json
+import re
 import unittest
 import unittest.mock
 import zipfile
@@ -772,6 +773,17 @@ def call(path, method="GET", query="", assertion=None, config=None):
 
 
 class AppTests(unittest.TestCase):
+    def test_every_page_script_is_served_as_javascript(self):
+        _, _, page = call("/v2/")
+        scripts = re.findall(rb'<script[^>]+src="([^"]+)"', page)
+        self.assertIn(b"provider-status.js", scripts)
+        for script in scripts:
+            with self.subTest(script=script):
+                status, headers, body = call("/v2/" + script.decode())
+                self.assertEqual(status, "200 OK")
+                self.assertEqual(headers["Content-Type"], "text/javascript; charset=utf-8")
+                self.assertTrue(body)
+
     def test_pages_and_redirect(self):
         self.assertEqual(call("/v2")[0], "302 Found")
         status, headers, body = call("/v2/")

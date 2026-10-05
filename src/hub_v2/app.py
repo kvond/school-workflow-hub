@@ -22,6 +22,7 @@ from . import agenda_edit, audit, completion, feedback, google, ledger, morning,
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
+          "provider-status.js": "text/javascript; charset=utf-8",
           "style.css": "text/css; charset=utf-8"}
 SECURITY_HEADERS = [
     ("Cache-Control", "no-store"),
@@ -425,7 +426,7 @@ def application(environ, start_response, config=None):
     if path == "/v2":
         return respond("302 Found", b"", "text/plain", [("Location", "/v2/")])
     sub = path[len("/v2/"):] if path.startswith("/v2/") else None
-    if sub in ("", "index.html", "app.js", "style.css"):
+    if sub == "" or sub in ASSETS:
         name = sub or "index.html"
         try:
             return respond("200 OK", (STATIC / name).read_bytes(), ASSETS[name])
