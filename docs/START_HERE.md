@@ -1,5 +1,21 @@
 # School Workflow Hub — start here
 
+## October 5 verification continuation
+
+The teacher approved the existing OpenAI connection and a one-page ninth-grade
+feedback draft. V2's Student feedback path now generates, reviews, saves to the
+existing private Hub store and serves an authenticated PDF. It reads the live
+Agenda policy and requires an exact registered lesson, current source revision
+and school-email roster match. It does not write grades, delivery states or
+Drive permissions. Provider responses are reserved and cached durably so an
+interrupted request cannot automatically bill twice. A held response requires
+review; it is not silently regenerated. ZIP intake and longitudinal growth
+remain separate, unverified work. Deployment and a real saved/printed draft
+must still be verified separately from these implementation tests.
+
+Morning status must show incomplete or failed receipts as unresolved. An active
+schedule and a ready browser companion do not establish a completed run.
+
 ## Current teacher decision: simplify, do not restart (September 18, 2026)
 
 The teacher needs two usable operations, not more prompts or exposed machinery:

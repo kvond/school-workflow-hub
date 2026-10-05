@@ -24,6 +24,14 @@ on:
       - 'src/school_workflow_hub/adapters/shared_form_intake.py'
       - 'tests/test_dated_agenda.py'
       - 'tests/test_shared_intake_catalog.py'
+      - 'src/hub_v2/native_feedback.py'
+      - 'src/hub_v2/feedback_pdf.py'
+      - 'src/hub_v2/app.py'
+      - 'src/hub_v2/completion.py'
+      - 'tests/test_native_feedback.py'
+      - 'web/tests/native-feedback.test.mjs'
+      - 'requirements-hosting.txt'
+      - 'requirements-testing.txt'
       - '.github/workflows/deck-release-gate.yml'
   push:
     branches: [main]
@@ -41,6 +49,14 @@ on:
       - 'tests/test_hub_v2.py'
       - 'src/school_workflow_hub/adapters/assessment_provider.py'
       - 'tests/test_assessment_provider.py'
+      - 'src/hub_v2/native_feedback.py'
+      - 'src/hub_v2/feedback_pdf.py'
+      - 'src/hub_v2/app.py'
+      - 'src/hub_v2/completion.py'
+      - 'tests/test_native_feedback.py'
+      - 'web/tests/native-feedback.test.mjs'
+      - 'requirements-hosting.txt'
+      - 'requirements-testing.txt'
       - '.github/workflows/deck-release-gate.yml'
 
 permissions:
@@ -62,10 +78,16 @@ jobs:
           fetch-depth: 1
           submodules: false
           lfs: false
+      - name: Install locked test dependencies
+        run: |
+          python3 -m venv .test-env
+          .test-env/bin/pip install --require-hashes -r requirements-testing.txt
       - name: Run deterministic release and provider tests
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONPATH: src
-        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_assessment_records tests.test_agenda_prompts tests.test_hub_v2 tests.test_dated_agenda tests.test_shared_intake_catalog
+        run: .test-env/bin/python -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_assessment_records tests.test_agenda_prompts tests.test_hub_v2 tests.test_dated_agenda tests.test_shared_intake_catalog tests.test_native_feedback
       - name: Check Hub browser JavaScript syntax
         run: node --check src/hub_v2/static/app.js
+      - name: Test feedback controls and morning status
+        run: node --test web/tests/native-feedback.test.mjs

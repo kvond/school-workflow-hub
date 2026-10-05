@@ -262,7 +262,7 @@ def _call_anthropic(config, system, user):
         raise ConnectionError("provider_response_invalid") from None
 
 
-def _call_openai(config, system, user):
+def _call_openai(config, system, user, *, schema=None):
     import requests as http
     # Stable teacher instructions precede per-student evidence and get an
     # explicit cache breakpoint. Responses storage is disabled for school work.
@@ -279,7 +279,7 @@ def _call_openai(config, system, user):
         "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
         "text": {"format": {
             "type": "json_schema", "name": "assessment_packet",
-            "strict": True, "schema": OPENAI_RESPONSE_SCHEMA,
+            "strict": True, "schema": schema or OPENAI_RESPONSE_SCHEMA,
         }},
     }
     response = _request(
@@ -312,9 +312,9 @@ def _call_openai(config, system, user):
         raise ConnectionError("provider_response_invalid") from None
 
 
-def _call(config, system, user):
+def _call(config, system, user, *, schema=None):
     if provider_name(config) == "openai":
-        return _call_openai(config, system, user)
+        return _call_openai(config, system, user, schema=schema)
     return _call_anthropic(config, system, user)
 
 
