@@ -12,6 +12,14 @@ on:
       - 'tests/test_hub_v2.py'
       - 'src/school_workflow_hub/adapters/assessment_provider.py'
       - 'tests/test_assessment_provider.py'
+      - 'src/school_workflow_hub/adapters/dated_agenda.py'
+      - 'src/school_workflow_hub/adapters/shared_form_intake.py'
+      - 'tests/test_dated_agenda.py'
+      - 'tests/test_shared_intake_catalog.py'
+      - 'src/school_workflow_hub/adapters/dated_agenda.py'
+      - 'src/school_workflow_hub/adapters/shared_form_intake.py'
+      - 'tests/test_dated_agenda.py'
+      - 'tests/test_shared_intake_catalog.py'
       - '.github/workflows/deck-release-gate.yml'
   push:
     branches: [main]
@@ -50,6 +58,6 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONPATH: src
-        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_hub_v2
+        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_hub_v2 tests.test_dated_agenda tests.test_shared_intake_catalog
       - name: Check Hub browser JavaScript syntax
         run: node --check src/hub_v2/static/app.js
