@@ -3,6 +3,8 @@ name: Deterministic release gate
 on:
   pull_request:
     paths:
+      - 'src/school_workflow_hub/workflows/assessment_records.py'
+      - 'tests/test_assessment_records.py'
       - 'src/school_workflow_hub/workflows/deck_release.py'
       - 'tests/test_deck_release.py'
       - 'src/hub_v2/audit.py'
@@ -24,6 +26,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'src/school_workflow_hub/workflows/assessment_records.py'
+      - 'tests/test_assessment_records.py'
       - 'src/school_workflow_hub/workflows/deck_release.py'
       - 'tests/test_deck_release.py'
       - 'src/hub_v2/audit.py'
@@ -58,6 +62,6 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONPATH: src
-        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_hub_v2 tests.test_dated_agenda tests.test_shared_intake_catalog
+        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_assessment_records tests.test_hub_v2 tests.test_dated_agenda tests.test_shared_intake_catalog
       - name: Check Hub browser JavaScript syntax
         run: node --check src/hub_v2/static/app.js
