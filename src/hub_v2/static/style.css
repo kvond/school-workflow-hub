@@ -166,3 +166,36 @@ button[disabled] { opacity: 0.6; cursor: default; }
   .card, .form-work { border-color: #999; break-inside: avoid; }
 }
 .prompt-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 360px; overflow: auto; }
+
+
+/* Hub v3 teacher cockpit */
+.eyebrow { margin: 0 0 3px; font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--muted); }
+.cockpit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
+.cockpit-panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin: 0 0 16px; }
+.cockpit-grid .cockpit-panel { margin: 0; }
+.cockpit-panel h2 { margin: 0 0 10px; font-size: 18px; }
+.cockpit-number { margin: 0; font-size: 38px; font-weight: 750; line-height: 1; color: var(--accent); }
+.cockpit-label { margin: 5px 0 10px; color: var(--muted); }
+.attention-list { margin: 6px 0 10px; padding-left: 20px; }
+.attention-list li { margin: 7px 0; }
+.needs { color: var(--warn-ink); font-weight: 600; }
+.today-lessons { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.today-lesson { border: 1px solid var(--line); border-radius: 10px; padding: 13px; background: var(--bg); }
+.today-lesson h3 { margin: 3px 0 8px; font-size: 17px; }
+.today-lesson-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.release-badge { display: inline-block; flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 750; letter-spacing: .02em; }
+.release-badge.ready { background: #e8f4ed; color: #25643d; }
+.release-badge.blocked { background: var(--warn-bg); color: var(--warn-ink); }
+.release-badge.stale { background: #eeeaf7; color: #554279; }
+.release-badge.neutral { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.readiness-strip { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 14px; margin: 0 0 12px; }
+.readiness-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+.release-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.release-item { display: grid; grid-template-columns: auto auto; align-items: center; gap: 4px 8px; border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; min-width: 210px; }
+.release-item small { grid-column: 1 / -1; color: var(--muted); max-width: 320px; }
+.cockpit-table td, .cockpit-table th { vertical-align: top; }
+
+@media (max-width: 760px) {
+  .cockpit-grid { grid-template-columns: 1fr; }
+  .readiness-head { display: block; }
+}

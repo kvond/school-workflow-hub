@@ -7,6 +7,9 @@ on:
       - 'tests/test_deck_release.py'
       - 'src/hub_v2/audit.py'
       - 'src/hub_v2/static/app.js'
+      - 'src/hub_v2/static/index.html'
+      - 'src/hub_v2/static/style.css'
+      - 'tests/test_hub_v2.py'
       - 'src/school_workflow_hub/adapters/assessment_provider.py'
       - 'tests/test_assessment_provider.py'
       - '.github/workflows/deck-release-gate.yml'
@@ -17,6 +20,9 @@ on:
       - 'tests/test_deck_release.py'
       - 'src/hub_v2/audit.py'
       - 'src/hub_v2/static/app.js'
+      - 'src/hub_v2/static/index.html'
+      - 'src/hub_v2/static/style.css'
+      - 'tests/test_hub_v2.py'
       - 'src/school_workflow_hub/adapters/assessment_provider.py'
       - 'tests/test_assessment_provider.py'
       - '.github/workflows/deck-release-gate.yml'
@@ -44,4 +50,6 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
           PYTHONPATH: src
-        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider
+        run: python3 -m unittest tests.test_deck_release tests.test_assessment_provider tests.test_hub_v2
+      - name: Check Hub browser JavaScript syntax
+        run: node --check src/hub_v2/static/app.js

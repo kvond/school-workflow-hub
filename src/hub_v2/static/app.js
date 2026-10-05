@@ -60,6 +60,199 @@ function showAgendaLink(agenda) {
   const a = $('agenda-link'); a.href = agenda.url; a.title = agenda.title || 'Agenda'; a.hidden = false;
 }
 
+
+// ---------- Hub v3 teacher cockpit ----------
+const cockpit = {seq: 0, audits: null, auditsAt: 0};
+
+function cockpitPanel(title, ...children) {
+  return el('section', {class: 'cockpit-panel'}, el('h2', {text: title}), ...children);
+}
+
+function releaseIssue(value) {
+  if (!value) return '';
+  const [code, aspect, phase] = String(value).split(':');
+  const words = code.replaceAll('_', ' ');
+  if (code === 'critical_aspect_block_missing') return `Missing critical-aspect block: ${aspect}`;
+  if (code === 'critical_aspect_phase_missing') return `${aspect}: missing ${String(phase || '').replaceAll('_', ' ')}`;
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function releaseBadge(release) {
+  if (!release) return el('span', {class: 'release-badge neutral', text: 'Not checked'});
+  const kind = release.status === 'READY' ? 'ready' : release.status === 'NOT_READY' ? 'blocked' : 'stale';
+  return el('span', {class: 'release-badge ' + kind, text: release.status.replaceAll('_', ' ')});
+}
+
+async function loadAudits(force = false) {
+  if (!force && cockpit.audits && Date.now() - cockpit.auditsAt < 60_000) return cockpit.audits;
+  const entries = await Promise.all(CLASSES.map(async ([key, name]) => {
+    try { return [key, name, await getJSON(`api/audit?class=${encodeURIComponent(key)}`)]; }
+    catch (error) { return [key, name, {rows: [], flags: [], problem: error.message}]; }
+  }));
+  cockpit.audits = Object.fromEntries(entries.map(([key, name, data]) => [key, {name, data}]));
+  cockpit.auditsAt = Date.now();
+  return cockpit.audits;
+}
+
+function releaseFor(audits, classKey, lesson) {
+  const rows = audits?.[classKey]?.data?.rows || [];
+  const exact = rows.find(row => row.topic === lesson.topic);
+  if (exact) return exact.release || null;
+  const sameWeek = lesson.week ? rows.filter(row => row.week === lesson.week) : [];
+  return sameWeek.length === 1 ? (sameWeek[0].release || null) : null;
+}
+
+function allReleaseRows(audits) {
+  return CLASSES.flatMap(([key, name]) => (audits?.[key]?.data?.rows || [])
+    .filter(row => row.release)
+    .map(row => ({classKey: key, className: name, ...row})));
+}
+
+function morningTotals(report) {
+  const out = {filled: 0, raised: 0, kept: 0, left: 0, reasons: {flag: 0, excused: 0, check: 0, name: 0, missing: 0}};
+  for (const item of report?.items || []) {
+    for (const key of ['filled', 'raised', 'kept', 'left']) out[key] += item[key] || 0;
+    for (const key of Object.keys(out.reasons)) out.reasons[key] += item.reasons?.[key] || 0;
+  }
+  return out;
+}
+
+function renderMorningCockpit(report, routineData) {
+  if (!report) return cockpitPanel('What ran',
+    note('No 7:00 a.m. score-entry receipt is recorded for today. This does not mean grades failed; it means no completed morning receipt is available.', 'info'),
+    routineData?.scores_entered?.last ? el('p', {class: 'muted', text: 'Latest Scores entered record: ' + routineData.scores_entered.last}) : null);
+  const totals = morningTotals(report);
+  const handled = totals.filled + totals.raised + totals.kept;
+  const detail = (report.items || []).map(item =>
+    el('li', {}, el('strong', {text: item.assignment + ': '}),
+      `${item.filled} entered · ${item.raised} raised · ${item.kept} kept · ${item.left} left`));
+  return cockpitPanel('What ran',
+    el('p', {class: 'cockpit-number', text: String(handled)}),
+    el('p', {class: 'cockpit-label', text: 'grade rows handled or preserved by the morning run'}),
+    el('p', {class: totals.left ? 'needs' : 'ok', text: totals.left
+      ? `${totals.left} row${totals.left === 1 ? '' : 's'} left for review.`
+      : '✓ Nothing from this receipt was left unresolved.'}),
+    el('details', {}, el('summary', {text: 'Morning assignment details'}), el('ul', {}, ...detail)));
+}
+
+function renderNeedsYou(report, releaseRows) {
+  const items = [];
+  for (const row of report?.items || []) {
+    const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
+    if (!row.left && !reasons.length) continue;
+    items.push(el('li', {}, el('strong', {text: row.assignment + ': '}),
+      reasons.length ? reasons.map(([reason, n]) => `${n} ${reason.replaceAll('_', ' ')}`).join(' · ') : `${row.left} left`));
+  }
+  for (const row of releaseRows.filter(row => row.release.status !== 'READY')) {
+    items.push(el('li', {}, el('strong', {text: `${row.className} · ${row.week} · ${row.topic}: `}),
+      releaseIssue(row.release.issues?.[0]) || row.release.status.replaceAll('_', ' ')));
+  }
+  return cockpitPanel('Needs you',
+    items.length ? el('ul', {class: 'attention-list'}, ...items)
+      : el('p', {class: 'ok', text: '✓ No grade-review exception or current deck-release problem is recorded.'}),
+    el('p', {class: 'muted', text: 'Excused/flagged rows, name mismatches, changed IC values and uncertain readback remain teacher decisions; ordinary blanks and raises do not.'}));
+}
+
+function renderTodayLessons(day, audits) {
+  const rows = [];
+  for (const cls of day?.classes || []) {
+    for (const lesson of cls.lessons || []) {
+      const release = releaseFor(audits, cls.key, lesson);
+      const links = (lesson.materials || []).slice(0, 4).map(material => link(material.label + ' ↗', material.url, 'chip'));
+      rows.push(el('article', {class: 'today-lesson'},
+        el('div', {class: 'today-lesson-head'},
+          el('div', {}, el('strong', {text: cls.name}), el('h3', {text: lesson.topic || 'Untitled lesson'})),
+          releaseBadge(release)),
+        release?.issues?.length ? el('p', {class: 'needs', text: releaseIssue(release.issues[0])}) : null,
+        links.length ? el('div', {class: 'links'}, ...links) : null,
+        el('div', {class: 'action-row'},
+          el('button', {type: 'button', onclick: () => { location.hash = '#plans'; }}, 'Review / revise lesson'))));
+    }
+  }
+  return cockpitPanel("Today's lessons",
+    rows.length ? el('div', {class: 'today-lessons'}, ...rows)
+      : el('p', {class: 'muted', text: day?.weekday ? `No lessons are listed for ${FULL_DAY[day.weekday] || day.weekday}.` : 'No lesson data was returned.'}));
+}
+
+function renderNextLessons(audits) {
+  const rows = allReleaseRows(audits);
+  if (!rows.length) return cockpitPanel('Next from Agenda',
+    note('No current/upcoming final deck was release-checked. Open Lessons / VT to inspect the Agenda and link audit.', 'info'));
+  const bodyRows = rows.map(row => {
+    const next = row.release.status === 'READY'
+      ? 'Teach; visual-only edits get a fast recheck.'
+      : (releaseIssue(row.release.issues?.[0]) || 'Revalidate before teaching.');
+    return el('tr', {},
+      el('td', {text: row.className}),
+      el('td', {text: row.week}),
+      el('td', {text: row.topic}),
+      el('td', {}, releaseBadge(row.release)),
+      el('td', {text: next}));
+  });
+  const table = el('table', {class: 'cockpit-table'},
+    el('thead', {}, el('tr', {}, ...['Class', 'Week', 'Lesson', 'Release', 'Next'].map(text => el('th', {text})))),
+    el('tbody', {}, ...bodyRows));
+  return cockpitPanel('Next from Agenda', el('div', {class: 'table-wrap'}, table));
+}
+
+async function loadToday(force = false) {
+  const seq = ++cockpit.seq;
+  setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
+  try {
+    if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
+    const [day, reportsData, routineData, audits] = await Promise.all([
+      getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
+      getJSON('api/morning/reports'),
+      getJSON('api/routine'),
+      loadAudits(force),
+    ]);
+    if (seq !== cockpit.seq) return;
+    showAgendaLink(day.agenda);
+    const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
+    const releaseRows = allReleaseRows(audits);
+    $('today-body').replaceChildren(
+      el('div', {class: 'cockpit-grid'},
+        renderMorningCockpit(report, routineData),
+        renderNeedsYou(report, releaseRows)),
+      renderTodayLessons(day, audits),
+      renderNextLessons(audits),
+      cockpitPanel('Feedback',
+        el('p', {text: 'Saved feedback still prints from Student work. The automatic Ready to print / Handed out / Needs new feedback queue is the next v3 slice.'}),
+        el('div', {class: 'action-row'},
+          el('button', {type: 'button', onclick: () => { location.hash = '#work'; }}, 'Open Student work'))));
+    setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
+  } catch (error) {
+    if (seq !== cockpit.seq) return;
+    setStatus('today-status', error.message, true);
+    $('today-body').replaceChildren();
+  }
+}
+
+async function loadLessonReadiness(force = false) {
+  const box = $('lesson-readiness');
+  if (!box) return;
+  box.replaceChildren(el('p', {class: 'muted', text: 'Checking current and upcoming deck releases…'}));
+  try {
+    const audits = await loadAudits(force);
+    const rows = allReleaseRows(audits);
+    if (!rows.length) {
+      box.replaceChildren(note('No current/upcoming deck release result is available yet.', 'info'));
+      return;
+    }
+    box.replaceChildren(
+      el('div', {class: 'readiness-head'},
+        el('strong', {text: 'VT / feedback-code readiness'}),
+        el('span', {class: 'muted', text: 'Actual final deck + live Prompt 0 / Prompt 2'})),
+      el('div', {class: 'release-row'}, ...rows.map(row =>
+        el('div', {class: 'release-item'},
+          el('span', {text: `${row.className} · ${row.week}`}),
+          releaseBadge(row.release),
+          el('small', {text: row.release.status === 'READY' ? row.topic : (releaseIssue(row.release.issues?.[0]) || row.topic)})))));
+  } catch (error) {
+    box.replaceChildren(note('Deck readiness could not be checked: ' + error.message));
+  }
+}
+
 // ---------- Lesson plans ----------
 const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null, weeks: {}, weeksLoading: {}};
 
@@ -1548,25 +1741,30 @@ async function loadRoutine() {
 
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  const current = ['work', 'routine'].includes(tab) ? tab : 'plans';
-  for (const name of ['plans', 'work', 'routine']) $('page-' + name).hidden = name !== current;
+  const current = ['today', 'plans', 'work', 'routine'].includes(tab) ? tab : 'today';
+  for (const name of ['today', 'plans', 'work', 'routine']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
-  if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
+  if (current === 'today') loadToday();
+  else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
   else if (current === 'routine') loadRoutine();
-  else if (!plans.started) loadPlans(plans.date);
+  else {
+    loadLessonReadiness();
+    if (!plans.started) loadPlans(plans.date);
+  }
 }
 
 fillSelect($('work-class'), CLASSES, work.cls);
 $('prev-week').addEventListener('click', () => loadPlans(addDays(plans.date, -7)));
 $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7)));
 $('today').addEventListener('click', () => loadPlans(todayISO()));
-$('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
+$('reload-plans').addEventListener('click', () => { loadLessonReadiness(true); loadPlans(plans.date, true); });
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
 $('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
+$('reload-today').addEventListener('click', () => loadToday(true));
 $('reload-routine').addEventListener('click', loadRoutine);
 $('run-link-check').addEventListener('click', runLinkCheck);
 $('reload-work').addEventListener('click', async () => {
