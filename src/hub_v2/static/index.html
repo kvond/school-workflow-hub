@@ -12,19 +12,32 @@
 <header class="top">
   <div class="brand"><span class="mark">a.</span><strong>Teaching Hub</strong></div>
   <nav class="tabs" aria-label="Pages">
-    <a href="#plans" data-tab="plans">Lesson plans</a>
+    <a href="#today" data-tab="today">Today</a>
+    <a href="#plans" data-tab="plans">Lessons / VT</a>
     <a href="#work" data-tab="work">Student work</a>
-    <a href="#routine" data-tab="routine">Routine</a>
+    <a href="#routine" data-tab="routine">System</a>
   </nav>
   <a class="agenda-link" id="agenda-link" target="_blank" rel="noopener noreferrer" hidden>Open Agenda ↗</a>
 </header>
 <main>
   <section id="morning-alert" aria-live="polite" hidden></section>
+  <section id="page-today" hidden>
+    <div class="bar">
+      <div>
+        <p class="eyebrow">TEACHER COCKPIT</p>
+        <h1>Today</h1>
+        <p class="muted">What ran, what needs you, and what is coming next.</p>
+      </div>
+      <div class="controls"><button type="button" id="reload-today">Refresh</button></div>
+    </div>
+    <p id="today-status" class="status" role="status"></p>
+    <div id="today-body"></div>
+  </section>
   <section id="page-plans" hidden>
     <div class="bar">
       <div class="week-nav">
         <button type="button" id="prev-week" aria-label="Previous week">←</button>
-        <div><h1 id="week-label">Lesson plans</h1><p id="week-closures" class="muted"></p></div>
+        <div><h1 id="week-label">Lessons / VT</h1><p id="week-closures" class="muted"></p></div>
         <button type="button" id="next-week" aria-label="Next week">→</button>
       </div>
       <div class="controls">
@@ -33,6 +46,7 @@
         <button type="button" id="reload-plans">Reload</button>
       </div>
     </div>
+    <section class="readiness-strip" id="lesson-readiness" aria-live="polite"></section>
     <nav id="days" class="days" aria-label="Days of the week"></nav>
     <p id="plans-status" class="status" role="status"></p>
     <div id="cards" class="cards"></div>
@@ -61,7 +75,7 @@
   </section>
   <section id="page-routine" hidden>
     <div class="bar">
-      <h1>Routine</h1>
+      <h1>System</h1>
       <div class="controls">
         <button type="button" id="reload-routine">Reload</button>
       </div>
