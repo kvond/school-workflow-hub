@@ -212,9 +212,9 @@ class CompletionTests(unittest.TestCase):
         compact = (
             "[[MARKER-INVENTORY:F06b]] NOTES=2 DRAFT=1 OPTIONAL=0 BANK_TERMS=0 "
             "NOTES_IDS=Q-ONE,Q-TWO DRAFT_IDS=Q-ONE OPTIONAL_IDS=-\n"
+            "[[NOTES:F06b:Q-TWO]] second words\n"
             "[[NOTES:F06b:Q-ONE]] first words\n"
             "[[DRAFT:F06b:Q-ONE]] revised words\n"
-            "[[NOTES:F06b:Q-TWO]] second words\n"
         )
         manifest = ar.derive_manifest(compact)
         self.assertEqual(manifest["inventory_basis"], "marker_census")
