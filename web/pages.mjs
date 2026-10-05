@@ -152,7 +152,7 @@ mountIcGradeSheet(queue,{
 const processStatus=el('p','','hint');processStatus.setAttribute('role','status');
 const processRow=el('div',undefined,'action-row');processRow.append(btn('Process work',()=>processWork()));queue.append(processRow,processStatus);
 const reviewBox=el('div',undefined,'assessment-review');queue.append(reviewBox);
-assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});
+assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>{retrieveRecords();loadFeedbackDelivery();}});
 const LESSON_INTAKE={
  submission_root_not_configured:'The dashboard has not been told where 00 ALL TURN IN lives. This is a deployment setting.',
  submission_reader_scope_missing:'The dashboard’s Drive read permission is misconfigured.',
@@ -187,7 +187,56 @@ async function processWork(){
   processStatus.textContent=d.files.length?(d.files.length+' submission'+(d.files.length===1?'':'s')+' found in '+(d.folder_name||'the lesson’s sources')+' · '+eligible+' not yet assessed'+extra+'. Review and generate feedback below.'):('No submission files found in this lesson’s sources'+extra+'.');
  }catch(e){if(generation===processGeneration)processStatus.textContent=e.message||'Process work could not run.';}
 }
-const reports=el('section',undefined,'surface');reports.append(el('h2','Feedback actions'),el('p','Print the selected lesson’s student feedback as a packet (one student per page), or print a single student from their row above. Printing uses the saved reports and makes no new AI calls.'));const reportActions=el('div',undefined,'action-row');const packetStatus=el('p','','hint');packetStatus.setAttribute('role','status');promptAction(reportActions,'Copy feedback instructions','feedback');reportActions.append(btn('Print feedback packet',()=>{const rows=recordState.status==='loaded'?filterRecords(recordState.data,scope.classKey,sectionId,scope.assignmentKey,scope.stage):[];const n=printFeedbackPacket(rows,recordState.status==='loaded'?recordState.data.submissions:[]);packetStatus.textContent=n?('Printing '+n+' student report'+(n===1?'':'s')+'.'):'No saved feedback to print for this selection yet.';}));reports.append(reportActions,packetStatus);
+const reports=el('section',undefined,'surface');
+reports.append(el('h2','Feedback actions'),el('p','Print the selected lesson’s saved feedback as a packet, then explicitly mark the packet printed and handed out. Printing uses saved reports and makes no new AI calls.'));
+const reportActions=el('div',undefined,'action-row');
+const packetStatus=el('p','','hint');packetStatus.setAttribute('role','status');
+const deliverySummary=el('p','','hint');deliverySummary.setAttribute('role','status');
+let deliveryByRecord=new Map(),lastPrintedRecordIds=[];
+
+function currentFeedbackRows(){
+ const rows=recordState.status==='loaded'?filterRecords(recordState.data,scope.classKey,sectionId,scope.assignmentKey,scope.stage):[];
+ return rows.filter(row=>row.feedback&&row.record_id&&row.section_id&&!row.hold_reason&&!['superseded','identity_unverified'].includes(row.status));
+}
+
+async function loadFeedbackDelivery(){
+ try{
+  const response=await fetch('/api/feedback-delivery',{cache:'no-store',credentials:'same-origin',redirect:'error'});
+  const data=await response.json();
+  if(!response.ok||data.schema_version!=='hub-feedback-queue/v1')throw Error();
+  deliveryByRecord=new Map([...data.ready,...data.printed,...data.handed_out].map(item=>[item.record_id,item]));
+  deliverySummary.textContent=data.ready.length+' ready to print · '+data.printed.length+' printed, not yet marked handed out · '+data.handed_out.length+' handed out.';
+ }catch{
+  deliverySummary.textContent='Feedback delivery status is unavailable. Saved feedback is unchanged.';
+ }
+}
+
+async function markFeedbackDelivery(action,recordIds){
+ if(!recordIds.length){packetStatus.textContent=action==='printed'?'Print a packet first.':'No printed feedback in this selection is waiting to be handed out.';return;}
+ packetStatus.textContent=action==='printed'?'Recording printed feedback…':'Recording handed-out feedback…';
+ try{
+  const response=await fetch('/api/feedback-delivery',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,record_ids:recordIds})});
+  const data=await response.json();
+  if(!response.ok||data.schema_version!=='hub-feedback-delivery-update/v1')throw Error(data.error||'Feedback delivery update failed.');
+  packetStatus.textContent=action==='printed'?('Recorded '+recordIds.length+' printed feedback report'+(recordIds.length===1?'':'s')+'.'):('Recorded '+recordIds.length+' handed-out feedback report'+(recordIds.length===1?'':'s')+'.');
+  await loadFeedbackDelivery();
+ }catch(error){packetStatus.textContent=error.message||'Feedback delivery status could not be updated.';}
+}
+
+promptAction(reportActions,'Copy feedback instructions','feedback');
+reportActions.append(btn('Print feedback packet',()=>{
+ const rows=currentFeedbackRows();
+ const n=printFeedbackPacket(rows,recordState.status==='loaded'?recordState.data.submissions:[]);
+ lastPrintedRecordIds=rows.filter(row=>row.feedback).map(row=>row.record_id);
+ packetStatus.textContent=n?('Printing '+n+' student report'+(n===1?'':'s')+'. After the print dialog finishes, mark the packet printed.'):'No saved feedback to print for this selection yet.';
+}));
+reportActions.append(btn('Mark packet printed',()=>markFeedbackDelivery('printed',lastPrintedRecordIds)));
+reportActions.append(btn('Mark handed out',()=>{
+ const ids=currentFeedbackRows().filter(row=>deliveryByRecord.get(row.record_id)?.status==='printed').map(row=>row.record_id);
+ markFeedbackDelivery('handed_out',ids);
+}));
+reports.append(deliverySummary,reportActions,packetStatus);
+loadFeedbackDelivery();
 async function reviewGrades(){
  const selection={classKey:scope.classKey,sectionId};
  const modal=$('detail'),body=el('div');
