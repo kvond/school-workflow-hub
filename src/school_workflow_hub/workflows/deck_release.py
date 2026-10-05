@@ -62,7 +62,7 @@ def _lines(text: str) -> list[str]:
 
 
 def _aspect_key(value: str) -> str:
-    value = re.sub(r"^\s*\d+\s*[.)-]?\s*", "", str(value or "")).strip()
+    value = re.sub(r"^\s*\d+\s*(?:[.)]|[-—–])?\s*", "", str(value or "")).strip()
     value = re.split(r"\s+[—–-]\s+|:\s+", value, maxsplit=1)[0]
     return " ".join(value.casefold().split())
 
