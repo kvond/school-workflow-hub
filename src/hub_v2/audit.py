@@ -19,7 +19,10 @@ weeks are skipped.
 """
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 
+from school_workflow_hub.workflows.deck_release import pptx_slide_texts, validate_release
+from . import feedback as feedback_module
 from . import google
 from .agenda import build_lesson, form_link, links, norm
 
@@ -46,6 +49,37 @@ def _titles(token, ids):
     ids = sorted(set(ids))
     with ThreadPoolExecutor(max_workers=8) as pool:
         return dict(zip(ids, pool.map(fetch, ids)))
+
+
+def _release_deck(token, deck_id, prompt0, prompt2):
+    """Read-only validation of the actual exported final-deck revision."""
+    try:
+        meta = google.drive_file(
+            token, deck_id, "id,name,mimeType,modifiedTime,version"
+        )
+        raw = google.deck_bytes(token, deck_id, meta.get("mimeType", ""))
+        result = validate_release(
+            pptx_slide_texts(raw),
+            revision=str(meta.get("version") or meta.get("modifiedTime") or ""),
+            prompt0=prompt0 or "",
+            prompt2=prompt2 or "",
+        )
+        result["title"] = meta.get("name", "")
+        return result
+    except (google.GoogleError, ValueError) as error:
+        return {
+            "schema_version": "hub-deck-release/v1",
+            "status": "NOT_READY",
+            "revision": "",
+            "critical_aspects": [],
+            "inventory_cycle": "",
+            "counts": {},
+            "issues": ["deck_release_unreadable"],
+            "warnings": [],
+            "receipt": {},
+            "external_writes": 0,
+            "problem": str(error),
+        }
 
 
 def _published(token, form_ids):
@@ -82,13 +116,40 @@ def check(token, agenda, class_key):
             match = DECK.search(material["url"])
             if match and match.group(1) not in {d["id"] for d in decks}:
                 decks.append({"label": material["label"], "id": match.group(1)})
+        release_deck = next((d["id"] for d in decks if d["label"] == "Teacher deck"),
+                            decks[0]["id"] if decks else "")
         rows.append({"row": row, "week": label, "topic": topic, "visible": _forms_in(cell("turnin")),
-                     "hidden": _forms_in(cell("turnin_url")), "second": _forms_in(cell("turnin2")), "decks": decks})
+                     "hidden": _forms_in(cell("turnin_url")), "second": _forms_in(cell("turnin2")),
+                     "decks": decks, "release_deck": release_deck})
     ids = [f["form_id"] for r in rows for f in r["visible"] + r["hidden"] + r["second"] if f["form_id"]]
     ids += [d["id"] for r in rows for d in r["decks"]]
     titles = _titles(token, ids) if ids else {}
     form_ids = [f["form_id"] for r in rows for f in r["visible"] + r["hidden"] + r["second"] if f["form_id"]]
     published = _published(token, form_ids) if form_ids else {}
+
+    # Release checks are heavier than title checks, so run them only for the
+    # current and next two planned lessons in this class. Older lessons remain
+    # available in the ordinary link audit without re-exporting every deck.
+    prompt0, _ = feedback_module.load_embed_prompt(token, agenda)
+    prompt2, _ = feedback_module.load_prompt(token, agenda)
+    current = agenda.week_for(date.today())
+    active_rows = []
+    if current:
+        labels = [r["week"] for r in rows]
+        try:
+            start = labels.index(current["label"])
+            active_rows = rows[start:start + 3]
+        except ValueError:
+            active_rows = []
+    release_ids = [r["release_deck"] for r in active_rows if r["release_deck"]]
+    releases = {}
+    if release_ids:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            results = pool.map(
+                lambda deck_id: _release_deck(token, deck_id, prompt0, prompt2),
+                release_ids,
+            )
+            releases = dict(zip(release_ids, results))
 
     flags = []
 
@@ -147,6 +208,7 @@ def check(token, agenda, class_key):
         return {"where": where, "label": f["label"], "form_id": f["form_id"] or "", "published_id": pub,
                 "title": title if isinstance(title, str) else "", "student_title": student_title}
     summary = [{"week": r["week"], "topic": r["topic"],
+                "release": releases.get(r["release_deck"]) if r["release_deck"] else None,
                 "forms": [form_row(f, "Turn it in") for f in r["visible"]]
                 + [form_row(f, "2nd turn it in") for f in r["second"]]
                 + [form_row(f, "_turnInURL") for f in r["hidden"]],
