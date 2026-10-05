@@ -159,6 +159,68 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
 
+
+    if path == "/api/feedback-delivery":
+        from .adapters import feedback_delivery
+        from .adapters.grading_records import read_records
+        from .adapters.hosted_agenda import (ConnectionError, _identity_configuration, authorize)
+        from .core.cloud_state import Conflict, StoreUnavailable
+        try:
+            assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            audience, allowed = _identity_configuration(os.environ)
+            authorize(assertion, audience, allowed)
+            records = read_records(assertion, os.environ)
+            if method == "GET":
+                if environ.get("QUERY_STRING", ""):
+                    raise ValueError("invalid_feedback_delivery")
+                return respond("200 OK", feedback_delivery.queue(
+                    records.get("submissions", []), os.environ))
+            if method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            origins = {v for v in os.environ.get("HUB_STATE_PROBE_ORIGINS", "").split(",")
+                       if v.startswith("https://") and "/" not in v[8:]}
+            if (environ.get("HTTP_ORIGIN") not in origins
+                    or environ.get("CONTENT_TYPE") != "application/json"
+                    or environ.get("QUERY_STRING", "")):
+                return respond("403 Forbidden", {"error": "save_origin_required"})
+            length = int(environ.get("CONTENT_LENGTH", "0"))
+            if not 1 <= length <= 20000:
+                raise ValueError("invalid_feedback_delivery")
+            payload = json.loads(environ["wsgi.input"].read(length))
+            if (not isinstance(payload, dict) or set(payload) != {"action", "record_ids"}
+                    or payload.get("action") not in {"printed", "handed_out"}
+                    or not isinstance(payload.get("record_ids"), list)
+                    or not 1 <= len(payload["record_ids"]) <= 100
+                    or any(not isinstance(value, str) or not value for value in payload["record_ids"])
+                    or len(set(payload["record_ids"])) != len(payload["record_ids"])):
+                raise ValueError("invalid_feedback_delivery")
+            by_id = {row.get("record_id"): row for row in records.get("submissions", [])}
+            changed = []
+            for record_id in payload["record_ids"]:
+                row = by_id.get(record_id)
+                if (not row or row.get("status") in {"superseded", "identity_unverified"}
+                        or row.get("hold_reason") or not row.get("section_id")
+                        or not isinstance(row.get("feedback"), str) or not row["feedback"].strip()):
+                    raise ValueError("invalid_feedback_delivery")
+                changed.append(feedback_delivery.mark(
+                    row, payload["action"], os.environ))
+            return respond("200 OK", {
+                "schema_version": "hub-feedback-delivery-update/v1",
+                "action": payload["action"], "records": changed,
+                "external_writes": 0,
+            })
+        except Conflict:
+            return respond("409 Conflict", {"error": "feedback_delivery_conflict"})
+        except StoreUnavailable:
+            return respond("503 Service Unavailable", {"error": "feedback_delivery_state_unavailable"})
+        except ConnectionError as error:
+            return respond("403 Forbidden" if str(error) == "sign_in_required"
+                           else "503 Service Unavailable", {"error": str(error)})
+        except (ValueError, KeyError, TypeError, OverflowError):
+            return respond("400 Bad Request", {"error": "invalid_feedback_delivery"})
+        except Exception:
+            return respond("503 Service Unavailable", {"error": "feedback_delivery_unavailable"})
+
     if path == "/api/assessment-save":
         from .adapters import assessment_save
         from .adapters.hosted_agenda import ConnectionError
