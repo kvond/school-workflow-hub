@@ -225,6 +225,15 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(manifest["bank_ids"], [])
         self.assertIn("verified exactly", manifest["reconciliation_note"])
 
+        item = packet()
+        item["manifest"] = manifest
+        item["responses"] = [
+            response("Q-ONE", "NOTES", "meaningful_attempt", "first words"),
+            response("Q-TWO", "NOTES", "meaningful_attempt", "second words"),
+            response("Q-ONE", "DRAFT", "meaningful_attempt", "revised words"),
+        ]
+        self.assertIs(ar.validate_packet(item, compact), item)
+
         broken = compact.replace("NOTES=2", "NOTES=3", 1)
         with self.assertRaises(ValueError) as caught:
             ar.derive_manifest(broken)
