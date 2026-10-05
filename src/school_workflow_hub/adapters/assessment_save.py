@@ -18,6 +18,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from .firestore_state import configured_store
+from . import feedback_delivery
 from .google_sheets import SheetsReader, SheetsReadError
 from .grading_records import HEADERS, _column, _sheet_map, configured, read_records
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize,
@@ -293,6 +294,21 @@ def _request_id(value):
     if not isinstance(value, str) or not re.fullmatch(r"[a-zA-Z0-9-]{16,64}", value):
         raise ValueError("invalid_assessment_save")
     return value
+
+
+
+def _delivery_receipt(records, record_id, config):
+    """Best-effort delivery projection; never invalidates a verified assessment."""
+    saved = next((row for row in records.get("submissions", [])
+                  if row.get("record_id") == record_id), None)
+    if not saved or not saved.get("feedback"):
+        return {"status": "not_applicable"}
+    try:
+        state = feedback_delivery.ensure_ready(saved, config)
+        return {"status": state["status"], "record_id": record_id,
+                "ready_at": state.get("ready_at")}
+    except Exception:
+        return {"status": "unavailable", "record_id": record_id}
 
 
 def save(assertion, payload, config):
