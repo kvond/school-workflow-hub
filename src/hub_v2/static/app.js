@@ -1594,7 +1594,7 @@ const ROUTINE = {
     {when: 'Weekdays, before school', you: 'Do the start-up list above.',
      done: 'The 6:30, 7:00 and 7:30 runs have what they need.'},
     {when: 'At school, when a new lesson starts', you: 'Open your class tab in the feedback checklist. Print the latest Made entries with unchecked Printed and Handed out boxes, then tick each box as you finish that step.',
-     done: 'Each student gets two pages of feedback, and the checklist shows who has it.'},
+     done: 'New feedback uses the approved one-page format. The checklist shows verified Drive delivery; a private Hub draft does not change it.'},
     {when: 'At school, before the next lesson', you: 'Open the Lesson opener in the private course folder. Start class with its information and questions.',
      done: 'The class goes back over what most students missed, before new material.'},
     {when: 'At school', you: 'Keep the Agenda up to date.',
@@ -1694,7 +1694,8 @@ function renderRoutine(data) {
       el('li', {}, sheet && !sheet.problem
         ? [link(`“${sheet.name}” ↗`, sheet.url), ` — a row for each IC entry and feedback round${sheet.last ? ` (last: ${sheet.last})` : ''}.`]
         : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
-      el('li', {}, 'Feedback, growth records, class summaries and the feedback checklist: in My Drive → Student Feedback — Private 2026–27.')));
+      el('li', {}, 'Feedback, growth records, class summaries and the feedback checklist: in My Drive → Student Feedback — Private 2026–27.'),
+      el('li', {}, 'Private Hub feedback drafts: Student work → choose the lesson → Student feedback. Save a draft there to open its PDF.')));
   body.replaceChildren(startup, mine, scheduled, manual, planning, sheets);
 }
 
