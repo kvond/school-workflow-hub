@@ -171,11 +171,17 @@ def validate_report(report, inputs):
                 or not isinstance(aspect.get('explanation'), str) or len(aspect['explanation']) > 500):
             raise Held('A critical-aspect label or level did not match the source.')
         quote = aspect.get('quote')
-        if not isinstance(quote, str) or len(quote) > 400 or len(quote.split()) > 25:
+        if not isinstance(quote, str) or len(quote) > 400:
             raise Held('A feedback quotation is too long or unreadable.')
         if original['available']:
             if not quote or quote not in original['answer']:
                 raise Held('A feedback quotation could not be verified in its revised-answer field.')
+            # Verify the entire supplied quotation before shortening it. This
+            # never turns a fabricated suffix into accepted source evidence.
+            # Keep an exact contiguous excerpt, preserving source whitespace.
+            words = list(re.finditer(r'\S+', quote))
+            if len(words) > 25:
+                aspect['quote'] = quote[:words[24].end()]
         elif quote or aspect['current_level'] != 'Evidence unavailable':
             raise Held('An unavailable answer cannot receive an invented quotation or level.')
     return report

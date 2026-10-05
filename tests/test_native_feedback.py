@@ -104,6 +104,19 @@ class NativeFeedbackTests(unittest.TestCase):
                 fb.generate(OPENAI_CONFIG, inputs())
         self.assertEqual(self.call.call_count, 1)
 
+    def test_verified_long_quote_is_shortened_without_another_model_call(self):
+        data = inputs(); data['aspects'][0]['answer'] = 'Carbon\n  ' * 30
+        response = report(); response['aspects'][0]['quote'] = data['aspects'][0]['answer']
+        self.call.return_value = json.dumps(response), {}
+        first = fb.generate(OPENAI_CONFIG, data)
+        quote = first['report']['aspects'][0]['quote']
+        self.assertEqual(len(quote.split()), 25)
+        self.assertIn(quote, data['aspects'][0]['answer'])
+        self.assertTrue(fb.generate(OPENAI_CONFIG, data)['cached'])
+        self.assertEqual(self.call.call_count, 1)
+        response['aspects'][0]['quote'] += 'invented ending'
+        with self.assertRaises(fb.Held): fb.validate_report(response, data)
+
     def test_blank_response_never_receives_a_level_or_quote(self):
         blank = inputs(); blank['aspects'][0].update(answer='', available=False)
         with self.assertRaises(fb.Held):
