@@ -1088,9 +1088,9 @@ async function maybeRecord(formId) {
 }
 function helperLine() {
   return el('p', {id: 'helper-status', class: helper.state === 'ready' ? 'ok' : 'note warn'},
-    helper.state === 'ready' ? `✓ The Chrome helper${helper.version ? ' ' + helper.version : ''} is installed in this browser.`
-      : helper.state === 'helper_not_configured' ? 'The Chrome helper here isn’t set up for this Hub. Ask Claude Code for a new helper package.'
-        : 'The Chrome helper isn’t installed in this browser. The Monday run needs it to enter scores: install it once on each computer (chrome://extensions → Developer mode → Load unpacked).');
+    helper.state === 'ready'
+      ? `✓ Score helper ready${helper.version ? ' · ' + helper.version : ''}.`
+      : 'Score helper isn’t connected in this browser. The morning review can’t run until it is ready.');
 }
 window.addEventListener('message', event => {
   if (event.source !== window || event.origin !== location.origin || event.data?.channel !== HELPER.reply) return;
@@ -1524,190 +1524,29 @@ async function missingWorkSheets() {
   }
 }
 
-// ---------- Routine: what runs on its own, and what you do ----------
-// The Monday prompt: pasted into the Claude extension in the teacher's own
-// Chrome (signed in to IC and the Hub). It prepares, waits for her OK, then
-// saves. Nothing here runs it on a timer.
-const mondayPrompt = () => `Please do my "Monday grades and roster" check now, in this Chrome window. I'm here and will review before anything is saved.
-
-GROUND RULES
-- This prompt replaces anything you remember about this routine from earlier weeks. Where your memory differs, follow this prompt.
-- If Infinite Campus (IC) or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password or choose a sign-in for me.
-- Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
-- Never type scores into IC yourself. The Chrome helper ("Hub helper" in IC) enters them: it keeps the higher score (fills blanks and raises lower scores, never lowers one), leaves IC flags alone, and after Save reloads IC and checks every score. If the Hub has no "Send to the Chrome helper" button, the helper isn't installed in this Chrome: stop and tell me.
-- Never delete anything, never create an IC assignment, and never change a due date that isn't on the list I approve.
-- Never type in the "Scores entered (On Dashboard)" sheet. The Hub adds its rows itself.
-- My sections: A2 Forensics and A3 Forensics (class: Forensics), A4 Biology (Biology), B3 A&P (A&P).
-
-PART A — ROSTER CHECK (read only)
-1. In IC, list each section's students as Last, First.
-2. Open my Google Sheet named "Rosters" (one tab per section). For each section list: students in IC but not in the tab, students in the tab but not in IC, and names spelled differently.
-3. In the Teaching Hub (${location.origin}/v2/#work), open Student work for each class and note anything its "Roster check" box flags.
-
-PART B — SCORES (read only)
-4. Check today's week and the three weeks before it in each class, with Section set to "All sections". Only work on assignments whose two weeks are still open, or closed within the last 8 days.
-5. For each of those assignments, wait until "Scoring N of M…" is gone and read its line that starts with "IC:". Skip it if it says "IC: final scores entered …" or has no "IC:" line. Otherwise click "Scores are ready to enter in IC", then "Send to the Chrome helper".
-6. In IC, find that assignment by its name, not its week number. For each section, open its (F) assignment (Notes) and its (S) assignment (Revision) so the score panel shows, and click "Hub helper" at the bottom right. Check the helper picked the right Hub lesson and column (fix them in its panel if not), but don't tick its box yet. Note its counts (to enter, raises, kept, left) and every row it leaves, with the reason. If an assignment isn't in IC at all, list it; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
-
-PART C — REVIEW (STOP)
-7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, the helper's counts, each raise old → new, and each row it leaves with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
-
-PART D — SAVE WHAT I APPROVE
-8. Roster: add only the students I approve, as new rows in the same format, with today's date (MM/DD/YYYY) in the tab's "Added" column. If the tab has no "Added" column, type Added in the first empty cell of row 1 to the right of the names. Don't delete rows or change other cells.
-9. IC: for each approved assignment and section, open its score panel, click "Hub helper", tick its box and click "Enter … and Save". Wait for it to say it saved and checked the scores. If it says it stopped or couldn't confirm, tell me exactly what it says and don't try again. For students it lists as new students, mark the assignment Exempt in IC. Enter approved due dates and click Save.
-10. The Hub notes "Entered in IC" by itself once the helper has done every section and column of an assignment. If an assignment doesn't show "✓ Entered in IC" afterward, tell me which.
-
-PART E — LOG
-11. Make a Google Doc named "Monday run — ${todayISO()}" at the top of 00 REAL ALL TURN IN with the roster changes made, what the helper entered, raised and left per section and assignment, anything that didn't read back, and a short note on anything confusing or slow.`;
-
-const ROUTINE = {
-  // How a completion score gets from a student's deck into IC, in order.
-  scoring: [
-    {when: 'Any day, any time', what: 'Students turn in their deck through the lesson’s Turn-in Form.'},
-    {when: '7:00 a.m. weekdays', what: 'The Chrome helper scores every class’s open assignments and enters them in IC, with a 0 for work not turned in. It keeps the higher score and never lowers one.'},
-    {when: 'Two weeks after the first turn-in', what: 'The assignment closes. Late work isn’t graded.'},
-  ],
-  // What runs without you. "needs" is what has to be open for it to run.
-  scheduled: [
-    {when: '6:30 a.m. weekdays', who: 'School ChatGPT (Codex)',
-     what: 'Checks rosters and tidies verified student work into each lesson’s turn-in folder before 7:00.',
-     needs: 'Nothing to click.'},
-    {when: '7:00 a.m. weekdays', who: 'Chrome helper',
-     what: 'Enters eligible scores in IC and checks them. Roster additions and removals still need review.',
-     needs: 'The Mac awake, school Chrome open with the Hub and IC tabs signed in, and the helper’s morning setting on.'},
-    {when: '7:30 a.m. weekdays', who: 'School ChatGPT (Codex)',
-     what: 'Writes feedback for the latest closed lesson, saves it privately and adds it to the feedback checklist. Then reads the class growth summaries and writes a one-page Lesson opener: what students are tending to miss, plus information and questions to bring up at the start of the next lesson.',
-     needs: 'Nothing to click.'},
-  ],
-  // Start-up: what to open each weekday morning, in order.
-  startup: [
-    'Mac on, plugged in, and set not to sleep before 7:00.',
-    'Chrome → the SCHOOL profile (katherine.vonduyke@redclay.k12.de.us). Not your home profile.',
-    'Tab 1: the Teaching Hub, signed in.',
-    'Tab 2: Infinite Campus (through ClassLink), signed in. Any IC page is fine.',
-    'Click the IC tab last, so it is the tab in front, and leave that Chrome window on top. Don’t minimize it.',
-    'Open the ChatGPT app on a school account (AIHS or the teacher account).',
-    'Leave everything open. Don’t close Chrome or log out of IC before 8:00.',
-  ],
-  // What the teacher does (you) and what that gets done (done). One line each.
-  mine: [
-    {when: 'Weekdays, before school', you: 'Do the start-up list above.',
-     done: 'The 6:30, 7:00 and 7:30 runs have what they need.'},
-    {when: 'At school, when a new lesson starts', you: 'Open your class tab in the feedback checklist. Print the latest Made entries with unchecked Printed and Handed out boxes, then tick each box as you finish that step.',
-     done: 'New feedback uses the approved one-page format. The checklist shows verified Drive delivery; a private Hub draft does not change it.'},
-    {when: 'At school, before the next lesson', you: 'Open the Lesson opener in the private course folder. Start class with its information and questions.',
-     done: 'The class goes back over what most students missed, before new material.'},
-    {when: 'At school', you: 'Keep the Agenda up to date.',
-     done: 'The Hub finds each lesson’s deck and Turn-in Form.'},
-    {when: 'When “Done for you” shows something held', you: 'Read the reason. Most need a fix, not grading. If unsure, ask Claude.',
-     done: 'Nothing is skipped without you knowing.'},
-  ],
-  // Lesson planning, usually before Friday or on Sunday night.
-  planning: [
-    {when: 'Planning a week', you: 'Lesson plans → Edit here: topic, day plans, the deck and its Turn-in Form → Save to Agenda.',
-     done: 'The lesson shows on the dashboard, and the Hub can find and score its work.'},
-    {when: 'Right after you update a deck', you: 'Copy embed-coding prompt (below) → paste it into Claude with the deck attached.',
-     done: 'Every answer box has a code, so the Hub can score it.'},
-    {when: 'After you move or add a lesson', you: 'Click Check links (below). Schoology needs nothing: students find lessons by folder name.',
-     done: 'Students’ links open the right Form and deck.'},
-  ],
-  // Only when an automatic run didn't do its job. Where to go, what to click.
-  manual: [
-    {need: 'Enter scores now, without waiting for 7:00',
-     steps: 'Hub tab → Student work → pick class and week → under the assignment, open “If manual is needed” → “Scores are ready to enter in IC” → “Send to the Chrome helper”. Then IC tab, in front → that class → Curriculum → click the assignment’s TITLE (not the “Scored” number) → Score → green “Hub helper” at the bottom right → tick its box → Enter and Save. Do the (F) Notes assignment and the Revision assignment, in each section.'},
-    {need: 'Let Claude do the score entry instead',
-     steps: 'Copy the Monday prompt below → Chrome, IC tab in front → Claude extension side panel → paste → review its list → reply OK.'},
-    {need: 'You typed scores into IC yourself',
-     steps: 'Hub tab → Student work → class and week → “I entered these in IC”. Skip this if the helper did it; the Hub notes it by itself.'},
-    {need: 'IC said a save was not confirmed',
-     steps: 'Check that assignment in IC. Then Chrome toolbar → puzzle-piece icon → School Workflow Hub → tick the recovery box → “Allow future mornings”.'},
-    {need: 'Turn the 7:00 run on or off',
-     steps: 'Chrome toolbar → puzzle-piece icon → School Workflow Hub → “Enter automatically on weekday mornings”.'},
-    {need: 'Feedback by hand',
-     steps: 'Hub tab → Student work → class and week → under the assignment, open “If manual is needed” → Start feedback → Copy prompt → paste into ChatGPT (school account). Then “Mark feedback done”.'},
-    {need: 'Files are in the wrong folder',
-     steps: 'Hub tab → Student work → class and week → top “If manual is needed” → “Tidy this week’s folders” → Move and rename. Once per class.'},
-    {need: 'Reminder sheets or reading answers',
-     steps: 'Hub tab → Student work → open “If manual is needed”: “Missing-work sheets” at the top, “Answers by question” under each assignment.'},
-  ],
-};
-
-const routine = {seq: 0};
-
-function routineStatus(key, data) {
-  const found = data?.[key];
-  if (found?.problem) return note(found.problem);
-  if (key === 'monday_run') {
-    if (!found) return el('p', {class: 'muted', text: 'No “Monday run” Doc yet.'});
-    const days = (Date.now() - new Date(found.at)) / 86400000;
-    return el('p', {class: days > 8 ? 'note warn' : 'muted'}, `Last run: ${when(found.at)}. `, link(found.name + ' ↗', found.url),
-      days > 8 ? ' That’s more than a week ago: run the Monday prompt.' : '');
-  }
-  return null;
-}
-
-function renderRoutine(data) {
-  const body = $('routine-body');
-  const startup = el('section', {class: 'routine'}, el('h2', {text: 'Every weekday morning: open these'}),
-    el('ol', {}, ROUTINE.startup.map(s => el('li', {text: s}))),
-    helperLine());
-  const mine = el('section', {class: 'routine'}, el('h2', {text: 'Your routine'}),
-    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
-      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.mine.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
-        el('td', {text: t.you}), el('td', {text: t.done})))))));
-  const scheduled = el('section', {class: 'routine routine-scheduled'}, el('h2', {text: 'Done for you'}),
-    ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
-      el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
-      el('p', {text: t.what}),
-      el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
-      t.key ? routineStatus(t.key, data) : null)));
-  const copied = el('span', {class: 'muted'});
-  const manual = el('details', {class: 'routine', open: store.get('routine-manual-open') === '1',
-    ontoggle: e => store.set('routine-manual-open', e.target.open ? '1' : '0')},
-    el('summary', {}, el('h2', {text: 'If manual is needed'})),
-    el('p', {class: 'muted', text: 'Only when a morning run didn’t do its job. Everything here is in the school Chrome profile.'}),
-    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
-      el('thead', {}, el('tr', {}, ['When you need to', 'Where and what to click'].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.manual.map(m => el('tr', {}, el('td', {class: 'routine-when', text: m.need}),
-        el('td', {text: m.steps})))))),
-    el('div', {class: 'action-row'},
-      el('button', {type: 'button', onclick: () => copyText(mondayPrompt(), copied)}, 'Copy Monday prompt (Claude extension)'),
-      copied),
-    el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: mondayPrompt()})),
-    data ? routineStatus('monday_run', data) : null);
-  const embed = data?.embed_prompt;
-  const embedCopied = el('span', {class: 'muted'});
-  const planning = el('section', {class: 'routine'}, el('h2', {text: 'Lesson planning (before Friday, or Sunday night)'}),
-    el('div', {class: 'table-wrap'}, el('table', {class: 'routine-table'},
-      el('thead', {}, el('tr', {}, ['When', 'You do', 'Gets done'].map(h => el('th', {text: h})))),
-      el('tbody', {}, ROUTINE.planning.map(t => el('tr', {}, el('td', {class: 'routine-when', text: t.when}),
-        el('td', {text: t.you}), el('td', {text: t.done})))))),
-    embed?.text ? el('div', {class: 'action-row'},
-      el('button', {type: 'button', class: 'primary', onclick: () => copyText(embed.text, embedCopied)}, 'Copy embed-coding prompt'),
-      link('Edit it in the Agenda ↗', embed.url), embedCopied) : null,
-    embed?.problem ? note(embed.problem, 'info') : null,
-    embed?.text ? el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: embed.text})) : null);
-  const sheet = data?.scores_entered;
-  const sheets = el('section', {class: 'routine'}, el('h2', {text: 'Where the records are'}),
-    el('ul', {class: 'files'},
-      el('li', {}, sheet && !sheet.problem
-        ? [link(`“${sheet.name}” ↗`, sheet.url), ` — a row for each IC entry and feedback round${sheet.last ? ` (last: ${sheet.last})` : ''}.`]
-        : sheet?.problem ? sheet.problem : 'No “Scores entered” sheet yet: make one at the top of 00 REAL ALL TURN IN.'),
-      el('li', {}, 'Feedback, growth records, class summaries and the feedback checklist: in My Drive → Student Feedback — Private 2026–27.'),
-      el('li', {}, 'Private Hub feedback drafts: Student work → choose the lesson → Student feedback. Save a draft there to open its PDF.')));
-  body.replaceChildren(startup, mine, scheduled, manual, planning, sheets);
+// ---------- Routine: the morning score handoff ----------
+function renderRoutine() {
+  $('routine-body').replaceChildren(el('section', {class: 'routine routine-morning'},
+    el('h2', {text: 'Morning score check'}),
+    el('ol', {},
+      el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. In school Chrome, open the Teaching Hub and Infinite Campus, signed in, with the IC tab in front.'),
+      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled check prepares the student-by-student review in the IC helper.'),
+      el('li', {}, el('strong', {text: 'Before 7:00.'}), ' Review the class, assignment, score column, proposed increases and held rows. Select only the scores you approve, then choose Enter and Save.'),
+    ),
+    el('p', {class: 'muted', text: 'The helper reloads IC and checks saved scores. A prepared review alone is not proof that scores were saved.'}),
+    helperLine()));
 }
 
 // ---------- Link check ----------
 // Problems first, one line each; Forms shared by weeks and decks the Hub
 // can't open are summed up underneath, since they're usually fine.
-const QUIET = new Set(['shared-form', 'deck-unreadable']);
+const QUIET = new Set(['shared-form', 'deck-unreadable', 'no-form']);
 
 function linkCheckResult(name, data) {
   const problems = data.flags.filter(f => !QUIET.has(f.kind));
   const shared = data.flags.filter(f => f.kind === 'shared-form');
   const decks = data.flags.filter(f => f.kind === 'deck-unreadable');
+  const noAgendaForm = data.flags.filter(f => f.kind === 'no-form');
   const releases = data.rows.filter(r => r.release);
   const notReady = releases.filter(r => r.release.status !== 'READY');
   const releaseText = release => {
@@ -1720,7 +1559,8 @@ function linkCheckResult(name, data) {
     data.problem ? note(data.problem) : null,
     problems.length
       ? el('ul', {class: 'link-flags'}, problems.map(f => el('li', {}, el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
-      : el('p', {class: 'ok', text: `✓ Every ${name} lesson links a Turn-in Form for its own week.`}),
+      : el('p', {class: 'ok', text: `✓ No other Agenda link problems found for ${name}.`}),
+    noAgendaForm.length ? el('p', {class: 'muted', text: `${noAgendaForm.map(f => `${f.week} · ${f.topic}`).join('; ')}: no Google Form is linked in the Agenda. If students turn work in through Schoology, this is expected; the Hub can’t check Schoology.`}) : null,
     releases.length ? (notReady.length
       ? el('p', {class: 'muted', text: `Deck release gate: ${releases.length - notReady.length} READY · ${notReady.length} needs attention in the current/upcoming window.`})
       : el('p', {class: 'ok', text: `✓ Current/upcoming ${name} decks passed the deterministic content/code gate.`})) : null,
@@ -1755,20 +1595,11 @@ async function runLinkCheck() {
   button.disabled = false;
 }
 
-async function loadRoutine() {
-  const seq = ++routine.seq;
-  renderRoutine(null);
-  setStatus('routine-status', 'Checking what has run…');
-  try {
-    const data = await getJSON('api/routine');
-    if (seq !== routine.seq) return;
-    renderRoutine(data);
-    setStatus('routine-status', '');
-  } catch (error) {
-    if (seq === routine.seq) setStatus('routine-status', error.message, true);
-  }
+function loadRoutine() {
+  renderRoutine();
+  loadMorningSummary();
+  window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 }
-
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
   const current = ['today', 'plans', 'work', 'routine'].includes(tab) ? tab : 'today';
@@ -1838,8 +1669,8 @@ async function loadMorningSummary() {
     const data = await getJSON('api/morning/reports');
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
-    box.replaceChildren(el('h2', {text: 'Morning score entry'}));
-    if (!reports.length) { box.append(note('No morning run recorded yet. Enable weekday mornings in the Chrome helper on your home Mac after its assignment mappings are verified.', 'info')); return; }
+    box.replaceChildren(el('h2', {text: 'Morning helper review'}));
+    if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The 6:30 check prepares a review; approve it in the IC helper. A prepared review is not an IC entry.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
     box.append(note('Roster additions and removals still need review; automatic roster sync is not available.', 'info'));
     reports.forEach((report, i) => {
@@ -1851,7 +1682,6 @@ async function loadMorningSummary() {
           : el('p', {text: `${r.assignment} · ${r.section} · ${words(r.column)} — students requiring readback: ${r.names.length ? r.names.join('; ') : 'details unavailable; check the full panel'}.`}));
       box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), lines, ...details));
     });
-  } catch { box.replaceChildren(el('h2', {text: 'Morning score entry'}), note('The morning summary could not be read. No successful run is confirmed.')); }
+  } catch { box.replaceChildren(el('h2', {text: 'Morning helper review'}), note('The morning summary could not be read. No successful IC save is confirmed.')); }
 }
 loadMorningSummary();
-$('reload-routine')?.addEventListener('click', loadMorningSummary);
