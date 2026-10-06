@@ -75,6 +75,12 @@ Session storage holds student lists; trusted-context-only local storage holds
 the opt-in, attempt date, uncertainty block and counts-only pending summary.
 No student records or credentials are stored there.
 
+Version 0.5.1 accepts literal parentheses in a mapped IC abbreviation, including
+an abbreviation truncated after an opening parenthesis. The complete rendered
+label must still match that abbreviation exactly; all route, section, score-group
+and points-scale checks remain in force. This package correction does not prove
+installation or a completed live morning run.
+
 ## Opt-in weekday mornings (0.4.0)
 
 The September 30 authorization adds one deterministic unattended path. The
