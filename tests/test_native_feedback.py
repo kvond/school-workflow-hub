@@ -58,6 +58,10 @@ class NativeFeedbackTests(unittest.TestCase):
             self.assertIn('HOW I CAN IMPROVE', text)
             self.assertNotIn('Private concern', text)
             self.assertNotIn('completion score', text)
+            value['created_at'] = '2026-10-06T00:04:00+00:00'
+            text = PdfReader(io.BytesIO(feedback_pdf.render(value))).pages[0].extract_text()
+            self.assertIn('2026-10-05', text)
+            self.assertNotIn('2026-10-06', text)
 
     def test_changed_work_policy_identity_reference_or_assignment_blocks_save(self):
         draft = fb.generate(OPENAI_CONFIG, inputs())

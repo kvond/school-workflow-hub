@@ -1,6 +1,8 @@
 """One-page student report. Pure rendering; no model, storage or grade writes."""
 from io import BytesIO
+from datetime import datetime
 from xml.sax.saxutils import escape
+from zoneinfo import ZoneInfo
 
 from .native_feedback import Held, LEVELS
 
@@ -56,7 +58,10 @@ def render(saved):
     c.setFillColor(ink)
     c.setFont('Helvetica-Bold', 22)
     c.drawString(left, 727, plain(saved['person']['name']))
-    y = para(saved['assignment']['assignment_title'] + ' | ' + saved['created_at'][:10], 715, 'small')
+    created = datetime.fromisoformat(saved['created_at'].replace('Z', '+00:00'))
+    prepared = (created.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+                if created.tzinfo else created.date().isoformat())
+    y = para(saved['assignment']['assignment_title'] + ' | ' + prepared, 715, 'small')
     y = heading('1  YOUR GROWTH', y - 24)
     y = para('Your current understanding in this lesson. A single report does not establish a growth trend.', y - 2, 'small')
     xs = [355, 413, 471, 529]
