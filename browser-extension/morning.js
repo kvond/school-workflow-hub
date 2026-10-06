@@ -30,7 +30,9 @@
   const fields=['section','column','url','section_id','term_id','year','school_id','calendar_id','structure_id','assignment_id','score_group','task_id','label_code'];
   if(!value||Object.keys(value).sort().join('|')!==fields.sort().join('|')||!safe(value.section)||!['notes','revision'].includes(value.column))fail('mapping_required');
   for(const key of ['section_id','term_id','year','school_id','calendar_id','structure_id','assignment_id','score_group','task_id'])if(!/^\d{1,30}$/.test(value[key]))fail('mapping_required');
-  if(!/^[A-Za-z0-9_-]{1,80}$/.test(value.label_code))fail('mapping_required');
+  // IC abbreviations may contain literal parentheses, including a truncated one.
+  // They are compared as text below, never interpreted as a regular expression.
+  if(typeof value.label_code!=='string'||!/^[A-Za-z0-9_()-]{1,80}$/.test(value.label_code))fail('mapping_required');
   let u;try{u=new URL(value.url);}catch{fail('mapping_required');}
   const path=`/campus/sis/control-center/classroom/curriculum/resource/${value.assignment_id}/view(secondaryRouteOutlet:multiscore/assignmentEditor/sectionID/${value.section_id}/objectSectionID/${value.assignment_id}/calendarID/${value.calendar_id}/structureID/${value.structure_id})`;
   if(u.origin!==origin||u.username||u.password||u.hash||u.pathname!==path)fail('mapping_required');

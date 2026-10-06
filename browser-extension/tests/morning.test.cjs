@@ -41,6 +41,24 @@ test('unattended mock panel: blank, raise, higher, flag, excused and check by ha
  assert.deepEqual(state.calls,['snapshot','snapshot','fill','fill','snapshot','save','reload']);
  assert.equal(state.rows[2].score,10);assert.equal(state.rows[3].score,null);
 });
+test('literal parentheses in IC abbreviations pass only an exact label match',async()=>{
+ for(const code of ['Unit(F','Unit(S','Unit(F)']){
+  const binding=M.target({...target(),label_code:code},origin),{state,ports}=panel();
+  state.rows.forEach(r=>r.label=code+r.label.slice(1));
+  const result=await M.run(list(),binding,ports);
+  assert.equal(result.result.outcome,'entered');
+ }
+ const binding=M.target({...target(),label_code:'Unit(F'},origin),{state,ports}=panel();
+ state.rows.forEach(r=>r.label='UnitF'+r.label.slice(1));
+ await assert.rejects(M.run(list(),binding,ports),/destination_mapping_changed/);
+ assert.ok(!state.calls.includes('fill'));
+ assert.ok(!state.calls.includes('save'));
+});
+test('abbreviation validation rejects coercion, whitespace, controls and regex syntax',()=>{
+ for(const label_code of [null,undefined,123,'','F'.repeat(81),' F','F ','F\n','F\u0000','F.*','F[','F|S','F/']){
+  assert.throws(()=>M.target({...target(),label_code},origin),/mapping_required/);
+ }
+});
 test('a change after review stops without any typing or save',async()=>{
  const {state,ports}=panel({change:true}),r=await M.run(list(),target(),ports);
  assert.equal(r.code,'ic_changed');assert.deepEqual(state.calls,['snapshot','snapshot']);
