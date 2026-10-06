@@ -76,24 +76,26 @@
   </section>
   <section id="page-routine" hidden>
     <div class="bar">
-      <h1>System</h1>
+      <h1>Morning routine</h1>
       <div class="controls">
-        <button type="button" id="reload-routine">Reload</button>
+        <button type="button" id="reload-routine">Refresh</button>
       </div>
     </div>
-    <p id="routine-status" class="status" role="status"></p>
     <div id="routine-body"></div>
-    <section id="ai-runtime" class="routine" aria-live="polite">
-      <h2>AI runtime</h2>
-      <p class="muted">Checking the school API provider…</p>
-    </section>
     <section id="morning-summary" class="routine" aria-live="polite"></section>
-    <section class="routine" id="link-check">
-      <h2>Check links</h2>
-      <p class="muted">Checks that each lesson in the Agenda links a Turn-in Form and deck for its own week. Run it after you move or add a lesson. It can’t see Schoology.</p>
-      <div class="action-row"><button type="button" id="run-link-check">Check links</button></div>
-      <div id="link-check-body"></div>
-    </section>
+    <details class="routine" id="more-hub-tools">
+      <summary>More Hub tools</summary>
+      <section id="ai-runtime" class="routine" aria-live="polite">
+        <h2>AI runtime</h2>
+        <p class="muted">Checking the school API provider…</p>
+      </section>
+      <section class="routine" id="link-check">
+        <h2>Check lesson links</h2>
+        <p class="muted">Checks Agenda Form and deck links. A lesson without an Agenda Form may use Schoology instead; this check cannot inspect Schoology. Run after moving or adding a lesson.</p>
+        <div class="action-row"><button type="button" id="run-link-check">Check links</button></div>
+        <div id="link-check-body"></div>
+      </section>
+    </details>
   </section>
 </main>
 </body>
