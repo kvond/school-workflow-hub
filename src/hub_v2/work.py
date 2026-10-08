@@ -520,16 +520,18 @@ def _matches(stem, signature):
 def assignment_match_score(submission, form):
     """Score evidence that a submitted deck belongs to one Form assignment.
 
-    A shared weekly folder can contain more than one lesson. Prefer the deck
-    signature learned from that Form's submissions, with a conservative
-    lesson-label word match when student copies retain the lesson title.
+    A shared weekly folder can contain more than one lesson. Prefer the
+    teacher deck paired to that Form, then signatures learned from uploads,
+    then lesson-label words. Uploads can have arrived through the wrong Form.
     """
     files = submission.get("files") or []
     signatures = set(form.get("signature") or ())
-    signature_match, label_match = 0, 0
+    teacher_signatures = set(form.get("teacher_signature") or ())
+    teacher_match, signature_match, label_match = 0, 0, 0
     label_words = deck_words(form.get("label", ""))
     for file in files:
         name = file.get("name", "")
+        teacher_match = max(teacher_match, _matches(deck_stem(name), teacher_signatures))
         signature_match = max(signature_match, _matches(deck_stem(name), signatures))
         overlap = deck_words(name) & label_words
         if len(overlap) >= 2:
@@ -537,7 +539,20 @@ def assignment_match_score(submission, form):
     # A known deck is stronger evidence than words shared by lesson labels.
     # For example Observation_Deductive_Reasoning shares two words with the
     # Reasoning label, but its full deck signature belongs to Observation.
-    return 1000 + signature_match if signature_match else min(label_match, 999)
+    if teacher_match:
+        return 2000 + min(teacher_match, 999)
+    return 1000 + min(signature_match, 999) if signature_match else min(label_match, 999)
+
+
+def _corroborates_assignment_title(file, form):
+    """A complete telling title, beyond a few overlapping label words.
+
+    Parenthetical descriptions such as '(Steps of CSI)' need not appear in
+    copies of the deck. At least two core title words must all be present.
+    """
+    title = re.sub(r"\s*\([^)]*\)", "", assignment_title(form.get("label", "")))
+    title_words = deck_words(title)
+    return len(title_words) >= 2 and title_words <= deck_words(file.get("name", ""))
 
 
 def assignment_for_submission(submission, forms):
@@ -554,6 +569,13 @@ def assignment_for_submission(submission, forms):
         scores = [assignment_match_score({"files": [file]}, form) for form in forms]
         best = max(scores, default=0)
         matches = [i for i, score in enumerate(scores) if best and score == best]
+        if len(matches) > 1 and 1000 <= best < 2000:
+            # Swapped Form uploads may have taught both Forms the same deck.
+            # Resolve only a uniquely corroborated full title; conflicting
+            # teacher-deck evidence and partial label overlaps stay held.
+            corroborated = [i for i in matches if _corroborates_assignment_title(file, forms[i])]
+            if len(corroborated) == 1:
+                matches = corroborated
         if len(matches) != 1 or (winner is not None and winner != matches[0]):
             return None
         winner = matches[0]
@@ -683,28 +705,46 @@ def pair_decks(forms, decks, names=None):
     When the lesson has as many decks as readable Forms, every deck is paired
     with a Form at once by the pairing whose names share the most words in
     all (a deck's own name can share words with another Form's, so pairs are
-    judged together, not one at a time). Otherwise an unclaimed deck goes to
-    the only Form with no uploads yet, or to the empty Forms by the same
-    shared-words rule. Ambiguous pairings are left alone. names are the decks'
-    Drive titles, in the same order, for their words ("Observation_Deductive…").
+    judged together, not one at a time). Otherwise a deck with one complete
+    assignment-title match is paired to it, and remaining unclaimed decks go
+    to empty Forms by the shared-words rule. Ambiguous pairings are left
+    alone. Paired teacher decks are kept separately from learned signatures
+    so wrong-Form uploads cannot outweigh them. names are the decks' Drive
+    titles, in the same order, for their words ("Observation_Deductive…").
     """
     import itertools
+
+    def paired(form, deck):
+        form["signature"].add(deck)
+        form.setdefault("teacher_signature", set()).add(deck)
+
     names = list(names) if names is not None else list(decks)
     words = {d: _words(n.replace("_", " ")) for d, n in zip(decks, names)}
     readable = [f for f in forms if f["form_id"]]
+    if len(readable) == 1:
+        for deck in decks:
+            paired(readable[0], deck)
+        return
     if 1 < len(readable) == len(decks) <= 4:
         scored = sorted(((sum(len(_words(f["label"] + " " + f["name"]) & words[d]) for f, d in zip(readable, order)),
                           order) for order in itertools.permutations(decks)), key=lambda s: s[0], reverse=True)
         if scored[0][0] > 0 and scored[0][0] > scored[1][0]:
             for form, deck in zip(readable, scored[0][1]):
-                form["signature"].add(deck)
+                paired(form, deck)
             return
+    # A lesson can link fewer teacher decks than Forms, and wrong-Form
+    # uploads can leave every learned signature populated. A full unique
+    # title still identifies a teacher deck without relying on an empty set.
+    for deck, name in zip(decks, names):
+        owners = [f for f in readable if _corroborates_assignment_title({"name": name}, f)]
+        if len(owners) == 1:
+            paired(owners[0], deck)
     empty = [f for f in forms if f["form_id"] and not f["signature"]]
     unclaimed = [d for d in decks if not any(_matches(d, f["signature"]) for f in forms)]
     if not empty or not unclaimed:
         return
     if len(empty) == 1 and len(unclaimed) == 1:
-        empty[0]["signature"].add(unclaimed[0])
+        paired(empty[0], unclaimed[0])
         return
     if len(empty) != len(unclaimed) or len(empty) > 4:
         return
@@ -715,7 +755,7 @@ def pair_decks(forms, decks, names=None):
     scored.sort(key=lambda s: s[0], reverse=True)
     if scored[0][0] > 0 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
         for form, deck in zip(empty, scored[0][1]):
-            form["signature"].add(deck)
+            paired(form, deck)
 
 
 SHARED_KEY = re.compile(r"^\s*(.+?)\s*·\s*wk\s*0*(\d+)\b", re.I)

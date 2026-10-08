@@ -59,6 +59,54 @@ class AssignmentMatchingTests(unittest.TestCase):
         self.assertEqual(work.assignment_for_submission(
             self.upload("Copy of Membrane Structure", "Membrane Structure"), forms), 0)
 
+    def contaminated_forms(self):
+        types = "▶ LIVE — Week 05 — Types of Evidence (VT)"
+        investigative = "▶ LIVE — Week 05 — Investigative Processes (VT)"
+        # A swapped upload taught each Form the other's deck as well as its own.
+        return [self.form("Types of Evidence — Turn In", types, investigative),
+                self.form("Investigative Processes (Steps of CSI) — Turn In", types, investigative)], \
+            types, investigative
+
+    def test_teacher_decks_are_authoritative_when_form_uploads_are_swapped(self):
+        forms, types, investigative = self.contaminated_forms()
+        work.pair_decks(forms, [work.deck_stem(types), work.deck_stem(investigative)],
+                        [types, investigative])
+        self.assertEqual(forms[0]["teacher_signature"], {work.deck_stem(types)})
+        self.assertEqual(forms[1]["teacher_signature"], {work.deck_stem(investigative)})
+        self.assertEqual(work.assignment_for_submission(self.upload(
+            "Copy of " + investigative + " - Fictional Student.pptx"), forms), 1)
+        self.assertEqual(work.assignment_for_submission(self.upload(
+            "Copy of " + types + " - Fictional Student.pptx"), forms), 0)
+
+    def test_one_teacher_deck_can_pair_despite_populated_learned_signatures(self):
+        forms, types, investigative = self.contaminated_forms()
+        work.pair_decks(forms, [work.deck_stem(types)], [types])
+        self.assertEqual(forms[0]["teacher_signature"], {work.deck_stem(types)})
+        self.assertNotIn("teacher_signature", forms[1])
+        self.assertEqual(work.assignment_for_submission(self.upload(
+            "Copy of " + types + " - Fictional Student.pptx"), forms), 0)
+        # With no linked teacher deck for this Form, its complete unique title
+        # resolves equal learned matches. The descriptive suffix is optional.
+        self.assertEqual(work.assignment_for_submission(self.upload(
+            "Copy of " + investigative + " - Fictional Student.pptx"), forms), 1)
+        self.assertIsNone(work.assignment_for_submission(self.upload(
+            "Copy of " + types, "Copy of " + investigative), forms))
+
+    def test_partial_label_overlap_cannot_resolve_contaminated_signatures(self):
+        deck = "Observation_Deductive_Reasoning_VT_CSI_1_markered"
+        forms = [self.form("Inductive and Deductive Reasoning — Turn In", deck),
+                 self.form("Observation Skills — Turn In", deck)]
+        work.pair_decks(forms, [work.deck_stem(deck)], [deck])
+        self.assertTrue(all(not form.get("teacher_signature") for form in forms))
+        self.assertIsNone(work.assignment_for_submission(self.upload("Copy of " + deck), forms))
+
+    def test_conflicting_teacher_decks_stay_in_review_despite_one_full_title(self):
+        forms, types, investigative = self.contaminated_forms()
+        for form in forms:
+            form["teacher_signature"] = {work.deck_stem(investigative)}
+        self.assertIsNone(work.assignment_for_submission(self.upload(
+            "Copy of " + investigative + " - Fictional Student.pptx"), forms))
+
 
 if __name__ == "__main__":
     unittest.main()

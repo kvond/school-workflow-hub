@@ -966,7 +966,7 @@ function icPanel(form, scores, lesson) {
     ...form.students.filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
       .filter(x => x.s && !x.s.problem).map(x => ({...x, unsure: Boolean(x.s.note),
         show: x.s.note ? ['check by hand', 'check by hand'] : shown(x.s)})),
-    // A student with a file in "Not sorted" may have turned it in: they're left
+    // A student whose submitted file still needs a lesson match is left
     // off the list (and named below) so a 0 isn't entered for them unchecked.
     // A student whose only turn-in was another lesson's deck (through this Form) is
     // checked by hand, not given a 0 unseen.
@@ -1022,7 +1022,7 @@ function icPanel(form, scores, lesson) {
   const unsorted = startedFor(form) ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
   if (unsorted.length) {
     panel.append(note(`Not listed: ${unsorted.map(m => `${m.last}, ${m.first}`).join('; ')}. `
-      + 'Each has a file in “Not sorted” that may be this assignment. Check that box before giving them a 0.', 'info'));
+      + 'Each has a submitted file awaiting a confirmed lesson match. Resolve “Confirm these submission matches” below; no new zero is sent while scoring is held.', 'info'));
   }
   panel.append(el('p', {class: 'muted', text: closed
     ? 'The two weeks are over, so students with nothing on time (including late work) are listed as 0. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.'
@@ -1077,7 +1077,7 @@ function helperRows(form) {
   }
   for (const r of [...form.missing, ...(form.late || []).filter(r => r.matched)]) {
     if (!started) add(r, 'none', null, null, 'its two weeks haven’t started');
-    else if (r.unsorted) add(r, 'check', null, null, 'has a file in Not sorted');
+    else if (r.unsorted) add(r, 'check', null, null, 'submission awaiting a confirmed lesson match; scoring held');
     else if (elsewhere.has(personKey(r))) add(r, 'check', null, null, 'turned in another lesson’s deck through this Form');
     else add(r, 'zero', 0, 0);
   }
@@ -1448,10 +1448,12 @@ function renderForm(form, lesson) {
       '. They joined after this assignment began, so it isn’t counted for them.'));
   }
   if (missing.length) {
-    box.append(el('div', {class: 'missing'}, el('h4', {text: closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
+    const held = sourceMatchesHeld() || missing.some(m => m.unsorted);
+    box.append(el('div', {class: 'missing'}, el('h4', {text: held ? `No confirmed submission for this assignment (${missing.length}) — scoring held`
+      : closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
       : startedFor(form) ? `Not turned in yet (${missing.length}) — 0 until they turn it in` : `Not turned in yet (${missing.length})`}),
       el('ul', {}, missing.map(m => el('li', {}, `${m.last}, ${m.first}${section === 'all' ? ' · ' + m.section : ''}`,
-        m.unsorted ? el('span', {class: 'badge warn', text: 'has a file in Not sorted'}) : null)))));
+        m.unsorted ? el('span', {class: 'badge warn', text: 'Submission awaiting a lesson match — scoring held'}) : null)))));
   }
   return box;
 }
