@@ -13,7 +13,10 @@ const el=(tag,props,...children)=>new Element(tag,props,children);
 const context = vm.createContext({el, note:(text)=>el('p',{text}), link:(text,href)=>el('a',{text,href}),
   cockpitPanel:(title,...children)=>el('section',{},title,...children),
   when:v=>v, work:{seq:1, cls:'biology',week:'Wk 04',ui:{}}, renderWork(){}, Set});
-vm.runInContext(source.slice(source.indexOf('function morningTotals('),source.indexOf('function renderTodayLessons(')),context);
+const morningStart = source.indexOf('function morningTotals(');
+const morningEnd = source.indexOf('function issueAction(');
+assert.ok(morningStart >= 0 && morningEnd > morningStart, 'morning receipt helpers must remain bounded');
+vm.runInContext(source.slice(morningStart, morningEnd), context);
 vm.runInContext(source.slice(source.indexOf('async function feedbackAction('),source.indexOf('function studentRow(')),context);
 const student=()=>({name:'Ana R.',section:'A4',file_id:'fictional-source',hold:'',draft:{id:'fictional-draft',saved_at:null,source_modified:'today',report:{student_summary:'You explain carbon.',question:'How does it move?',aspects:[{name:'Carbon moves',current_level:'Developing'}],teacher_notes:['Private note']}}});
 
@@ -40,6 +43,25 @@ test('feedback has separate save and print controls, never a grade-save action',
   panel=context.feedbackPanel({form_id:'form'});
   assert.equal(panel.all.filter(n=>n.tag==='a')[0].props.href,'/v2/api/feedback/pdf?id=fictional');
   assert.ok(!requests.some(r=>/assessment-save|record|morning/.test(r.url)));
+});
+
+test('only confirmed receipt rows contribute to the saved count',()=>{
+  const panel=context.renderMorningCockpit({code:'save_uncertain',items:[
+    {assignment:'Confirmed lesson',code:'read_back',filled:2,raised:1,kept:3,left:0},
+    {assignment:'Uncertain lesson',code:'save_uncertain',filled:20,raised:10,kept:0,left:0},
+  ]},{});
+  assert.equal(panel.all.find(n=>n.props.class==='cockpit-number').props.text,'6');
+  assert.match(panel.text,/Uncertain lesson/);
+  assert.match(panel.text,/inspect the scores, correct\/save only if needed, and reload/);
+  assert.doesNotMatch(panel.text,/22 new|11 raised/);
+});
+
+test('no source scores and no receipt are not described as a successful IC comparison',()=>{
+  const report={code:'finished',items:[{assignment:'Lesson',code:'no_scores',filled:0,raised:0,kept:0,left:0}]};
+  assert.match(context.renderMorningCockpit(report,{}).text,/not entered or compared in IC/);
+  assert.match(context.renderNeedsYou(report).text,/IC was not compared/);
+  assert.doesNotMatch(context.renderNeedsYou(report).text,/No grade rows were left out/);
+  assert.match(context.renderNeedsYou(null).text,/not verified/);
 });
 
 test('changing lesson during generation cannot attach a draft to the new selection',async()=>{

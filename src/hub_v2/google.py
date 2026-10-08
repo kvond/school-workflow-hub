@@ -271,6 +271,39 @@ def deck_bytes(token, file_id, mime):
     return b"".join(chunks)
 
 
+def printable_pdf_bytes(token, file_id, mime):
+    """Download a saved PDF or export a native Google Doc as its print PDF."""
+    if mime == "application/pdf":
+        url, params = ("https://www.googleapis.com/drive/v3/files/" + quote(file_id),
+                       {"alt": "media", "supportsAllDrives": "true"})
+    elif mime == "application/vnd.google-apps.document":
+        url, params = ("https://www.googleapis.com/drive/v3/files/%s/export" % quote(file_id),
+                       {"mimeType": "application/pdf"})
+    else:
+        raise GoogleError("Only saved feedback documents and PDFs can be printed.")
+    try:
+        response = _session().get(url, params=params, timeout=(5, 30), stream=True,
+                                  allow_redirects=False,
+                                  headers={"Authorization": "Bearer " + token})
+    except Exception:
+        raise GoogleError("Google didn't answer in time. Try again.") from None
+    with response:
+        if response.status_code != 200:
+            raise GoogleError(_status_message(response.status_code), response.status_code)
+        chunks, total = [], 0
+        try:
+            for chunk in response.iter_content(1 << 20):
+                total += len(chunk)
+                if total > 10_000_000:
+                    raise GoogleError("A feedback document is too large to add to the print packet.")
+                chunks.append(chunk)
+        except GoogleError:
+            raise
+        except Exception:
+            raise GoogleError("Google didn't answer in time. Try again.") from None
+    return b"".join(chunks)
+
+
 def move_item(token, item_id, new_parent, old_parents):
     """Move a file or folder into new_parent; returns its parents afterwards."""
     return get_json("https://www.googleapis.com/drive/v3/files/" + quote(item_id), token, {

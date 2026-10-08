@@ -27,12 +27,13 @@
       <div>
         <p class="eyebrow">TEACHER COCKPIT</p>
         <h1>Today</h1>
-        <p class="muted">What ran, what needs you, and what is coming next.</p>
+        <p class="muted">What ran, exceptions, and the next lessons.</p>
       </div>
       <div class="controls"><button type="button" id="reload-today">Refresh</button></div>
     </div>
     <p id="today-status" class="status" role="status"></p>
     <div id="today-body"></div>
+    <div id="today-feedback" aria-live="polite"></div>
   </section>
   <section id="page-plans" hidden>
     <div class="bar">
@@ -47,7 +48,11 @@
         <button type="button" id="reload-plans">Reload</button>
       </div>
     </div>
-    <section class="readiness-strip" id="lesson-readiness" aria-live="polite"></section>
+    <section id="next-week-notes" class="next-week-notes" aria-label="Planning notes for next week"></section>
+    <details class="readiness-strip" id="lesson-readiness">
+      <summary>VT readiness and feedback-code checks</summary>
+      <div id="lesson-readiness-body" aria-live="polite"></div>
+    </details>
     <nav id="days" class="days" aria-label="Days of the week"></nav>
     <p id="plans-status" class="status" role="status"></p>
     <div id="cards" class="cards"></div>
@@ -61,18 +66,18 @@
         <label>Section <select id="work-section"></select></label>
         <button type="button" id="reload-work">Reload</button>
       </div>
-      <details class="manual">
-        <summary>If manual is needed</summary>
-        <div class="controls">
-          <button type="button" id="tidy-work">Tidy this week's folders</button>
-          <button type="button" id="missing-sheets">Missing-work sheets</button>
-        </div>
-      </details>
     </div>
     <p id="work-status" class="status" role="status"></p>
     <div id="tidy-box" class="tidy-box"></div>
     <div id="sheets-box" hidden></div>
     <div id="work-body"></div>
+    <details class="manual manual-tools">
+      <summary>Optional manual tools</summary>
+      <div class="controls">
+        <button type="button" id="tidy-work">Tidy this week's folders</button>
+        <button type="button" id="missing-sheets">Missing-work sheets</button>
+      </div>
+    </details>
   </section>
   <section id="page-routine" hidden>
     <div class="bar">

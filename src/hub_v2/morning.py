@@ -46,7 +46,7 @@ def catalog(agenda):
                         out.append({"class": cls, "week": week["label"], "form": fid,
                                     "assignment": str(form.get("label") or lesson["topic"])[:200]})
     return {"assignments": out, "roster": "unavailable",
-            "roster_note": "Roster sync is status-only; additions and removals need review."}
+            "roster_note": "IC is the roster source of truth. Roster sync is not connected; normal additions and departures are not student-work exceptions."}
 
 
 def person(row):

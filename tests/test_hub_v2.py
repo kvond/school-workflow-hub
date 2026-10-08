@@ -972,6 +972,9 @@ class TidyTests(unittest.TestCase):
             for x in patches:
                 x.stop()
         self.assertEqual(result["moved"], 4)
+        self.assertEqual(len(result["moved_items"]), 4)
+        self.assertTrue(all(item["name"] and item["from_name"] and item["to_name"] for item in result["moved_items"]))
+        self.assertEqual({item["to_name"] for item in result["moved_items"]}, {p["keep"]["name"]})
         self.assertEqual({i for i in ("D1", "D2", "LOOSEF", "S1") if d.items[i]["parents"] == ["KEEP"]},
                          {"D1", "D2", "LOOSEF", "S1"})
         self.assertEqual((d.items["X1"]["parents"], d.items["S3"]["parents"]), (["WK03"], ["SHAREDF"]))
