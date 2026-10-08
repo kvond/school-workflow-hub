@@ -106,10 +106,6 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     # folders still lack a safe lesson match.
     if found.get("other_files"):
         return {"code": "coverage_incomplete"}
-    # Do not score one assignment while submissions from the same weekly
-    # folders still lack a safe lesson match.
-    if found.get("other_files"):
-        return {"code": "coverage_incomplete"}
     now = datetime.now(timezone.utc)
     mark = ledger.read(token, config, fid)
     if not mark.get("configured") or mark.get("problem"):

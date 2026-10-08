@@ -109,21 +109,48 @@ function allReleaseRows(audits) {
 }
 
 function morningTotals(report) {
-  const out = {filled: 0, raised: 0, kept: 0, left: 0, reasons: {flag: 0, excused: 0, check: 0, name: 0, missing: 0}};
+  const out = {filled: 0, raised: 0, kept: 0, left: 0, leftKnown: true, reasons: {flag: 0, excused: 0, check: 0, name: 0}};
   for (const item of report?.items || []) {
-    for (const key of ['filled', 'raised', 'kept', 'left']) out[key] += item[key] || 0;
-    for (const key of Object.keys(out.reasons)) out.reasons[key] += item.reasons?.[key] || 0;
+    for (const key of ['filled', 'raised', 'kept']) out[key] += item[key] || 0;
+    const review = morningRowReview(item);
+    if (review.left == null) out.leftKnown = false;
+    else out.left += review.left;
+    for (const [key, count] of review.reasons) out.reasons[key] += count;
   }
   return out;
 }
 
 const MORNING_REASONS = {
-  flag: 'IC score rows already have flags; helper left them alone',
-  excused: 'Students marked excused; helper left them alone',
-  check: 'Hub source rows need a hand check before entry',
-  name: 'IC has students who are not on the Hub list',
-  missing: 'Hub-listed students were not present in this IC assignment roster (this does not mean missing work)',
+  flag: 'IC rows have a status flag other than Exempt; the helper left them unchanged',
+  excused: 'New students are excused from this assignment',
+  check: 'The Hub could not confirm a score from the submitted work; open Student work for this assignment and read the reason on rows marked “Check by hand”',
+  name: 'IC students could not be matched to the Hub list',
 };
+
+const MORNING_COVERAGE = 'Source coverage was incomplete, so scoring and IC entry stopped for this assignment. Open Student work to see whether Form or roster access, or a submission’s lesson match, needs repair.';
+const morningContext = row => [row.class_name, row.week, row.assignment].filter(Boolean).join(' · ') || 'Assignment unavailable';
+
+function morningRowReview(row) {
+  const reasons = row.reasons || {};
+  const leftRecorded = Number.isInteger(row.left) && row.left >= 0;
+  const exemptKnown = Number.isInteger(reasons.exempt) && reasons.exempt >= 0;
+  // An old receipt may count flags on already-matching scores. Only subtract
+  // Exempt when its count can actually be part of the recorded unchanged rows.
+  const left = row.left === 0 ? 0 : leftRecorded && exemptKnown && reasons.exempt <= row.left
+    ? row.left - reasons.exempt : null;
+  const contextKnown = !!row.class_name && !!row.week;
+  const detailKnown = contextKnown && exemptKnown && left != null;
+  return {
+    left,
+    detailKnown,
+    reasons: detailKnown && left > 0 ? Object.entries(reasons)
+      .filter(([reason, count]) => Object.hasOwn(MORNING_REASONS, reason) && count > 0 && count <= left) : [],
+    unavailable: !contextKnown
+      ? 'This older receipt does not retain class/week or Exempt flag details. Detailed follow-up is unavailable.'
+      : !detailKnown
+        ? 'This receipt does not retain verified Exempt counts for the unchanged rows. Detailed follow-up is unavailable.' : '',
+  };
+}
 
 function morningProblem(report) {
   if (!report) return '';
@@ -144,14 +171,17 @@ function renderMorningCockpit(report, routineData) {
   const problem = morningProblem(report);
   const saved = report.code === 'finished' && !problem;
   const detail = (report.items || []).map(item =>
-    el('li', {}, el('strong', {text: item.assignment + ': '}),
+    el('li', {}, el('strong', {text: morningContext(item) + ': '}),
       item.code === 'read_back'
         ? `${item.filled} new · ${item.raised} raised · ${item.kept} already matched in IC — confirmed after reload.`
         : item.code === 'nothing_to_enter'
           ? `No changes needed. ${item.kept} scores already matched in IC.`
           : item.code === 'no_scores'
             ? 'No eligible Hub scores were available. This assignment was not entered or compared in IC.'
-            : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`));
+            : item.code === 'coverage_incomplete'
+              ? MORNING_COVERAGE
+              : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`,
+      morningRowReview(item).unavailable ? el('p', {class: 'muted', text: morningRowReview(item).unavailable}) : null));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
     el('p', {class: 'cockpit-label', text: saved
@@ -164,25 +194,35 @@ function renderMorningCockpit(report, routineData) {
 }
 
 function renderNeedsYou(report) {
-  const items = [];
+  const items = [], unavailable = [];
   if (!report) return cockpitPanel('Run status', note('No receipt is available yet. IC results are not verified.', 'info'));
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
-    if (row.code === 'no_scores') {
-      items.push(el('li', {}, el('strong', {text: row.assignment + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
+    const review = morningRowReview(row);
+    if (review.unavailable) unavailable.push(el('p', {class: 'muted'}, el('strong', {text: morningContext(row) + ': '}), review.unavailable));
+    if (!review.detailKnown) continue;
+    if (row.code === 'coverage_incomplete') {
+      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), MORNING_COVERAGE));
       continue;
     }
-    const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
-    if (!row.left && !reasons.length) continue;
-    items.push(el('li', {}, el('strong', {text: row.assignment + ': '}),
-      reasons.length ? reasons.map(([reason, n]) => `${n} — ${MORNING_REASONS[reason] || reason}`).join('; ')
-        : 'Helper could not confirm completion; inspect this assignment before changing anything.'));
+    if (row.code === 'no_scores') {
+      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
+      continue;
+    }
+    if (!review.reasons.length) {
+      if (review.left && !row.reasons?.missing) unavailable.push(el('p', {class: 'muted'},
+        el('strong', {text: morningContext(row) + ': '}), 'The receipt does not retain a follow-up reason for the unchanged rows. Detailed follow-up is unavailable.'));
+      continue;
+    }
+    items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}),
+      review.reasons.map(([reason, n]) => `${n} — ${MORNING_REASONS[reason]}`).join('; ')));
   }
   return cockpitPanel('Rows the helper left unchanged',
     items.length ? el('ul', {class: 'attention-list'}, ...items)
-      : el('p', {class: 'ok', text: '✓ No grade rows were left out of the helper run.'}),
-    el('p', {class: 'muted', text: 'This is not a second score-entry step. “Not present in this IC assignment roster” means the student was not on that assignment’s IC score table; it does not mean missing student work. The receipt is counts-only and cannot identify those students.'}));
+      : unavailable.length ? null : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
+    ...unavailable,
+    el('p', {class: 'muted', text: 'IC’s assignment roster determines which students belong in this run. Exempt rows do not require follow-up. The receipt contains counts; Student work gives the source details for the named class and assignment.'}));
 }
 
 function issueAction(release) {
@@ -615,6 +655,8 @@ function renderPlans(data) {
 
 // ---------- Student work ----------
 const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}};
+const sourceMatchesHeld = () => !!work.data?.other_files?.length;
+const SOURCE_MATCH_HOLD = 'Scoring and IC entry are on hold until every submission in this week’s turn-in folders has a confirmed lesson match. Resolve “Confirm these submission matches” below, then refresh Student work.';
 
 function fillSelect(select, options, value) {
   select.replaceChildren(...options.map(([v, label]) => el('option', {value: v, text: label})));
@@ -722,6 +764,7 @@ function scoreCells(row, scores) {
 }
 
 async function scoreForm(form) {
+  if (sourceMatchesHeld()) return;
   const rows = form.students.filter(r => r.files.length);
   const scores = work.scores[form.form_id] = work.scores[form.form_id] || {};
   const queue = rows.filter(r => !scores[scoreFile(r).id]);
@@ -730,7 +773,7 @@ async function scoreForm(form) {
   work.ui[form.form_id] = {...work.ui[form.form_id], progress: `Scoring ${done} of ${rows.length}…`};
   renderWork();
   const worker = async () => {
-    while (queue.length && seq === work.seq) {
+    while (queue.length && seq === work.seq && !sourceMatchesHeld()) {
       const id = scoreFile(queue.shift()).id;
       try {
         scores[id] = await getJSON(`api/score?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}&file=${encodeURIComponent(id)}`);
@@ -884,6 +927,7 @@ const markDate = mark => mark ? when(mark.at) : '';
 // are entered (the "I entered these in IC" note is dated after the close),
 // late work isn't graded, so there's nothing more to enter.
 function icStatus(form) {
+  if (sourceMatchesHeld()) return {kind: 'held', text: SOURCE_MATCH_HOLD};
   if (!form.window) return null;
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
@@ -908,6 +952,7 @@ function marksLine(form) {
 }
 
 function icPanel(form, scores, lesson) {
+  if (sourceMatchesHeld()) return el('div', {class: 'ic-panel'}, note(SOURCE_MATCH_HOLD, 'info'));
   const section = work.section;
   const ui = work.ui[form.form_id] || {};
   const sheet = work.marks[form.form_id];
@@ -1012,6 +1057,7 @@ function elsewhereKeys(form) {
 // Every roster student of the class (all sections) with what to enter, the
 // same rules as the table above.
 function helperRows(form) {
+  if (sourceMatchesHeld()) return [];
   const scores = work.scores[form.form_id] || {};
   const started = startedFor(form), elsewhere = elsewhereKeys(form);
   const rows = new Map();
@@ -1058,6 +1104,7 @@ function formName(form, lesson) {
 }
 
 const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
+  coverage_incomplete: SOURCE_MATCH_HOLD,
   helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'};
 const helperError = code => HELPER_ERRORS[code]
   || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
@@ -1073,6 +1120,7 @@ async function sendToHelper(form, lesson) {
 
 // Hand one assignment's list to the helper; returns the helper's code.
 async function sendList(form, lesson) {
+  if (sourceMatchesHeld()) return 'coverage_incomplete';
   const rows = helperRows(form);
   const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
     class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
@@ -1099,7 +1147,7 @@ async function sendList(form, lesson) {
 // the helper's Enter. It never types scores.
 function weekToEnter() {
   const data = work.data;
-  if (!data) return {ready: [], waiting: false};
+  if (!data || sourceMatchesHeld()) return {ready: [], waiting: false};
   const all = data.lessons.flatMap(lesson => lesson.forms.map(form => ({form, lesson})))
     .filter(({form}) => form.form_id && form.window && icStatus(form)?.kind !== 'final');
   const waiting = all.some(({form}) => form.students.length && (!work.scores[form.form_id] || work.ui[form.form_id]?.progress));
@@ -1133,6 +1181,7 @@ STEPS
 }
 
 async function sendWeek(status, promptBox) {
+  if (sourceMatchesHeld()) { status.textContent = SOURCE_MATCH_HOLD; return; }
   const {ready} = weekToEnter();
   status.textContent = ' Sending to the Chrome helper…';
   const failed = [];
@@ -1343,7 +1392,7 @@ function renderForm(form, lesson) {
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
   const scores = work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
-  const scoredAll = scores && !ui.progress;
+  const scoredAll = scores && !ui.progress && !sourceMatchesHeld();
   box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
     ui.open === 'feedback' ? 'Hide feedback' : 'Student feedback')));
   if (ui.open === 'feedback') box.append(feedbackPanel(form));
@@ -1813,23 +1862,12 @@ async function loadMorningSummary() {
     box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
     reports.forEach((report, i) => {
       const lines = el('ul', {}, report.items.map(row => {
-        const left = Math.max(0, row.left - (row.reasons.exempt || 0));
-        const reasons = Object.entries(row.reasons)
-          .filter(([reason, count]) => !['exempt', 'missing'].includes(reason) && count)
-          .map(([reason, count]) => {
-            if (reason === 'check') return `${count} Hub source row${count === 1 ? '' : 's'} need review; open Student work for this assignment and check the rows marked “Check by hand”.`;
-            if (reason === 'flag') return `${count} IC row${count === 1 ? '' : 's'} have an IC status flag other than Exempt; the helper left them unchanged.`;
-            if (reason === 'excused') return `${count} new-student row${count === 1 ? '' : 's'} are excused from this assignment.`;
-            if (reason === 'name') return `${count} IC student${count === 1 ? '' : 's'} could not be matched to the Hub list.`;
-            return `${count} ${words(reason)}`;
-          });
-        if (row.code === 'coverage_incomplete') reasons.unshift('Scoring stopped before this assignment because a submission still needs a confirmed lesson match. Open Student work and resolve “Confirm these submission matches.”');
-        const context = [row.class_name, row.week, row.assignment].filter(Boolean).join(' · ');
-        const older = !row.class_name || !row.week;
-        return el('li', {}, el('strong', {text: context || row.assignment + ' · older receipt'}),
-          older
-            ? ` — ${row.filled} entered, ${row.raised} raised, ${row.kept} kept. This older receipt does not retain class/week or flag details.`
-            : ` — ${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${left} left — ${words(row.code)}. ${reasons.join(' ')}`);
+        const review = morningRowReview(row);
+        const reasons = review.reasons.map(([reason, count]) => `${count} — ${MORNING_REASONS[reason]}.`);
+        if (row.code === 'coverage_incomplete' && review.detailKnown) reasons.unshift(MORNING_COVERAGE);
+        return el('li', {}, el('strong', {text: morningContext(row)}),
+          ` — ${row.filled} entered, ${row.raised} raised, ${row.kept} kept${review.detailKnown ? `, ${review.left} unchanged` : ''} — ${words(row.code)}. `,
+          review.unavailable || reasons.join(' '));
       }));
       const details = morningRecovery.filter(r => r.run_id === report.run_id).map(r =>
         r.type === 'verified' ? el('p', {text: `Manually verified by ${r.by} at ${new Date(r.at).toLocaleString()}: ${r.note}`})

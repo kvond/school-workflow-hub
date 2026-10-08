@@ -8,7 +8,7 @@
  'use strict';
  const E=globalThis.HubIcEntry,A=globalThis.HubIcAdapter,C=globalThis.HubPostingConfig,P=globalThis.HubPostingProtocol;
  if(!E||!A?.panel||!P.origin(C.IC_ORIGIN)||location.origin!==C.IC_ORIGIN||window.top!==window)return;
- const {surface,renderedFlags,until,norm}=A.panel;
+ const {surface,waitSurface,renderedFlags,until,norm}=A.panel;
  const SAVED='All scores have been saved.';
  const LABEL=/^(.+?) MP: Marking Period Score input for (.+)$/;
  const fail=code=>{throw Error(code);};
@@ -108,7 +108,13 @@
   const problem=sessionProblem();if(problem){reply({ok:false,code:problem,not_started:true});return;}
   if(message.type==='morning_session'){reply({ok:true});return;}
   if(message.type==='morning_probe'){
-   try{if(document.hidden||working||host)throw Error();read(true);reply({ok:true});}catch{reply({ok:false,code:'panel_unusable'});}return;
+   (async()=>{try{
+    if(document.hidden||working||host)throw Error('panel_unusable');
+    await waitSurface();read(true);reply({ok:true});
+   }catch(error){
+    const known=new Set(['ic_not_saved','unsupported_gradebook','unsupported_points_scale','signed_out']);
+    reply({ok:false,code:known.has(error?.message)?error.message:'panel_unusable'});
+   }})();return true;
   }
   if(working||host||document.hidden){reply({ok:false,code:'panel_unusable',not_started:true});return;}
   working=true;
@@ -123,6 +129,7 @@
    await authorized();
    const target=M.target(message.target,C.IC_ORIGIN);
    if(location.href!==target.url)throw Error('destination_mapping_changed');
+   await waitSurface();
    const initial=read(true),io=ports({context:initial.snapshot.context});
    io.authorized=authorized;
    io.binding=async()=>{const s=surface();return {group:s.group,structure_id:/structureID\/(\d+)/.exec(new URL(s.path).pathname)?.[1],task:[...s.score.querySelectorAll('[aria-label]')].some(e=>e.getAttribute('aria-label')===`progressScore_${target.term_id}_${target.task_id}_${target.section_id}`)};};

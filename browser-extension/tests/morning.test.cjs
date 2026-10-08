@@ -43,12 +43,22 @@ test('unattended mock panel: blank, raise, higher, flag, excused and check by ha
 });
 test('Exempt-only IC flags are separate and Hub-only rows are outside assignment scope',()=>{
  const plan={missing:['Hub-only student'],items:[
-  {flags:['Exempt'],hub:{kind:'score'}},
-  {flags:[' exempt '],hub:{kind:'score'}},
-  {flags:['Exempt','Missing'],hub:{kind:'score'}},
-  {flags:['Late'],hub:{kind:'score'}},
+  {flags:['Exempt'],action:'leave',hub:{kind:'score'}},
+  {flags:[' exempt '],action:'leave',hub:{kind:'score'}},
+  {flags:['Exempt','Missing'],action:'leave',hub:{kind:'score'}},
+  {flags:['Late'],action:'leave',hub:{kind:'score'}},
+  {flags:['Exempt'],action:'keep',hub:{kind:'excused'}},
+  {flags:['Missing'],action:'fill',hub:{kind:'zero'}},
+  {flags:[],action:'skip',hub:{kind:'none'}},
  ]};
  assert.deepEqual(M.reasons(plan),{flag:2,exempt:2,excused:0,check:0,name:0,missing:0});
+});
+test('a verified missing-work zero is entered without an actionable flag',async()=>{
+ const value=list();value.rows[3]={...value.rows[3],kind:'zero',notes:0,revision:0};
+ const {state,ports}=panel(),result=await M.run(value,target(),ports);
+ assert.equal(result.result.outcome,'entered');assert.equal(result.result.counts.filled,2);
+ assert.equal(state.rows[3].score,0);assert.deepEqual(state.rows[3].flags,['Missing']);
+ assert.deepEqual(result.reasons,{flag:0,exempt:0,excused:1,check:1,name:0,missing:0});
 });
 test('literal parentheses in IC abbreviations pass only an exact label match',async()=>{
  for(const code of ['Unit(F','Unit(S','Unit(F)']){

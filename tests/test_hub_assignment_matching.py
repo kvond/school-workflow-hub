@@ -1,0 +1,64 @@
+"""Assignment routing on fictional lesson titles and uploads only."""
+import unittest
+
+from hub_v2 import work
+
+
+class AssignmentMatchingTests(unittest.TestCase):
+    def form(self, label, *decks):
+        return {"form_id": label, "label": label, "name": "",
+                "signature": {work.deck_stem(deck) for deck in decks}}
+
+    def upload(self, *names):
+        return {"files": [{"name": name} for name in names]}
+
+    def test_teacher_deck_pairing_outweighs_misleading_lesson_label_words(self):
+        observation = "Observation_Deductive_Reasoning_VT_CSI_1_markered"
+        inductive = "Inductive_Deductive_Forensics_Google_Slides"
+        forms = [self.form("Inductive and Deductive Reasoning — Turn In",
+                           "Week 04 — Eyewitness Accounts (VT)"),
+                 self.form("Observation Skills — Turn In")]
+        work.pair_decks(forms, [work.deck_stem(observation), work.deck_stem(inductive)],
+                        [observation, inductive])
+        upload = self.upload("Copy of " + observation + " - Fictional Student.pptx")
+
+        self.assertGreater(work.assignment_match_score(upload, forms[1]),
+                           work.assignment_match_score(upload, forms[0]))
+        self.assertEqual(work.assignment_for_submission(upload, forms), 1)
+        self.assertEqual(work.assignment_for_submission(
+            self.upload("Copy of " + inductive + " - Fictional Student.pptx"), forms), 0)
+
+    def test_learned_deck_signature_outweighs_label_fallback(self):
+        deck = "Observation_Deductive_Reasoning_VT_CSI_1_markered"
+        forms = [self.form("Inductive and Deductive Reasoning — Turn In"),
+                 self.form("Observation Skills — Turn In", deck)]
+        self.assertEqual(work.assignment_for_submission(self.upload("Copy of " + deck), forms), 1)
+
+    def test_unique_label_fallback_still_matches_student_lesson_title(self):
+        forms = [self.form("Membrane Structure — Turn In"),
+                 self.form("Membrane Transport — Turn In")]
+        self.assertEqual(work.assignment_for_submission(
+            self.upload("Copy of Membrane Transport - Fictional Student.pptx"), forms), 1)
+
+    def test_equal_matches_stay_in_review(self):
+        for forms in ([self.form("First lesson", "Membrane Transport"),
+                       self.form("Second lesson", "Membrane Transport")],
+                      [self.form("Membrane Transport Quiz — Turn In"),
+                       self.form("Membrane Transport Review — Turn In")]):
+            with self.subTest(labels=[form["label"] for form in forms]):
+                self.assertIsNone(work.assignment_for_submission(
+                    self.upload("Membrane Transport"), forms))
+
+    def test_multi_file_upload_needs_one_unique_assignment_for_all_files(self):
+        forms = [self.form("Membrane Structure — Turn In", "Membrane Structure"),
+                 self.form("Membrane Transport — Turn In", "Membrane Transport")]
+        self.assertIsNone(work.assignment_for_submission(
+            self.upload("Copy of Membrane Structure", "Copy of Membrane Transport"), forms))
+        self.assertIsNone(work.assignment_for_submission(
+            self.upload("Copy of Membrane Structure", "My attachment"), forms))
+        self.assertEqual(work.assignment_for_submission(
+            self.upload("Copy of Membrane Structure", "Membrane Structure"), forms), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

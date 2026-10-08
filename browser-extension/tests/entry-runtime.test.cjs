@@ -23,9 +23,10 @@ function harness(){
  const fromPage=data=>page.listener({source:window,origin:C.HUB_ORIGIN,data:{channel:E.CHANNEL,version:E.VERSION,request_id:crypto.randomUUID(),...data}});
  const plain=value=>JSON.parse(JSON.stringify(value??null));
  const fromIC=async(message,id=50)=>plain(await invoke(listeners.background,{type:'entry_ic',...message},sender(id)));
+ const fromPopup=async message=>plain(await invoke(listeners.background,message,{id:runtimeBase.id,frameId:0,url:runtimeBase.getURL('popup.html')}));
  const last=type=>plain(state.posted.filter(p=>p.value.type===type).at(-1)?.value);
  const settle=()=>new Promise(r=>setTimeout(r,10));
- return {state,fromPage,fromIC,settle,last,plain,invoke:async(...a)=>plain(await invoke(...a)),background:()=>listeners.background,sender,window};
+ return {state,fromPage,fromIC,fromPopup,settle,last,plain,invoke:async(...a)=>plain(await invoke(...a)),background:()=>listeners.background,sender,window};
 }
 
 test('the page learns the helper is installed without asking',async()=>{
@@ -69,6 +70,27 @@ test('an IC result reaches the Hub page as counts only, and is remembered for it
  await h.fromPage({type:'status'});
  assert.deepEqual(h.last('status').results,[result]);
  assert.equal((await h.fromIC({op:'lists'})).lists.length,1);
+});
+
+test('completed no-change columns stop counting as waiting but their receipts remain available',async()=>{
+ const h=harness(),sent=list();
+ await h.fromPage({type:'send',list:sent});
+ const makeResult=column=>({list_id:sent.list_id,form_id:sent.form_id,class_key:'biology',week:'Wk 03',column,section:'A4 Fictional',ic_title:`Cycle 03 · Energy Flow (${column==='notes'?'F':'S'})`,outcome:'checked',certain:true,counts:{filled:0,raised:0,kept:1,left:0,not_saved:0},at:new Date().toISOString()});
+ assert.equal((await h.fromPopup({type:'companion_popup_status'})).entry_lists,1);
+ await h.fromIC({op:'result',result:makeResult('notes')});
+ assert.equal((await h.fromIC({op:'lists'})).lists.length,1);
+ await h.fromIC({op:'result',result:makeResult('revision')});
+ assert.equal((await h.fromIC({op:'lists'})).lists.length,0);
+ const status=await h.fromPopup({type:'companion_popup_status'});
+ assert.equal(status.entry_lists,0);
+ await h.fromPage({type:'status'});await h.settle();
+ assert.equal(h.last('status').results.length,2);
+ // A refreshed Hub list has a new ID: old completion receipts remain visible,
+ // but they cannot make the refreshed list appear complete.
+ const refreshed=list();
+ await h.fromPage({type:'send',list:refreshed});
+ assert.equal((await h.fromIC({op:'lists'})).lists[0].list.list_id,refreshed.list_id);
+ assert.equal((await h.fromPopup({type:'companion_popup_status'})).entry_lists,1);
 });
 
 test('the page bridge ignores other windows, origins and channels',async()=>{

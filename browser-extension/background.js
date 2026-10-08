@@ -119,6 +119,26 @@ async function entryLoad(){
  return stored.filter(item=>{try{E.validateList(item.list,now);return true;}catch{return false;}});
 }
 const entrySave=lists=>chrome.storage.session.set({ic_lists:lists});
+function entryRequired(list){
+ const required=new Set();
+ for(const row of list.rows){
+  if(!['score','zero'].includes(row.kind))continue;
+  for(const column of ['notes','revision'])if(row[column]!==null)required.add(JSON.stringify([row.section,column]));
+ }
+ return required;
+}
+function entryComplete(item){
+ const required=entryRequired(item.list);
+ if(!required.size)return false;
+ const checked=new Set((item.done||[]).filter(result=>
+  result.list_id===item.list.list_id&&result.form_id===item.list.form_id&&
+  result.class_key===item.list.class_key&&result.week===item.list.week&&
+  result.certain===true&&['entered','checked'].includes(result.outcome)&&
+  result.counts?.not_saved===0
+ ).map(result=>JSON.stringify([result.section,result.column])));
+ return [...required].every(key=>checked.has(key));
+}
+const entryWaiting=lists=>lists.filter(item=>!entryComplete(item));
 async function entryHub(message,sender){
  if(!E||!configured())return {ok:false,code:'helper_not_configured'};
  if(message.op==='status')return entryLocked(async()=>({ok:true,code:'helper_ready',helper_version:chrome.runtime.getManifest().version,morning:await globalThis.HubMorningStatus?.()||null,results:(await entryLoad()).flatMap(item=>item.done)}));
@@ -137,7 +157,7 @@ async function entryHub(message,sender){
 }
 async function entryIC(message){
  if(!E||!configured())return {ok:false,code:'helper_not_configured'};
- if(message.op==='lists')return entryLocked(async()=>({ok:true,lists:(await entryLoad()).map(item=>({list:item.list}))}));
+ if(message.op==='lists')return entryLocked(async()=>({ok:true,lists:entryWaiting(await entryLoad()).map(item=>({list:item.list}))}));
  if(message.op!=='result')return {ok:false,code:'invalid_request'};
  let result;
  try{result=E.validateResult(message.result);}catch{return {ok:false,code:'invalid_result'};}
@@ -154,7 +174,7 @@ async function entryIC(message){
 chrome.runtime.onMessage.addListener((message,sender,respond)=>{
  if(message?.type==='companion_popup_status'&&sender.id===chrome.runtime.id&&sender.url===chrome.runtime.getURL('popup.html')){
   if(!E){respond(status());return;}
-  entryLocked(async()=>({...status(),entry_lists:(await entryLoad()).length})).then(respond,()=>respond(status()));return true;
+  entryLocked(async()=>({...status(),entry_lists:entryWaiting(await entryLoad()).length})).then(respond,()=>respond(status()));return true;
  }
  if(message?.type==='entry_hub'){
   if(!fromSite(sender,C.HUB_ORIGIN)){respond({ok:false,code:'invalid_request'});return;}

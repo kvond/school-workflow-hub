@@ -9,6 +9,22 @@
   const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(now)).map(p=>[p.type,p.value]));
   return {day:`${p.year}-${p.month}-${p.day}`,weekday:!['Sat','Sun'].includes(p.weekday),minutes:Number(p.hour)*60+Number(p.minute)};
  }
+ function schoolYear(now=Date.now()){
+  const day=clock(now).day,year=Number(day.slice(0,4)),month=Number(day.slice(5,7));
+  const start=month>=7?year:year-1;
+  return `${start}-${String(start+1).slice(-2)}`;
+ }
+ function skipByYear(entry,now=Date.now()){
+  if(schoolYear(now)!=='2026-27'||!entry)return '';
+  const week=String(entry.week||'').trim().toLowerCase().replace(/\s+/g,' ');
+  const assignment=String(entry.assignment||'').trim().toLowerCase().replace(/\s+/g,' ')
+   .replace(/\s*[—–-]\s*turn\s*in\s*$/i,'');
+  // This year's Week 1 Google Form appeared as a raw URL in the catalog. Keep
+  // the rule structural so no private Form ID or student data is stored here.
+  if(/^wk\s*0?1\b/.test(week)&&/^https:\/\/docs\.google\.com\/forms\//i.test(String(entry.assignment||'')))return 'week_1_intentionally_skipped';
+  if(String(entry.class||'').toLowerCase()==='forensics'&&assignment==='inductive and deductive reasoning')return 'established_skip';
+  return '';
+ }
  function due(state,now=Date.now()){
   const t=clock(now);
   if(!state.enabled||!t.weekday||t.minutes<420||state.day>=t.day)return null;
@@ -54,11 +70,14 @@
  }
  function reasons(plan){
   // IC's assignment roster is canonical; Hub-only rows are outside this
-  // assignment and should not create a follow-up item.
+  // assignment and should not create a follow-up item. Exempt-only flags are
+  // already resolved; a successfully entered missing-work zero is also resolved.
   const counts={flag:0,exempt:0,excused:0,check:0,name:0,missing:0};
   for(const i of plan.items){
+   if(i.action!=='leave')continue;
    const flags=i.flags.map(flag=>String(flag).trim().toLowerCase());
-   if(flags.length){if(flags.every(flag=>flag==='exempt'))counts.exempt++;else counts.flag++;}
+   if(flags.length&&flags.every(flag=>flag==='exempt'))counts.exempt++;
+   else if(flags.length)counts.flag++;
    else if(i.hub?.kind==='excused')counts.excused++;
    else if(i.hub?.kind==='check')counts.check++;
    else if(!i.hub)counts.name++;
@@ -78,6 +97,6 @@
   const result=await E.execute(plan,checked);
   return {result:E.hubResult(plan,result,plan.context.title),code:result.code,reasons:reasons(plan),diagnostics:[...new Set([...result.failed,...result.unexpected])]};
  }
- const api={clock,due,missed,need,target,targets,verify,reasons,run};root.HubMorning=Object.freeze(api);
+ const api={clock,schoolYear,skipByYear,due,missed,need,target,targets,verify,reasons,run};root.HubMorning=Object.freeze(api);
  if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(globalThis);

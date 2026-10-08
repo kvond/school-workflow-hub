@@ -1456,6 +1456,34 @@ class ScoreFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_score(late=True)
 
+    def test_unresolved_submission_matches_hold_manual_and_feedback_scoring_before_deck_reads(self):
+        found = self.work_result()
+        found["other_files"] = [{"files": [{"id": "UNRESOLVEDFILE123"}]}]
+        form = found["lessons"][0]["forms"][0]
+        history = {("STUDENTDECK123", "known-version"): {"result": {"notes_score": 8}}}
+        with patch.dict(completion._results, history, clear=True), \
+                patch.object(completion, "_template") as template, \
+                patch.object(google, "drive_file") as metadata, \
+                patch.object(google, "deck_bytes") as read, \
+                patch.object(completion, "assess") as assess:
+            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                           "STUDENTDECK123", found)
+            batch = app._score_rows("token", fixture(), "forensics", "Wk 04", self.FORM, form, found)
+            with patch.object(google, "service_token", return_value="token"), \
+                    patch.object(app, "load_agenda", return_value=fixture()), \
+                    patch.object(app, "lesson_work", return_value=found):
+                manual = app.api("api/score", {"class": ["forensics"], "week": ["Wk 04"],
+                                              "form": [self.FORM], "file": ["STUDENTDECK123"]}, {})
+            self.assertEqual(result["code"], "coverage_incomplete")
+            self.assertIn("confirmed lesson match", result["problem"])
+            self.assertEqual(batch[0][1], result)
+            self.assertEqual(manual, result)
+            self.assertEqual(completion._results, history)
+            template.assert_not_called()
+            metadata.assert_not_called()
+            read.assert_not_called()
+            assess.assert_not_called()
+
 
 class LedgerAndFeedbackTests(unittest.TestCase):
     CONFIG = {"HUB_SUBMISSIONS_ROOT_FOLDER": "ROOT", "HUB_READER_SERVICE_ACCOUNT": "reader@fictional.example"}

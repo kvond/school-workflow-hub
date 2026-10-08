@@ -654,6 +654,15 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         raise ValueError("file")
     upload = next(f for f in row["files"] if f["id"] == file_id)
     out = {"file_id": file_id, "problem": None}
+    # Manual score requests, feedback collection and morning scoring all use
+    # this entry point. Do not read or assess decks while the same lesson-work
+    # scan still contains submissions without a confirmed assignment match.
+    # Existing score/template caches remain intact for a later resolved scan.
+    if work_result.get("other_files"):
+        return {**out, "code": "coverage_incomplete", "problem":
+                "Scoring is on hold until every submission in this week's turn-in folders "
+                "has a confirmed lesson match. Open Student work and resolve "
+                "‘Confirm these submission matches’."}
     if upload.get("mime") not in (SLIDES, google.PPTX):
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []

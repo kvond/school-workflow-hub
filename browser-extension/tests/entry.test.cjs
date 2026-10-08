@@ -38,6 +38,12 @@ test('the Revision column uses the Hub revision score, and N/A is skipped',()=>{
  assert.deepEqual(by,{'Avery, Ann':'keep','Brook, Ben':'fill','Cole, Cy':'fill','Fox, Fay':'skip','Gray, Gus':'raise'});
 });
 
+test('an IC Missing marker does not block a verified zero while the marker itself stays intact',()=>{
+ const p=plan([row('Avery','Ann','zero',0,0)],[ic('Avery, Ann',null,['Missing'])]);
+ assert.deepEqual([p.items[0].action,p.items[0].value,p.changes.length],['fill',0,1]);
+ assert.deepEqual(p.snapshot.rows[0].flags,['Missing']);
+});
+
 test('IC flags, odd IC values and Exempt are left alone',()=>{
  const p=plan(base(),[ic('Avery, Ann',null,['Missing']),ic('Brook, Ben',null,[],'M'),ic('Cole, Cy',0,['Missing']),ic('Eve, Ed',null,['Exempt']),ic('Fox, Fay')]);
  const by=Object.fromEntries(p.items.map(i=>[i.name,[i.action,i.why]]));

@@ -28,9 +28,11 @@
   const summaryDialogs=[...score.querySelectorAll('[role="dialog"]')].filter(g=>[...g.querySelectorAll('h2')].some(h=>norm(h.textContent).startsWith('Student Summary')));
   const inPanel=e=>!summaryDialogs.some(g=>g.contains(e));
   const unsupported=reason=>{console.warn('School Workflow Hub: unsupported_gradebook ('+reason+')');fail('unsupported_gradebook');};
-  // IC uses this CSS class for its bulk-fill box as well as individual grades.
-  // Only the explicit per-student score IDs are posting destinations.
-  const inputs=[...score.querySelectorAll('input.multiscore__simple-score--input[aria-label][id^="as_alignmentMultiScore_"]')].filter(e=>visible(e)&&inPanel(e));
+  // IC can change score-field styling across releases. The generated per-row
+  // ID, accessible label, and later row/student checks identify destinations;
+  // a CSS class is presentation and must not gate discovery. The bulk-fill
+  // control remains excluded because it does not use the per-row ID grammar.
+  const inputs=[...score.querySelectorAll('input[aria-label][id^="as_alignmentMultiScore_"]')].filter(e=>visible(e)&&inPanel(e));
   if(!inputs.length||inputs.length>100)unsupported('score_input_count');
   const groups=new Set(inputs.map(e=>/^as_alignmentMultiScore_(\d+)-\d+$/.exec(e.id)?.[1]));
   if(groups.size!==1||groups.has(undefined))unsupported('score_group_identifiers');
@@ -46,6 +48,19 @@
   const context={section_id:section,term_id:term,year:op.get('year'),school_id:op.get('schoolID'),calendar_id:path[4],assignment_id:path[1],title,points:10};
   if(Object.entries(context).some(([k,v])=>k!=='points'&&(!v||k!=='title'&&!/^\d+$/.test(v))))fail('destination_context_changed');
   return {frame:f,doc:d,score,inputs,save,context,group:[...groups][0],path:u.href};
+ }
+ // IC's SPA can report the destination URL before Angular has rendered its
+ // per-student score rows. Retry only that transient structural state; other
+ // safety failures (wrong frame, sign-in, changed context) remain immediate.
+ async function waitSurface(ms=60000){
+  const end=Date.now()+ms;let last;
+  while(Date.now()<end){
+   try{return surface();}catch(error){
+    if(error?.message!=='unsupported_gradebook')throw error;
+    last=error;await new Promise(resolve=>setTimeout(resolve,100));
+   }
+  }
+  throw last||Error('unsupported_gradebook');
  }
  const identityCache=new Map();
  function currentScore(input){const v=input.value.trim();if(v==='')return null;if(!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(v)||!Number.isFinite(Number(v))||Number(v)<0||Number(v)>10)fail('destination_grade_requires_review');return Number(v);}
@@ -230,7 +245,7 @@
   return {code:'review_opened'};
  }
  // The score-panel readers, shared with the Hub v2 list entry (ic-entry.js).
- const panel=Object.freeze({surface,renderedFlags,until,norm});
+ const panel=Object.freeze({surface,waitSurface,renderedFlags,until,norm});
  const api={parseReference,sameSource,selectAssignmentReview,inspect,prepare,panel};root.HubIcAdapter=Object.freeze(api);
  if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(globalThis);

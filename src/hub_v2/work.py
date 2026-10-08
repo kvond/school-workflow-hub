@@ -526,15 +526,38 @@ def assignment_match_score(submission, form):
     """
     files = submission.get("files") or []
     signatures = set(form.get("signature") or ())
-    best = 0
+    signature_match, label_match = 0, 0
     label_words = deck_words(form.get("label", ""))
     for file in files:
         name = file.get("name", "")
-        best = max(best, _matches(deck_stem(name), signatures))
+        signature_match = max(signature_match, _matches(deck_stem(name), signatures))
         overlap = deck_words(name) & label_words
         if len(overlap) >= 2:
-            best = max(best, 100 + len(overlap))
-    return best
+            label_match = max(label_match, len(overlap))
+    # A known deck is stronger evidence than words shared by lesson labels.
+    # For example Observation_Deductive_Reasoning shares two words with the
+    # Reasoning label, but its full deck signature belongs to Observation.
+    return 1000 + signature_match if signature_match else min(label_match, 999)
+
+
+def assignment_for_submission(submission, forms):
+    """The one assignment every attached file uniquely matches, or None.
+
+    Keep mixed-lesson uploads and unresolved attachments in review rather
+    than allowing one strongly matched file to assign the entire upload.
+    """
+    winner = None
+    files = submission.get("files") or []
+    if not files:
+        return None
+    for file in files:
+        scores = [assignment_match_score({"files": [file]}, form) for form in forms]
+        best = max(scores, default=0)
+        matches = [i for i, score in enumerate(scores) if best and score == best]
+        if len(matches) != 1 or (winner is not None and winner != matches[0]):
+            return None
+        winner = matches[0]
+    return winner
 
 
 def shared_folder_reviews(forms, roots, parents):
@@ -917,10 +940,9 @@ def lesson_work(token, config, agenda, class_key, week_label):
         for submission in pending:
             for file in submission.get("files", []):
                 file["name"] = known.get(file.get("id"), {}).get("name") or file.get("name", "")
-            scores = sorted(((assignment_match_score(submission, form), i)
-                             for i, form in enumerate(forms)), reverse=True)
-            if scores and scores[0][0] and (len(scores) == 1 or scores[0][0] > scores[1][0]):
-                forms[scores[0][1]]["found"].append(submission)
+            assignment = assignment_for_submission(submission, forms)
+            if assignment is not None:
+                forms[assignment]["found"].append(submission)
             else:
                 other.append(submission)
 
