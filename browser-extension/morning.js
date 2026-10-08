@@ -53,8 +53,16 @@
   if(plan.snapshot.rows.some(r=>!r.label.startsWith(binding.label_code+' MP: Marking Period Score input for ')))fail('destination_mapping_changed');
  }
  function reasons(plan){
-  const counts={flag:0,excused:0,check:0,name:0,missing:plan.missing.length};
-  for(const i of plan.items){if(i.flags.length)counts.flag++;else if(i.hub?.kind==='excused')counts.excused++;else if(i.hub?.kind==='check')counts.check++;else if(!i.hub)counts.name++;}
+  // IC's assignment roster is canonical; Hub-only rows are outside this
+  // assignment and should not create a follow-up item.
+  const counts={flag:0,exempt:0,excused:0,check:0,name:0,missing:0};
+  for(const i of plan.items){
+   const flags=i.flags.map(flag=>String(flag).trim().toLowerCase());
+   if(flags.length){if(flags.every(flag=>flag==='exempt'))counts.exempt++;else counts.flag++;}
+   else if(i.hub?.kind==='excused')counts.excused++;
+   else if(i.hub?.kind==='check')counts.check++;
+   else if(!i.hub)counts.name++;
+  }
   return counts;
  }
  async function run(list,binding,ports){

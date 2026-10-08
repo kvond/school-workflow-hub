@@ -10,8 +10,8 @@
  const locked=fn=>{const next=queue.then(fn,fn);queue=next.catch(()=>{});return next;};
  const read=async()=>{const data=await chrome.storage.local.get([KEY,'morning_enabled','morning_enabled_day']);return {day:'',blocked:false,...data[KEY],enabled:data.morning_enabled===true,enabled_day:data.morning_enabled_day||''};};
  const write=s=>{const {enabled,enabled_day,...stored}=s;return chrome.storage.local.set({[KEY]:stored});};
- const reasons=()=>({flag:0,excused:0,check:0,name:0,missing:0});
- const item=(assignment,code)=>({assignment:String(assignment).slice(0,200),code,filled:0,raised:0,kept:0,left:0,reasons:reasons()});
+ const reasons=()=>({flag:0,exempt:0,excused:0,check:0,name:0,missing:0});
+ const item=(entry,code)=>({assignment:String(entry.assignment).slice(0,200),class_name:String(entry.class_name||'').slice(0,100),week:String(entry.week||'').slice(0,100),code,filled:0,raised:0,kept:0,left:0,reasons:reasons()});
  const safe=new Set(['signed_out','hub_unavailable','ic_unavailable','panel_unusable','disabled','source_changed','receipt_unconfirmed','mapping_required','missed_noon','ic_changed','destination_mapping_changed','students_dont_match','several_sections','ic_not_saved','unsupported_points_scale','unsupported_gradebook','list_expired','coverage_incomplete']);
  const code=e=>safe.has(e?.message)?e.message:'panel_unusable';
  const deadline=(promise,ms=100000)=>{let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('panel_unusable')),ms);})]).finally(()=>clearTimeout(timer));};
@@ -100,7 +100,7 @@
      if(!setting.enabled)throw Error('disabled');
      if(at.day!==s.day||at.minutes>=720)throw Error('missed_noon');
      const scope={class:entry.class,week:entry.week,form:entry.form};
-     const summary=item(entry.assignment,'running');
+     const summary=item(entry,'running');
      let initial;
      try{initial=await hub(source,'list',scope);}catch(e){summary.code=code(e);s.report.items.push(summary);throw e;}
      if(initial.code!=='ready'){

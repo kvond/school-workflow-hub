@@ -1418,6 +1418,12 @@ function renderWork() {
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
   if (data.roster_check) parts.push(renderRosterCheck(data.roster_check));
+  if (data.folder_reviews?.length) {
+    parts.push(el('section', {class: 'folder-review'},
+      el('h3', {text: 'Check this shared lesson folder'}),
+      ...data.folder_reviews.map(review => el('p', {class: 'note info'},
+        review.message, ' ', link(review.folder_name + ' ↗', review.folder_url)))));
+  }
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week})));
     if (lesson.problem) parts.push(note(lesson.problem));
@@ -1426,8 +1432,8 @@ function renderWork() {
   const other = (data.other_files || []).filter(r => !r.matched || work.section === 'all' || r.section === work.section);
   if (other.length) {
     parts.push(el('section', {class: 'form-work'},
-      el('div', {class: 'form-head'}, el('h3', {text: 'Not sorted to an assignment'})),
-      note('These files are in this lesson’s turn-in folders, but the Hub can’t verify an assignment match from the available evidence. They stay in place until the lesson is confirmed.', 'info'),
+      el('div', {class: 'form-head'}, el('h3', {text: 'Confirm these submission matches'})),
+      note(`These ${other.length === 1 ? 'file is' : 'files are'} already in the ${data.week} turn-in folders. The Hub couldn’t safely match ${other.length === 1 ? 'it' : 'them'} to one assignment, so scoring is held until the match is clear. Open the linked work and confirm the assignment; nothing was moved.`, 'info'),
       el('div', {class: 'table-wrap'}, el('table', {},
         el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
         el('tbody', {}, other.map(r => studentRow(r)))))));
@@ -1806,9 +1812,25 @@ async function loadMorningSummary() {
     const words = value => String(value).replaceAll('_', ' ');
     box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
     reports.forEach((report, i) => {
-      const lines = el('ul', {}, report.items.map(row => el('li', {}, el('strong', {text: row.assignment + ': '}),
-        `${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${row.left} left — ${words(row.code)}. `,
-        Object.entries(row.reasons).filter(([, n]) => n).map(([reason, n]) => `${n} ${words(reason)}`).join('; '))));
+      const lines = el('ul', {}, report.items.map(row => {
+        const left = Math.max(0, row.left - (row.reasons.exempt || 0));
+        const reasons = Object.entries(row.reasons)
+          .filter(([reason, count]) => !['exempt', 'missing'].includes(reason) && count)
+          .map(([reason, count]) => {
+            if (reason === 'check') return `${count} Hub source row${count === 1 ? '' : 's'} need review; open Student work for this assignment and check the rows marked “Check by hand”.`;
+            if (reason === 'flag') return `${count} IC row${count === 1 ? '' : 's'} have an IC status flag other than Exempt; the helper left them unchanged.`;
+            if (reason === 'excused') return `${count} new-student row${count === 1 ? '' : 's'} are excused from this assignment.`;
+            if (reason === 'name') return `${count} IC student${count === 1 ? '' : 's'} could not be matched to the Hub list.`;
+            return `${count} ${words(reason)}`;
+          });
+        if (row.code === 'coverage_incomplete') reasons.unshift('Scoring stopped before this assignment because a submission still needs a confirmed lesson match. Open Student work and resolve “Confirm these submission matches.”');
+        const context = [row.class_name, row.week, row.assignment].filter(Boolean).join(' · ');
+        const older = !row.class_name || !row.week;
+        return el('li', {}, el('strong', {text: context || row.assignment + ' · older receipt'}),
+          older
+            ? ` — ${row.filled} entered, ${row.raised} raised, ${row.kept} kept. This older receipt does not retain class/week or flag details.`
+            : ` — ${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${left} left — ${words(row.code)}. ${reasons.join(' ')}`);
+      }));
       const details = morningRecovery.filter(r => r.run_id === report.run_id).map(r =>
         r.type === 'verified' ? el('p', {text: `Manually verified by ${r.by} at ${new Date(r.at).toLocaleString()}: ${r.note}`})
           : el('p', {text: `${r.assignment} · ${r.section} · ${words(r.column)} — students requiring readback: ${r.names.length ? r.names.join('; ') : 'details unavailable; check the full panel'}.`}));

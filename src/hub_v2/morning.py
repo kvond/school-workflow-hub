@@ -43,7 +43,8 @@ def catalog(agenda):
                     fid = form.get("form_id")
                     if fid and (cls, fid) not in seen:
                         seen.add((cls, fid))
-                        out.append({"class": cls, "week": week["label"], "form": fid,
+                        out.append({"class": cls, "class_name": agenda.classes[cls]["name"],
+                                    "week": week["label"], "form": fid,
                                     "assignment": str(form.get("label") or lesson["topic"])[:200]})
     return {"assignments": out, "roster": "unavailable",
             "roster_note": "IC is the roster source of truth. Roster sync is not connected; normal additions and departures are not student-work exceptions."}
@@ -101,6 +102,14 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     lesson, form = forms[0]
     if found.get("problems") or form.get("problem"):
         return {"code": "coverage_incomplete"}
+    # Do not score one assignment while submissions from the same weekly
+    # folders still lack a safe lesson match.
+    if found.get("other_files"):
+        return {"code": "coverage_incomplete"}
+    # Do not score one assignment while submissions from the same weekly
+    # folders still lack a safe lesson match.
+    if found.get("other_files"):
+        return {"code": "coverage_incomplete"}
     now = datetime.now(timezone.utc)
     mark = ledger.read(token, config, fid)
     if not mark.get("configured") or mark.get("problem"):
@@ -133,13 +142,23 @@ def validate_report(value):
     if value["code"] not in CODES or value["roster"] != "unavailable" or not isinstance(value["items"], list) or len(value["items"]) > 300:
         raise ValueError("report")
     for item in value["items"]:
-        if not isinstance(item, dict) or set(item) != {"assignment", "code", "filled", "raised", "kept", "left", "reasons"}:
+        legacy_item = {"assignment", "code", "filled", "raised", "kept", "left", "reasons"}
+        current_item = legacy_item | {"class_name", "week"}
+        if not isinstance(item, dict) or set(item) not in (legacy_item, current_item):
             raise ValueError("report")
         if not isinstance(item["assignment"], str) or len(item["assignment"]) > 200 or item["code"] not in CODES:
             raise ValueError("report")
+        if "class_name" in item and (not isinstance(item["class_name"], str) or not item["class_name"].strip() or len(item["class_name"]) > 100):
+            raise ValueError("report")
+        if "week" in item and (not isinstance(item["week"], str) or not item["week"].strip() or len(item["week"]) > 100):
+            raise ValueError("report")
         if any(type(item[k]) is not int or not 0 <= item[k] <= 3600 for k in ("filled", "raised", "kept", "left")):
             raise ValueError("report")
-        if set(item["reasons"]) != {"flag", "excused", "check", "name", "missing"} or any(type(n) is not int or not 0 <= n <= 3600 for n in item["reasons"].values()):
+        legacy_reasons = {"flag", "excused", "check", "name", "missing"}
+        current_reasons = legacy_reasons | {"exempt"}
+        if (not isinstance(item["reasons"], dict)
+                or set(item["reasons"]) not in (legacy_reasons, current_reasons)
+                or any(type(n) is not int or not 0 <= n <= 3600 for n in item["reasons"].values())):
             raise ValueError("report")
     return value
 

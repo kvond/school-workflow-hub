@@ -517,6 +517,62 @@ def _matches(stem, signature):
     return best
 
 
+def assignment_match_score(submission, form):
+    """Score evidence that a submitted deck belongs to one Form assignment.
+
+    A shared weekly folder can contain more than one lesson. Prefer the deck
+    signature learned from that Form's submissions, with a conservative
+    lesson-label word match when student copies retain the lesson title.
+    """
+    files = submission.get("files") or []
+    signatures = set(form.get("signature") or ())
+    best = 0
+    label_words = deck_words(form.get("label", ""))
+    for file in files:
+        name = file.get("name", "")
+        best = max(best, _matches(deck_stem(name), signatures))
+        overlap = deck_words(name) & label_words
+        if len(overlap) >= 2:
+            best = max(best, 100 + len(overlap))
+    return best
+
+
+def shared_folder_reviews(forms, roots, parents):
+    """Report, without moving files, when named lesson folders serve multiple Forms."""
+    found = {}
+    for form in forms:
+        for submission in form.get("found", []):
+            for file in submission.get("files", []):
+                file_id = file.get("id")
+                if not file_id:
+                    continue
+                ancestors = set(_ancestors(file_id, parents))
+                for folder_id, folder_name in roots.items():
+                    if (not folder_name or folder_week(folder_name) is None
+                            or "(file responses)" in str(folder_name).lower()):
+                        continue
+                    if folder_id in ancestors:
+                        key = (folder_id, form.get("label", ""))
+                        found.setdefault(key, set()).add(file_id)
+    by_folder = {}
+    for (folder_id, label), file_ids in found.items():
+        by_folder.setdefault(folder_id, {})[label] = file_ids
+    reviews = []
+    for folder_id, assignments in by_folder.items():
+        if len(assignments) < 2:
+            continue
+        detail = ["%s (%d file%s)" % (assignment_title(label), len(file_ids),
+                                      "" if len(file_ids) == 1 else "s")
+                  for label, file_ids in sorted(assignments.items())]
+        reviews.append({"folder_name": roots[folder_id],
+                        "folder_url": "https://drive.google.com/drive/folders/" + folder_id,
+                        "assignments": [assignment_title(label) for label in sorted(assignments)],
+                        "message": ("This folder contains submitted work for multiple lessons: %s. "
+                                    "Do both lessons belong in this folder? Files were left where they are."
+                                    % "; ".join(detail))})
+    return sorted(reviews, key=lambda item: item["folder_name"])
+
+
 def describe_files(token, submissions_list, known):
     """Fill in each file's Drive name, type, trash state and link, reusing
     metadata already read from the folder listing."""
@@ -745,6 +801,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
         problems.append("No %s row labelled '%s' was found in the Agenda." % (class_name, week_label))
         return {"class_key": class_key, "week": week_label, "lessons": [], "other_files": [],
                 "roster_check": None,
+                "folder_reviews": [],
                 "folders": [], "folder_files": 0, "folder_note": None,
                 "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students), "problems": problems}
 
@@ -858,9 +915,10 @@ def lesson_work(token, config, agenda, class_key, week_label):
             named = [(stem, name) for stem, name in named if len(stem) >= 8]
             pair_decks(lesson_forms, [stem for stem, _ in named], [name for _, name in named])
         for submission in pending:
-            first = submission["files"][0]
-            stem = deck_stem(known.get(first["id"], {}).get("name") or first["name"])
-            scores = sorted(((_matches(stem, form["signature"]), i) for i, form in enumerate(forms)), reverse=True)
+            for file in submission.get("files", []):
+                file["name"] = known.get(file.get("id"), {}).get("name") or file.get("name", "")
+            scores = sorted(((assignment_match_score(submission, form), i)
+                             for i, form in enumerate(forms)), reverse=True)
             if scores and scores[0][0] and (len(scores) == 1 or scores[0][0] > scores[1][0]):
                 forms[scores[0][1]]["found"].append(submission)
             else:
@@ -961,8 +1019,10 @@ def lesson_work(token, config, agenda, class_key, week_label):
                    set(_ancestors(fid, parents)) & set(roots))
                    and not (str(name).startswith("_") and fid not in holding)]
     check = roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
+    folder_reviews = shared_folder_reviews(forms, roots, parents)
     return {"class_key": class_key, "week": week_label, "lessons": result, "other_files": other_rows,
             "roster_check": check,
+            "folder_reviews": folder_reviews,
             "folders": folder_list,
             "folder_files": sum(1 for i in items if i.get("mimeType") != google.FOLDER),
             "folder_note": folder_note,

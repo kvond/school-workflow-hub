@@ -670,6 +670,22 @@ class FolderTests(unittest.TestCase):
         self.assertEqual(work.deck_words("Copy of Observation_Deductive_Reasoning_VT_CSI_1_markered - Ana"),
                          {"observation", "deductive", "reasoning"})
 
+    def test_submission_title_matches_unique_form_label_and_reports_shared_folder(self):
+        forms = [
+            {"label": "Membrane Structure — Turn in", "signature": set(), "found": [
+                {"files": [{"id": "A", "name": "Copy of Membrane Structure - Avery.pptx"}]}]},
+            {"label": "Membrane Transport — Turn in", "signature": set(), "found": [
+                {"files": [{"id": "B", "name": "Copy of Membrane Transport - Brook.pptx"}]}]},
+        ]
+        pending = {"files": [{"id": "C", "name": "Copy of Membrane Transport - Casey.pptx"}]}
+        self.assertGreater(work.assignment_match_score(pending, forms[1]),
+                           work.assignment_match_score(pending, forms[0]))
+        reviews = work.shared_folder_reviews(forms, {"FOLDER": "Biology Wk 04 — Shared"},
+                                             {"A": "FOLDER", "B": "FOLDER"})
+        self.assertEqual(len(reviews), 1)
+        self.assertIn("Do both lessons belong in this folder?", reviews[0]["message"])
+        self.assertIn("Files were left where they are", reviews[0]["message"])
+
     def wrong_form_entries(self, current):
         def found(*names):
             return [{"source": "form", "files": [{"name": name}], "key": name} for name in names]

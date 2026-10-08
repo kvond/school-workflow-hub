@@ -37,9 +37,18 @@ test('exact destination mapping, no title fallback or foreign routes',()=>{
 test('unattended mock panel: blank, raise, higher, flag, excused and check by hand',async()=>{
  const {state,ports}=panel(),r=await M.run(list(),target(),ports);
  assert.equal(r.result.outcome,'entered');assert.equal(r.result.counts.filled,1);assert.equal(r.result.counts.raised,1);assert.equal(r.result.counts.kept,1);assert.equal(r.result.counts.left,3);
- assert.deepEqual(r.reasons,{flag:1,excused:1,check:1,name:0,missing:0});
+ assert.deepEqual(r.reasons,{flag:1,exempt:0,excused:1,check:1,name:0,missing:0});
  assert.deepEqual(state.calls,['snapshot','snapshot','fill','fill','snapshot','save','reload']);
  assert.equal(state.rows[2].score,10);assert.equal(state.rows[3].score,null);
+});
+test('Exempt-only IC flags are separate and Hub-only rows are outside assignment scope',()=>{
+ const plan={missing:['Hub-only student'],items:[
+  {flags:['Exempt'],hub:{kind:'score'}},
+  {flags:[' exempt '],hub:{kind:'score'}},
+  {flags:['Exempt','Missing'],hub:{kind:'score'}},
+  {flags:['Late'],hub:{kind:'score'}},
+ ]};
+ assert.deepEqual(M.reasons(plan),{flag:2,exempt:2,excused:0,check:0,name:0,missing:0});
 });
 test('literal parentheses in IC abbreviations pass only an exact label match',async()=>{
  for(const code of ['Unit(F','Unit(S','Unit(F)']){

@@ -126,10 +126,8 @@
    if(ic.flags.length)return leave(`IC flag (${ic.flags.join(', ')}): check by hand`);
    return Object.assign(item,{action:ic.score===null?'fill':'raise',why:''});
   });
-  const found=new Set(matched.map(m=>m.row));
-  const missing=list.rows.map((row,i)=>({row,i})).filter(({row,i})=>row.section===section&&!found.has(i)&&row.kind!=='none').map(({row})=>`${row.last}, ${row.first}`);
   const count=action=>items.filter(item=>item.action===action).length;
-  return freeze({list_id:list.list_id,form_id:list.form_id,class_key:list.class_key,week:list.week,column,section,context:clone(snapshot.context),snapshot:clone(snapshot),items,missing,
+  return freeze({list_id:list.list_id,form_id:list.form_id,class_key:list.class_key,week:list.week,column,section,context:clone(snapshot.context),snapshot:clone(snapshot),items,
    changes:items.filter(item=>['fill','raise'].includes(item.action)).map(item=>({label:item.label,name:item.name,before:item.current,value:item.value,action:item.action})),
    counts:{fill:count('fill'),raise:count('raise'),keep:count('keep'),leave:count('leave'),skip:count('skip')}});
  }

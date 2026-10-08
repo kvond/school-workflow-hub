@@ -46,6 +46,19 @@ class MorningTests(unittest.TestCase):
             self.assertEqual(morning.make_list("t", {}, agenda, "biology", "Wk 05", FORM["form_id"], loader, scorer)["code"], "coverage_incomplete")
         self.assertTrue(loader.call_args.kwargs["fresh"])
 
+    def test_unmatched_source_files_block_scoring(self):
+        agenda = Mock(classes={"biology": {"name": "Biology"}})
+        found = {"lessons": [{"topic": "Matter", "forms": [FORM]}], "problems": [],
+                 "other_files": [{"matched": True, "last": "Brook"}]}
+        loader = Mock(return_value=found)
+        scorer = Mock()
+        binding = {"class_key": "biology", "form_id": FORM["form_id"], "targets": []}
+        with patch.object(morning.ledger, "read", return_value={"configured": True}):
+            result = morning.make_list("t", {"HUB_IC_ASSIGNMENT_MAP": json.dumps([binding])}, agenda,
+                                       "biology", "Wk 05", FORM["form_id"], loader, scorer)
+        self.assertEqual(result, {"code": "coverage_incomplete"})
+        scorer.assert_not_called()
+
     def test_receipts_accept_only_counts_and_allowlisted_reasons(self):
         self.assertEqual(morning.validate_report(report()), report())
         for mutate in (lambda r: r.update(names=["Private Person"]), lambda r: r["items"][0].update(filled=True), lambda r: r["items"][0].update(code="raw provider error"), lambda r: r["items"][0]["reasons"].update(student="Private Person")):

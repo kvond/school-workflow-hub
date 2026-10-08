@@ -45,11 +45,11 @@ test('IC flags, odd IC values and Exempt are left alone',()=>{
  assert.equal(by['Brook, Ben'][0],'leave');assert.deepEqual(by['Cole, Cy'],['keep','same']);assert.deepEqual(by['Eve, Ed'],['keep','Exempt in IC']);
 });
 
-test('students not yet due are skipped, and Hub students missing from IC are listed',()=>{
+test('students not yet due are skipped; IC assignment rows define the helper scope',()=>{
  const rows=[...base(),row('Ivy','Ida','none',null,null,'A4 Fictional','its two weeks haven’t started'),row('Jay','Jo','score',4,4,'B3 Other')];
  const p=plan(rows,[ic('Avery, Ann'),ic('Brook, Ben'),ic('Cole, Cy'),ic('Ivy, Ida')]);
  assert.equal(p.items.find(i=>i.name==='Ivy, Ida').action,'skip');
- assert.deepEqual(p.missing,['Dale, Di','Eve, Ed','Fox, Fay','Gray, Gus']);
+ assert.equal(Object.hasOwn(p,'missing'),false);
 });
 
 test('the wrong class, a mixed section or an unsaved panel stops before any plan',()=>{

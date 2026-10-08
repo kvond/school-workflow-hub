@@ -193,7 +193,6 @@
      node('tr',{},['Student','IC now','Hub','Helper will'].map(h=>node('th',{style:'text-align:left;border-bottom:1px solid #ccd;padding:3px 6px'},h))),
      items.map(item=>node('tr',{style:['fill','raise'].includes(item.action)?'background:#eef7f0':item.action==='leave'?'background:#fff6e5':''},
       [item.name,item.other??shown(item.current),hubCell(item),doing(item)].map(t=>node('td',{style:'padding:3px 6px;border-bottom:1px solid #eef'},t))))),
-    plan.missing.length?node('p',{style:'margin:6px 0'},node('strong',{},'On the Hub list but not in this IC assignment: '),plan.missing.join('; '),'.'):null,
     node('p',{style:'margin:6px 0;color:#445'},'The helper keeps the higher score: it fills blanks and raises lower scores, never lowers one, and leaves IC flags alone. After Save it reloads the assignment and checks every score.'));
   }
 
