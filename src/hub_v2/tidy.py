@@ -6,9 +6,8 @@ The teacher keeps exactly one icon folder per course per week
 there for work turned in more than two weeks late. The earlier shared Form's
 script and new Forms can still create extra folders for a week. plan() lists
 what would move; apply() moves exactly that previewed plan and checks each
-move. An emptied extra folder goes to the Drive trash (restorable) when Drive
-lets the dashboard trash it; otherwise it gets '_' in front of its name so the
-teacher knows there is nothing in it.
+move. A verified empty duplicate gets '~delete ' in front of its name for the
+teacher to remove later. The Hub never trashes folders or marks Form upload trees.
 
 Tidy also puts each student's name and lesson in front of their turned-in
 files' names ("Ana Rivera.Energy Flow - <original name>"), so a Drive search
@@ -25,7 +24,7 @@ from .agenda import norm
 
 ICON = "📥"
 LATE_FOLDER = "⏰ Late — not graded"
-EMPTY_MARK = "_"
+EMPTY_MARK = "~delete "
 MAX_MOVES = 300
 MAX_RENAMES = 300
 CAPABILITIES = "id,name,parents,capabilities(canAddChildren,canMoveItemWithinDrive,canTrash,canRename)"
@@ -336,18 +335,19 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
         if google.folder_children(token, folder["id"]):
             left.append({**folder, "why": "It still has something in it."})
             continue
-        if current["can_trash"]:
-            try:
-                google.trash_item(write_token, folder["id"])
-                trashed.append(folder)
-                continue
-            except google.GoogleError:
-                pass
+        if _is_form_folder(folder['name']):
+            left.append({**folder, 'why': 'A Form upload folder must remain in place, even when empty.'})
+            continue
         if folder["name"].startswith(EMPTY_MARK):
             continue
         try:
-            google.rename_item(write_token, folder["id"], EMPTY_MARK + folder["name"])
-            marked.append({**folder, "name": EMPTY_MARK + folder["name"]})
+            name = EMPTY_MARK + folder['name']
+            google.rename_item(write_token, folder['id'], name)
+            after = google.drive_file(token, folder['id'])
+            if after.get('name') == name and not google.folder_children(token, folder['id']):
+                marked.append({**folder, 'name': name})
+            else:
+                left.append({**folder, 'why': 'The empty-folder label was not confirmed.'})
         except google.GoogleError:
             left.append({**folder, "why": "Only you can delete this empty folder."})
     return {**current, "keep_id": keep_id, "moved": moved, "moved_items": moved_items, "failed": failed, "trashed": trashed,

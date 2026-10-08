@@ -57,10 +57,13 @@ test('only confirmed receipt rows contribute to the saved count',()=>{
 });
 
 test('no source scores and no receipt are not described as a successful IC comparison',()=>{
-  const report={code:'finished',items:[{assignment:'Lesson',code:'no_scores',filled:0,raised:0,kept:0,left:0}]};
-  assert.match(context.renderMorningCockpit(report,{}).text,/not entered or compared in IC/);
-  assert.match(context.renderNeedsYou(report).text,/IC was not compared/);
-  assert.doesNotMatch(context.renderNeedsYou(report).text,/No grade rows were left out/);
+  for (const details of [{}, {class_name:'Biology',week:'Wk 04',reasons:{exempt:0,flag:0,excused:0,check:0,name:0,missing:0}}]) {
+    const report={code:'finished',items:[{assignment:'Lesson',code:'no_scores',filled:0,raised:0,kept:0,left:0,...details}]};
+    assert.match(context.renderMorningCockpit(report,{}).text,/not entered or compared in IC/);
+    const followup=context.renderNeedsYou(report).text;
+    assert.match(followup,/IC was not compared/);
+    assert.doesNotMatch(followup,/No grade rows were left out|No grade rows need attention|older receipt|Detailed follow-up is unavailable/);
+  }
   assert.match(context.renderNeedsYou(null).text,/not verified/);
 });
 

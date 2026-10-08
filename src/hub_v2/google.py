@@ -317,6 +317,50 @@ def create_folder(token, name, parent):
                     body={"name": name, "mimeType": FOLDER, "parents": [parent]})
 
 
+def archive_file_id(token, *, shortcut=False):
+    """Reserve an ID before an archive create, so uncertain responses cannot duplicate it."""
+    data = get_json("https://www.googleapis.com/drive/v3/files/generateIds", token,
+                    {"count": 1, "space": "drive", "type": "shortcuts" if shortcut else "files"})
+    ids = data.get("ids") or []
+    if len(ids) != 1 or not isinstance(ids[0], str):
+        raise GoogleError("Drive did not reserve an archive file ID.")
+    return ids[0]
+
+
+def archive_create(token, metadata, pdf_bytes=None):
+    """Create one reserved folder/shortcut/PDF; never modify sharing or source bytes."""
+    fields = "id,name,mimeType,parents,properties,shortcutDetails,createdTime,md5Checksum,size"
+    if pdf_bytes is None:
+        return get_json("https://www.googleapis.com/drive/v3/files", token,
+                        {"fields": fields, "supportsAllDrives": "true"}, method="POST", body=metadata)
+    import json
+    boundary = "hub-archive-" + hashlib.sha256(pdf_bytes).hexdigest()[:24]
+    body = ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n%s\r\n"
+            "--%s\r\nContent-Type: application/pdf\r\n\r\n" %
+            (boundary, json.dumps(metadata), boundary)).encode() + pdf_bytes + \
+        ("\r\n--%s--\r\n" % boundary).encode()
+    try:
+        response = _session().post("https://www.googleapis.com/upload/drive/v3/files",
+            params={"uploadType": "multipart", "fields": fields, "supportsAllDrives": "true"},
+            headers={"Authorization": "Bearer " + token,
+                     "Content-Type": "multipart/related; boundary=" + boundary},
+            data=body, timeout=(5, 30), allow_redirects=False)
+        if response.status_code != 200:
+            try:
+                reasons = {e.get("reason") for e in response.json().get("error", {}).get("errors", [])}
+            except (ValueError, TypeError, AttributeError):
+                reasons = set()
+            if reasons & {"storageQuotaExceeded", "teamDriveFileLimitExceeded"}:
+                raise GoogleError("Drive storage quota prevents this PDF upload. The saved feedback is still downloadable from the Hub.",
+                                  response.status_code)
+            raise GoogleError(_status_message(response.status_code), response.status_code)
+        return response.json()
+    except GoogleError:
+        raise
+    except Exception:
+        raise GoogleError("Drive did not confirm the archive PDF upload.") from None
+
+
 def rename_item(token, item_id, name):
     return get_json("https://www.googleapis.com/drive/v3/files/" + quote(item_id), token,
                     {"fields": "id,name", "supportsAllDrives": "true"}, method="PATCH", body={"name": name})

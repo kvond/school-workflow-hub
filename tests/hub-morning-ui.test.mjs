@@ -37,6 +37,20 @@ function boot(items) {
 const allNodes = element => [element, ...element.children.filter(child => child instanceof Element).flatMap(allNodes)];
 const attention = element => allNodes(element).filter(node => node.className === 'attention-list');
 
+test('Routine explains dated student filing and separate teacher reports without adding controls', () => {
+  const {context, document} = boot([]);
+  const routine = source.slice(source.indexOf('function renderRoutine()'), source.indexOf('// ---------- Link check ----------'));
+  vm.runInContext('function helperLine() { return el("p", {text: "Existing helper controls"}); }\n' + routine + '\nrenderRoutine();', context);
+  const panel = document.getElementById('routine-body');
+  assert.match(panel.textContent, /At 6:30\..*dated links in private folders by class, section and student/);
+  assert.match(panel.textContent, /Original files and Form upload folders are preserved/);
+  assert.match(panel.textContent, /At 7:30\..*Student feedback goes in those same student folders/);
+  assert.match(panel.textContent, /Teacher summaries, growth reports and notes go in separate private teacher report folders for each class/);
+  assert.match(panel.textContent, /fills blanks and raises lower scores only.*saves, reloads and verifies/);
+  assert.equal(allNodes(panel).filter(node => ['button', 'input', 'select'].includes(node.tagName)).length, 0);
+  assert.match(panel.textContent, /Existing helper controls/);
+});
+
 test('legacy receipt flags remain unavailable detail and cannot become teacher tasks', async () => {
   const legacy = row({class_name: undefined, week: undefined, left: 4,
     reasons: {flag: 4, excused: 0, check: 0, name: 0, missing: 6}});

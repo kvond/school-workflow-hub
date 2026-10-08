@@ -76,6 +76,64 @@ class NativeFeedbackTests(unittest.TestCase):
             self.assertIn('2026-10-05', text)
             self.assertNotIn('2026-10-06', text)
 
+    def test_enabled_student_archive_files_existing_reviewed_pdf_once_without_regeneration_or_delivery_changes(self):
+        from hub_v2 import student_archive
+        old = inputs()
+        draft = fb.generate(OPENAI_CONFIG, old)
+        current = deepcopy(old)
+        current['archive_identity'] = {'school_email': 'ana.rivera@school.example', 'first': 'Ana', 'last': 'Rivera',
+                                       'section': 'A4 Biology', 'matched_by': 'email', 'source': 'form'}
+        artifact = {'status': 'verified', 'feedback_id': draft['id'], 'drive_file_id': 'FictionalPdf1234567890',
+                    'student_folder_id': 'FictionalStudentFolder123', 'class_key': 'biology',
+                    'created_at': '2026-10-08T14:00:00Z', 'url': 'https://drive.google.com/open?id=FictionalPdf1234567890'}
+        delivery = {'printed': False, 'handed_to_student': True}
+        self.port.commit({'fictional-delivery-state': (delivery, None)})
+        with patch.object(student_archive, 'enabled', return_value=True), \
+                patch.object(student_archive, 'file_feedback', return_value=artifact) as file_feedback, \
+                patch.object(google, 'append_rows') as delivery_write:
+            saved = fb.save(OPENAI_CONFIG, draft['id'], current, token='read', write_token='write')
+            again = fb.save(OPENAI_CONFIG, draft['id'], current, token='read', write_token='write')
+            reused = fb.generate(OPENAI_CONFIG, current)
+        file_feedback.assert_called_once()
+        args = file_feedback.call_args.args
+        self.assertEqual(args[:3], ('read', 'write', OPENAI_CONFIG))
+        self.assertEqual(args[3]['archive_identity'], current['archive_identity'])
+        self.assertEqual(args[3]['id'], draft['id'])
+        from pypdf import PdfReader
+        printed = PdfReader(io.BytesIO(args[4])).pages[0].extract_text()
+        self.assertNotIn('Private concern', printed)
+        self.assertEqual(saved['archive'], artifact)
+        self.assertEqual(again['archive'], artifact)
+        self.assertEqual(reused['id'], draft['id'])
+        self.assertTrue(reused['cached'])
+        self.assertEqual(self.call.call_count, 1)
+        self.assertEqual(self.port.read(['fictional-delivery-state']).documents['fictional-delivery-state'].value, delivery)
+        delivery_write.assert_not_called()
+
+    def test_enabled_filing_missing_writer_or_held_identity_preserves_saved_feedback_and_never_rebills(self):
+        from hub_v2 import student_archive
+        draft = fb.generate(OPENAI_CONFIG, inputs())
+        with patch.object(student_archive, 'enabled', return_value=True), \
+                patch.object(student_archive, 'file_feedback', return_value={'status': 'held', 'problem': 'School email needs verification.'}) as file_feedback:
+            with self.assertRaisesRegex(fb.Held, 'feedback is saved.*authorized Drive writer'):
+                fb.save(OPENAI_CONFIG, draft['id'], inputs())
+            file_feedback.assert_not_called()
+            with self.assertRaisesRegex(fb.Held, 'feedback is saved.*School email needs verification'):
+                fb.save(OPENAI_CONFIG, draft['id'], inputs(), token='read', write_token='write')
+        self.assertTrue(fb.get_saved(OPENAI_CONFIG, draft['id']).value['saved_at'])
+        self.assertTrue(fb.generate(OPENAI_CONFIG, inputs())['cached'])
+        self.assertEqual(self.call.call_count, 1)
+
+    def test_archive_disabled_keeps_private_saved_pdf_usable_without_drive_tokens(self):
+        from hub_v2 import student_archive
+        draft = fb.generate(OPENAI_CONFIG, inputs())
+        with patch.object(student_archive, 'enabled', return_value=False), \
+                patch.object(student_archive, 'file_feedback') as file_feedback:
+            result = fb.save(OPENAI_CONFIG, draft['id'], inputs())
+        self.assertTrue(result['readback_verified'])
+        self.assertTrue(result['pdf_url'])
+        file_feedback.assert_not_called()
+
     def test_today_feedback_lists_only_print_ready_files_created_today_in_their_course_folder(self):
         folders = {'biology': 'BIOLOGY_FOLDER_ID', 'forensics': 'FORENSICS_FOLDER_ID',
                    'anatomy': 'ANATOMY_FOLDER_ID'}
@@ -92,6 +150,8 @@ class NativeFeedbackTests(unittest.TestCase):
                 {'id': 'bio-draft', 'name': 'DRAFT Feedback — Biology.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:01:00Z'},
                 {'id': 'bio-old', 'name': 'Feedback — Biology Wk 05.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T02:00:00Z'},
                 {'id': 'bio-summary', 'name': 'Class summary and feedback.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:02:00Z'},
+                {'id': 'bio-teacher', 'name': 'TeacherNotes — feedback.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:02:00Z'},
+                {'id': 'bio-growth', 'name': 'Growth record — feedback.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:02:00Z'},
             ], 'FORENSICS_FOLDER_ID': [], 'ANATOMY_FOLDER_ID': [],
         }
         with patch.object(fb.google, 'drive_file', side_effect=lambda token, ident, fields: metadata[ident]), \
@@ -122,6 +182,76 @@ class NativeFeedbackTests(unittest.TestCase):
         with patch.object(fb, 'today_files', return_value={'configured': True, 'date': '2026-10-08', 'files': files}):
             with self.assertRaises(fb.Held):
                 fb.print_today('token', {}, ['bio', 'bio'], date_et='2026-10-08')
+
+    def test_today_finds_nested_archived_student_pdfs_deduplicates_legacy_and_excludes_teacher_reports(self):
+        from hub_v2 import student_archive
+        def archived(ident, name, **extra):
+            return {'status': 'verified', 'drive_file_id': ident, 'name': name, 'class_key': 'biology',
+                    'student_folder_id': 'FictionalStudentFolder123', 'student_folder_name': 'Rivera, Ana',
+                    'class_folder_id': 'FictionalBiologyFolder123', 'class_folder_name': 'Biology',
+                    'created_at': '2026-10-08T14:00:00Z', 'mime': 'application/pdf',
+                    'url': 'https://drive.google.com/open?id=' + ident, 'feedback_id': 'feedbackdraft_' + 'a' * 64, **extra}
+        index = [archived('same-pdf', 'Feedback — Ana Rivera — carbon.pdf'),
+                 archived('nested-pdf', 'Feedback — Sam Avery — carbon.pdf'),
+                 archived('teacher-notes', 'TeacherNotes — feedback.pdf'),
+                 archived('growth', 'Growth record — feedback.pdf'),
+                 archived('teacher-report', 'Teacher report — feedback.pdf'),
+                 archived('held', 'Feedback — held.pdf', status='held'),
+                 archived('not-pdf', 'Feedback — document', mime='application/vnd.google-apps.document')]
+        legacy = {'configured': True, 'problem': None, 'files': [
+            {'id': 'same-pdf', 'name': 'Feedback — earlier class packet.pdf', 'course': 'biology',
+             'mime': 'application/pdf', 'created_at': '2026-10-08T14:00:00Z', 'created_day': '2026-10-08'}]}
+        from pypdf import PdfReader, PdfWriter
+        source = io.BytesIO(); writer = PdfWriter(); writer.add_blank_page(width=612, height=792); writer.write(source)
+        with patch.object(fb, '_legacy_feedback_files', return_value=legacy), \
+                patch.object(student_archive, 'enabled', return_value=True), \
+                patch.object(student_archive, 'list_feedback', return_value=index), \
+                patch.object(google, 'printable_pdf_bytes', return_value=source.getvalue()) as read_pdf:
+            today = fb.today_files('token', {}, date_et='2026-10-08')
+            packet, _ = fb.print_today('token', {}, [item['id'] for item in today['files']], date_et='2026-10-08')
+        self.assertEqual({item['id'] for item in today['files']}, {'same-pdf', 'nested-pdf'})
+        self.assertTrue(all(item['archived'] for item in today['files']))
+        self.assertEqual(len(PdfReader(io.BytesIO(packet)).pages), 2)
+        self.assertEqual(read_pdf.call_count, 2)
+        self.assertEqual(today['files'][0]['course_folder_url'], 'https://drive.google.com/drive/folders/FictionalBiologyFolder123')
+
+    def test_archive_only_print_listing_works_without_legacy_feedback_roots(self):
+        from hub_v2 import student_archive
+        item = {'status': 'verified', 'drive_file_id': 'NestedFeedback123', 'name': 'Feedback — Ana.pdf',
+                'class_key': 'biology', 'class_folder_id': 'FictionalBiologyFolder123',
+                'student_folder_id': 'FictionalStudentFolder123', 'created_at': '2026-10-07T14:00:00Z',
+                'mime': 'application/pdf'}
+        with patch.object(student_archive, 'enabled', return_value=True), \
+                patch.object(student_archive, 'list_feedback', return_value=[item]), \
+                patch.object(google, 'drive_file') as legacy_read:
+            listed = fb.today_files('token', {}, date_et='2026-10-08')
+        self.assertTrue(listed['configured'])
+        self.assertEqual(listed['date'], '2026-10-07')
+        self.assertEqual([file['id'] for file in listed['files']], ['NestedFeedback123'])
+        legacy_read.assert_not_called()
+
+    def test_direct_legacy_class_packets_remain_printable_under_verified_student_records_root(self):
+        from hub_v2 import student_archive
+        root = 'FictionalRecordsRoot123'
+        folders = {cls: 'Fictional' + cls + 'Folder123' for cls in fb.FEEDBACK_FOLDERS}
+        config = {fb.FEEDBACK_ROOT_CONFIG: root, fb.FEEDBACK_FOLDER_CONFIG: json.dumps(folders),
+                  student_archive.ROOT_CONFIG: root, student_archive.COURSES_CONFIG: json.dumps(folders)}
+        def location(token, config, cls):
+            return root, {'id': folders[cls], 'name': fb.FEEDBACK_COURSE_NAMES[cls], 'mimeType': google.FOLDER,
+                          'parents': [root]}
+        packet = {'id': 'FictionalClassPacket123', 'name': 'Biology Wk 04 — Student feedback.pdf',
+                  'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:00:00Z'}
+        with patch.object(student_archive, 'feedback_location', side_effect=location) as privacy_check, \
+                patch.object(student_archive, 'list_feedback', return_value=[]), \
+                patch.object(google, 'folder_children', side_effect=lambda token, ident: [packet] if ident == folders['biology'] else []):
+            listed = fb.today_files('token', config, date_et='2026-10-08')
+        self.assertEqual(privacy_check.call_count, 3)
+        self.assertEqual([file['id'] for file in listed['files']], [packet['id']])
+        self.assertEqual(listed['files'][0]['course_folder'], 'Biology')
+        self.assertNotIn('student_folder', listed['files'][0])
+        with patch.object(student_archive, 'feedback_location', side_effect=student_archive.Held('Private access unverified.')):
+            with self.assertRaisesRegex(fb.Held, 'Private access unverified'):
+                fb.today_files('token', config, date_et='2026-10-08')
 
     def test_changed_work_policy_identity_reference_or_assignment_blocks_save(self):
         draft = fb.generate(OPENAI_CONFIG, inputs())
@@ -256,12 +386,24 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
         self.assertEqual(result['aspects'][0]['answer'], 'Carbon moves.')
         self.assertEqual(result['prompt'], 'Live policy')
         self.assertEqual(result['person']['name'], 'Ana R.')
+        self.assertEqual(result['archive_identity']['school_email'], self.row['email'])
+        self.assertEqual(result['archive_identity']['matched_by'], 'email')
+        self.assertEqual(result['archive_identity']['source'], 'form')
+        self.assertNotIn('school_email', result['person'])
 
     def test_wrong_registry_source_or_agenda_deck_is_held_before_model(self):
         self.assignment['source_deck_id'] = 'another-deck'
         with self.assertRaises(fb.Held): self.read()
         self.assignment['source_deck_id'] = 'template'
         with self.assertRaises(fb.Held): self.read(decks=['another-deck'])
+
+    def test_only_an_explicitly_verified_native_ic_identity_is_carried_to_archive_filing(self):
+        self.row['ic_student_id'] = '424242'
+        self.assertNotIn('ic_student_id', self.read()['archive_identity'])
+        self.row['ic_identity_verified'] = True
+        self.assertEqual(self.read()['archive_identity']['ic_student_id'], '424242')
+        self.row['ic_student_id'] = 'unknown'
+        self.assertNotIn('ic_student_id', self.read()['archive_identity'])
 
     def test_source_changed_during_capture_is_held(self):
         self.captures[0]['file']['modified_at'] = 'changed'

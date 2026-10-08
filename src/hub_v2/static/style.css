@@ -60,6 +60,10 @@ h4 { font-size: 14px; margin: 12px 0 6px; }
 .manual-tools { margin: 18px 0; }
 .manual-tools > summary { cursor: pointer; color: var(--muted); }
 .manual-tools .controls { margin-top: 8px; }
+.student-records { margin: 0 0 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+.student-records > summary { cursor: pointer; font-weight: 600; }
+.student-records p { margin: 10px 0; }
+.student-records-table td:last-child { white-space: nowrap; }
 .status { min-height: 1.5em; margin: 0 0 8px; color: var(--muted); }
 .status.error { color: var(--warn-ink); background: var(--warn-bg); padding: 8px 12px; border-radius: 8px; }
 

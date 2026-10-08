@@ -1,8 +1,9 @@
 """Version-bound feedback drafts in the existing private Hub store.
 
-No grade, answer-workbook, Drive, delivery-ledger or permission writes. Source
-and identity come from the current Form/roster and an exact registered deck.
-A durable call reservation prevents an interrupted request billing twice.
+Source and identity come from the current Form/roster and an exact registered
+deck. Reviewed student PDFs can be filed in the explicitly enabled private
+student archive, with readback. Grade and teacher-controlled delivery states
+remain separate. A durable call reservation prevents duplicate AI billing.
 """
 import json
 import re
@@ -154,7 +155,13 @@ def evidence(assertion, token, config, agenda, scope, found):
     names = feedback.short_names([r for r in form['students'] if r.get('matched')])
     person = {'name': names[id(row)], 'section': row['section'],
               'identity_hash': content_hash([scope['class'], row['section'], row['email'], row['first'], row['last']])}
+    archive_identity = {'school_email': row['email'], 'first': row['first'], 'last': row['last'],
+                        'section': row['section'], 'matched_by': 'email', 'source': 'form'}
+    native_id = str(row.get('ic_student_id') or row.get('student_id') or '')
+    if row.get('ic_identity_verified') is True and re.fullmatch(r'\d{2,20}', native_id):
+        archive_identity.update(ic_student_id=native_id, ic_identity_verified=True)
     return {'scope': scope, 'person': person, 'assignment': assignments[0],
+            'archive_identity': archive_identity,
             'source': captured, 'reference': reference, 'aspects': _aspects(reference['text'], score),
             'answers': score['items'], 'prompt': prompt, 'prompt_url': where}
 
@@ -246,6 +253,8 @@ def generate(config, inputs):
              'report': report, 'usage': call.value['usage'], 'created_at': now(),
              'prompt_sha256': content_hash(inputs['prompt']), 'prompt_url': inputs['prompt_url'],
              'saved_at': None}
+    if inputs.get('archive_identity'):
+        value['archive_identity'] = inputs['archive_identity']
     # Layout validation happens before the draft is offered to the teacher.
     from .feedback_pdf import render
     render(value)
@@ -270,7 +279,8 @@ def reply(value, cached=True):
     return {'id': value['id'], 'name': value['person']['name'], 'report': value['report'],
             'source_modified': value['source']['file']['modified_at'], 'created_at': value['created_at'],
             'saved_at': value['saved_at'], 'cached': cached, 'usage': value['usage'],
-            'pdf_url': '/v2/api/feedback/pdf?id=' + value['id'] if value['saved_at'] else None}
+            'pdf_url': '/v2/api/feedback/pdf?id=' + value['id'] if value['saved_at'] else None,
+            'archive': value.get('archive')}
 
 
 def get_saved(config, ident):
@@ -282,7 +292,7 @@ def get_saved(config, ident):
     return stored
 
 
-def save(config, ident, inputs):
+def save(config, ident, inputs, *, token=None, write_token=None):
     stored = get_saved(config, ident)
     value = stored.value
     fresh = inputs['source']
@@ -294,10 +304,44 @@ def save(config, ident, inputs):
             or any(inputs['scope'][k] != value['scope'][k] for k in ('class', 'form', 'file'))):
         raise Held('The source, lesson, identity or instructions changed after this draft. Check current work before saving.')
     # Save is idempotent; generated content stays immutable and no grade rows exist here.
-    if not value['saved_at']:
-        value = {**value, 'saved_at': now()}
-        _commit_checked(configured_store(config), ident, value, stored.version)
+    updated = {**value, 'saved_at': value['saved_at'] or now()}
+    if inputs.get('archive_identity'):
+        # Identity comes from fresh verified Form evidence, not a name guess
+        # or a model. Keep it outside the draft fingerprint so an older saved
+        # draft can be filed without asking the model to regenerate it.
+        updated['archive_identity'] = inputs['archive_identity']
+    if updated != value:
+        stored = _commit_checked(configured_store(config), ident, updated, stored.version)
+        value = stored.value
+    from . import student_archive
+    if student_archive.enabled(config):
+        value = _file_saved(config, value, stored.version, token, write_token)
     return {**reply(value), 'readback_verified': True}
+
+
+def _file_saved(config, value, version, token, write_token):
+    """File the existing immutable student PDF; never call the provider again."""
+    existing = value.get('archive') or {}
+    if (existing.get('status') == 'verified' and existing.get('feedback_id') == value['id']
+            and existing.get('class_key') == value['scope']['class']
+            and existing.get('drive_file_id') and existing.get('student_folder_id')):
+        return value
+    if not token or not write_token:
+        raise Held('The feedback is saved, but private student-folder filing needs the Hub’s authorized Drive writer.')
+    from . import student_archive
+    from .feedback_pdf import render
+    try:
+        artifact = student_archive.file_feedback(token, write_token, config, value, render(value))
+    except student_archive.Held as error:
+        raise Held('The feedback is saved, but private student-folder filing is held: ' + str(error)) from None
+    if (not isinstance(artifact, dict) or artifact.get('status') != 'verified'
+            or artifact.get('feedback_id') != value['id'] or artifact.get('class_key') != value['scope']['class']
+            or not artifact.get('drive_file_id') or not artifact.get('student_folder_id')):
+        problem = artifact.get('problem') if isinstance(artifact, dict) else None
+        raise Held('The feedback is saved, but private student-folder filing is held: ' +
+                   str(problem or 'the saved PDF could not be read back.'))
+    value = {**value, 'archive': artifact}
+    return _commit_checked(configured_store(config), value['id'], value, version).value
 
 
 def listing(config, scope, found):
@@ -326,8 +370,16 @@ def listing(config, scope, found):
     return {'students': students, 'problem': form.get('problem') or None}
 
 
-def today_files(token, config, *, date_et=None):
-    """Today's print-ready feedback, or the latest dated batch when today is empty."""
+def _student_print_name(name):
+    folded = name.casefold()
+    compact = re.sub(r'[^a-z]', '', folded)
+    return ('feedback' in folded and not folded.startswith('draft ')
+            and not any(word in compact for word in ('growthrecord', 'growthreport', 'classsummary',
+                                                       'classreport', 'teachernote', 'teacherreport', 'checklist')))
+
+
+def _legacy_feedback_files(token, config):
+    """Read existing class feedback packets; never file a packet as one student's work."""
     raw = config.get(FEEDBACK_FOLDER_CONFIG, '')
     try:
         folders = json.loads(raw) if raw else {}
@@ -339,31 +391,36 @@ def today_files(token, config, *, date_et=None):
             or any(not isinstance(folders.get(cls), str)
                    or not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', folders[cls])
                    for cls in FEEDBACK_FOLDERS)):
-        return {'configured': False, 'date': date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat(),
-                'files': [], 'problem': 'The Hub is not connected to the private Drive feedback folders yet.'}
-    day = date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat()
-    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
-        raise Held('The selected feedback date is invalid.')
-    root = google.drive_file(token, root_id, 'id,name,mimeType,parents')
-    if (root.get('mimeType') != google.FOLDER
-            or 'student feedback' not in str(root.get('name') or '').casefold()
-            or 'private' not in str(root.get('name') or '').casefold()):
-        raise Held('The configured private feedback root no longer matches. No packet was assembled.')
+        return {'configured': False, 'files': [],
+                'problem': 'The Hub is not connected to the private Drive feedback folders yet.'}
+    from . import student_archive
+    records_root = student_archive.enabled(config) and root_id == config.get(student_archive.ROOT_CONFIG)
+    checked_folders = {}
+    if records_root:
+        for cls, folder_id in folders.items():
+            try:
+                verified_root, folder = student_archive.feedback_location(token, config, cls)
+            except student_archive.Held as error:
+                raise Held('The private feedback location needs attention: ' + str(error)) from None
+            if verified_root != root_id or folder.get('id') != folder_id:
+                raise Held('A feedback folder does not match its configured student-records class. No packet was assembled.')
+            checked_folders[cls] = folder
+    else:
+        root = google.drive_file(token, root_id, 'id,name,mimeType,parents')
+        if (root.get('mimeType') != google.FOLDER
+                or 'student feedback' not in str(root.get('name') or '').casefold()
+                or 'private' not in str(root.get('name') or '').casefold()):
+            raise Held('The configured private feedback root no longer matches. No packet was assembled.')
     files = []
     for cls, folder_id in folders.items():
-        folder = google.drive_file(token, folder_id, 'id,name,mimeType,parents')
+        folder = checked_folders.get(cls) or google.drive_file(token, folder_id, 'id,name,mimeType,parents')
         if (folder.get('mimeType') != google.FOLDER
-                or folder.get('name') != FEEDBACK_FOLDERS[cls]
+                or (not records_root and folder.get('name') != FEEDBACK_FOLDERS[cls])
                 or root_id not in (folder.get('parents') or [])):
             raise Held('A configured private feedback folder no longer matches its course. No packet was assembled.')
         for item in google.folder_children(token, folder_id):
             name = str(item.get('name') or '')
-            if (item.get('mimeType') not in PRINTABLE_MIMES
-                    or 'feedback' not in name.casefold()
-                    or name.casefold().startswith('draft ')
-                    or 'growth record' in name.casefold()
-                    or 'class summary' in name.casefold()
-                    or 'checklist' in name.casefold()):
+            if item.get('mimeType') not in PRINTABLE_MIMES or not _student_print_name(name):
                 continue
             created = item.get('createdTime') or ''
             try:
@@ -371,14 +428,60 @@ def today_files(token, config, *, date_et=None):
                     ZoneInfo('America/New_York')).date().isoformat()
             except (ValueError, TypeError):
                 continue
-            if created_day > day:
-                continue
             files.append({'id': item['id'], 'name': name, 'course': cls,
                           'course_name': FEEDBACK_COURSE_NAMES[cls],
                           'course_folder': folder['name'], 'mime': item['mimeType'],
                           'course_folder_url': 'https://drive.google.com/drive/folders/' + folder_id,
                           'created_at': created, 'created_day': created_day,
                           'url': 'https://drive.google.com/open?id=' + item['id']})
+    return {'configured': True, 'files': files, 'problem': None}
+
+
+def today_files(token, config, *, date_et=None):
+    """Print-ready archived student PDFs and existing class packets, deduplicated by Drive ID."""
+    day = date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+    try:
+        if not isinstance(day, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+            raise ValueError()
+        datetime.strptime(day, '%Y-%m-%d')
+    except (TypeError, ValueError):
+        raise Held('The selected feedback date is invalid.') from None
+    legacy = _legacy_feedback_files(token, config)
+    by_id = {item['id']: item for item in legacy['files']}
+    from . import student_archive
+    archive_on = student_archive.enabled(config)
+    if archive_on:
+        try:
+            archive_files = student_archive.list_feedback(token, config)
+        except student_archive.Held as error:
+            raise Held('The private student feedback archive needs attention before printing: ' + str(error)) from None
+        for item in archive_files:
+            cls = item.get('class_key')
+            name = str(item.get('name') or '')
+            if (item.get('status') != 'verified' or item.get('mime') != 'application/pdf'
+                    or cls not in FEEDBACK_FOLDERS or not _student_print_name(name)):
+                continue
+            created = item.get('created_at') or ''
+            try:
+                created_day = datetime.fromisoformat(created.replace('Z', '+00:00')).astimezone(
+                    ZoneInfo('America/New_York')).date().isoformat()
+            except (ValueError, TypeError):
+                continue
+            ident, class_folder = item.get('drive_file_id'), item.get('class_folder_id')
+            if not ident or not class_folder:
+                continue
+            by_id[ident] = {'id': ident, 'name': name, 'course': cls,
+                           'course_name': FEEDBACK_COURSE_NAMES[cls], 'mime': 'application/pdf',
+                           'course_folder': item.get('class_folder_name') or FEEDBACK_COURSE_NAMES[cls],
+                           'course_folder_url': 'https://drive.google.com/drive/folders/' + class_folder,
+                           'student_folder': item.get('student_folder_name') or '',
+                           'student_folder_url': 'https://drive.google.com/drive/folders/' + str(item.get('student_folder_id') or ''),
+                           'created_at': created, 'created_day': created_day,
+                           'url': item.get('url') or 'https://drive.google.com/open?id=' + ident,
+                           'feedback_id': item.get('feedback_id'), 'archived': True}
+    if not legacy['configured'] and not archive_on:
+        return {**legacy, 'date': day}
+    files = [item for item in by_id.values() if item['created_day'] <= day]
     batch_day = max((item['created_day'] for item in files), default=day)
     files = [item for item in files if item['created_day'] == batch_day]
     order = {name: index for index, name in enumerate(FEEDBACK_FOLDERS)}

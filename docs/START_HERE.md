@@ -1,5 +1,14 @@
 # School Workflow Hub — start here
 
+## October 8 student records
+
+The teacher-facing Drive layout now uses private class/section/student folders
+with dated work links and saved student feedback. Teacher-only reports have
+separate private class folders. Source uploads and Form trees remain intact;
+only verified empty unused folders receive `~delete `. See
+[Student records](STUDENT_RECORDS.md) for runtime configuration, identity
+requirements, automatic filing, private readback and quota/coverage holds.
+
 ## October 5 verification continuation
 
 The teacher approved the existing OpenAI connection and a one-page ninth-grade

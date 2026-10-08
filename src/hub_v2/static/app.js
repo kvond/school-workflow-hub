@@ -199,15 +199,15 @@ function renderNeedsYou(report) {
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
+    if (row.code === 'no_scores') {
+      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
+      continue;
+    }
     const review = morningRowReview(row);
     if (review.unavailable) unavailable.push(el('p', {class: 'muted'}, el('strong', {text: morningContext(row) + ': '}), review.unavailable));
     if (!review.detailKnown) continue;
     if (row.code === 'coverage_incomplete') {
       items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), MORNING_COVERAGE));
-      continue;
-    }
-    if (row.code === 'no_scores') {
-      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
       continue;
     }
     if (!review.reasons.length) {
@@ -658,6 +658,105 @@ const work = {cls: store.get('class') || 'forensics', week: null, section: store
 const sourceMatchesHeld = () => !!work.data?.other_files?.length;
 const SOURCE_MATCH_HOLD = 'Scoring and IC entry are on hold until every submission in this week’s turn-in folders has a confirmed lesson match. Resolve “Confirm these submission matches” below, then refresh Student work.';
 
+const studentRecords = {cls: null, seq: 0, data: null, readAt: 0};
+function recordFolderURL(value) {
+  try {
+    const url = new URL(value);
+    return url.origin === 'https://drive.google.com' && !url.username && !url.password
+      && /^\/drive\/folders\/[A-Za-z0-9_-]+$/.test(url.pathname) ? url.href : null;
+  } catch { return null; }
+}
+function recordDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return 'No dated records yet';
+  const date = at(value);
+  return Number.isNaN(date.getTime()) ? 'No dated records yet'
+    : date.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+}
+function recordProblem(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text.length <= 600 && /[A-Za-z]{2,}\s+[A-Za-z]{2,}/.test(text)
+    && !/[_\u0000-\u001f]|https?:\/\/|Traceback|Bearer\s|\{[^}]*\}/i.test(text)
+    ? text : 'A record could not be confirmed. Existing records are preserved.';
+}
+function recordLabel(value) {
+  return typeof value === 'string' && value.trim().length <= 160 && !/[\u0000-\u001f]/.test(value) ? value.trim() : '';
+}
+function studentFilingNote(data) {
+  const filing = data.filing;
+  if (!filing || filing.coverage === 'unverified') return note('Filing coverage has not been verified. Available student folders do not confirm that all submissions have been filed.', 'info');
+  const scans = Array.isArray(filing.scans) ? filing.scans.filter(scan => scan?.class_key === data.class_key) : [];
+  const pending = [];
+  for (const scan of scans.filter(scan => scan.status === 'held' || scan.held_count > 0)) {
+    const context = [CLASSES.find(([key]) => key === data.class_key)?.[1] || recordLabel(data.class_name),
+      recordLabel(scan.week) || 'Week unavailable'].filter(Boolean).join(' · ');
+    const held = Array.isArray(scan.held) ? scan.held : [];
+    for (const row of held) pending.push([context, recordLabel(row?.name), recordLabel(row?.section), recordLabel(row?.assignment)].filter(Boolean).join(' · ') + ': ' + recordProblem(row?.problem));
+    for (const problem of Array.isArray(scan.problems) ? scan.problems : []) pending.push(context + ': ' + recordProblem(problem));
+    if (!held.length && !scan.problems?.length) pending.push(context + ': The filing check did not finish. Existing records are preserved.');
+  }
+  if (filing.coverage === 'holds_remain' || filing.held_count > 0 || pending.length) {
+    const count = Number.isInteger(filing.held_count) && filing.held_count > 0 ? filing.held_count : null;
+    return el('div', {class: 'note info'},
+      el('p', {text: count ? `${count} filing ${count === 1 ? 'hold remains' : 'holds remain'}. Checks cover recorded weeks only.` : 'Student filing is pending. Checks cover recorded weeks only.'}),
+      el('ul', {}, [...new Set(pending.length ? pending : ['The pending filing reason is not available. Existing records are preserved.'])].map(text => el('li', {text}))));
+  }
+  return el('p', {class: 'muted', text: 'Filing checks cover recorded weeks only; they do not confirm that all submissions have been filed.'});
+}
+function renderStudentRecords(data) {
+  const body = $('student-records-body');
+  body.replaceChildren();
+  const teacherURL = recordFolderURL(data.teacher_reports_url);
+  if (teacherURL) body.append(el('p', {}, link(`Open ${data.class_name} teacher reports`, teacherURL)));
+  if (!data.configured || data.status === 'unconfigured') {
+    body.append(note('Student records are not available for this class yet.', 'info')); return;
+  }
+  if (data.status === 'held') {
+    const problems = Array.isArray(data.problems) ? data.problems : [];
+    if (problems.length || !(data.filing?.coverage === 'holds_remain' || data.filing?.held_count > 0))
+      body.append(note('Some student records could not be confirmed.', 'info'));
+    if (problems.length) body.append(el('ul', {class: 'muted'}, [...new Set(problems.map(recordProblem))].map(text => el('li', {text}))));
+  }
+  body.append(studentFilingNote(data));
+  body.append(el('p', {class: 'muted', text: 'Open a student’s folder to check dated work or reprint saved feedback. Teacher reports stay in the class’s separate folder.'}));
+  if (!data.students.length) {
+    body.append(el('p', {class: 'muted', text: data.status === 'held' ? 'No student folders could be confirmed.' : 'No student records have been filed for this class yet.'})); return;
+  }
+  body.append(el('div', {class: 'table-wrap'}, el('table', {class: 'student-records-table'},
+    el('thead', {}, el('tr', {}, ['Student', 'Section', 'Status', 'Latest record', 'Folder'].map(text => el('th', {text})))),
+    el('tbody', {}, data.students.map(student => {
+      const folderURL = recordFolderURL(student.folder_url);
+      return el('tr', {}, el('td', {text: student.name}), el('td', {text: student.section || '—'}),
+        el('td', {text: student.status === 'current' ? 'Current' : student.status === 'retained' ? 'Retained history' : student.status === 'unverified' ? 'Roster unverified' : 'Status unavailable'}),
+        el('td', {text: recordDate(student.latest_record_date)}),
+        el('td', {}, folderURL ? link('Open folder', folderURL) : el('span', {class: 'muted', text: 'Folder unavailable'})));
+    })))));
+}
+async function loadStudentRecords(fresh = false) {
+  const panel = $('student-records');
+  if (!panel) return;
+  const cls = work.cls;
+  if (studentRecords.cls !== cls) {
+    studentRecords.cls = cls; studentRecords.data = null; studentRecords.readAt = 0; studentRecords.seq++;
+    $('student-records-body').replaceChildren();
+  }
+  $('student-records-summary').textContent = `Student records · ${CLASSES.find(([key]) => key === cls)?.[1] || 'Class'}`;
+  if (!panel.open) return;
+  if (!fresh && studentRecords.data && Date.now() - studentRecords.readAt < 60_000) { renderStudentRecords(studentRecords.data); return; }
+  const seq = ++studentRecords.seq;
+  $('student-records-body').replaceChildren(el('p', {class: 'muted', text: 'Reading student records…'}));
+  try {
+    const data = await getJSON(`api/student-records?class=${encodeURIComponent(cls)}`);
+    if (seq !== studentRecords.seq || work.cls !== cls) return;
+    if (data?.schema !== 'hub-student-archive/v1' || data.class_key !== cls || !Array.isArray(data.students))
+      throw new Error('Student records could not be confirmed for this class. Reload to try again.');
+    renderStudentRecords(data);
+    studentRecords.data = data; studentRecords.readAt = Date.now();
+  } catch (error) {
+    if (seq === studentRecords.seq && work.cls === cls) $('student-records-body').replaceChildren(note(
+      /^Please sign in/.test(error.message) ? error.message : 'Student records could not be loaded for this class. Reload to try again.', 'info'));
+  }
+}
+
 function fillSelect(select, options, value) {
   select.replaceChildren(...options.map(([v, label]) => el('option', {value: v, text: label})));
   if (options.some(([v]) => v === value)) select.value = value;
@@ -680,6 +779,7 @@ async function openWork([cls, week] = []) {
   if (CLASSES.some(([key]) => key === cls)) work.cls = cls;
   if (week) work.week = week;
   $('work-class').value = work.cls;
+  loadStudentRecords(true);
   try {
     if (work.weeksFor !== work.cls) await loadWeeks();
     else $('work-week').value = work.week;
@@ -1719,8 +1819,9 @@ function renderRoutine() {
     el('h2', {text: 'Morning score check'}),
     el('ol', {},
       el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
-      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, then verified submission tidy finishes before score entry.'),
+      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first. Verified work is filed as dated links in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
       el('li', {}, el('strong', {text: 'At or after 7:00.'}), ' With weekday entry enabled, the Chrome helper processes mapped assignments across classes, fills blanks and raises lower scores only, then saves, reloads and verifies. Review the gradebook afterward; adjust any score that needs correction.'),
+      el('li', {}, el('strong', {text: 'At 7:30.'}), ' Student feedback goes in those same student folders. Teacher summaries, growth reports and notes go in separate private teacher report folders for each class.'),
     ),
     el('p', {class: 'muted', text: 'An enabled schedule, ready helper or attempted run is not proof of saved grades. Confirm the helper receipt and IC readback. If a save or readback is uncertain, stop further writes and inspect the named assignment in IC before clearing the recovery block.'}),
     helperLine()));
@@ -1814,11 +1915,12 @@ $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.tar
 $('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
+$('student-records').addEventListener('toggle', () => { if ($('student-records').open) loadStudentRecords(true); });
 $('reload-today').addEventListener('click', () => loadToday(true));
 $('reload-routine').addEventListener('click', loadRoutine);
 $('run-link-check').addEventListener('click', runLinkCheck);
 $('reload-work').addEventListener('click', async () => {
-  try { work.weeksFor = null; await loadWeeks(true); await loadWork(); } catch (error) { setStatus('work-status', error.message, true); }
+  try { work.weeksFor = null; await loadWeeks(true); await loadWork(); await loadStudentRecords(true); } catch (error) { setStatus('work-status', error.message, true); }
 });
 $('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
 $('missing-sheets').addEventListener('click', missingWorkSheets);

@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, audit, completion, feedback, google, ledger, morning, native_feedback, recovery, routine, tidy, work
+from . import agenda_edit, audit, completion, feedback, google, ledger, morning, native_feedback, recovery, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -113,6 +113,10 @@ def api(sub, query, config):
     if sub == 'api/learning-report':
         return learning_report(config)
     token = google.service_token(config)
+    if sub == 'api/student-records':
+        if set(query) != {'class'}:
+            raise ValueError('class')
+        return student_archive.archive_listing(token, config, _class_key(_one(query, 'class')))
     fresh = _one(query, "fresh", False) == "1"
     agenda = load_agenda(token, config, fresh)
     sheet = {"title": agenda.title,
@@ -281,7 +285,9 @@ def native_feedback_post(environ, respond, config):
             agenda = load_agenda(token, config, fresh=True)
             found = lesson_work(token, config, agenda, scope['class'], scope['week'], fresh=True)
             inputs = native_feedback.evidence(assertion, token, config, agenda, scope, found)
-            return respond('200 OK', native_feedback.save(config, payload['id'], inputs))
+            archive_tokens = ({'token': token, 'write_token': google.service_token(config, write=True)}
+                              if student_archive.enabled(config) else {})
+            return respond('200 OK', native_feedback.save(config, payload['id'], inputs, **archive_tokens))
         if set(payload) != {'class', 'week', 'form', 'file'}:
             raise ValueError()
         cls, week, form_id = _form_args(payload)
@@ -490,6 +496,8 @@ def application(environ, start_response, config=None):
         return morning_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/tidy":
         return tidy_post(environ, respond, config)
+    if method == 'POST' and path == '/v2/api/student-records/archive':
+        return student_records_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/record":
         return record_post(environ, respond, config)
     if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save',
@@ -545,6 +553,33 @@ def application(environ, start_response, config=None):
     return respond("200 OK", body)
 
 
+def student_records_post(environ, respond, config):
+    """File verified Form receipts; source files and grades are never mutated."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = _json_body(environ, 2000)
+        if set(payload) != {'class', 'week'}:
+            raise ValueError()
+        class_key, week = _class_key(payload['class']), payload['week']
+        if not isinstance(week, str) or not 1 <= len(week) <= 100:
+            raise ValueError()
+        token = google.service_token(config)
+        agenda = load_agenda(token, config, fresh=True)
+        if week not in {w['label'] for w in agenda.week_options(class_key)}:
+            raise ValueError()
+        found = lesson_work(token, config, agenda, class_key, week, fresh=True)
+        return respond('200 OK', student_archive.archive_work(
+            token, google.service_token(config, write=True), config, class_key, found))
+    except (ValueError, KeyError, TypeError):
+        return respond('400 Bad Request', {'error': 'That filing request was not understood.'})
+    except google.GoogleError as error:
+        return respond('502 Bad Gateway', {'error': str(error)})
+    except Exception:
+        return respond('503 Service Unavailable', {'error': 'Student filing is not confirmed. Existing work is preserved.'})
+
+
 def tidy_post(environ, respond, config):
     """Move a previewed Tidy plan. Signed-in teacher, same-origin JSON only."""
     refused = _same_origin_json(environ, respond, config)
@@ -559,7 +594,17 @@ def tidy_post(environ, respond, config):
         token = google.service_token(config)
         write_token = google.service_token(config, write=True)
         agenda = load_agenda(token, config)
-        return respond("200 OK", tidy.apply(token, write_token, config, agenda, class_key, week, plan_id))
+        result = tidy.apply(token, write_token, config, agenda, class_key, week, plan_id)
+        if student_archive.enabled(config):
+            try:
+                result['student_records'] = student_archive.archive_work(
+                    token, write_token, config, class_key,
+                    lesson_work(token, config, agenda, class_key, week, fresh=True))
+            except Exception as error:
+                result['student_records'] = {'status': 'held', 'filed': 0,
+                    'problems': [str(error) if isinstance(error, google.GoogleError) else
+                                 'Student filing did not finish. The preceding tidy result is preserved.']}
+        return respond("200 OK", result)
     except tidy.Changed:
         return respond("409 Conflict", {"error": "Something changed since the preview. Review it again."})
     except (ValueError, KeyError, TypeError, AttributeError):

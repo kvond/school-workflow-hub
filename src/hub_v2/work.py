@@ -170,11 +170,12 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
                      "last": student["last"] if student else "",
                      "first": student["first"] if student else "",
                      "section": student["section"] if student else "",
-                     "matched_by": entry["how"], "email": current["email"],
+                     "matched_by": identify(current, students, domains, prefix)[1], "email": current["email"],
                      "typed": [] if student else current["typed"],
                      "source": current["source"], "submitted_at": current["submitted_at"],
                      "files": current["files"], "late": current["late"],
                      "earlier": [{"submitted_at": s["submitted_at"], "source": s["source"], "files": s["files"],
+                                  "email": s['email'], "matched_by": identify(s, students, domains, prefix)[1],
                                   "late": s["late"]}
                                  for s in sorted(items[1:], key=lambda s: s["submitted_at"], reverse=True)]})
     rows.sort(key=lambda r: (not r["matched"], r["section"], roster.plain(r["last"]),

@@ -977,7 +977,7 @@ class TidyTests(unittest.TestCase):
         self.assertTrue(p["can_move"])
         self.assertEqual(d.items["D1"]["parents"], ["DUP"])  # a preview moves nothing
 
-    def test_apply_moves_exactly_the_plan_and_marks_emptied_folders_with_an_underscore(self):
+    def test_apply_moves_exactly_the_plan_and_marks_emptied_folders_for_deletion(self):
         d, responses = self.drive()
         p = self.run_plan(d, responses)
         patches = d.patches(responses)
@@ -996,16 +996,16 @@ class TidyTests(unittest.TestCase):
         self.assertEqual({i for i in ("D1", "D2", "LOOSEF", "S1") if d.items[i]["parents"] == ["KEEP"]},
                          {"D1", "D2", "LOOSEF", "S1"})
         self.assertEqual((d.items["X1"]["parents"], d.items["S3"]["parents"]), (["WK03"], ["SHAREDF"]))
-        # The dashboard can't trash her folder, so it gets '_' in front instead.
+        # Folder removal remains the teacher's decision.
         self.assertEqual(([e["id"] for e in result["marked"]], result["trashed"], result["left_empty"]),
                          (["DUP"], [], []))
-        self.assertEqual(d.items["DUP"]["name"], "_📥 Wk 04 — Fictional")
+        self.assertEqual(d.items["DUP"]["name"], "~delete 📥 Wk 04 — Fictional")
         # A second preview finds nothing left to do.
         work._shared_cache.clear()
         again = self.run_plan(d, responses)
         self.assertEqual((again["moves"], again["empty_after"]), ([], []))
 
-    def test_emptied_folders_go_to_the_trash_when_drive_allows_it(self):
+    def test_emptied_folders_are_marked_even_when_drive_allows_trashing(self):
         d, responses = self.drive()
         d.owner = True
         p = self.run_plan(d, responses)
@@ -1018,8 +1018,8 @@ class TidyTests(unittest.TestCase):
         finally:
             for x in patches:
                 x.stop()
-        self.assertEqual(([e["id"] for e in result["trashed"]], result["marked"]), (["DUP"], []))
-        self.assertIn("DUP", d.trashed)
+        self.assertEqual(([e["id"] for e in result["marked"]], result["trashed"]), (["DUP"], []))
+        self.assertEqual(d.trashed, set())
 
     def test_late_work_moves_into_the_weeks_late_folder(self):
         d, responses = self.drive()
