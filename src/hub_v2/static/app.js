@@ -231,16 +231,68 @@ function renderNextLessons(audits) {
   return cockpitPanel('Next from Agenda', el('div', {class: 'table-wrap'}, table));
 }
 
+async function printTodayFeedback(files, status, button) {
+  button.disabled = true;
+  const printWindow = window.open('about:blank', '_blank');
+  if (!printWindow) {
+    status.textContent = 'The print packet was not opened. Allow pop-ups for the Hub, then press Print new feedback again.';
+    button.disabled = false;
+    return;
+  }
+  status.textContent = `Preparing ${files.length} feedback documents…`;
+  try {
+    const response = await fetch('api/feedback/print-today', {method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: files.map(file => file.id)})});
+    if (!response.ok) {
+      let detail = 'The packet could not be prepared.';
+      try { detail = (await response.json()).error || detail; } catch { /* keep the safe message */ }
+      throw new Error(detail);
+    }
+    const blob = await response.blob();
+    if (blob.type !== 'application/pdf' || !blob.size) throw new Error('The print packet was empty.');
+    const url = URL.createObjectURL(blob);
+    printWindow.addEventListener('load', () => setTimeout(() => printWindow.print(), 900), {once: true});
+    printWindow.location = url;
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    status.textContent = `Print dialog opened for one packet with ${files.length} feedback documents. They are already filed in their course folders.`;
+  } catch (error) {
+    printWindow.close();
+    status.textContent = error.message;
+    button.disabled = false;
+  }
+}
+
+function renderTodayFeedback(data) {
+  if (data.error) return cockpitPanel('Feedback created today', note(data.error, 'info'));
+  if (data.problem) return cockpitPanel('Feedback created today', note(data.problem, 'info'));
+  const files = data.files || [];
+  const panel = cockpitPanel('Feedback created today');
+  if (!files.length) {
+    panel.append(note('No print-ready feedback files were created in Drive today.', 'info'));
+    return panel;
+  }
+  const status = el('p', {class: 'muted', role: 'status', text: `${files.length} ready · already filed in the matching course folders.`});
+  const list = el('ul', {class: 'feedback-today-list'}, ...files.map(file =>
+    el('li', {}, el('strong', {text: `${file.course_name}: `}),
+      link(file.name, file.url), el('small', {class: 'muted', text: ` · ${when(file.created_at)} · `}),
+      link('Open course folder ↗', file.course_folder_url))));
+  const button = el('button', {type: 'button', class: 'primary'}, `Print all ${files.length} new feedback`);
+  button.onclick = () => printTodayFeedback(files, status, button);
+  panel.append(status, list, el('div', {class: 'action-row'}, button));
+  return panel;
+}
+
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   try {
     if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
-    const [day, reportsData, routineData, audits] = await Promise.all([
+    const [day, reportsData, routineData, audits, feedbackData] = await Promise.all([
       getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
       getJSON('api/morning/reports'),
       getJSON('api/routine'),
       loadAudits(force),
+      getJSON('api/feedback/today').catch(error => ({error: error.message})),
     ]);
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
@@ -250,6 +302,7 @@ async function loadToday(force = false) {
         renderMorningCockpit(report, routineData),
         renderNeedsYou(report)),
       renderNextLessons(audits));
+    $('today-feedback').replaceChildren(renderTodayFeedback(feedbackData));
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;

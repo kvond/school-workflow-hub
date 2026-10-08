@@ -201,6 +201,9 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .task-check { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0; font-weight: 600; }
 .task-check input { margin: 4px 0 0; flex: 0 0 auto; }
 .cockpit-table td p { margin: 0 0 8px; }
+.feedback-today-list { margin: 8px 0; padding-left: 20px; }
+.feedback-today-list li { margin: 5px 0; }
+.feedback-today-list small { margin-left: 4px; }
 .readiness-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
 .release-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .release-item { display: grid; grid-template-columns: auto auto; align-items: center; gap: 4px 8px; border: 1px solid var(--line); border-radius: 9px; padding: 7px 9px; min-width: 210px; }

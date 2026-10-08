@@ -63,6 +63,49 @@ class NativeFeedbackTests(unittest.TestCase):
             self.assertIn('2026-10-05', text)
             self.assertNotIn('2026-10-06', text)
 
+    def test_today_feedback_lists_only_print_ready_files_created_today_in_their_course_folder(self):
+        folders = {'biology': 'BIOLOGY_FOLDER_ID', 'forensics': 'FORENSICS_FOLDER_ID',
+                   'anatomy': 'ANATOMY_FOLDER_ID'}
+        config = {fb.FEEDBACK_ROOT_CONFIG: 'FEEDBACK_ROOT_ID', fb.FEEDBACK_FOLDER_CONFIG: json.dumps(folders)}
+        metadata = {
+            'FEEDBACK_ROOT_ID': {'id': 'FEEDBACK_ROOT_ID', 'name': 'Student Feedback — Private 2026–27', 'mimeType': google.FOLDER},
+            'BIOLOGY_FOLDER_ID': {'id': 'BIOLOGY_FOLDER_ID', 'name': fb.FEEDBACK_FOLDERS['biology'], 'mimeType': google.FOLDER, 'parents': ['FEEDBACK_ROOT_ID']},
+            'FORENSICS_FOLDER_ID': {'id': 'FORENSICS_FOLDER_ID', 'name': fb.FEEDBACK_FOLDERS['forensics'], 'mimeType': google.FOLDER, 'parents': ['FEEDBACK_ROOT_ID']},
+            'ANATOMY_FOLDER_ID': {'id': 'ANATOMY_FOLDER_ID', 'name': fb.FEEDBACK_FOLDERS['anatomy'], 'mimeType': google.FOLDER, 'parents': ['FEEDBACK_ROOT_ID']},
+        }
+        children = {
+            'BIOLOGY_FOLDER_ID': [
+                {'id': 'bio-new', 'name': 'Feedback — Biology Wk 06.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:00:00Z'},
+                {'id': 'bio-draft', 'name': 'DRAFT Feedback — Biology.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:01:00Z'},
+                {'id': 'bio-old', 'name': 'Feedback — Biology Wk 05.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T02:00:00Z'},
+                {'id': 'bio-summary', 'name': 'Class summary and feedback.pdf', 'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:02:00Z'},
+            ], 'FORENSICS_FOLDER_ID': [], 'ANATOMY_FOLDER_ID': [],
+        }
+        with patch.object(fb.google, 'drive_file', side_effect=lambda token, ident, fields: metadata[ident]), \
+                patch.object(fb.google, 'folder_children', side_effect=lambda token, ident: children[ident]):
+            result = fb.today_files('token', config, date_et='2026-10-08')
+        self.assertTrue(result['configured'])
+        self.assertEqual([item['id'] for item in result['files']], ['bio-new'])
+        self.assertEqual(result['files'][0]['course_folder'], fb.FEEDBACK_FOLDERS['biology'])
+
+    def test_print_today_merges_current_packet_in_course_order(self):
+        from io import BytesIO
+        from pypdf import PdfReader, PdfWriter
+        source = BytesIO(); writer = PdfWriter(); writer.add_blank_page(width=612, height=792); writer.write(source)
+        files = [
+            {'id': 'bio', 'name': 'Feedback Biology', 'course': 'biology', 'mime': 'application/pdf', 'created_at': '2026-10-08T13:00:00Z'},
+            {'id': 'forensics', 'name': 'Feedback Forensics', 'course': 'forensics', 'mime': 'application/pdf', 'created_at': '2026-10-08T14:00:00Z'},
+        ]
+        with patch.object(fb, 'today_files', return_value={'configured': True, 'date': '2026-10-08', 'files': files}), \
+                patch.object(fb.google, 'printable_pdf_bytes', return_value=source.getvalue()) as read_pdf:
+            packet, name = fb.print_today('token', {}, ['forensics', 'bio'], date_et='2026-10-08')
+        self.assertEqual(name, 'New-Student-Feedback-2026-10-08.pdf')
+        self.assertEqual(len(PdfReader(BytesIO(packet)).pages), 2)
+        self.assertEqual([call.args[1] for call in read_pdf.call_args_list], ['bio', 'forensics'])
+        with patch.object(fb, 'today_files', return_value={'configured': True, 'date': '2026-10-08', 'files': files}):
+            with self.assertRaises(fb.Held):
+                fb.print_today('token', {}, ['bio', 'bio'], date_et='2026-10-08')
+
     def test_changed_work_policy_identity_reference_or_assignment_blocks_save(self):
         draft = fb.generate(OPENAI_CONFIG, inputs())
         for area, field, value in [('source', 'sha256', 'c' * 64), ('source', 'file', {'modified_at': 'later'}),

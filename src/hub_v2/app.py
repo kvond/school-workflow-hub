@@ -138,6 +138,8 @@ def api(sub, query, config):
         prompt, where = feedback.load_embed_prompt(token, agenda)
         return {**routine.status(token, config),
                 "embed_prompt": {"text": prompt, "url": where} if prompt else {"problem": where}}
+    if sub == 'api/feedback/today':
+        return native_feedback.today_files(token, config)
     if sub == "api/audit":
         return audit.check(token, agenda, _class_key(_one(query, "class")))
     if sub == "api/feedback/native":
@@ -240,6 +242,13 @@ def native_feedback_post(environ, respond, config):
     from school_workflow_hub.adapters.hosted_agenda import ConnectionError
     try:
         payload = _json_body(environ, 2000)
+        if environ['PATH_INFO'].endswith('/print-today'):
+            if set(payload) != {'ids'}:
+                raise ValueError()
+            packet, name = native_feedback.print_today(
+                google.service_token(config), config, payload['ids'])
+            return respond('200 OK', packet, 'application/pdf',
+                           [('Content-Disposition', 'inline; filename="%s"' % name)])
         assertion = environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION')
         if environ['PATH_INFO'].endswith('/save'):
             if set(payload) != {'id', 'class', 'week', 'form', 'file'}:
@@ -464,7 +473,8 @@ def application(environ, start_response, config=None):
         return tidy_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/record":
         return record_post(environ, respond, config)
-    if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save'):
+    if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save',
+                                     '/v2/api/feedback/print-today'):
         return native_feedback_post(environ, respond, config)
     if method == "POST" and path in ("/v2/api/answers", "/v2/api/answers/sweep"):
         return retired_answers_post(environ, respond, config)
