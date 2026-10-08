@@ -92,7 +92,26 @@ def _class_key(value):
     return value
 
 
+def learning_report(config):
+    """A private report handoff; school data and report IDs stay out of source code."""
+    url = str(config.get('HUB_GROWTH_REPORT_URL') or '')
+    teaching = str(config.get('HUB_GROWTH_TEACHING_URL') or '')
+    pattern = r'https://docs\.google\.com/spreadsheets/d/[A-Za-z0-9_-]{10,200}/edit(?:#gid=\d+)?'
+    if not re.fullmatch(pattern, url):
+        return {'configured': False}
+    as_of = str(config.get('HUB_GROWTH_REPORT_AS_OF') or '')
+    try:
+        date.fromisoformat(as_of)
+    except ValueError:
+        as_of = ''
+    return {'configured': True, 'url': url,
+            'teaching_url': teaching if re.fullmatch(pattern, teaching) and teaching.split('/edit')[0] == url.split('/edit')[0] else url,
+            'as_of': as_of, 'automatic_refresh': False}
+
+
 def api(sub, query, config):
+    if sub == 'api/learning-report':
+        return learning_report(config)
     token = google.service_token(config)
     fresh = _one(query, "fresh", False) == "1"
     agenda = load_agenda(token, config, fresh)

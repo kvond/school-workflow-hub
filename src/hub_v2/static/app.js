@@ -128,6 +128,7 @@ const MORNING_REASONS = {
 function morningProblem(report) {
   if (!report) return '';
   if (report.code !== 'finished') return 'Morning run: ' + String(report.code || 'status unavailable').replaceAll('_', ' ') + '. Completion is not verified.';
+  if (!report.items?.length) return 'The completed receipt contains no assignment results. No IC save or score comparison is verified.';
   const held = (report.items || []).filter(item => !['read_back', 'nothing_to_enter', 'no_scores'].includes(item.code));
   return held.length ? `${held.length} assignment${held.length === 1 ? '' : 's'} did not finish: ` +
     [...new Set(held.map(item => String(item.code || 'status unavailable').replaceAll('_', ' ')))].join(', ') + '.' : '';
@@ -137,29 +138,41 @@ function renderMorningCockpit(report, routineData) {
   if (!report) return cockpitPanel('What ran',
     note('No 7:00 a.m. score-entry receipt is recorded for today. This does not mean grades failed; it means no completed morning receipt is available.', 'info'),
     routineData?.scores_entered?.last ? el('p', {class: 'muted', text: 'Latest Scores entered record: ' + routineData.scores_entered.last}) : null);
-  const totals = morningTotals(report);
+  const confirmed = (report.items || []).filter(item => ['read_back', 'nothing_to_enter'].includes(item.code));
+  const totals = morningTotals({items: confirmed});
   const handled = totals.filled + totals.raised + totals.kept;
   const problem = morningProblem(report);
-  const saved = report.code === 'finished';
+  const saved = report.code === 'finished' && !problem;
   const detail = (report.items || []).map(item =>
     el('li', {}, el('strong', {text: item.assignment + ': '}),
-      `${item.filled} new · ${item.raised} raised · ${item.kept} already matched in IC${item.code === 'read_back' ? ' and confirmed after reload' : ''}`));
+      item.code === 'read_back'
+        ? `${item.filled} new · ${item.raised} raised · ${item.kept} already matched in IC — confirmed after reload.`
+        : item.code === 'nothing_to_enter'
+          ? `No changes needed. ${item.kept} scores already matched in IC.`
+          : item.code === 'no_scores'
+            ? 'No eligible Hub scores were available. This assignment was not entered or compared in IC.'
+            : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
     el('p', {class: 'cockpit-label', text: saved
       ? `${totals.filled} new scores entered · ${totals.raised} raised · ${totals.kept} existing scores matched in IC`
-      : 'grade rows handled or preserved by the morning run'}),
+      : 'grade rows with confirmed IC results; unfinished results appear below'}),
     el('p', {class: problem ? 'needs' : 'ok', text: problem || (saved
-      ? '✓ The helper finished. You do not need to enter these scores again; change one in IC only if you want a different score.'
+      ? (confirmed.length ? '✓ These IC results are confirmed. Review the gradebook afterward and adjust a score only if needed.' : 'No eligible Hub scores were available. No IC entry or score comparison is confirmed.')
       : 'The run has not confirmed a completed save.')}),
     el('details', {}, el('summary', {text: 'Morning assignment details'}), el('ul', {}, ...detail)));
 }
 
 function renderNeedsYou(report) {
   const items = [];
+  if (!report) return cockpitPanel('Run status', note('No receipt is available yet. IC results are not verified.', 'info'));
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
+    if (row.code === 'no_scores') {
+      items.push(el('li', {}, el('strong', {text: row.assignment + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
+      continue;
+    }
     const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
     if (!row.left && !reasons.length) continue;
     items.push(el('li', {}, el('strong', {text: row.assignment + ': '}),
@@ -263,23 +276,31 @@ async function printTodayFeedback(files, status, button) {
 }
 
 function renderTodayFeedback(data) {
-  if (data.error) return cockpitPanel('Feedback created today', note(data.error, 'info'));
-  if (data.problem) return cockpitPanel('Feedback created today', note(data.problem, 'info'));
+  if (data.error) return cockpitPanel('Feedback ready to print', note(data.error, 'info'));
+  if (data.problem) return cockpitPanel('Feedback ready to print', note(data.problem, 'info'));
   const files = data.files || [];
-  const panel = cockpitPanel('Feedback created today');
+  const panel = cockpitPanel('Feedback ready to print');
   if (!files.length) {
-    panel.append(note('No print-ready feedback files were created in Drive today.', 'info'));
+    panel.append(note('No print-ready feedback documents were found in the connected course folders.', 'info'));
     return panel;
   }
-  const status = el('p', {class: 'muted', role: 'status', text: `${files.length} ready · already filed in the matching course folders.`});
+  const status = el('p', {class: 'muted', role: 'status', text: `${files.length} documents · created ${data.date} · already filed by course. Printing and handing out remain separate.`});
   const list = el('ul', {class: 'feedback-today-list'}, ...files.map(file =>
     el('li', {}, el('strong', {text: `${file.course_name}: `}),
       link(file.name, file.url), el('small', {class: 'muted', text: ` · ${when(file.created_at)} · `}),
       link('Open course folder ↗', file.course_folder_url))));
-  const button = el('button', {type: 'button', class: 'primary'}, `Print all ${files.length} new feedback`);
+  const button = el('button', {type: 'button', class: 'primary'}, `Print this feedback packet (${files.length} documents)`);
   button.onclick = () => printTodayFeedback(files, status, button);
   panel.append(status, list, el('div', {class: 'action-row'}, button));
   return panel;
+}
+
+function renderLearningReport(data) {
+  if (!data?.configured) return null;
+  return cockpitPanel('Class growth and DTGSS',
+    el('p', {text: data.as_of ? `Report updated ${data.as_of}.` : 'Saved class learning report.'}),
+    el('div', {class: 'action-row'}, link('Open growth report', data.url), link('Discussion prompts and check-ins', data.teaching_url)),
+    el('p', {class: 'muted', text: 'Current-roster percentages, Beginning and Developing counts, and paired comparisons. The report states its evidence dates.'}));
 }
 
 async function loadToday(force = false) {
@@ -287,12 +308,13 @@ async function loadToday(force = false) {
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   try {
     if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
-    const [day, reportsData, routineData, audits, feedbackData] = await Promise.all([
+    const [day, reportsData, routineData, audits, feedbackData, learningData] = await Promise.all([
       getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
       getJSON('api/morning/reports'),
       getJSON('api/routine'),
       loadAudits(force),
       getJSON('api/feedback/today').catch(error => ({error: error.message})),
+      getJSON('api/learning-report').catch(() => ({configured: false})),
     ]);
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
@@ -302,7 +324,7 @@ async function loadToday(force = false) {
         renderMorningCockpit(report, routineData),
         renderNeedsYou(report)),
       renderNextLessons(audits));
-    $('today-feedback').replaceChildren(renderTodayFeedback(feedbackData));
+    $('today-feedback').replaceChildren(...[renderLearningReport(learningData), renderTodayFeedback(feedbackData)].filter(Boolean));
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
@@ -1780,7 +1802,7 @@ async function loadMorningSummary() {
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
     box.replaceChildren(el('h2', {text: 'Morning helper review'}));
-    if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The 6:30 check prepares a review; approve it in the IC helper. A prepared review is not an IC entry.', 'info')); return; }
+    if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The weekday helper runs at 7:00 when enabled. An enabled schedule is not proof of entry; Today shows the saved-and-reloaded results when a receipt arrives.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
     box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
     reports.forEach((report, i) => {

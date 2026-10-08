@@ -29,6 +29,19 @@ def report():
 
 
 class NativeFeedbackTests(unittest.TestCase):
+    def test_learning_report_handoff_does_not_need_source_reads_and_rejects_external_links(self):
+        with patch.object(google, 'service_token', side_effect=AssertionError('unnecessary source access')):
+            self.assertEqual(app.api('api/learning-report', {}, {}), {'configured': False})
+            self.assertEqual(app.learning_report({'HUB_GROWTH_REPORT_URL': 'https://example.test/report'}), {'configured': False})
+            url = 'https://docs.google.com/spreadsheets/d/FictionalReport12345/edit'
+            result = app.api('api/learning-report', {}, {'HUB_GROWTH_REPORT_URL': url,
+                'HUB_GROWTH_TEACHING_URL': url + '#gid=123', 'HUB_GROWTH_REPORT_AS_OF': '2026-10-08'})
+            self.assertTrue(result['configured'])
+            self.assertEqual(result['teaching_url'], url + '#gid=123')
+            self.assertFalse(result['automatic_refresh'])
+            self.assertEqual(app.learning_report({'HUB_GROWTH_REPORT_URL': url,
+                'HUB_GROWTH_REPORT_AS_OF': 'not a date', 'HUB_GROWTH_TEACHING_URL': 'javascript:alert(1)'})['teaching_url'], url)
+
     def setUp(self):
         self.port = MemoryCAS()
         self.storage = patch.object(fb, 'configured_store', lambda c: self.port)
@@ -84,9 +97,13 @@ class NativeFeedbackTests(unittest.TestCase):
         with patch.object(fb.google, 'drive_file', side_effect=lambda token, ident, fields: metadata[ident]), \
                 patch.object(fb.google, 'folder_children', side_effect=lambda token, ident: children[ident]):
             result = fb.today_files('token', config, date_et='2026-10-08')
+            later = fb.today_files('token', config, date_et='2026-10-09')
         self.assertTrue(result['configured'])
         self.assertEqual([item['id'] for item in result['files']], ['bio-new'])
         self.assertEqual(result['files'][0]['course_folder'], fb.FEEDBACK_FOLDERS['biology'])
+        self.assertEqual(later['date'], '2026-10-08')
+        self.assertEqual(later['requested_date'], '2026-10-09')
+        self.assertEqual([item['id'] for item in later['files']], ['bio-new'])
 
     def test_print_today_merges_current_packet_in_course_order(self):
         from io import BytesIO

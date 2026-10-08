@@ -327,7 +327,7 @@ def listing(config, scope, found):
 
 
 def today_files(token, config, *, date_et=None):
-    """New print-ready feedback from today's verified course folders."""
+    """Today's print-ready feedback, or the latest dated batch when today is empty."""
     raw = config.get(FEEDBACK_FOLDER_CONFIG, '')
     try:
         folders = json.loads(raw) if raw else {}
@@ -371,17 +371,20 @@ def today_files(token, config, *, date_et=None):
                     ZoneInfo('America/New_York')).date().isoformat()
             except (ValueError, TypeError):
                 continue
-            if created_day != day:
+            if created_day > day:
                 continue
             files.append({'id': item['id'], 'name': name, 'course': cls,
                           'course_name': FEEDBACK_COURSE_NAMES[cls],
                           'course_folder': folder['name'], 'mime': item['mimeType'],
                           'course_folder_url': 'https://drive.google.com/drive/folders/' + folder_id,
-                          'created_at': created,
+                          'created_at': created, 'created_day': created_day,
                           'url': 'https://drive.google.com/open?id=' + item['id']})
+    batch_day = max((item['created_day'] for item in files), default=day)
+    files = [item for item in files if item['created_day'] == batch_day]
     order = {name: index for index, name in enumerate(FEEDBACK_FOLDERS)}
     files.sort(key=lambda item: (order[item['course']], item['created_at'], item['name'].casefold()))
-    return {'configured': True, 'date': day, 'files': files, 'problem': None}
+    return {'configured': True, 'date': batch_day, 'requested_date': day,
+            'files': files, 'problem': None}
 
 
 def print_today(token, config, file_ids, *, date_et=None):
