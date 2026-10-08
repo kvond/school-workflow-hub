@@ -1,8 +1,10 @@
 """Private archival acceptance using fictional Drive and disposable CAS state."""
 from copy import deepcopy
+from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
+from threading import Barrier, Lock
 import unittest
 from unittest.mock import Mock, patch
 
@@ -324,6 +326,70 @@ class StudentArchiveTests(unittest.TestCase):
         scan = archive.archive_listing("read", self.config, "biology")["filing"]["scans"][0]
         self.assertEqual(scan["held_count"], 2)
         self.assertTrue(all(h["assignment"] == "Energy Flow — Turn In" for h in scan["held"]))
+
+    def test_listing_deduplicates_fresh_metadata_with_at_most_four_concurrent_reads(self):
+        extra = []
+        for first, last in (("Ben", "Stone"), ("Cara", "Liu")):
+            ident = "FictionalSourceFor" + first
+            self.drive.add(ident, "Energy Flow - " + first, google.PPTX, ["OriginalFormUploadFolder"])
+            extra.append(row(first=first, last=last, email="s." + first.lower() + "." + last.lower() + "@school.example",
+                             files=[{"id": ident, "mime": google.PPTX}]))
+        self.assertEqual(self.archive(found(row(), *extra))["status"], "verified")
+        watched = {ident for ident, item in self.drive.items.items() if item["properties"].get(archive.TAG)}
+        calls, lock, gate = Counter(), Lock(), Barrier(4, timeout=5)
+        state = {"active": 0, "peak": 0, "started": 0}
+
+        def fetch(token, ident, fields=None):
+            if ident not in watched:
+                return self.drive.metadata(token, ident, fields)
+            with lock:
+                calls[ident] += 1
+                state["active"] += 1
+                state["started"] += 1
+                first_wave = state["started"] <= 4
+                state["peak"] = max(state["peak"], state["active"])
+            try:
+                if first_wave:
+                    gate.wait()
+                return self.drive.metadata(token, ident, fields)
+            finally:
+                with lock:
+                    state["active"] -= 1
+
+        with patch.object(google, "drive_file", side_effect=fetch), \
+                patch.object(self.port, "read", wraps=self.port.read) as reads:
+            _, students = archive._indexed("read", self.config, "biology")
+        self.assertEqual(len(students), 3)
+        self.assertEqual(state["peak"], 4)
+        self.assertEqual(set(calls), watched)
+        self.assertTrue(all(count == 1 for count in calls.values()))
+        artifact_batches = [c.args[0] for c in reads.call_args_list if any(i.startswith("archivework_") for i in c.args[0])]
+        self.assertEqual(len(artifact_batches), 1)
+        self.assertEqual(len(artifact_batches[0]), 3)
+
+    def test_concurrent_metadata_still_holds_private_parent_and_shortcut_target_failures(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        listing = archive.archive_listing("read", self.config, "biology")
+        artifact_id = listing["students"][0]["records"][0]["drive_file_id"]
+        student_id = self.drive.items[artifact_id]["parents"][0]
+        section_id = self.drive.items[student_id]["parents"][0]
+        for ident, field, value in ((section_id, "permissions", [{"type": "anyone", "role": "reader"}]),
+                                    (artifact_id, "parents", [COURSES["biology"]]),
+                                    (artifact_id, "shortcutDetails", {"targetId": "DifferentOriginal"})):
+            before = deepcopy(self.drive.items[ident])
+            self.drive.items[ident][field] = value
+            held = archive.archive_listing("read", self.config, "biology")
+            self.assertEqual((held["status"], held["students"]), ("held", []))
+            self.assertTrue(held["problems"])
+            self.drive.items[ident] = before
+
+    def test_concurrent_metadata_read_error_is_not_treated_as_an_empty_archive(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        artifact = next(item for item in self.drive.items.values() if item["mimeType"] == archive.SHORTCUT)
+        self.drive.items.pop(artifact["id"])
+        held = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual((held["status"], held["students"]), ("held", []))
+        self.assertTrue(held["problems"])
 
     def test_google_pdf_quota_failure_has_precise_redacted_explanation(self):
         response = Mock(status_code=403)

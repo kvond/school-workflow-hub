@@ -683,7 +683,7 @@ function recordLabel(value) {
 }
 function studentFilingNote(data) {
   const filing = data.filing;
-  if (!filing || filing.coverage === 'unverified') return note('Filing coverage has not been verified. Available student folders do not confirm that all submissions have been filed.', 'info');
+  if (!filing || filing.coverage === 'unverified') return {brief: note('Filing coverage has not been verified. Available student folders do not confirm that all submissions have been filed.', 'info')};
   const scans = Array.isArray(filing.scans) ? filing.scans.filter(scan => scan?.class_key === data.class_key) : [];
   const pending = [];
   for (const scan of scans.filter(scan => scan.status === 'held' || scan.held_count > 0)) {
@@ -696,11 +696,13 @@ function studentFilingNote(data) {
   }
   if (filing.coverage === 'holds_remain' || filing.held_count > 0 || pending.length) {
     const count = Number.isInteger(filing.held_count) && filing.held_count > 0 ? filing.held_count : null;
-    return el('div', {class: 'note info'},
-      el('p', {text: count ? `${count} filing ${count === 1 ? 'hold remains' : 'holds remain'}. Checks cover recorded weeks only.` : 'Student filing is pending. Checks cover recorded weeks only.'}),
-      el('ul', {}, [...new Set(pending.length ? pending : ['The pending filing reason is not available. Existing records are preserved.'])].map(text => el('li', {text}))));
+    return {
+      brief: el('p', {class: 'note info', text: count ? `${count} filing ${count === 1 ? 'hold remains' : 'holds remain'}. Checks cover recorded weeks only.` : 'Student filing is pending. Checks cover recorded weeks only.'}),
+      summary: `Filing checks · ${count ? count + (count === 1 ? ' record' : ' records') : 'records'} awaiting review`,
+      detail: el('ul', {}, [...new Set(pending.length ? pending : ['The pending filing reason is not available. Existing records are preserved.'])].map(text => el('li', {text}))),
+    };
   }
-  return el('p', {class: 'muted', text: 'Filing checks cover recorded weeks only; they do not confirm that all submissions have been filed.'});
+  return {brief: el('p', {class: 'muted', text: 'Filing checks cover recorded weeks only; they do not confirm that all submissions have been filed.'})};
 }
 function renderStudentRecords(data) {
   const body = $('student-records-body');
@@ -710,18 +712,17 @@ function renderStudentRecords(data) {
   if (!data.configured || data.status === 'unconfigured') {
     body.append(note('Student records are not available for this class yet.', 'info')); return;
   }
+  const problems = data.status === 'held' && Array.isArray(data.problems) ? data.problems : [];
   if (data.status === 'held') {
-    const problems = Array.isArray(data.problems) ? data.problems : [];
     if (problems.length || !(data.filing?.coverage === 'holds_remain' || data.filing?.held_count > 0))
       body.append(note('Some student records could not be confirmed.', 'info'));
-    if (problems.length) body.append(el('ul', {class: 'muted'}, [...new Set(problems.map(recordProblem))].map(text => el('li', {text}))));
   }
-  body.append(studentFilingNote(data));
+  const filing = studentFilingNote(data);
+  body.append(filing.brief);
   body.append(el('p', {class: 'muted', text: 'Open a student’s folder to check dated work or reprint saved feedback. Teacher reports stay in the class’s separate folder.'}));
   if (!data.students.length) {
-    body.append(el('p', {class: 'muted', text: data.status === 'held' ? 'No student folders could be confirmed.' : 'No student records have been filed for this class yet.'})); return;
-  }
-  body.append(el('div', {class: 'table-wrap'}, el('table', {class: 'student-records-table'},
+    body.append(el('p', {class: 'muted', text: data.status === 'held' ? 'No student folders could be confirmed.' : 'No student records have been filed for this class yet.'}));
+  } else body.append(el('div', {class: 'table-wrap'}, el('table', {class: 'student-records-table'},
     el('thead', {}, el('tr', {}, ['Student', 'Section', 'Status', 'Latest record', 'Folder'].map(text => el('th', {text})))),
     el('tbody', {}, data.students.map(student => {
       const folderURL = recordFolderURL(student.folder_url);
@@ -730,6 +731,10 @@ function renderStudentRecords(data) {
         el('td', {text: recordDate(student.latest_record_date)}),
         el('td', {}, folderURL ? link('Open folder', folderURL) : el('span', {class: 'muted', text: 'Folder unavailable'})));
     })))));
+  if (filing.detail || problems.length) body.append(el('details', {},
+    el('summary', {text: filing.summary || 'Filing checks · records awaiting review'}),
+    problems.length ? el('ul', {class: 'muted'}, [...new Set(problems.map(recordProblem))].map(text => el('li', {text}))) : null,
+    filing.detail));
 }
 async function loadStudentRecords(fresh = false) {
   const panel = $('student-records');

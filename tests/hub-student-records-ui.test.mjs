@@ -151,3 +151,29 @@ test('unverified filing and machine hold reasons cannot become a complete-source
   assert.match(h.body.textContent, /Biology · Wk 02: A record could not be confirmed. Existing records are preserved/);
   assert.doesNotMatch(h.body.textContent, /private_archive_identity_missing|all caught up/);
 });
+
+test('folder access stays above collapsed filing details while exact hold counts and context remain available', async () => {
+  const held = Array.from({length: 45}, (_, index) => ({name: 'Fictional student ' + index % 36,
+    section: 'A2 Fictional', assignment: 'Evidence — Turn In', problem: 'A verified school email is needed.'}));
+  const h = boot(() => response('forensics', {status: 'held', students: [{name: 'Ann Avery', section: 'A2 Fictional',
+    status: 'unverified', folder_url: 'https://drive.google.com/drive/folders/STUDENT_CURRENT', latest_record_date: '2032-01-07'}],
+    filing: {coverage: 'holds_remain', held_count: 45, scans: [{class_key: 'forensics', week: 'Wk 05', status: 'held', held_count: 45,
+      held, problems: []}]}}));
+  h.ui.work.cls = 'forensics'; h.panel.open = true; await h.ui.loadStudentRecords();
+  const tableWrap = h.body.children.find(node => node.className === 'table-wrap');
+  const checks = h.body.children.find(node => node.tagName === 'details');
+  assert.ok(tableWrap);
+  assert.ok(checks);
+  assert.ok(h.body.children.indexOf(tableWrap) < h.body.children.indexOf(checks));
+  assert.equal(checks.open, false);
+  assert.match(checks.children[0].textContent, /Filing checks · 45 records awaiting review/);
+  assert.match(h.body.children.filter(node => node !== checks).map(node => node.textContent).join(''), /45 filing holds remain. Checks cover recorded weeks only/);
+  assert.doesNotMatch(h.body.children.filter(node => node !== checks).map(node => node.textContent).join(''), /A verified school email is needed/);
+  assert.equal(walk(checks).filter(node => node.tagName === 'li').length, 36);
+  for (let index = 0; index < 36; index++) assert.ok(walk(checks).some(node => node.tagName === 'li'
+    && node.textContent === `Forensics · Wk 05 · Fictional student ${index} · A2 Fictional · Evidence — Turn In: A verified school email is needed.`));
+  assert.match(tableWrap.textContent, /Ann AveryA2 FictionalRoster unverifiedJan 7, 2032/);
+  assert.ok(walk(tableWrap).some(node => node.tagName === 'a' && node.href.endsWith('/STUDENT_CURRENT')));
+  assert.match(h.body.textContent, /Open Forensics teacher reports/);
+  assert.equal(walk(h.body).filter(node => ['button', 'input'].includes(node.tagName)).length, 0);
+});

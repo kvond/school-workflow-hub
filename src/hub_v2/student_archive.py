@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from . import google, work
@@ -609,25 +610,41 @@ def _indexed(token, config, cls):
     if len(ids) > MAX_STUDENTS:
         raise Held("The student archive index needs its size checked.")
     students = _batch_read(port, ids)
-    output = []
+    checked, item_ids, metadata_ids = [], [], set()
     for ident in ids:
         doc = students.get(ident)
         if not doc or doc.value.get("status") != "verified":
             raise Held("One student folder is not confirmed in the private archive index.")
         student = doc.value
-        _private(google.drive_file(token, student["parent"], FIELDS), parent=course["id"], folder=True)
-        _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True)
-        item_ids = list(student.get("items", {}))
-        if len(item_ids) > MAX_ITEMS:
+        student_items = list(student.get("items", {}))
+        if len(student_items) > MAX_ITEMS:
             raise Held("One student's archive has too many unverified records.")
-        documents = _batch_read(port, item_ids)
+        checked.append((student, student_items))
+        item_ids.extend(student_items)
+        metadata_ids.update((student["parent"], student["drive_file_id"]))
+    # Read all indexed artifacts in the same bounded sequential CAS batches.
+    # Repeated section parents need just one fresh metadata read per request.
+    documents = _batch_read(port, list(dict.fromkeys(item_ids)))
+    for item in documents.values():
+        if not item or item.value.get("status") != "verified":
+            raise Held("An archived record has not been verified yet.")
+        metadata_ids.add(item.value["drive_file_id"])
+    fetch_ids = sorted(metadata_ids)
+    # These are independent GETs only. Google's sessions are thread-local;
+    # no index writes or checks run in workers and errors propagate unchanged.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        metadata = dict(zip(fetch_ids, pool.map(lambda ident: google.drive_file(token, ident, FIELDS), fetch_ids)))
+    output = []
+    for student, student_items in checked:
+        _private(metadata[student["parent"]], parent=course["id"], folder=True)
+        _private(metadata[student["drive_file_id"]], parent=student["parent"], folder=True)
         artifacts = []
-        for item_id in item_ids:
+        for item_id in student_items:
             item = documents.get(item_id)
             if not item or item.value.get("status") != "verified":
                 raise Held("An archived record has not been verified yet.")
             artifact = item.value
-            meta = _private(google.drive_file(token, artifact["drive_file_id"], FIELDS), parent=student["drive_file_id"])
+            meta = _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"])
             if (meta.get("properties") or {}).get(TAG) != item_id:
                 raise Held("An archived record no longer matches its private index.")
             if artifact["kind"] == "feedback":
