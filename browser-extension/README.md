@@ -100,9 +100,12 @@ that day's attempt; it does not resume score entry.
 The worker selects exactly one open Hub tab and one open IC tab. It asks the
 Hub for all dated Agenda assignments, skips those with final entry already
 recorded or no scores, and obtains fresh `hub-ic-list/v1` lists. Unreadable
-sources, unscored decks, unsorted files and ambiguous roster rows stay held.
-The run reports roster sync as unavailable before starting scores: the existing
-roster endpoint is status-only, so no students are added, renamed or removed.
+sources, unscored decks, unsorted files and ambiguous identity matches stay
+held. Infinite Campus is the canonical changing roster. The run reports that
+IC-to-Hub roster sync is not connected; ordinary roster additions and
+departures are not classified as student-work exceptions. Until the IC roster
+reader is implemented and verified, this does not claim to update the Hub's
+active roster.
 
 The worker navigates the existing IC tab to each explicitly mapped score panel
 and makes it active. It never uses title matching. A bounded readiness check

@@ -1,8 +1,8 @@
 // Teaching Hub v2: lesson plans from the Agenda, and student work found from
 // each lesson's Form responses and turn-in folder, with completion scores
-// counted from each deck's coded boxes. Scores go into Infinite Campus through
-// the Chrome helper (the browser companion extension) in the teacher's own
-// Chrome, after her OK there, or by her own typing; never by this page.
+// counted from each deck's coded boxes. The opted-in Chrome helper writes and
+// verifies eligible morning scores; this page reads receipts and offers
+// optional manual tools.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
 const SCAN_CLASSES = ['biology', 'anatomy'];  // with an "Answers by question" view
@@ -117,6 +117,14 @@ function morningTotals(report) {
   return out;
 }
 
+const MORNING_REASONS = {
+  flag: 'IC score rows already have flags; helper left them alone',
+  excused: 'Students marked excused; helper left them alone',
+  check: 'Hub source rows need a hand check before entry',
+  name: 'IC has students who are not on the Hub list',
+  missing: 'Hub-listed students were not present in this IC assignment roster (this does not mean missing work)',
+};
+
 function morningProblem(report) {
   if (!report) return '';
   if (report.code !== 'finished') return 'Morning run: ' + String(report.code || 'status unavailable').replaceAll('_', ' ') + '. Completion is not verified.';
@@ -132,19 +140,22 @@ function renderMorningCockpit(report, routineData) {
   const totals = morningTotals(report);
   const handled = totals.filled + totals.raised + totals.kept;
   const problem = morningProblem(report);
+  const saved = report.code === 'finished';
   const detail = (report.items || []).map(item =>
     el('li', {}, el('strong', {text: item.assignment + ': '}),
-      `${item.filled} entered · ${item.raised} raised · ${item.kept} kept · ${item.left} left · ${String(item.code || 'status unavailable').replaceAll('_', ' ')}`));
+      `${item.filled} new · ${item.raised} raised · ${item.kept} already matched in IC${item.code === 'read_back' ? ' and confirmed after reload' : ''}`));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
-    el('p', {class: 'cockpit-label', text: 'grade rows handled or preserved by the morning run'}),
-    el('p', {class: problem || totals.left ? 'needs' : 'ok', text: problem || (totals.left
-      ? `${totals.left} row${totals.left === 1 ? '' : 's'} left for review.`
-      : '✓ Nothing from this completed receipt was left unresolved.')}),
+    el('p', {class: 'cockpit-label', text: saved
+      ? `${totals.filled} new scores entered · ${totals.raised} raised · ${totals.kept} existing scores matched in IC`
+      : 'grade rows handled or preserved by the morning run'}),
+    el('p', {class: problem ? 'needs' : 'ok', text: problem || (saved
+      ? '✓ The helper finished. You do not need to enter these scores again; change one in IC only if you want a different score.'
+      : 'The run has not confirmed a completed save.')}),
     el('details', {}, el('summary', {text: 'Morning assignment details'}), el('ul', {}, ...detail)));
 }
 
-function renderNeedsYou(report, releaseRows) {
+function renderNeedsYou(report) {
   const items = [];
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
@@ -152,37 +163,53 @@ function renderNeedsYou(report, releaseRows) {
     const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
     if (!row.left && !reasons.length) continue;
     items.push(el('li', {}, el('strong', {text: row.assignment + ': '}),
-      reasons.length ? reasons.map(([reason, n]) => `${n} ${reason.replaceAll('_', ' ')}`).join(' · ') : `${row.left} left`));
+      reasons.length ? reasons.map(([reason, n]) => `${n} — ${MORNING_REASONS[reason] || reason}`).join('; ')
+        : 'Helper could not confirm completion; inspect this assignment before changing anything.'));
   }
-  for (const row of releaseRows.filter(row => row.release.status !== 'READY')) {
-    items.push(el('li', {}, el('strong', {text: `${row.className} · ${row.week} · ${row.topic}: `}),
-      releaseIssue(row.release.issues?.[0]) || row.release.status.replaceAll('_', ' ')));
-  }
-  return cockpitPanel('Needs you',
+  return cockpitPanel('Rows the helper left unchanged',
     items.length ? el('ul', {class: 'attention-list'}, ...items)
-      : el('p', {class: 'ok', text: '✓ No grade-review exception or current deck-release problem is recorded.'}),
-    el('p', {class: 'muted', text: 'Excused/flagged rows, name mismatches, changed IC values and uncertain readback remain teacher decisions; ordinary blanks and raises do not.'}));
+      : el('p', {class: 'ok', text: '✓ No grade rows were left out of the helper run.'}),
+    el('p', {class: 'muted', text: 'This is not a second score-entry step. “Not present in this IC assignment roster” means the student was not on that assignment’s IC score table; it does not mean missing student work. The receipt is counts-only and cannot identify those students.'}));
 }
 
-function renderTodayLessons(day, audits) {
-  const rows = [];
-  for (const cls of day?.classes || []) {
-    for (const lesson of cls.lessons || []) {
-      const release = releaseFor(audits, cls.key, lesson);
-      const links = (lesson.materials || []).slice(0, 4).map(material => link(material.label + ' ↗', material.url, 'chip'));
-      rows.push(el('article', {class: 'today-lesson'},
-        el('div', {class: 'today-lesson-head'},
-          el('div', {}, el('strong', {text: cls.name}), el('h3', {text: lesson.topic || 'Untitled lesson'})),
-          releaseBadge(release)),
-        release?.issues?.length ? el('p', {class: 'needs', text: releaseIssue(release.issues[0])}) : null,
-        links.length ? el('div', {class: 'links'}, ...links) : null,
-        el('div', {class: 'action-row'},
-          el('button', {type: 'button', onclick: () => { location.hash = '#plans'; }}, 'Review / revise lesson'))));
-    }
+function issueAction(release) {
+  const issue = release?.issues?.[0];
+  if (release?.status === 'READY') return 'No fix needed. Teach this lesson.';
+  if (!issue) return 'No exact cause was returned. Open this lesson in Lessons / VT and run the link check.';
+  if (issue === 'missing_teacher_reference_contract') return 'Open the teacher deck from Lessons / VT and add or restore its required teacher reference instructions, then recheck readiness.';
+  if (issue === 'teacher_reference_has_no_critical_aspects') return 'Add the required critical aspects to the teacher reference instructions, then recheck readiness.';
+  if (issue === 'marker_inventory_missing_or_duplicated') return 'In the teacher deck, keep one complete embed-coding marker inventory and remove or repair any duplicate; then recheck readiness.';
+  if (issue === 'marker_inventory_counts_unparsed' || issue === 'marker_inventory_count_mismatch') return 'In Student work, use the named assignment’s deck-code note; run the embed-coding program on that deck, then recheck readiness.';
+  if (issue === 'marker_inventory_id_mismatch') return 'In the teacher deck, make the marker IDs in the inventory match the IDs embedded in the lesson slides; then recheck readiness.';
+  if (issue === 'duplicate_feedback_marker') return 'In the teacher deck, remove or correct the repeated feedback marker so each marker ID appears once; then recheck readiness.';
+  if (issue === 'feedback_marker_cycle_mismatch') return 'In the teacher deck, make the feedback marker cycle match the cycle named by its inventory; then recheck readiness.';
+  if (issue === 'draft_without_matching_notes') return 'In the teacher deck, add a matching NOTES marker for every DRAFT marker, or remove the unmatched DRAFT marker; then recheck readiness.';
+  if (issue === 'concept_bank_heading_missing') return 'In the teacher deck, add the required “Define these in your own words” heading above the concept bank; then recheck readiness.';
+  if (issue === 'required_what_if_missing') return 'In the teacher deck, add the required “What if?” prompt for the scored completion item; then recheck readiness.';
+  if (issue === 'agenda_prompt_contract_unavailable') return 'The Agenda prompt details could not be read, so readiness cannot be verified. Restore access to the linked Agenda prompts, then recheck.';
+  if (issue === 'teacher_reference_has_no_week_question') return 'Add the week question to the teacher reference instructions so the readiness check can verify it.';
+  if (issue === 'deck_release_unreadable') return 'Open the teacher deck from Lessons / VT and confirm the link opens; if not, correct that deck link in the Agenda.';
+  if (issue.startsWith('critical_aspect_block_missing:')) return `In the teacher deck, add the lesson section for ${issue.slice('critical_aspect_block_missing:'.length)}; then recheck readiness.`;
+  if (issue.startsWith('critical_aspect_phase_missing:')) {
+    const [, aspect, phase] = issue.split(':');
+    return `In the teacher deck, add the ${String(phase || '').replaceAll('_', ' ')} section for ${aspect}; then recheck readiness.`;
   }
-  return cockpitPanel("Today's lessons",
-    rows.length ? el('div', {class: 'today-lessons'}, ...rows)
-      : el('p', {class: 'muted', text: day?.weekday ? `No lessons are listed for ${FULL_DAY[day.weekday] || day.weekday}.` : 'No lesson data was returned.'}));
+  return `${releaseIssue(issue)}. Open this exact lesson in Lessons / VT, follow the issue shown there, then recheck readiness.`;
+}
+
+async function openAgendaLesson(classKey, week, row) {
+  try {
+    const data = await getJSON(`api/weeks?class=${encodeURIComponent(classKey)}&today=${todayISO()}`);
+    const target = data.weeks.find(item => item.label === week && item.monday);
+    if (!target) throw new Error('The matching Agenda week is not available.');
+    plans.focusRow = `${classKey}|${row}`;
+    plans.date = target.monday;
+    location.hash = '#plans';
+    await loadPlans(target.monday);
+  } catch (error) {
+    setStatus('plans-status', error.message, true);
+    location.hash = '#plans';
+  }
 }
 
 function renderNextLessons(audits) {
@@ -190,15 +217,13 @@ function renderNextLessons(audits) {
   if (!rows.length) return cockpitPanel('Next from Agenda',
     note('No current/upcoming final deck was release-checked. Open Lessons / VT to inspect the Agenda and link audit.', 'info'));
   const bodyRows = rows.map(row => {
-    const next = row.release.status === 'READY'
-      ? 'Teach; visual-only edits get a fast recheck.'
-      : (releaseIssue(row.release.issues?.[0]) || 'Revalidate before teaching.');
     return el('tr', {},
       el('td', {text: row.className}),
       el('td', {text: row.week}),
       el('td', {text: row.topic}),
       el('td', {}, releaseBadge(row.release)),
-      el('td', {text: next}));
+      el('td', {}, el('p', {text: issueAction(row.release)}),
+        el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
   });
   const table = el('table', {class: 'cockpit-table'},
     el('thead', {}, el('tr', {}, ...['Class', 'Week', 'Lesson', 'Release', 'Next'].map(text => el('th', {text})))),
@@ -220,17 +245,11 @@ async function loadToday(force = false) {
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
     const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
-    const releaseRows = allReleaseRows(audits);
     $('today-body').replaceChildren(
       el('div', {class: 'cockpit-grid'},
         renderMorningCockpit(report, routineData),
-        renderNeedsYou(report, releaseRows)),
-      renderTodayLessons(day, audits),
-      renderNextLessons(audits),
-      cockpitPanel('Feedback',
-        el('p', {text: 'Saved feedback still prints from Student work. The automatic Ready to print / Handed out / Needs new feedback queue is the next v3 slice.'}),
-        el('div', {class: 'action-row'},
-          el('button', {type: 'button', onclick: () => { location.hash = '#work'; }}, 'Open Student work'))));
+        renderNeedsYou(report)),
+      renderNextLessons(audits));
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
@@ -240,7 +259,7 @@ async function loadToday(force = false) {
 }
 
 async function loadLessonReadiness(force = false) {
-  const box = $('lesson-readiness');
+  const box = $('lesson-readiness-body');
   if (!box) return;
   box.replaceChildren(el('p', {class: 'muted', text: 'Checking current and upcoming deck releases…'}));
   try {
@@ -251,9 +270,7 @@ async function loadLessonReadiness(force = false) {
       return;
     }
     box.replaceChildren(
-      el('div', {class: 'readiness-head'},
-        el('strong', {text: 'VT / feedback-code readiness'}),
-        el('span', {class: 'muted', text: 'Actual final deck + live Prompt 0 / Prompt 2'})),
+      el('p', {class: 'muted', text: 'Actual final deck + live Prompt 0 / Prompt 2'}),
       el('div', {class: 'release-row'}, ...rows.map(row =>
         el('div', {class: 'release-item'},
           el('span', {text: `${row.className} · ${row.week}`}),
@@ -265,7 +282,7 @@ async function loadLessonReadiness(force = false) {
 }
 
 // ---------- Lesson plans ----------
-const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null, weeks: {}, weeksLoading: {}};
+const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
 
 function renderDays(date) {
   const monday = mondayOf(date);
@@ -285,6 +302,7 @@ async function loadPlans(date, fresh = false) {
     if (seq !== plans.seq) return;
     showAgendaLink(data.agenda);
     renderPlans(data);
+    renderNextWeekNotes(data);
     setStatus('plans-status', '');
   } catch (error) {
     if (seq !== plans.seq) return;
@@ -293,12 +311,33 @@ async function loadPlans(date, fresh = false) {
   }
 }
 
+function renderNextWeekNotes(data) {
+  const box = $('next-week-notes');
+  if (!box) return;
+  const monday = addDays(data.week?.monday || mondayOf(plans.date), 7);
+  const heading = `Notes for next week · ${weekRange(monday)}`;
+  const classes = data.classes || [];
+  box.replaceChildren(el('h2', {text: heading}),
+    el('p', {class: 'muted', text: 'Private notes saved in this browser. One note per class.'}),
+    ...classes.map(cls => {
+      const key = `next-week-note:${cls.key}:${monday}`;
+      const textarea = el('textarea', {rows: 2, 'aria-label': `${cls.name} notes for next week`, placeholder: `${cls.name}: what needs planning?`});
+      textarea.value = store.get(key) || '';
+      const status = el('small', {class: 'muted', text: ''});
+      textarea.addEventListener('input', () => {
+        store.set(key, textarea.value);
+        status.textContent = 'Saved in this browser';
+      });
+      return el('label', {class: 'next-week-note'}, el('strong', {text: cls.name}), textarea, status);
+    }));
+}
+
 function block(label, text) {
   return el('div', {class: 'block'}, el('p', {class: 'label', text: label}), el('p', {class: 'plan', text}));
 }
 
 function renderLesson(cls, lesson, weekday) {
-  const box = el('div', {class: 'lesson'}, el('h3', {text: lesson.topic || 'Untitled lesson'}));
+  const box = el('div', {class: 'lesson', id: `lesson-${cls.key}-${lesson.row}`, tabindex: '-1'}, el('h3', {text: lesson.topic || 'Untitled lesson'}));
   const today = lesson.today;
   if (today) {
     box.append(el('div', {class: 'today'},
@@ -492,6 +531,11 @@ function renderPlans(data) {
     return card;
   });
   $('cards').replaceChildren(...data.problems.map(p => note(p)), ...cards);
+  if (plans.focusRow) {
+    const target = document.getElementById('lesson-' + plans.focusRow.replace('|', '-'));
+    plans.focusRow = null;
+    if (target) requestAnimationFrame(() => { target.scrollIntoView({behavior: 'smooth', block: 'center'}); target.focus?.(); });
+  }
 }
 
 // ---------- Student work ----------
@@ -679,14 +723,24 @@ function answersPanel(form, scores) {
   return panel;
 }
 
-function uncodedReport(scores) {
-  const slides = {};
-  for (const result of Object.values(scores)) {
-    for (const slide of new Set((result.uncoded || []).map(u => u.slide))) slides[slide] = (slides[slide] || 0) + 1;
-  }
-  const list = Object.entries(slides).sort((a, b) => a[0] - b[0]);
-  if (!list.length) return null;
-  return note(`Writing in boxes with no code (not scored): ${list.map(([slide, n]) => `slide ${slide} (${n} student${n > 1 ? 's' : ''})`).join(', ')}. Run your embed-coding program on this deck before you hand it out next time.`, 'info');
+function uncodedReport(scores, form) {
+  const rows = form.students.filter(row => row.files.length).map(row => ({
+    row, result: scores[scoreFile(row)?.id],
+  })).filter(item => item.result?.uncoded?.length);
+  if (!rows.length) return null;
+  const slides = [...new Set(rows.flatMap(({result}) => result.uncoded.map(item => item.slide)))].sort((a, b) => a - b);
+  const key = `embed-coded:${work.cls}:${work.week}:${form.form_id}`;
+  const checked = store.get(key) === 'done';
+  const checkbox = el('input', {type: 'checkbox', checked, 'aria-label': `Mark embed coding done for ${form.label}`});
+  const status = el('small', {class: 'muted', text: checked ? 'Marked done in this browser.' : 'Reminder saved in this browser.'});
+  checkbox.addEventListener('change', () => {
+    store.set(key, checkbox.checked ? 'done' : 'todo');
+    status.textContent = checkbox.checked ? 'Marked done in this browser.' : 'Reminder saved in this browser.';
+  });
+  return el('section', {class: 'note info coding-followup'},
+    el('p', {text: `Some writing was not scored because its boxes have no code. Affected submissions: ${rows.map(({row, result}) => `${row.last}, ${row.first} (${[...new Set(result.uncoded.map(item => item.slide))].sort((a, b) => a - b).map(n => `slide ${n}`).join(', ')})`).join('; ')}. Slide(s) ${slides.join(', ')}.`}),
+    el('label', {class: 'task-check'}, checkbox, ' Run the embed-coding program on this deck before the next handout.'),
+    status);
 }
 
 
@@ -1232,9 +1286,10 @@ function renderForm(form, lesson) {
     box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
   }
   if (scores && !ui.progress) {
-    const failed = Object.values(scores).filter(s => s.problem).length;
-    if (failed) box.append(note(`${failed} deck(s) couldn’t be scored — see the note in their row.`, 'info'));
-    const report = uncodedReport(scores);
+    const failedRows = form.students.filter(row => row.files.length && scores[scoreFile(row)?.id]?.problem)
+      .map(row => `${row.last}, ${row.first}${work.section === 'all' ? ` (${row.section})` : ''}: ${scores[scoreFile(row)?.id].problem}`);
+    if (failedRows.length) box.append(note(`Couldn’t score ${failedRows.length} deck${failedRows.length === 1 ? '' : 's'}: ${failedRows.join('; ')}`, 'info'));
+    const report = uncodedReport(scores, form);
     if (report) box.append(report);
     const listNote = Object.values(scores).map(r => r.inventory_note).find(Boolean);
     if (listNote) box.append(note(`Deck code list: ${listNote}`, 'info'));
@@ -1288,10 +1343,8 @@ function renderWork() {
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
   if (data.roster_check) parts.push(renderRosterCheck(data.roster_check));
-  const entry = weekEntryBox();
-  if (entry) parts.push(entry);
   for (const lesson of data.lessons) {
-    parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week}), link('Edit in the Agenda ↗', lesson.edit_url, 'edit')));
+    parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week})));
     if (lesson.problem) parts.push(note(lesson.problem));
     lesson.forms.forEach(form => parts.push(renderForm(form, lesson)));
   }
@@ -1299,11 +1352,13 @@ function renderWork() {
   if (other.length) {
     parts.push(el('section', {class: 'form-work'},
       el('div', {class: 'form-head'}, el('h3', {text: 'Not sorted to an assignment'})),
-      note('These files are in the lesson’s turn-in folders, but their names don’t say which assignment they are. Open each one to check.', 'info'),
+      note('These files are in this lesson’s turn-in folders, but the Hub can’t verify an assignment match from the available evidence. They stay in place until the lesson is confirmed.', 'info'),
       el('div', {class: 'table-wrap'}, el('table', {},
         el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
         el('tbody', {}, other.map(r => studentRow(r)))))));
   }
+  const entry = weekEntryBox();
+  if (entry) parts.push(entry);
   $('work-body').replaceChildren(...parts);
 }
 
@@ -1396,6 +1451,8 @@ async function applyTidy(box, p) {
     if (!response.ok) throw new Error(body?.error || `The server returned an error (${response.status}).`);
     const parts = [el('h3', {text: `Tidy ${p.week} folders`}),
       note(body.moves.length ? `Moved ${body.moved} of ${body.moves.length} item(s).` : 'Nothing needed moving.', 'info')];
+    if (body.moved_items?.length) parts.push(el('ul', {class: 'files tidy-receipt'}, body.moved_items.map(item =>
+      el('li', {text: `Moved “${item.name}” from ${item.from_name || 'a source folder whose name Drive did not return'} to ${item.to_name || `📥 ${p.week}`}.`}))));
     if (body.renames?.length) parts.push(note(`Renamed ${body.renamed} of ${body.renames.length} student file(s) to start with the student’s name and lesson.`, 'info'));
     if (body.failed.length) parts.push(note(`${body.failed.length} couldn’t be moved: ` + body.failed.map(f => `${f.name} (${f.why})`).join('; ')));
     if (body.rename_failed?.length) parts.push(note(`${body.rename_failed.length} couldn’t be renamed: ` + body.rename_failed.map(f => `${f.name} (${f.why})`).join('; ')));
@@ -1672,7 +1729,7 @@ async function loadMorningSummary() {
     box.replaceChildren(el('h2', {text: 'Morning helper review'}));
     if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The 6:30 check prepares a review; approve it in the IC helper. A prepared review is not an IC entry.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
-    box.append(note('Roster additions and removals still need review; automatic roster sync is not available.', 'info'));
+    box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
     reports.forEach((report, i) => {
       const lines = el('ul', {}, report.items.map(row => el('li', {}, el('strong', {text: row.assignment + ': '}),
         `${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${row.left} left — ${words(row.code)}. `,

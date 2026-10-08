@@ -31,11 +31,29 @@ repository, not only roster sync:
 - An assistant may read the shared status and may prepare work for review, but
   it never claims the task, writes a destination, or records a receipt.
 
+## Required roster behavior
+
+Infinite Campus is the canonical, changing class roster. A successful complete
+IC read must update the Hub's active roster view: newly enrolled students are
+added, and students no longer on the IC roster are removed from active roster
+updates. Do not present ordinary additions or departures as student-work
+exceptions. Keep historical submissions, grade receipts, and feedback records
+for departed students; removing a student from the active roster must not erase
+that history. An incomplete or inaccessible IC scan must not be treated as an
+empty roster or as mass departures: leave the last complete roster intact and
+report one sync failure with the exact class/source that could not be read.
+
+The roster workbook is a downstream mirror for existing readers, not the
+authority for current membership. After any workbook update, read it back and
+verify the current active names against the IC snapshot.
+
 ## Current state
 
 `/api/roster-sync` is status-only. It returns `run_enabled: false` and does
-not create a task, read Infinite Campus, or write the roster workbook. This is
-intentional until the two adapters below have passed a supervised acceptance:
+not create a task, read Infinite Campus, or write the roster workbook. Thus the
+required IC-to-Hub roster update is not implemented or live-verified yet. Keep
+roster churn out of student-work exception lists; show the sync connection gap
+once as a system status until these adapters pass acceptance:
 
 1. a complete-current Infinite Campus roster reader with stable private
    identity mapping; and

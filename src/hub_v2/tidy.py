@@ -302,7 +302,7 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
             late_id = google.create_folder(write_token, current["create_late"], keep_id)["id"]
         except google.GoogleError:
             late_id = None  # its late files stay put and are listed below
-    moved, failed = 0, []
+    moved, moved_items, failed = 0, [], []
     for m in sorted(current["moves"], key=lambda m: m["to"] == "late"):
         if m["to"] == "late" and not late_id:
             failed.append({"name": m["name"], "why": "Drive wouldn't let the dashboard make the Late folder. Make a "
@@ -314,6 +314,19 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
             after = google.move_item(write_token, m["id"], target, [m["from_id"]] if m["from_id"] else [])
             if target in (after.get("parents") or []):
                 moved += 1
+                source_name = m.get("from_name") or ""
+                if not source_name and m.get("from_id"):
+                    try:
+                        source_name = google.drive_file(token, m["from_id"]).get("name") or ""
+                    except google.GoogleError:
+                        pass
+                moved_items.append({"name": after.get("name") or m["name"],
+                                    "from_name": source_name,
+                                    "to": m["to"],
+                                    "to_name": (current["late_folder"].get("name") if m["to"] == "late" and current.get("late_folder")
+                                                else current.get("create_late") if m["to"] == "late"
+                                                else current["keep"].get("name") if current.get("keep")
+                                                else current.get("create") or "")})
             else:
                 failed.append({"name": m["name"], "why": "Drive didn't confirm the move."})
         except google.GoogleError as error:
@@ -337,7 +350,7 @@ def apply(token, write_token, config, agenda, class_key, week_label, plan_id, no
             marked.append({**folder, "name": EMPTY_MARK + folder["name"]})
         except google.GoogleError:
             left.append({**folder, "why": "Only you can delete this empty folder."})
-    return {**current, "keep_id": keep_id, "moved": moved, "failed": failed, "trashed": trashed,
+    return {**current, "keep_id": keep_id, "moved": moved, "moved_items": moved_items, "failed": failed, "trashed": trashed,
             "marked": marked, "left_empty": left, "renamed": renamed, "rename_failed": rename_failed,
             "applied": True}
 
