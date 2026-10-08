@@ -37,7 +37,12 @@
    fill:async change=>{
     const {s,snapshot}=read(false);if(!sameContext(s,plan))fail('ic_changed');
     const inputs=s.inputs.filter(i=>norm(i.getAttribute('aria-label'))===change.label),row=snapshot.rows.find(r=>r.label===change.label);
-    if(inputs.length!==1||!row||row.score!==change.before||row.other!==null||row.flags.length)fail('ic_changed');
+    const planned=(plan.snapshot?.rows||plan.rows).find(r=>r.label===change.label);
+    // The planner permits only its explicit missing-work zero on a Missing
+    // row. Preserve that marker; all other flags still prevent typing. A flag
+    // changed since the initial read invalidates even that narrow exception.
+    const zeroWithMissing=change.value===0&&row?.flags.length&&row.flags.every(flag=>flag==='Missing');
+    if(inputs.length!==1||!row||!planned||row.score!==change.before||row.other!==null||JSON.stringify(row.flags)!==JSON.stringify(planned.flags)||(row.flags.length&&!zeroWithMissing))fail('ic_changed');
     const input=inputs[0],view=s.doc.defaultView,setter=Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype,'value').set;
     input.focus();setter.call(input,String(change.value));
     input.dispatchEvent(new view.Event('input',{bubbles:true}));input.dispatchEvent(new view.Event('change',{bubbles:true}));input.blur();
@@ -76,6 +81,8 @@
  const time=iso=>new Date(iso).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
  const listName=list=>`${list.class_name} · ${list.week} · ${list.assignment}`;
  const shown=v=>v===null?'blank':String(v);
+ const exemptOnly=item=>item.flags.length&&item.flags.every(flag=>String(flag).trim().toLowerCase()==='exempt');
+ const leftForReview=plan=>plan.items.filter(item=>item.action==='leave'&&!exemptOnly(item)).length;
  function hubCell(item){
   if(!item.hub)return '—';
   if(item.hub.kind==='excused')return 'Excused';
@@ -84,6 +91,7 @@
   return item.value===null?'N/A':String(item.value);
  }
  function doing(item){
+  if(exemptOnly(item))return 'preserve Exempt';
   if(item.action==='fill')return `enter ${item.value}`;
   if(item.action==='raise')return `raise to ${item.value}`;
   if(item.action==='keep')return `keep (${item.why})`;
@@ -130,7 +138,7 @@
    const target=M.target(message.target,C.IC_ORIGIN);
    if(location.href!==target.url)throw Error('destination_mapping_changed');
    await waitSurface();
-   const initial=read(true),io=ports({context:initial.snapshot.context});
+   const initial=read(true),io=ports(initial.snapshot);
    io.authorized=authorized;
    io.binding=async()=>{const s=surface();return {group:s.group,structure_id:/structureID\/(\d+)/.exec(new URL(s.path).pathname)?.[1],task:[...s.score.querySelectorAll('[aria-label]')].some(e=>e.getAttribute('aria-label')===`progressScore_${target.term_id}_${target.task_id}_${target.section_id}`)};};
    return M.run(message.list,target,io);
@@ -192,13 +200,14 @@
    try{plan=E.buildPlan(list,read(true).snapshot,column);}
    catch(error){status.textContent=say(error);go.hidden=true;confirm.disabled=true;return;}
    const c=plan.counts;
-   status.textContent=`${plan.section}: ${c.fill} blank → enter · ${c.raise} raise · ${c.keep} kept (IC same or higher) · ${c.leave} left for you.`;
+   const exemptions=plan.items.filter(exemptOnly).length,keptExempt=plan.items.filter(item=>item.action==='keep'&&exemptOnly(item)).length;
+   status.textContent=`${plan.section}: ${c.fill} blank → enter · ${c.raise} raise · ${c.keep-keptExempt} kept (IC same or higher)${exemptions?` · ${exemptions} Exempt preserved`:''} · ${leftForReview(plan)} left for you.`;
    go.textContent=plan.changes.length?`Enter ${plan.changes.length} score${plan.changes.length===1?'':'s'} and Save`:'Nothing to enter: tell the Hub this is checked';
    const items=[...plan.items].sort((a,b)=>ORDER[a.action]-ORDER[b.action]||a.name.localeCompare(b.name));
    body.append(node('p',{style:'margin:4px 0;color:#445'},list.status_text),
     node('table',{style:'width:100%;border-collapse:collapse;margin:8px 0'},
      node('tr',{},['Student','IC now','Hub','Helper will'].map(h=>node('th',{style:'text-align:left;border-bottom:1px solid #ccd;padding:3px 6px'},h))),
-     items.map(item=>node('tr',{style:['fill','raise'].includes(item.action)?'background:#eef7f0':item.action==='leave'?'background:#fff6e5':''},
+     items.map(item=>node('tr',{style:['fill','raise'].includes(item.action)?'background:#eef7f0':item.action==='leave'&&!exemptOnly(item)?'background:#fff6e5':''},
       [item.name,item.other??shown(item.current),hubCell(item),doing(item)].map(t=>node('td',{style:'padding:3px 6px;border-bottom:1px solid #eef'},t))))),
     node('p',{style:'margin:6px 0;color:#445'},'The helper keeps the higher score: it fills blanks and raises lower scores, never lowers one, and leaves IC flags alone. After Save it reloads the assignment and checks every score.'));
   }
@@ -213,15 +222,17 @@
    catch{run={outcome:'uncertain',code:'save_unconfirmed',certain:false,counts:{filled:0,raised:0,kept:current.counts.keep,left:current.counts.leave,not_saved:0},failed:[],unexpected:[]};}
    const n=run.counts;
    status.textContent={
-    entered:`Saved and checked after reloading: ${n.filled} entered, ${n.raised} raised. ${n.left} left for you (listed below).`,
-    checked:'Nothing needed entering: IC already has these scores or higher.',
+    entered:`Saved and checked after reloading: ${n.filled} entered, ${n.raised} raised. ${leftForReview(current)} left for you (listed below).`,
+    checked:'Nothing needed entering: eligible IC scores already match or are higher; Exempt flags are preserved.',
     partial:`Saved, but after reloading ${run.failed.length?`these didn’t match: ${run.failed.join('; ')}. `:''}${run.unexpected.length?`These changed though the helper didn’t touch them: ${run.unexpected.join('; ')}. `:''}Check them in IC. Reviewing again enters only what’s still missing.`,
     uncertain:'Stopped after clicking Save; the helper couldn’t confirm what IC saved. Reload this assignment in IC and check it before trying again.',
    }[run.outcome]||(run.code==='ic_changed'?'IC changed since this review, so nothing was typed. Click Review again.'
     :run.code==='ic_unreadable'?'The assignment couldn’t be read, so nothing was typed. Click Review again.'
     :'Stopped before saving: nothing was saved. Reload this assignment in IC to clear what the helper typed, then review again.');
    if(['entered','checked','partial','uncertain'].includes(run.outcome)){
-    try{await ask('result',{result:E.hubResult(current,run,title)});}
+    // Manual receipts report rows needing attention. Morning receipts retain
+    // their separate Exempt reason count for the scheduled summary.
+    try{await ask('result',{result:E.hubResult(current,{...run,counts:{...run.counts,left:leftForReview(current)}},title)});}
     catch{status.textContent+=' (The Hub couldn’t be told; click “I entered these in IC” there yourself when every section is done.)';}
    }
    working=false;again.disabled=false;close.disabled=false;select.disabled=false;radios.forEach(r=>{r.disabled=false;});go.hidden=true;

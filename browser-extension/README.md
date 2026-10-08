@@ -1,6 +1,6 @@
 # Signed-in school browser companion ("Chrome helper")
 
-## Weekday batch, current IC roster and missing-work zeros (0.5.14)
+## Weekday batch, current IC roster and missing-work zeros (0.5.15)
 
 The opted-in weekday run processes all exact mapped assignments in one batch,
 without an assignment-by-assignment approval popup. It fills blank scores and
@@ -14,6 +14,11 @@ The IC assignment roster defines the helper's students. Hub-only names are
 omitted; current IC students without a safe Hub identity match remain held.
 Exempt-only IC flags are already resolved and do not create a follow-up item.
 Receipts include the class and week alongside each assignment needing attention.
+The native entry port also accepts the planner's explicit missing-work zero,
+preserving the `Missing` flag through Save and readback. Changed flags, positive
+scores with flags and other flag combinations remain held. Manual reviews label
+Exempt-only rows as preserved and exclude them from counts needing attention;
+scheduled receipts retain their separate exemption count.
 
 This Chrome/Edge extension enters grades in Infinite Campus from the teacher's
 own signed-in school browser. Since 0.3.0 its main job is the Teaching Hub
