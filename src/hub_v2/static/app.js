@@ -1529,11 +1529,11 @@ function renderRoutine() {
   $('routine-body').replaceChildren(el('section', {class: 'routine routine-morning'},
     el('h2', {text: 'Morning score check'}),
     el('ol', {},
-      el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. In school Chrome, open the Teaching Hub and Infinite Campus, signed in, with the IC tab in front.'),
-      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled check prepares the student-by-student review in the IC helper.'),
-      el('li', {}, el('strong', {text: 'Before 7:00.'}), ' Review the class, assignment, score column, proposed increases and held rows. Select only the scores you approve, then choose Enter and Save.'),
+      el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
+      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, then verified submission tidy finishes before score entry.'),
+      el('li', {}, el('strong', {text: 'At or after 7:00.'}), ' With weekday entry enabled, the Chrome helper processes mapped assignments across classes, fills blanks and raises lower scores only, then saves, reloads and verifies. Review the gradebook afterward; adjust any score that needs correction.'),
     ),
-    el('p', {class: 'muted', text: 'The helper reloads IC and checks saved scores. A prepared review alone is not proof that scores were saved.'}),
+    el('p', {class: 'muted', text: 'An enabled schedule, ready helper or attempted run is not proof of saved grades. Confirm the helper receipt and IC readback. If a save or readback is uncertain, stop further writes and inspect the named assignment in IC before clearing the recovery block.'}),
     helperLine()));
 }
 
