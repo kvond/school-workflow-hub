@@ -701,6 +701,8 @@ class FolderTests(unittest.TestCase):
                             "Copy of Untitled presentation - Sam")),
         }
         return [{"current": week == current, "week": week, "label": label, "found": subs,
+                 "teacher_signature": {work.deck_stem("▶ LIVE — Week 04 — Eyewitness Accounts (VT)")}
+                 if week == "Wk 04" else set(),
                  **dict(zip(("base", "words"), work.lesson_words(topic, label, [], subs)))}
                 for week, (topic, label, subs) in lessons.items()]
 

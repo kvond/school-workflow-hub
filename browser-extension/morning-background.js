@@ -126,6 +126,7 @@
    await publish(s,source);
    if(due.skip||s.blocked)return;
    if(s.report_pending||s.outbox.length){s.report.code='receipt_unconfirmed';s.report_pending=true;await write(s);return;}
+   let targetInProgress=null;
    try{
     if(pending.size)throw Error('panel_unusable');
     const catalog=await hub(source,'catalog');
@@ -162,6 +163,10 @@
      try{list=E.validateList(initial.list);targets=M.targets(list,initial.targets,C.IC_ORIGIN);}catch{summary.code='mapping_required';await publish(s,source);continue;}
      const results=[];
      for(const binding of targets){
+      targetInProgress={summary,binding};
+      // A completed earlier column does not complete the assignment. Persist
+      // the next column's in-progress state before its read-only preflight.
+      summary.code='running';await write(s);
       // Re-read source and exact mapping before each section/column.
       const fresh=await hub(source,'list',scope);
       if(fresh.code!=='ready'||!initial.revision||fresh.revision!==initial.revision||JSON.stringify(fresh.list.rows)!==JSON.stringify(list.rows)||JSON.stringify(fresh.targets)!==JSON.stringify(initial.targets))throw Error('source_changed');
@@ -188,12 +193,20 @@
       s.blocked=!good&&!untouched;await write(s);
       if(!good)throw Error('panel_unusable');
      }
+     targetInProgress=null;
      try{await hub(source,'record',{scope,list,targets,results});}catch{summary.code='receipt_unconfirmed';throw Error('receipt_unconfirmed');}
      await publish(s,source);
      if(s.report_pending)throw Error('receipt_unconfirmed');
     }
     s.report.code='finished';
-   }catch(e){s.report.code=code(e);const last=s.report.items.at(-1);if(last?.code==='running')last.code=s.report.code;}
+   }catch(e){
+    s.report.code=code(e);const last=s.report.items.at(-1);
+    if(last?.code==='running')last.code=s.report.code;
+    if(targetInProgress&&last===targetInProgress.summary){
+     const binding=targetInProgress.binding,context=` · ${String(binding.section).slice(0,100)} · ${binding.column==='notes'?'Notes':'Revision'}`;
+     last.assignment=last.assignment.slice(0,200-context.length)+context;
+    }
+   }
    await publish(s,source);
   }finally{active=null;sourceTab=null;busy=false;}
  }

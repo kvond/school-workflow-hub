@@ -663,6 +663,10 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
                 "Scoring is on hold until every submission in this week's turn-in folders "
                 "has a confirmed lesson match. Open Student work and resolve "
                 "‘Confirm these submission matches’."}
+    if upload.get("other_week"):
+        return {**out, "code": "source_week_mismatch", "problem":
+                "This submission names Week %s, outside this assignment's Agenda and teacher-deck weeks. "
+                "Confirm its lesson before scoring or entering a grade." % upload["other_week"]}
     if upload.get("mime") not in (SLIDES, google.PPTX):
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []

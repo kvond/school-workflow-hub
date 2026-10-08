@@ -422,29 +422,43 @@ def lesson_words(topic, label, deck_names, found):
     return base, base | {w for w, n in counts.items() if n >= 2 and 2 * n >= len(matching)}
 
 
-def wrong_form_moves(entries):
+def wrong_form_moves(entries, held=None):
     """[(from, submission, to)] for turn-ins that are another lesson's deck.
 
     entries are this week's Forms ("current": True) and nearby lessons' Forms,
-    each with its "base" and "words" (see lesson_words) and "found". A file
-    stays when its deck names anything of its own lesson; it moves only when it
-    shares a telling word with exactly one other lesson (a word two lessons
-    share tells nothing). Only moves out of this week's Forms, or into them,
-    are returned."""
+    each with its "base" and "words" (see lesson_words) and "found". Every
+    attached file must name one assignment's complete core title or match its
+    paired teacher deck. One shared word is not enough. Only moves out of this
+    week's Forms, or into them, are returned. Rejected former one-word imports
+    go to held, when supplied, so they stay visible and do not become zeros.
+    """
     seen = {}
     for entry in entries:
         for word in entry["words"]:
             seen[word] = seen.get(word, 0) + 1
     telling = [{w for w in entry["words"] if seen[w] == 1} for entry in entries]
+
+    def confirms(submission, entry):
+        files = submission.get("files") or []
+        signatures = entry.get("teacher_signature") or ()
+        return bool(files) and all(
+            any(len(known) >= 8 and known in deck_stem(file.get("name", "")) for known in signatures)
+            or _corroborates_assignment_title(file, entry)
+            for file in files)
+
     moves = []
     for i, entry in enumerate(entries):
         for submission in entry["found"]:
             words = {w for f in submission["files"] for w in deck_words(f.get("name"))}
-            if not words or words & (telling[i] | entry["base"]):
+            if not words or confirms(submission, entry):
                 continue
-            hits = [j for j, other in enumerate(telling) if j != i and words & other]
+            hits = [j for j, other in enumerate(entries) if j != i and confirms(submission, other)]
             if len(hits) == 1 and (entry["current"] or entries[hits[0]]["current"]):
                 moves.append((i, submission, hits[0]))
+            elif held is not None and not entry["current"]:
+                weak = [j for j, other in enumerate(telling) if j != i and words & other]
+                if len(weak) == 1 and entries[weak[0]]["current"]:
+                    held.append((i, submission, weak[0]))
     return moves
 
 
@@ -476,6 +490,12 @@ def nearby_forms(token, agenda, class_key, week_label, skip):
     out = []
     for label in labels[max(0, here - NEARBY_LESSONS):here] + labels[here + 1:here + 1 + NEARBY_LESSONS]:
         for lesson in agenda.lessons(class_key, label):
+            paired = [{"form_id": form["form_id"], "label": form["label"], "name": "", "signature": set()}
+                      for form in lesson["forms"] if form["form_id"]]
+            deck_ids = {m.group(1) for material in lesson["materials"]
+                        for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
+            names = [info.get("name", "") for info in _metadata(token, deck_ids).values()]
+            pair_decks(paired, [deck_stem(name) for name in names], names)
             for form in lesson["forms"]:
                 if not form["form_id"] or form["form_id"] in skip:
                     continue
@@ -486,7 +506,9 @@ def nearby_forms(token, agenda, class_key, week_label, skip):
                 skip = skip | {form["form_id"]}
                 out.append({"week": label, "label": form["label"],
                             "topic": lesson["topic"] if len(lesson["forms"]) == 1 else "",
-                            "form_id": form["form_id"], "found": found})
+                            "form_id": form["form_id"], "found": found,
+                            "teacher_signature": next((f.get("teacher_signature", set()) for f in paired
+                                                       if f["form_id"] == form["form_id"]), set())})
     return out
 
 
@@ -994,18 +1016,25 @@ def lesson_work(token, config, agenda, class_key, week_label):
         deck_ids = {m.group(1) for material in lesson["materials"]
                     for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
         titles = [info.get("name", "") for info in _metadata(token, deck_ids).values()]
+        lesson_forms = forms[index:index + len(lesson["forms"])]
+        for form in lesson_forms:
+            form.setdefault("signature", set())
+        pair_decks(lesson_forms, [deck_stem(title) for title in titles], titles)
         alone = len(lesson["forms"]) == 1  # a row's topic and decks describe its Forms only when it has one
-        for form in forms[index:index + len(lesson["forms"])]:
+        for form in lesson_forms:
             base, words = lesson_words(lesson["topic"] if alone else "", form["label"], titles if alone else [],
                                        form["found"])
             entries.append({"current": True, "form": form, "week": week_label, "label": form["label"],
-                            "found": form["found"], "base": base, "words": words})
+                            "found": form["found"], "base": base, "words": words,
+                            "teacher_signature": form.get("teacher_signature", set())})
         index += len(lesson["forms"])
     for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}):
         base, words = lesson_words(near["topic"], near["label"], [], near["found"])
         entries.append({"current": False, "week": near["week"], "label": near["label"], "found": near["found"],
-                        "base": base, "words": words})
-    for i, submission, j in wrong_form_moves(entries):
+                        "base": base, "words": words,
+                        "teacher_signature": near.get("teacher_signature", set())})
+    held_imports = []
+    for i, submission, j in wrong_form_moves(entries, held_imports):
         source, target = entries[i], entries[j]
         if submission not in source["found"]:
             continue
@@ -1016,6 +1045,11 @@ def lesson_work(token, config, agenda, class_key, week_label):
         if target["current"]:
             via = source["label"] if source["current"] else "%s · %s" % (source["week"], source["label"])
             target["found"].append(dict(submission, files=[dict(f, via=via) for f in submission["files"]]))
+    for i, submission, j in held_imports:
+        source, target = entries[i], entries[j]
+        target["form"].setdefault("held_elsewhere", []).append({
+            "submission": submission,
+            "to": "Submitted through %s · %s; lesson match not confirmed" % (source["week"], source["label"])})
 
     # Each Form's two weeks start at its first turn-in; files not sorted to a
     # Form use the week's earliest-opened one.
@@ -1043,7 +1077,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
                 m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted
             began = school_day(open_for["from"]) if open_for else None
             missing, excused = excuse_new(missing, began)
-            moved = form.get("moved_out", [])
+            moved = form.get("moved_out", []) + form.get("held_elsewhere", [])
             describe_files(token, [m["submission"] for m in moved], known)
             elsewhere = []
             for m in moved:

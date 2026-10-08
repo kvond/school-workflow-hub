@@ -10,16 +10,21 @@ function fixture(){
 }
 const settle=()=>new Promise(resolve=>setTimeout(resolve,15));
 function background(options={}){
- const state=options.stored||{morning_enabled:options.enabled??true},messages=[],listeners={},calls=[];
+ const state=options.stored||{morning_enabled:options.enabled??true},messages=[],listeners={},calls=[],writes=[];
  let probeFailures=options.probeFailures||0;
  let now=Date.parse('2026-10-01T11:00:00Z');const f=fixture();
+ const targets=[f.target];
+ if(options.secondColumn){
+  f.list.rows[0].revision=6;
+  targets.push({...f.target,column:'revision',assignment_id:'124',label_code:'S',url:f.target.url.replace('resource/123/','resource/124/').replace('objectSectionID/123/','objectSectionID/124/')});
+ }
  const tabs={1:{id:1,url:C.HUB_ORIGIN+'/v2/',status:'complete'},2:{id:2,url:C.IC_ORIGIN+'/campus/',status:'complete'}};
  const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,getManifest:()=>({version:'0.5.14'}),onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
  const invoke=(m,sender={id:'extension',url:runtime.getURL('popup.html')})=>new Promise(resolve=>{if(listeners.message(m,sender,resolve)!==true)resolve(undefined);});
  const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:new Map(),chrome:{runtime,
- storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>Object.assign(state,structuredClone(data)),setAccessLevel:async v=>{state.access=v.accessLevel;}}},
+ storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>{if(data.morning_state)writes.push(structuredClone(data.morning_state));Object.assign(state,structuredClone(data));},setAccessLevel:async v=>{state.access=v.accessLevel;}}},
  alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
- tabs:{query:async({url})=>Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1))),get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{Object.assign(tabs[id],v);calls.push('navigate');return tabs[id];},sendMessage:async(id,m)=>{
+ tabs:{query:async({url})=>Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1))),get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{calls.push('navigate');if(options.failSecondNavigation&&calls.filter(c=>c==='navigate').length===2)throw Error('panel_unusable');Object.assign(tabs[id],v);return tabs[id];},sendMessage:async(id,m)=>{
   messages.push(m);
   if(m.type==='morning_session'||m.type==='morning_probe'){
    if(options.signedOut)return {ok:false,code:'signed_out'};
@@ -29,7 +34,7 @@ function background(options={}){
    if(m.type==='morning_hub'){
    calls.push(m.action);
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
-   if(m.action==='list')return {ok:true,data:{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:[f.target]}};
+   if(m.action==='list')return {ok:true,data:{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
    if(m.action==='recovery'){if(options.recoveryFail)throw Error('unavailable');return {ok:true,data:{recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}}};}
    if(m.action==='report'&&options.disableDuringReport){state.morning_enabled=false;options.disableDuringReport=false;}
    return {ok:true,data:{recorded:true}};
@@ -37,15 +42,15 @@ function background(options={}){
   if(m.type==='morning_execute'){
    calls.push('execute');
    assert.equal(state.morning_state.blocked,true);assert.equal(state.morning_state.day,'2026-10-01');
-   const authorization=await invoke({type:'morning_authorize',run_id:m.run_id,nonce:m.nonce},{id:'extension',frameId:0,tab:{id:2},url:f.target.url});
+   const authorization=await invoke({type:'morning_authorize',run_id:m.run_id,nonce:m.nonce},{id:'extension',frameId:0,tab:{id:2},url:m.target.url});
    assert.equal(authorization.ok,true);
    if(options.lostResponse)throw Error('lost');
    if(options.readbackFailure)return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'uncertain',certain:false,counts:{filled:0,raised:0,kept:0,left:0,not_saved:0},at:new Date().toISOString()},code:'readback_incomplete',diagnostics:['Avery, Ann'],reasons:{missing:1}}};
-   return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'entered',certain:true,counts:{filled:1,raised:0,kept:0,left:0,not_saved:0},at:new Date().toISOString()},code:'read_back',reasons:{flag:0,excused:0,check:0,name:0,missing:0}}};
+   return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:m.target.column,section:m.target.section,ic_title:`Matter (${m.target.column==='notes'?'F':'S'})`,outcome:options.confirmedKept?'checked':'entered',certain:true,counts:{filled:options.confirmedKept?0:1,raised:0,kept:options.confirmedKept||0,left:0,not_saved:0},at:new Date().toISOString()},code:options.confirmedKept?'nothing_to_enter':'read_back',reasons:{flag:0,excused:0,check:0,name:0,missing:0}}};
   }
  }}}};
  vm.runInNewContext(source('morning-background.js'),context);
- return {state,calls,messages,invoke,tabs,advance:t=>{now=Date.parse(t);},alarm:async()=>{await settle();listeners.alarm({name:'hub-weekday-morning'});await settle();},listeners};
+ return {state,calls,messages,writes,invoke,tabs,advance:t=>{now=Date.parse(t);},alarm:async()=>{await settle();listeners.alarm({name:'hub-weekday-morning'});await settle();},listeners};
 }
 test('school-year skip rules apply only to the named 2026-27 exceptions',()=>{
  const weekOne={class:'biology',week:'Wk 01',form:'SYNTHETIC_FORM',assignment:'https://docs.google.com/forms/d/SYNTHETIC/viewform'};
@@ -185,6 +190,18 @@ test('navigation waits past a stale complete tab before probing the exact assign
  const h=background({staleNavigation:true});await h.alarm();await new Promise(r=>setTimeout(r,300));
  assert.equal(h.state.morning_state.report.code,'finished');
  assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+
+test('a later column preflight failure preserves confirmed counts and names the incomplete target',async()=>{
+ const h=background({secondColumn:true,failSecondNavigation:true,confirmedKept:23});await h.alarm();
+ const report=h.state.morning_state.report,item=report.items[0];
+ assert.equal(report.code,'panel_unusable');assert.equal(item.code,'panel_unusable');
+ assert.equal(item.assignment,'Matter · A4 Fictional · Revision');
+ assert.deepEqual([item.filled,item.raised,item.kept,item.left],[0,0,23,0]);
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.ok(!h.calls.includes('record'));
+ assert.ok(h.writes.some(write=>write.report?.items[0]?.code==='running'&&write.report.items[0].kept===23));
+ assert.equal(h.state.morning_state.blocked,false);assert.equal(h.state.morning_state.inflight,false);
+ const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,false);
 });
 
 test('a loading or inaccessible IC workspace frame is unavailable, not falsely signed out',()=>{

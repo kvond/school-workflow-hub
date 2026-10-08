@@ -1,6 +1,6 @@
 # Signed-in school browser companion ("Chrome helper")
 
-## Weekday batch, current IC roster and missing-work zeros (0.5.15)
+## Weekday batch, current IC roster and missing-work zeros (0.5.16)
 
 The opted-in weekday run processes all exact mapped assignments in one batch,
 without an assignment-by-assignment approval popup. It fills blank scores and
@@ -19,6 +19,9 @@ preserving the `Missing` flag through Save and readback. Changed flags, positive
 scores with flags and other flag combinations remain held. Manual reviews label
 Exempt-only rows as preserved and exclude them from counts needing attention;
 scheduled receipts retain their separate exemption count.
+If a later section or column fails, its receipt identifies that section and
+Notes/Revision, marks the assignment incomplete, and preserves earlier verified
+counts. Navigation checks and retry limits remain in force.
 
 This Chrome/Edge extension enters grades in Infinite Campus from the teacher's
 own signed-in school browser. Since 0.3.0 its main job is the Teaching Hub
