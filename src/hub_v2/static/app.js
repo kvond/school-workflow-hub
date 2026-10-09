@@ -350,13 +350,13 @@ function renderTodayFeedback(data) {
   const button = el('button', {type: 'button', class: 'primary'}, `Print all feedback — ${data.date}`);
   button.onclick = () => printTodayFeedback(data, status, button);
   const savedURL = packet?.status === 'ready' && /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(packet.pdf_url || '') ? packet.pdf_url : null;
-  panel.append(status,
+  panel.append(...[status,
     savedURL ? el('p', {}, link(`Open saved daily feedback — ${packet.date} (${packet.pages} pages)`, savedURL))
       : note(packet?.configured ? 'Printing saves this day’s all-class document. Verified student copies stay in their folders; existing class packets stay at class level.'
         : 'The daily document folder is not connected yet. The existing feedback can be printed as a preview.', 'info'),
     data.source_problem ? note('Current feedback sources could not be fully checked. This saved dated document remains available: ' + data.source_problem, 'info') : null,
     el('div', {class: 'action-row'}, button),
-    files.length ? el('details', {}, el('summary', {text: 'Feedback sources and student copies'}), list) : null);
+    files.length ? el('details', {}, el('summary', {text: 'Feedback sources and student copies'}), list) : null].filter(Boolean));
   return panel;
 }
 

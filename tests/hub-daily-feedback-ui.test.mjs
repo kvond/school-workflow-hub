@@ -37,7 +37,7 @@ test('Today links the actual saved feedback date across classes, with source lin
   const rendered = ui.renderTodayFeedback({date: DAY, requested_date: '2026-10-08', files, daily_packet: packet});
   assert.match(rendered.textContent, /Feedback dated 2026-10-07 · all classes/);
   assert.match(rendered.textContent, /Open saved daily feedback — 2026-10-07 \(7 pages\)/);
-  assert.doesNotMatch(rendered.textContent, /created 2026-10-08|printed successfully/);
+  assert.doesNotMatch(rendered.textContent, /created 2026-10-08|printed successfully|null|undefined/);
   assert.equal(walk(rendered).filter(node => node.tagName === 'button').length, 1);
   assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
   const details = walk(rendered).find(node => node.tagName === 'details');
