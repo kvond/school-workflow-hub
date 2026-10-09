@@ -126,7 +126,7 @@ def api(sub, query, config):
     sheet = {"title": agenda.title,
              "url": "https://docs.google.com/spreadsheets/d/%s/edit" % agenda.spreadsheet_id}
     if sub == "api/morning/catalog":
-        return morning.catalog(agenda)
+        return morning.catalog(agenda, config)
     if sub == "api/morning/reports":
         return {"reports": morning.reports(token, config), "recovery": recovery.records(token, config)}
     if sub == "api/morning/list":
@@ -170,7 +170,7 @@ def api(sub, query, config):
             raise ValueError('date')
         return native_feedback.today_files(token, config, date_et=_one(query, 'date', False) or None)
     if sub == "api/audit":
-        return audit.check(token, agenda, _class_key(_one(query, "class")))
+        return audit.check(token, agenda, _class_key(_one(query, "class")), config)
     if sub == "api/feedback/native":
         class_key, week, form_id = _form_args(query)
         found = lesson_work(token, config, agenda, class_key, week, fresh=True)
@@ -337,8 +337,15 @@ def record_post(environ, respond, config):
         if kind not in ledger.KINDS or not isinstance(note, str) or len(note) > 500:
             raise ValueError()
         token = google.service_token(config)
-        agenda = load_agenda(token, config)
-        context, _, _ = _form_context(token, config, agenda, class_key, week, form_id)
+        agenda = load_agenda(token, config, fresh=kind == "ic")
+        if kind == "ic":
+            policy = work.week_policy(config, agenda, class_key, week)
+            if policy.get("problem") or policy.get("excluded"):
+                return respond("409 Conflict", {"error": policy.get("problem") or policy["reason"],
+                                                "code": "coverage_incomplete" if policy.get("problem") else "excluded_week"})
+        context, _, found = _form_context(token, config, agenda, class_key, week, form_id)
+        if kind == "ic" and found.get("assessment_problem"):
+            return respond("409 Conflict", {"error": found["assessment_problem"], "code": "coverage_incomplete"})
         ledger.record(token, google.service_token(config, write=True), config, kind, context, note)
         return respond("200 OK", {"recorded": 1, "sheet": ledger.read(token, config, form_id)})
     except (ValueError, KeyError, TypeError, AttributeError):

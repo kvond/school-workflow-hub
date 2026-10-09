@@ -16,7 +16,7 @@ CODES = frozenset(("running", "finished", "no_scores", "mapping_required", "sign
     "read_back", "nothing_to_enter", "ic_changed", "ic_unreadable", "typing_stopped", "typed_values_differ",
     "save_unconfirmed", "readback_incomplete", "readback_mismatch", "destination_mapping_changed",
     "students_dont_match", "several_sections", "ic_not_saved", "unsupported_points_scale",
-    "unsupported_gradebook", "list_expired", "source_changed", "receipt_unconfirmed", "coverage_incomplete"))
+    "unsupported_gradebook", "list_expired", "source_changed", "receipt_unconfirmed", "coverage_incomplete", "excluded_week"))
 
 
 def bindings(config):
@@ -31,12 +31,21 @@ def bindings(config):
     return value
 
 
-def catalog(agenda):
+def catalog(agenda, config=None):
     today = ledger.eastern_now()[:10]
-    out, seen = [], set()
+    out, seen, exclusions, problems = [], set(), [], []
     for cls in agenda.classes:
         for week in agenda.week_options(cls):
             if not week.get("monday") or week["monday"] > today:
+                continue
+            policy = work.week_policy(config or {}, agenda, cls, week["label"])
+            if policy["problem"]:
+                problems.append(policy["problem"])
+                continue
+            if policy["excluded"]:
+                exclusions.append({"class": cls, "class_name": agenda.classes[cls]["name"],
+                                   "week": week["label"], "school_year": policy["school_year"],
+                                   "reason": policy["reason"]})
                 continue
             for lesson in agenda.lessons(cls, week["label"]):
                 for form in lesson["forms"]:
@@ -46,7 +55,7 @@ def catalog(agenda):
                         out.append({"class": cls, "class_name": agenda.classes[cls]["name"],
                                     "week": week["label"], "form": fid,
                                     "assignment": str(form.get("label") or lesson["topic"])[:200]})
-    return {"assignments": out, "roster": "unavailable",
+    return {"assignments": out, "exclusions": exclusions, "problems": list(dict.fromkeys(problems)), "roster": "unavailable",
             "roster_note": "IC is the roster source of truth. Roster sync is not connected; normal additions and departures are not student-work exceptions."}
 
 
@@ -59,9 +68,11 @@ def rows(form, scored, now):
     window = form.get("window")
     started = bool(window and (not window.get("from") or work.when(window["from"]) <= now))
     elsewhere = set()
+    accepted = set()
     for item in form.get("elsewhere", []):
         last, _, first = item.get("who", "").partition(",")
-        elsewhere.add(person({"last": last, "first": first, "section": item["section"]}))
+        (accepted if item.get("accepted_intake") else elsewhere).add(
+            person({"last": last, "first": first, "section": item["section"]}))
     result = {}
 
     def add(row, kind, notes=None, revision=None, reason=""):
@@ -87,6 +98,8 @@ def rows(form, scored, now):
             add(row, "none", reason="its two weeks haven't started")
         elif row.get("unsorted") or person(row) in elsewhere:
             add(row, "check", reason="submission needs review")
+        elif person(row) in accepted:
+            add(row, "none", reason="accepted through this Form for another assignment; no score inferred here")
         else:
             add(row, "zero", 0, 0)
     for row in form.get("excused", []):
@@ -95,6 +108,11 @@ def rows(form, scored, now):
 
 
 def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
+    policy = work.week_policy(config, agenda, cls, week)
+    if policy["problem"]:
+        return {"code": "coverage_incomplete", "problem": policy["problem"]}
+    if policy["excluded"]:
+        return {"code": "excluded_week", "problem": policy["reason"]}
     found = load_work(token, config, agenda, cls, week, fresh=True)
     forms = [(lesson, form) for lesson in found["lessons"] for form in lesson["forms"] if form["form_id"] == fid]
     if len(forms) != 1:

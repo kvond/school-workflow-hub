@@ -715,6 +715,17 @@ function renderPlans(data) {
 // ---------- Student work ----------
 const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}};
 const sourceMatchesHeld = () => !!work.data?.other_files?.length;
+function weekAssessmentHold(data = work.data) {
+  if (data?.assessment_problem) return 'This week’s submission route needs confirmation before scoring or IC entry.';
+  const policy = data?.week_policy;
+  if (policy?.problem) return 'This week’s assessment scope needs confirmation before scoring or IC entry.';
+  if (policy?.excluded === true) return recordProblem(policy.reason || 'This week was not assigned this school year.');
+  return '';
+}
+function omittedFormProblem(lesson, data = work.data) {
+  return data?.week_policy?.excluded === true && !data.week_policy.problem && !lesson.forms?.length
+    && lesson.problem === "This lesson has no Form link in its 'Turn it in' column.";
+}
 const SOURCE_MATCH_HOLD = 'Scoring and IC entry are on hold until every submission in this week’s turn-in folders has a confirmed lesson match. Resolve “Confirm these submission matches” below, then refresh Student work.';
 
 const studentRecords = {cls: null, seq: 0, data: null, readAt: 0};
@@ -786,7 +797,7 @@ function renderStudentRecords(data) {
     el('tbody', {}, data.students.map(student => {
       const folderURL = recordFolderURL(student.folder_url);
       return el('tr', {}, el('td', {text: student.name}), el('td', {text: student.section || '—'}),
-        el('td', {text: student.status === 'current' ? 'Current' : student.status === 'retained' ? 'Retained history' : student.status === 'identity_unverified' ? 'Filed by name · identity unverified' : student.status === 'unverified' ? 'Roster unverified' : 'Status unavailable'}),
+        el('td', {text: studentRecordStatus(student)}),
         el('td', {text: recordDate(student.latest_record_date)}),
         el('td', {}, folderURL ? link('Open folder', folderURL) : el('span', {class: 'muted', text: 'Folder unavailable'})));
     })))));
@@ -794,6 +805,15 @@ function renderStudentRecords(data) {
     el('summary', {text: filing.summary || 'Filing checks · records awaiting review'}),
     problems.length ? el('ul', {class: 'muted'}, [...new Set(problems.map(recordProblem))].map(text => el('li', {text}))) : null,
     filing.detail));
+}
+function studentRecordStatus(student) {
+  const roster = student.roster_status;
+  if (roster?.verified === true && roster.status === 'withdrawn' && roster.active === false)
+    return `Withdrawn${/^\d{4}-\d{2}-\d{2}$/.test(roster.end_date || '') ? ' · ' + recordDate(roster.end_date) : ''} · history retained`;
+  if (roster?.verified === true && roster.status === 'active' && roster.active === true) return 'Active in IC';
+  return student.status === 'current' ? 'Current' : student.status === 'retained' ? 'Retained history'
+    : student.status === 'identity_unverified' ? 'Filed by name · identity unverified'
+    : student.status === 'unverified' ? 'Roster unverified' : 'Status unavailable';
 }
 async function loadStudentRecords(fresh = false) {
   const panel = $('student-records');
@@ -884,7 +904,7 @@ function fileList(files) {
     link(f.shown || f.name, f.url),
     f.from_folder ? el('span', {class: 'badge', title: 'In the week’s turn-in folder but not in this Form’s responses', text: 'From turn-in folder'}) : null,
     f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
-    f.via ? el('span', {class: 'badge warn', title: 'This lesson’s deck, turned in through another lesson’s Form; it counts here', text: `Via ${f.via}`}) : null,
+    f.via ? el('span', {class: f.accepted_intake === true ? 'badge' : 'badge warn', title: 'This lesson’s deck, turned in through another lesson’s Form; it counts here', text: `Via ${f.via}`}) : null,
     f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
     f.late ? el('span', {class: 'badge warn', title: 'Turned in more than two weeks after this week — not graded', text: 'Late'}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
@@ -928,7 +948,7 @@ function scoreCells(row, scores) {
 }
 
 async function scoreForm(form) {
-  if (sourceMatchesHeld()) return;
+  if (sourceMatchesHeld() || weekAssessmentHold()) return;
   const rows = form.students.filter(r => r.files.length);
   const scores = work.scores[form.form_id] = work.scores[form.form_id] || {};
   const queue = rows.filter(r => !scores[scoreFile(r).id]);
@@ -937,7 +957,7 @@ async function scoreForm(form) {
   work.ui[form.form_id] = {...work.ui[form.form_id], progress: `Scoring ${done} of ${rows.length}…`};
   renderWork();
   const worker = async () => {
-    while (queue.length && seq === work.seq && !sourceMatchesHeld()) {
+    while (queue.length && seq === work.seq && !sourceMatchesHeld() && !weekAssessmentHold()) {
       const id = scoreFile(queue.shift()).id;
       try {
         scores[id] = await getJSON(`api/score?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}&file=${encodeURIComponent(id)}`);
@@ -1091,6 +1111,7 @@ const markDate = mark => mark ? when(mark.at) : '';
 // are entered (the "I entered these in IC" note is dated after the close),
 // late work isn't graded, so there's nothing more to enter.
 function icStatus(form) {
+  if (weekAssessmentHold()) return {kind: 'held', text: weekAssessmentHold()};
   if (sourceMatchesHeld()) return {kind: 'held', text: SOURCE_MATCH_HOLD};
   if (!form.window) return null;
   const sheet = work.marks[form.form_id];
@@ -1116,6 +1137,7 @@ function marksLine(form) {
 }
 
 function icPanel(form, scores, lesson) {
+  if (weekAssessmentHold()) return el('div', {class: 'ic-panel'}, note(weekAssessmentHold(), 'info'));
   if (sourceMatchesHeld()) return el('div', {class: 'ic-panel'}, note(SOURCE_MATCH_HOLD, 'info'));
   const section = work.section;
   const ui = work.ui[form.form_id] || {};
@@ -1123,7 +1145,7 @@ function icPanel(form, scores, lesson) {
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
   const closed = closedFor(form);
   const inSection = r => section === 'all' || r.section === section;
-  const elsewhere = elsewhereKeys(form);
+  const elsewhere = elsewhereKeys(form), accepted = acceptedIntakeKeys(form);
   const all = [
     // A score the Hub isn't sure of (the copy lacks many of the deck's codes) is
     // never entered automatically: the teacher checks it by hand.
@@ -1134,7 +1156,8 @@ function icPanel(form, scores, lesson) {
     // off the list (and named below) so a 0 isn't entered for them unchecked.
     // A student whose only turn-in was another lesson's deck (through this Form) is
     // checked by hand, not given a 0 unseen.
-    ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)].filter(inSection)
+    ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)]
+      .filter(r => inSection(r) && (!accepted.has(personKey(r)) || elsewhere.has(personKey(r))))
       .map(r => elsewhere.has(personKey(r)) ? {r, s: null, other: true, show: ['check by hand', 'check by hand']}
         : {r, s: null, zero: true, show: shown(null)}) : []),
     // Added to the roster after this assignment began: excused, never a 0.
@@ -1212,7 +1235,13 @@ const fold = value => String(value || '').normalize('NFKD').replace(/[\u0300-\u0
 const personKey = r => `${fold(r.last)}|${fold(r.first)}|${r.section}`;
 const oneLine = (value, max = 200) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
 function elsewhereKeys(form) {
-  return new Set((form.elsewhere || []).map(e => {
+  return new Set((form.elsewhere || []).filter(e => e.accepted_intake !== true).map(e => {
+    const [last, ...first] = String(e.who).split(',');
+    return personKey({last, first: first.join(','), section: e.section});
+  }));
+}
+function acceptedIntakeKeys(form) {
+  return new Set((form.elsewhere || []).filter(e => e.accepted_intake === true).map(e => {
     const [last, ...first] = String(e.who).split(',');
     return personKey({last, first: first.join(','), section: e.section});
   }));
@@ -1221,9 +1250,9 @@ function elsewhereKeys(form) {
 // Every roster student of the class (all sections) with what to enter, the
 // same rules as the table above.
 function helperRows(form) {
-  if (sourceMatchesHeld()) return [];
+  if (sourceMatchesHeld() || weekAssessmentHold()) return [];
   const scores = work.scores[form.form_id] || {};
-  const started = startedFor(form), elsewhere = elsewhereKeys(form);
+  const started = startedFor(form), elsewhere = elsewhereKeys(form), accepted = acceptedIntakeKeys(form);
   const rows = new Map();
   const add = (r, kind, notes = null, revision = null, reason = '') => {
     const key = personKey(r);
@@ -1243,6 +1272,7 @@ function helperRows(form) {
     if (!started) add(r, 'none', null, null, 'its two weeks haven’t started');
     else if (r.unsorted) add(r, 'check', null, null, 'submission awaiting a confirmed lesson match; scoring held');
     else if (elsewhere.has(personKey(r))) add(r, 'check', null, null, 'turned in another lesson’s deck through this Form');
+    else if (accepted.has(personKey(r))) add(r, 'none', null, null, 'accepted intake for another assignment; not assessed here');
     else add(r, 'zero', 0, 0);
   }
   for (const r of form.excused || []) add(r, 'excused', null, null, 'new student');
@@ -1269,6 +1299,7 @@ function formName(form, lesson) {
 
 const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
   coverage_incomplete: SOURCE_MATCH_HOLD,
+  assessment_scope_held: 'This week is not eligible for scoring or IC entry. Check its assessment scope note.',
   helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'};
 const helperError = code => HELPER_ERRORS[code]
   || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
@@ -1284,6 +1315,7 @@ async function sendToHelper(form, lesson) {
 
 // Hand one assignment's list to the helper; returns the helper's code.
 async function sendList(form, lesson) {
+  if (weekAssessmentHold()) return 'assessment_scope_held';
   if (sourceMatchesHeld()) return 'coverage_incomplete';
   const rows = helperRows(form);
   const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
@@ -1311,7 +1343,7 @@ async function sendList(form, lesson) {
 // the helper's Enter. It never types scores.
 function weekToEnter() {
   const data = work.data;
-  if (!data || sourceMatchesHeld()) return {ready: [], waiting: false};
+  if (!data || sourceMatchesHeld() || weekAssessmentHold()) return {ready: [], waiting: false};
   const all = data.lessons.flatMap(lesson => lesson.forms.map(form => ({form, lesson})))
     .filter(({form}) => form.form_id && form.window && icStatus(form)?.kind !== 'final');
   const waiting = all.some(({form}) => form.students.length && (!work.scores[form.form_id] || work.ui[form.form_id]?.progress));
@@ -1345,6 +1377,7 @@ STEPS
 }
 
 async function sendWeek(status, promptBox) {
+  if (weekAssessmentHold()) { status.textContent = weekAssessmentHold(); return; }
   if (sourceMatchesHeld()) { status.textContent = SOURCE_MATCH_HOLD; return; }
   const {ready} = weekToEnter();
   status.textContent = ' Sending to the Chrome helper…';
@@ -1526,7 +1559,8 @@ function renderForm(form, lesson) {
   if (!form.form_id || (form.problem && !form.students.length)) return box;
   const matched = form.students.filter(r => r.matched && inSection(r));
   const unmatched = form.students.filter(r => !r.matched);
-  const missing = form.missing.filter(inSection);
+  const accepted = acceptedIntakeKeys(form), elsewhere = elsewhereKeys(form);
+  const missing = form.missing.filter(r => inSection(r) && (!accepted.has(personKey(r)) || r.unsorted || elsewhere.has(personKey(r))));
   const late = (form.late || []).filter(r => !r.matched || inSection(r));
   const lateMatched = late.filter(r => r.matched).length;
   box.append(el('p', {class: 'summary'},
@@ -1540,21 +1574,24 @@ function renderForm(form, lesson) {
     box.append(el('p', {class: 'muted', text: `Open ${form.window.opened} until ${form.window.label}: two weeks from the first turn-in, never starting before the lesson’s week. Anything later is Late and isn’t graded.`}));
   }
   if (form.elsewhere?.length) {
-    // Another lesson's deck turned in through this Form (or left in this week's folder): not counted here.
-    box.append(el('div', {class: 'note info'},
-      el('strong', {text: `Not counted here (${form.elsewhere.length}): another lesson’s deck. `}),
-      form.elsewhere.map((e, i) => [i ? '; ' : '', `${e.who}${e.section ? ` (${e.section})` : ''} — `,
+    for (const accepted of [true, false]) {
+      const entries = form.elsewhere.filter(e => (e.accepted_intake === true) === accepted);
+      if (!entries.length) continue;
+      box.append(el('div', {class: 'note info'},
+      el('strong', {text: accepted ? `Accepted intake (${entries.length}): ` : `Not counted here (${entries.length}): another lesson’s deck. `}),
+      entries.map((e, i) => [i ? '; ' : '', `${e.who}${e.section ? ` (${e.section})` : ''} — `,
         e.url ? link(e.file || 'file', e.url) : e.file,
-        e.source === 'folder' ? ` is in this week’s folder but belongs to ${e.to}: move it to that week’s 📥 folder`
+        !accepted && e.source === 'folder' ? ` is in this week’s folder but belongs to ${e.to}: move it to that week’s 📥 folder`
           : ` counts for ${e.to}`]).flat(),
       '.'));
+    }
   }
   const marks = marksLine(form);
   if (marks) box.append(marks);
   const standing = icStatus(form);
   if (standing) box.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
-  const scores = work.scores[form.form_id];
+  const scores = weekAssessmentHold() ? null : work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress && !sourceMatchesHeld();
   box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
@@ -1611,7 +1648,7 @@ function renderForm(form, lesson) {
       excused.map(m => `${m.last}, ${m.first} (added ${m.added})`).join('; '),
       '. They joined after this assignment began, so it isn’t counted for them.'));
   }
-  if (missing.length) {
+  if (missing.length && !weekAssessmentHold()) {
     const held = sourceMatchesHeld() || missing.some(m => m.unsorted);
     box.append(el('div', {class: 'missing'}, el('h4', {text: held ? `No confirmed submission for this assignment (${missing.length}) — scoring held`
       : closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
@@ -1626,6 +1663,7 @@ function renderWork() {
   const data = work.data;
   if (!data) return;
   const parts = data.problems.map(p => note(p));
+  if (weekAssessmentHold(data)) parts.push(note(weekAssessmentHold(data), 'info'));
   if (!data.roster_size) parts.push(note('No roster students were found for this class, so nobody can be listed as missing.'));
   if (data.folders?.length) {
     parts.push(el('p', {class: 'muted'}, `Read the Form uploads and ${data.folder_files} file(s) in `,
@@ -1641,7 +1679,7 @@ function renderWork() {
   }
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week})));
-    if (lesson.problem) parts.push(note(lesson.problem));
+    if (lesson.problem && !omittedFormProblem(lesson, data)) parts.push(note(lesson.problem));
     lesson.forms.forEach(form => parts.push(renderForm(form, lesson)));
   }
   const other = (data.other_files || []).filter(r => !r.matched || work.section === 'all' || r.section === work.section);
@@ -1782,6 +1820,7 @@ function studentHistory(weekResults, section) {
     return people.get(key);
   };
   for (const {week, data} of weekResults) {
+    if (weekAssessmentHold(data)) continue;
     for (const lesson of data.lessons) {
       for (const form of lesson.forms) {
         if (!startedFor(form) || seen.has(form.form_id)) continue;  // not begun, or already counted from another week
@@ -1794,7 +1833,9 @@ function studentHistory(weekResults, section) {
           const p = person(r); p.total += 1;
           p.onTime.push(Math.max(0, Math.floor((new Date(r.submitted_at) - opened) / DAY)));
         }
-        for (const r of [...form.missing, ...form.late.filter(r => r.matched)].filter(inSection)) {
+        const accepted = acceptedIntakeKeys(form), elsewhere = elsewhereKeys(form);
+        for (const r of [...form.missing, ...form.late.filter(r => r.matched)]
+          .filter(r => inSection(r) && (!accepted.has(personKey(r)) || r.unsorted || elsewhere.has(personKey(r))))) {
           const p = person(r); p.total += 1;
           p.missing.push({...item, late: Boolean(r.submitted_at)});
         }
@@ -1911,6 +1952,7 @@ function linkCheckResult(name, data) {
   };
   return [
     data.problem ? note(data.problem) : null,
+    data.exclusions?.length ? el('p', {class: 'muted', text: data.exclusions.map(e => `${e.week} · ${e.topic}: ${recordProblem(e.reason)}`).join(' ')}) : null,
     problems.length
       ? el('ul', {class: 'link-flags'}, problems.map(f => el('li', {}, el('strong', {text: `${f.week} · ${f.topic}: `}), f.message)))
       : el('p', {class: 'ok', text: `✓ No other Agenda link problems found for ${name}.`}),
@@ -1926,7 +1968,8 @@ function linkCheckResult(name, data) {
       el('div', {class: 'table-wrap'}, el('table', {},
         el('thead', {}, el('tr', {}, ['Week', 'Topic', 'Turn-in Forms', 'Decks', 'Release'].map(h => el('th', {text: h})))),
         el('tbody', {}, data.rows.map(r => el('tr', {}, el('td', {text: r.week}), el('td', {text: r.topic}),
-          el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ') || '—'}),
+          el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ')
+            || (r.week_policy?.excluded === true && !r.week_policy.problem ? 'Not assigned this school year' : '—')}),
           el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}),
           el('td', {text: releaseText(r.release)})))))))];
 }

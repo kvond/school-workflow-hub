@@ -24,6 +24,7 @@ from datetime import date
 from school_workflow_hub.workflows.deck_release import pptx_slide_texts, validate_release
 from . import feedback as feedback_module
 from . import google
+from . import work
 from .agenda import build_lesson, form_link, links, norm
 
 DECK = re.compile(r"/presentation/d/([A-Za-z0-9_-]{20,})")
@@ -97,7 +98,7 @@ def _published(token, form_ids):
         return dict(zip(ids, pool.map(fetch, ids)))
 
 
-def check(token, agenda, class_key):
+def check(token, agenda, class_key, config=None):
     """{"class", "rows": [...], "flags": [{week, row, kind, message}]} for one class tab."""
     entry = agenda.classes[class_key]
     layout, cells = entry["layout"], entry["cells"]
@@ -120,7 +121,8 @@ def check(token, agenda, class_key):
                             decks[0]["id"] if decks else "")
         rows.append({"row": row, "week": label, "topic": topic, "visible": _forms_in(cell("turnin")),
                      "hidden": _forms_in(cell("turnin_url")), "second": _forms_in(cell("turnin2")),
-                     "decks": decks, "release_deck": release_deck})
+                     "decks": decks, "release_deck": release_deck,
+                     "week_policy": work.week_policy(config or {}, agenda, class_key, label)})
     ids = [f["form_id"] for r in rows for f in r["visible"] + r["hidden"] + r["second"] if f["form_id"]]
     ids += [d["id"] for r in rows for d in r["decks"]]
     titles = _titles(token, ids) if ids else {}
@@ -160,7 +162,7 @@ def check(token, agenda, class_key):
     for r in rows:
         number = _week(r["week"])
         forms = r["visible"] + [f for f in r["second"] if f["form_id"] not in {v["form_id"] for v in r["visible"]}]
-        if not forms and not r["hidden"]:
+        if not forms and not r["hidden"] and not r["week_policy"]["excluded"]:
             flag(r, "no-form", "No Turn-in Form.")
         seen = {f["form_id"] for f in forms if f["form_id"]}
         for f in forms + [f for f in r["hidden"] if not f["form_id"] or f["form_id"] not in seen]:
@@ -207,7 +209,7 @@ def check(token, agenda, class_key):
             pub = match.group(1) if match else ""
         return {"where": where, "label": f["label"], "form_id": f["form_id"] or "", "published_id": pub,
                 "title": title if isinstance(title, str) else "", "student_title": student_title}
-    summary = [{"week": r["week"], "topic": r["topic"],
+    summary = [{"week": r["week"], "topic": r["topic"], "week_policy": r["week_policy"],
                 "release": releases.get(r["release_deck"]) if r["release_deck"] else None,
                 "forms": [form_row(f, "Turn it in") for f in r["visible"]]
                 + [form_row(f, "2nd turn it in") for f in r["second"]]
@@ -216,4 +218,9 @@ def check(token, agenda, class_key):
                            "title": titles.get(d["id"]) if isinstance(titles.get(d["id"]), str) else ""}
                           for d in r["decks"]]}
                for r in rows]
-    return {"class": entry["name"], "rows": summary, "flags": flags, "problem": None}
+    exclusions = [{"week": r["week"], "row": r["row"], "topic": r["topic"],
+                   "school_year": r["week_policy"]["school_year"], "reason": r["week_policy"]["reason"]}
+                  for r in rows if r["week_policy"]["excluded"]]
+    problems = list(dict.fromkeys(r["week_policy"]["problem"] for r in rows if r["week_policy"]["problem"]))
+    return {"class": entry["name"], "rows": summary, "flags": flags, "exclusions": exclusions,
+            "problem": " ".join(problems) or None}

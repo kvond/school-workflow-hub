@@ -14,6 +14,29 @@ registration writer, grading operation or model call. No real stopgap rows are
 removed and no test Form is submitted. Preserve the Drive recovery priority in
 START_HERE before any separately authorized activation.
 
+## V2 teacher-approved intake and school-year exclusions
+
+An explicitly approved alternate intake does not change an assignment's Form
+identity. `HUB_ACCEPTED_FORM_ROUTES` is a JSON list of exact `school_year`,
+`class_key`, `week`, `source_form_id` and `assignment_form_id` values. Both Forms
+must still be uniquely registered in that Agenda week. Only the existing unique
+deck match can route work; mixed or unknown attachments remain unresolved. The
+original Form, response ID and submission time stay on each source file. The
+source list shows accepted intake as information and infers no source-assignment
+zero from it. Acceptance is directional and expires outside the named year.
+
+`HUB_WEEK_EXCLUSIONS` is a JSON list of `school_year`, `class_key`, `weeks` and
+`reason` values. For example, a fictional entry may name `2026-27`, `biology`,
+`["Wk 01"]` and the teacher's reason. Week labels must exactly match the Agenda;
+deck week numbers and cycle numbers are not aliases. The Agenda's Monday proves
+the academic year, with July beginning the year. Missing or ambiguous dates and
+invalid configuration hold assessment rather than silently permitting it.
+
+An effective exclusion removes that week from morning assessment, blocks manual
+scoring before reading decks and prevents inferred missing-work zeros. It keeps
+source discovery, historical filing, saved grades and feedback intact. No weeks
+are excluded by default; a future-use Form alone does not activate an exclusion.
+
 ## Sources and matching
 
 Read complete, bounded response pages from the verified Form for each selected

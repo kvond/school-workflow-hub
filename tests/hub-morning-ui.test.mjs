@@ -153,3 +153,69 @@ test('unresolved submission matches prevent score requests and IC handoff of cac
   assert.equal(resumed[0].notes, 8);
   assert.equal(resumed[0].revision, 9);
 });
+
+test('accepted intake is not a source-assignment zero but unresolved evidence still requires a check', () => {
+  const {context} = boot([]);
+  const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
+  vm.runInContext(studentWork + '\nfunction helperProgress() { return null; }\nglobalThis.client = {work, helperRows, icPanel};', context);
+  const {client} = context;
+  const person = {first: 'Ann', last: 'Avery', section: 'A4 Biology'};
+  const intake = {who: 'Avery, Ann', section: person.section, accepted_intake: true, to: 'Other lesson — Turn in'};
+  const form = {form_id: 'FICTIONALFORM123', window: {started: true}, students: [], missing: [person], late: [], excused: [], elsewhere: [intake]};
+  client.work.data = {other_files: [], lessons: [{forms: [form]}]};
+  client.work.section = 'all'; client.work.scores = {[form.form_id]: {}};
+  assert.equal(client.helperRows(form)[0].kind, 'none');
+  assert.equal(client.helperRows(form)[0].notes, null);
+  assert.match(client.icPanel(form, {}, {}).textContent, /No scores to enter yet/);
+  form.missing[0] = {...person, unsorted: true};
+  assert.equal(client.helperRows(form)[0].kind, 'check');
+  form.missing[0] = person;
+  form.elsewhere.push({...intake, accepted_intake: false});
+  assert.equal(client.helperRows(form)[0].kind, 'check');
+  assert.match(client.icPanel(form, {}, {}).textContent, /check by hand/);
+});
+
+test('excluded or uncertain assessment scope never scores or sends cached results or missing zeros', async () => {
+  const {context} = boot([]), requests = [], messages = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.window = {postMessage: message => messages.push(message)};
+  const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
+  vm.runInContext(studentWork + '\nfunction renderWork() {}\nglobalThis.client = {work, scoreForm, helperRows, sendList, weekToEnter, sendWeek, icPanel, icStatus};', context);
+  const {client} = context;
+  const form = {form_id: 'FICTIONALFORM123', window: {started: true}, students: [{matched: true, first: 'Ann', last: 'Avery', section: 'A4 Biology', files: [{id: 'FICTIONALFILE123'}]}],
+    missing: [{first: 'Ben', last: 'Brook', section: 'A4 Biology'}], late: [], excused: [], elsewhere: []};
+  client.work.scores = {[form.form_id]: {FICTIONALFILE123: {notes_score: 9, revision_score: 10}}};
+  for (const policy of [{excluded: true, reason: 'This lesson was not assigned this school year.'}, {excluded: false, problem: 'scope_unconfirmed'}]) {
+    client.work.data = {other_files: [], week_policy: policy, lessons: [{forms: [form]}]};
+    await client.scoreForm(form);
+    assert.equal(client.helperRows(form).length, 0);
+    assert.equal(client.weekToEnter().ready.length, 0);
+    assert.equal(await client.sendList(form, {}), 'assessment_scope_held');
+    assert.equal(client.icStatus(form).kind, 'held');
+    assert.doesNotMatch(client.icPanel(form, client.work.scores[form.form_id], {}).textContent, /Enter these scores|Notes \/10/);
+    const status = new Element('span'); await client.sendWeek(status, new Element('details'));
+    assert.match(status.textContent, /not assigned|assessment scope/);
+  }
+  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+  client.work.data = {other_files: [], assessment_problem: 'The configured alternate route is stale.', lessons: [{forms: [form]}]};
+  assert.equal(client.helperRows(form).length, 0);
+  assert.equal(await client.sendList(form, {}), 'assessment_scope_held');
+  assert.match(client.icPanel(form, {}, {}).textContent, /submission route needs confirmation/);
+});
+
+test('link audit explains excluded weeks without a missing Form warning', () => {
+  const {context} = boot([]);
+  const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
+  const audit = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
+  vm.runInContext(studentWork + '\n' + audit + '\nglobalThis.auditUI = {linkCheckResult, omittedFormProblem};', context);
+  const policy = {excluded: true, reason: 'This lesson was not assigned this school year.'};
+  const result = context.auditUI.linkCheckResult('Biology', {flags: [], exclusions: [{week: 'Wk 01', topic: 'Ecosystems', reason: policy.reason}],
+    rows: [{week: 'Wk 01', topic: 'Ecosystems', forms: [], decks: [], week_policy: policy}]});
+  const text = result.filter(Boolean).map(node => node.textContent).join(' ');
+  assert.match(text, /Wk 01 · Ecosystems: This lesson was not assigned this school year/);
+  assert.match(text, /Not assigned this school year/);
+  assert.doesNotMatch(text, /no Google Form is linked|needs attention/);
+  const lesson = {forms: [], problem: "This lesson has no Form link in its 'Turn it in' column."};
+  assert.equal(context.auditUI.omittedFormProblem(lesson, {week_policy: policy}), true);
+  assert.equal(context.auditUI.omittedFormProblem({...lesson, problem: 'The private folder is unavailable.'}, {week_policy: policy}), false);
+});

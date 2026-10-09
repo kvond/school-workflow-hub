@@ -25,6 +25,7 @@ class's roster, or on no roster at all, is flagged, and the Rosters sheet's
 last update is shown.
 """
 import os
+import json
 import re
 import threading
 import time
@@ -82,7 +83,7 @@ def named_week(file_name, lesson_week):
     return weeks[0]
 
 
-def submissions(responses):
+def submissions(responses, source_form_id=None):
     found = []
     for response in responses:
         files, typed = [], []
@@ -90,7 +91,11 @@ def submissions(responses):
             for upload in ((answer.get("fileUploadAnswers") or {}).get("answers") or []):
                 if upload.get("fileId"):
                     files.append({"id": upload["fileId"], "name": upload.get("fileName", ""),
-                                  "mime": upload.get("mimeType", "")})
+                                  "mime": upload.get("mimeType", ""), **({
+                                      "source_form_id": source_form_id,
+                                      "source_response_id": response.get("responseId", ""),
+                                      "source_submitted_at": response.get("lastSubmittedTime") or response.get("createTime") or ""
+                                  } if source_form_id else {})})
             for value in ((answer.get("textAnswers") or {}).get("answers") or []):
                 value = str(value.get("value", "")).strip()
                 if value and len(value) <= 120:
@@ -379,6 +384,101 @@ def week_monday(agenda, week_label):
     return date.fromisoformat(week["monday"]) if week else None
 
 
+def _school_year(agenda, week_label):
+    weeks = [w for w in getattr(agenda, "weeks", []) if w.get("label") == week_label]
+    if len(weeks) != 1 or not weeks[0].get("monday"):
+        return None
+    monday = date.fromisoformat(weeks[0]["monday"])
+    first = monday.year if monday.month >= 7 else monday.year - 1
+    return "%d-%02d" % (first, (first + 1) % 100)
+
+
+def _scoped_config(config, name, required):
+    raw = config.get(name)
+    if not raw:
+        return []
+    try:
+        values = json.loads(raw)
+        if (not isinstance(values, list) or len(values) > 500
+                or any(not isinstance(v, dict) or set(v) != required
+                       or not isinstance(v.get("class_key"), str)
+                       or not isinstance(v.get("school_year"), str)
+                       or not re.fullmatch(r"20\d\d-\d\d", v["school_year"])
+                       or int(v["school_year"][-2:]) != (int(v["school_year"][:4]) + 1) % 100
+                       for v in values)):
+            raise ValueError
+        return values
+    except (ValueError, TypeError, KeyError):
+        raise ValueError("The teacher's year-specific submission settings need checking before grading.") from None
+
+
+def week_policy(config, agenda, class_key, week_label):
+    """A teaching-year exclusion blocks assessment, never source discovery or filing.
+
+    Only an exact Agenda week label in the named class and academic year applies.
+    Week numbers in deck names and cycle names are not policy aliases.
+    """
+    out = {"excluded": False, "school_year": None, "reason": "", "problem": None}
+    try:
+        values = _scoped_config(config, "HUB_WEEK_EXCLUSIONS", {"school_year", "class_key", "weeks", "reason"})
+        if not values:
+            return out
+        year = _school_year(agenda, week_label)
+        for value in values:
+            if (value["class_key"] not in agenda.classes or not isinstance(value["weeks"], list)
+                    or not value["weeks"] or any(not isinstance(w, str) for w in value["weeks"])
+                    or len(value["weeks"]) != len(set(value["weeks"]))
+                    or not isinstance(value["reason"], str) or not value["reason"].strip()
+                    or len(value["reason"]) > 300 or any(ord(c) < 32 for c in value["reason"])):
+                raise ValueError
+            labels = {label for _, label in (agenda.classes[value["class_key"]].get("layout") or {"rows": []})["rows"]}
+            if value["school_year"] == year and any(w not in labels for w in value["weeks"]):
+                raise ValueError
+        out["school_year"] = year
+        labels = {label for _, label in (agenda.classes[class_key].get("layout") or {"rows": []})["rows"]}
+        if year is None and any(v["class_key"] == class_key and week_label in v["weeks"] for v in values):
+            raise ValueError
+        hits = [v for v in values if v["class_key"] == class_key and v["school_year"] == year
+                and week_label in v["weeks"] and week_label in labels]
+        if len(hits) > 1:
+            raise ValueError
+        if hits:
+            out.update(excluded=True, reason=hits[0]["reason"].strip())
+    except (ValueError, TypeError, KeyError):
+        out["problem"] = "The teacher's year-specific week exclusions need checking before grading."
+    return out
+
+
+def accepted_form_routes(config, agenda, class_key, week_label, forms):
+    """Exact approved alternate intake Forms, separate from assignment identity."""
+    try:
+        values = _scoped_config(config, "HUB_ACCEPTED_FORM_ROUTES",
+                                {"school_year", "class_key", "week", "source_form_id", "assignment_form_id"})
+        year = _school_year(agenda, week_label) if values else None
+        for value in values:
+            if (value["class_key"] not in agenda.classes or not isinstance(value["week"], str)
+                    or any(not isinstance(value[k], str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", value[k])
+                           for k in ("source_form_id", "assignment_form_id"))
+                    or value["source_form_id"] == value["assignment_form_id"]):
+                raise ValueError
+            labels = {label for _, label in (agenda.classes[value["class_key"]].get("layout") or {"rows": []})["rows"]}
+            if value["school_year"] == year and value["week"] not in labels:
+                raise ValueError
+        if not values:
+            return set(), None
+        ids = [form["form_id"] for form in forms if form.get("form_id")]
+        if year is None and any(v["class_key"] == class_key and v["week"] == week_label for v in values):
+            raise ValueError
+        routes = [(v["source_form_id"], v["assignment_form_id"]) for v in values
+                  if v["class_key"] == class_key and v["school_year"] == year
+                  and v["week"] == week_label]
+        if len(routes) != len(set(routes)) or any(ids.count(fid) != 1 for route in routes for fid in route):
+            raise ValueError
+        return set(routes), None
+    except (ValueError, TypeError, KeyError):
+        return set(), "The teacher-approved alternate submission Form mapping needs checking before grading."
+
+
 def form_weeks(agenda, class_key):
     """{form id: the Monday of the first Agenda week whose row links it}."""
     entry = agenda.classes[class_key]
@@ -473,7 +573,7 @@ def recent_submissions(token, form_id):
         hit = _responses_cache.get(form_id)
         if hit and time.time() - hit[0] < RESPONSES_SECONDS:
             return list(hit[1])
-    found = submissions(google.form_responses(token, form_id))
+    found = submissions(google.form_responses(token, form_id), form_id)
     with _responses_lock:
         _responses_cache[form_id] = (time.time(), found)
     return list(found)
@@ -706,7 +806,7 @@ def read_form(token, form, account):
     if not form["form_id"]:
         return item
     try:
-        item["found"] = submissions(google.form_responses(token, form["form_id"]))
+        item["found"] = submissions(google.form_responses(token, form["form_id"]), form["form_id"])
     except google.GoogleError as error:
         item["problem"] = form_problem(error, account)
         return item
@@ -807,7 +907,7 @@ def shared_submissions(token, config, class_name, number):
             return [], "The earlier shared turn-in Form couldn't be read (%s), so its uploads may be missing." % error
         _shared_cache[form_id] = (time.time(), responses)
     found = []
-    for submission in submissions(responses):
+    for submission in submissions(responses, form_id):
         for text in submission["typed"]:
             match = SHARED_KEY.match(text)
             if match and norm(match.group(1)) == norm(class_name) and int(match.group(2)) == number:
@@ -901,16 +1001,22 @@ def lesson_work(token, config, agenda, class_key, week_label):
     account = google.service_account(config)
     class_name = agenda.classes[class_key]["name"]
     lessons = agenda.lessons(class_key, week_label)
+    policy = week_policy(config, agenda, class_key, week_label)
+    if policy["problem"]:
+        problems.append(policy["problem"])
     number = week_number(week_label)
     if not lessons:
         problems.append("No %s row labelled '%s' was found in the Agenda." % (class_name, week_label))
-        return {"class_key": class_key, "week": week_label, "lessons": [], "other_files": [],
+        return {"class_key": class_key, "week": week_label, "week_policy": policy, "lessons": [], "other_files": [],
                 "roster_check": None,
                 "folder_reviews": [],
                 "folders": [], "folder_files": 0, "folder_note": None,
                 "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students), "problems": problems}
 
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
+    accepted_routes, route_problem = accepted_form_routes(config, agenda, class_key, week_label, forms)
+    if route_problem:
+        problems.append(route_problem)
     # A lesson moved to another week keeps its deck's name ("… Week 04 …"), so
     # its weeks are its Agenda week and the week its own decks are named for.
     deck_ids = {m.group(1) for lesson in lessons for material in lesson["materials"]
@@ -1059,12 +1165,16 @@ def lesson_work(token, config, agenda, class_key, week_label):
         if submission not in source["found"]:
             continue
         source["found"].remove(submission)
+        accepted = (source.get("form", {}).get("form_id"), target.get("form", {}).get("form_id")) in accepted_routes
         if source["current"]:
             source["form"].setdefault("moved_out", []).append(
-                {"submission": submission, "to": "%s · %s" % (target["week"], target["label"])})
+                {"submission": submission, "to": "%s · %s" % (target["week"], target["label"]),
+                 "accepted_intake": accepted, "source_form_id": source["form"]["form_id"],
+                 "assignment_form_id": target.get("form", {}).get("form_id")})
         if target["current"]:
             via = source["label"] if source["current"] else "%s · %s" % (source["week"], source["label"])
-            target["found"].append(dict(submission, files=[dict(f, via=via) for f in submission["files"]]))
+            target["found"].append(dict(submission, files=[dict(f, via=via, accepted_intake=accepted,
+                assignment_form_id=target["form"]["form_id"]) for f in submission["files"]]))
     for i, submission, j in held_imports:
         source, target = entries[i], entries[j]
         target["form"].setdefault("held_elsewhere", []).append({
@@ -1107,7 +1217,10 @@ def lesson_work(token, config, agenda, class_key, week_label):
                                   (m["submission"]["email"] or first.get("name", "")),
                                   "section": student["section"] if student else "", "to": m["to"],
                                   "source": m["submission"]["source"], "file": first.get("name", ""),
-                                  "url": first.get("url", ""), "submitted_at": m["submission"]["submitted_at"]})
+                                  "url": first.get("url", ""), "submitted_at": m["submission"]["submitted_at"],
+                                  "accepted_intake": bool(m.get("accepted_intake")),
+                                  "source_form_id": m.get("source_form_id"),
+                                  "assignment_form_id": m.get("assignment_form_id")})
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
@@ -1137,7 +1250,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
                    and not (str(name).startswith("_") and fid not in holding)]
     check = roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
     folder_reviews = shared_folder_reviews(forms, roots, parents)
-    return {"class_key": class_key, "week": week_label, "lessons": result, "other_files": other_rows,
+    return {"class_key": class_key, "week": week_label, "week_policy": policy, "assessment_problem": route_problem,
+            "lessons": result, "other_files": other_rows,
             "roster_check": check,
             "folder_reviews": folder_reviews,
             "folders": folder_list,

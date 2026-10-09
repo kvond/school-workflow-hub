@@ -457,7 +457,9 @@ class StudentArchiveTests(unittest.TestCase):
         for key, doc in initial_observations.items():
             self.assertEqual(observations[key], doc)
         fresh = next(doc.value for key, doc in observations.items() if key not in initial_observations)
-        self.assertEqual(fresh["source_context"], {"week": "Wk 05", "form_id": None})
+        self.assertEqual(fresh["source_context"]["week"], "Wk 05")
+        self.assertIsNone(fresh["source_context"]["form_id"])
+        self.assertFalse(fresh["source_context"]["accepted_intake"])
         self.assertEqual((fresh["identity_status"], fresh["lesson_status"], fresh["date_basis"]),
                          ("identity_unverified", "unverified", "filename_submission"))
         self.assertEqual(fresh["submitted_at"], "2026-10-09T14:00:00Z")
@@ -994,6 +996,100 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(record["lesson_status"], "unverified")
         self.assertEqual(record["source_file_id"], SOURCE)
         self.assertEqual(data, original)
+
+    def test_accepted_intake_keeps_original_form_event_separate_from_target_assignment(self):
+        candidate = row(files=[{"id": SOURCE, "mime": google.PPTX,
+            "source_form_id": "FictionalOriginalForm00001", "assignment_form_id": "FictionalTargetForm000001",
+            "source_response_id": "FictionalResponse0000001", "source_submitted_at": "2026-10-06T13:00:00Z",
+            "accepted_intake": True}])
+        self.assertEqual(self.archive(found(candidate))["status"], "verified")
+        item = self.port.rows[archive.key("archivework", [ROOT, "biology", SOURCE])].value
+        self.assertEqual(item["form_id"], "FictionalOriginalForm00001")
+        self.assertEqual(item["assignment_form_id"], "FictionalTargetForm000001")
+        self.assertEqual(item["submitted_at"], "2026-10-06T13:00:00Z")
+        self.assertEqual(item["date"], "2026-10-06")
+        self.assertTrue(item["source_context"]["accepted_intake"])
+        self.assertEqual(item["source_context"]["source_response_id"], "FictionalResponse0000001")
+
+    def test_folder_assignment_form_is_not_claimed_as_an_original_form_receipt(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        before = deepcopy(self.port.rows[archive.key("archivework", [ROOT, "biology", SOURCE])].value)
+        candidate = row(source="folder", email="", matched_by="file name")
+        with patch.object(archive, "_filing_roster", return_value=name_roster()):
+            self.assertEqual(self.archive(found(candidate))["status"], "verified")
+        after = self.port.rows[archive.key("archivework", [ROOT, "biology", SOURCE])].value
+        self.assertEqual(after["form_id"], before["form_id"])
+        self.assertEqual(after["source_context"], before["source_context"])
+        observations = [d.value for k, d in self.port.rows.items() if k.startswith("archiveobservation_")]
+        folder = next(o for o in observations if o["date_basis"] == "file_created")
+        self.assertIsNone(folder["source_context"]["form_id"])
+        self.assertEqual(folder["source_context"]["assignment_form_id"], "FictionalForm000000001")
+
+    def test_selected_verified_withdrawal_retains_history_without_active_roster_claim(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        ident = next(k for k in self.port.rows if k.startswith("archivestudent_"))
+        old = self.port.rows[ident]
+        status = {"verified": True, "basis": "verified_selected_ic_roster", "class_key": "biology",
+            "section": "A4 Biology", "status": "withdrawn", "active": False, "end_date": "2026-10-01",
+            "school_year": "2026-27", "checked_at": "2026-10-09T14:00:00Z"}
+        self.port.commit({ident: ({**old.value, "roster_status": status}, old.version)})
+        listing = archive.archive_listing("read", self.config, "biology")
+        self.assertFalse(listing["roster_verified"])
+        self.assertEqual(listing["students"][0]["status"], "withdrawn")
+        self.assertEqual(listing["students"][0]["roster_status"]["end_date"], "2026-10-01")
+        self.assertEqual(len(listing["students"][0]["records"]), 1)
+        for updates in ({"verified": False}, {"class_key": "forensics"}, {"section": "A2 Forensics"}, {"active": True}):
+            self.assertIsNone(archive._confirmed_roster_status({**old.value, "roster_status": {**status, **updates}}, "biology"))
+
+    def test_shared_feedback_exposes_actual_checksum_and_exact_packet_coverage(self):
+        value = saved(); raw = b"%PDF immutable shared student feedback"
+        self.assertEqual(archive.file_feedback("read", "write", self.config, value, raw)["status"], "verified")
+        ident = next(k for k in self.port.rows if k.startswith("archivefeedback_"))
+        old = self.port.rows[ident]
+        fields = {"shared_source_key": "sharedfeedbacksource_" + "c" * 64,
+            "shared_source_document_id": "FictionalSharedOriginal01", "shared_pdf_sha256": hashlib.sha256(raw).hexdigest(),
+            "covered_by_packet_manifest": "feedbackpacketmanifest_" + "d" * 64,
+            "covered_by_packet_id": "FictionalWholeClassPDF01"}
+        self.port.commit({ident: ({**old.value, **fields}, old.version)})
+        meta = archive.list_feedback("read", self.config)[0]
+        self.assertEqual(meta["pdf_sha256"], hashlib.sha256(raw).hexdigest())
+        for field, expected in fields.items():
+            self.assertEqual(meta[field], expected)
+
+    def test_exact_configured_week_exclusion_suppresses_only_missing_form_warning(self):
+        reason = "This first-week lesson was not assigned this school year."
+        self.config["HUB_WEEK_EXCLUSIONS"] = json.dumps([{"school_year": "2026-27", "class_key": "biology",
+            "weeks": ["Wk 01"], "reason": reason}])
+        data = {"class_key": "biology", "week": "Wk 01", "week_policy": {"excluded": True, "school_year": "2026-27", "reason": reason},
+            "lessons": [{"forms": [], "problem": "This lesson has no Form link in its 'Turn it in' column."}],
+            "other_files": [], "problems": []}
+        self.assertEqual(self.archive(data)["status"], "verified")
+        data["week_policy"]["school_year"] = "2027-28"
+        self.assertEqual(self.archive(data)["status"], "held")
+        data["week_policy"]["school_year"] = "2026-27"
+        data["lessons"][0]["problem"] = "The private submission folder is unavailable."
+        self.assertEqual(self.archive(data)["status"], "held")
+
+    def test_teacher_attributed_joint_native_copy_is_read_only_and_revision_bound(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        ident = archive.key("archivework", [ROOT, "biology", SOURCE]); old = self.port.rows[ident]
+        value = {**old.value, "source_kind": "teacher_attributed_joint_copy", "mime": "application/vnd.google-apps.presentation",
+            "drive_version": "1", "teacher_joint_attribution": True,
+            "shared_source_key": "sharedfeedbacksource_" + "c" * 64, "copied_slide_content_sha256": "d" * 64}
+        meta = self.drive.items[value["drive_file_id"]]
+        meta.update(mimeType=value["mime"], properties={archive.TAG: ident, "hubCopiedSource": SOURCE,
+            "hubSharedSource": value["shared_source_key"]})
+        meta.pop("shortcutDetails")
+        self.port.commit({ident: (value, old.version)})
+        listing = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(listing["counts"]["work"], 1)
+        self.assertEqual(listing["students"][0]["records"][0]["source_file_id"], SOURCE)
+        count = len(self.drive.created)
+        meta["version"] = "2"
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "held")
+        self.assertEqual(len(self.drive.created), count)
+        meta["version"] = "1"; meta["properties"]["hubCopiedSource"] = EARLIER
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "held")
 
 
 if __name__ == "__main__":

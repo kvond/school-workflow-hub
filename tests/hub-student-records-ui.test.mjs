@@ -83,6 +83,19 @@ test('a name-filed folder stays visibly identity unverified without adding contr
   assert.equal(walk(h.body).filter(node => ['button', 'input'].includes(node.tagName)).length, 0);
 });
 
+test('verified selected IC withdrawal shows its end date and retains the folder', async () => {
+  const data = response();
+  data.students[0].status = 'withdrawn';
+  data.students[0].roster_status = {verified: true, status: 'withdrawn', active: false, end_date: '2032-01-03'};
+  data.students[1].status = 'identity_unverified';
+  data.students[1].roster_status = {verified: true, status: 'active', active: true};
+  const h = boot(() => data); h.panel.open = true; await h.ui.loadStudentRecords();
+  assert.match(h.body.textContent, /Ann AveryA4 FictionalWithdrawn · Jan 3, 2032 · history retained/);
+  assert.match(h.body.textContent, /Ben BrookA4 FictionalActive in IC/);
+  assert.equal(walk(h.body).filter(node => node.tagName === 'a' && node.href.includes('/STUDENT_')).length, 2);
+  assert.equal(walk(h.body).filter(node => ['button', 'input'].includes(node.tagName)).length, 0);
+});
+
 test('switching class suppresses an older reply and immediately clears the old class links', async () => {
   const pending = new Map(), h = boot(url => new Promise(resolve => pending.set(url, resolve)));
   h.panel.open = true;

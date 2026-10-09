@@ -654,6 +654,14 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         raise ValueError("file")
     upload = next(f for f in row["files"] if f["id"] == file_id)
     out = {"file_id": file_id, "problem": None}
+    if work_result.get("assessment_problem"):
+        return {**out, "code": "coverage_incomplete", "problem": work_result["assessment_problem"]}
+    policy = work_result.get("week_policy") or {}
+    if policy.get("problem"):
+        return {**out, "code": "coverage_incomplete", "problem": policy["problem"]}
+    if policy.get("excluded"):
+        return {**out, "code": "excluded_week", "problem": policy.get("reason") or
+                "The teacher excluded this Agenda week from grading for this school year. Its work remains filed."}
     # Manual score requests, feedback collection and morning scoring all use
     # this entry point. Do not read or assess decks while the same lesson-work
     # scan still contains submissions without a confirmed assignment match.

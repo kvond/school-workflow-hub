@@ -663,6 +663,22 @@ def _scan_scope(cls, found):
     return week
 
 
+def _forms_not_required(config, cls, found):
+    policy = found.get("week_policy") or {}
+    if policy.get("excluded") is not True or policy.get("problem"):
+        return False
+    try:
+        settings = work._scoped_config(config, "HUB_WEEK_EXCLUSIONS",
+            {"school_year", "class_key", "weeks", "reason"})
+        matches = [p for p in settings if p["class_key"] == cls
+            and p["school_year"] == policy.get("school_year")
+            and isinstance(p["weeks"], list) and found.get("week") in p["weeks"]
+            and isinstance(p["reason"], str) and p["reason"].strip() == policy.get("reason")]
+        return len(matches) == 1
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def _hold_context(row, assignment=""):
     first, last = _clean(row.get("first"), 100), _clean(row.get("last"), 100)
     name = last + ", " + first if first and last else last or first or _clean(row.get("who"), 100)
@@ -749,6 +765,7 @@ def archive_work(token, write_token, config, class_key, found):
 
         candidates, emails, conflicts = [], {}, set()
         lessons = list(found.get("lessons", []))
+        forms_not_required = _forms_not_required(config, class_key, found)
         calendar_week = bool(lessons) and all(l.get("calendar_only") is True and not l.get("forms") for l in lessons)
         loose = list(found.get("other_files", []))
         for lesson in lessons:
@@ -764,7 +781,7 @@ def archive_work(token, write_token, config, class_key, found):
             lessons.append({"topic": "Lesson not confirmed", "forms": [{"label": "Lesson not confirmed",
                 "form_id": None, "lesson_unverified": True, "students": loose}]})
         for lesson in lessons:
-            if (lesson.get("problem") and not (lesson.get("calendar_only") is True and not lesson.get("forms")
+            if (lesson.get("problem") and not ((lesson.get("calendar_only") is True or forms_not_required) and not lesson.get("forms")
                     and lesson["problem"] == "This lesson has no Form link in its 'Turn it in' column.")):
                 result["held"].append({"assignment": _clean(lesson.get("topic")), "problem": lesson["problem"]})
             for form in lesson.get("forms", []):
@@ -839,7 +856,10 @@ def archive_work(token, write_token, config, class_key, found):
                             actual_owner, _ = _filename_owner(config, source, roster_reader())
                             if not _same_name(actual_owner, version_person):
                                 raise Held("This file's student name changed while filing. Keep it for a corrected named resubmission.")
-                        date, date_basis, submitted_at = _work_date(version, source)
+                        original_event = {**version, "submitted_at": file["source_submitted_at"]} if file.get("source_submitted_at") else version
+                        date, date_basis, submitted_at = _work_date(original_event, source)
+                        source_form_id = file.get("source_form_id") or (form.get("form_id") if version.get("source") == "form" else None)
+                        assignment_form_id = file.get("assignment_form_id") or form.get("form_id")
                         lesson_status = "unverified" if file.get("other_week") or form.get("lesson_unverified") else "verified"
                         artifact_key = key("archivework", [run.root, class_key, file["id"]])
                         old = _read(run.port, artifact_key)
@@ -854,7 +874,8 @@ def archive_work(token, write_token, config, class_key, found):
                         artifact = run.create(artifact_key, label,
                             student["drive_file_id"], SHORTCUT, target=file["id"], attributes={
                                 "kind": "work", "date": date, "student_key": student["student_key"],
-                                "class_key": class_key, "source_file_id": file["id"], "form_id": form.get("form_id"),
+                                "class_key": class_key, "source_file_id": file["id"], "form_id": source_form_id,
+                                "assignment_form_id": assignment_form_id, "source_response_id": file.get("source_response_id"),
                                 "source_modified_at": source.get("modifiedTime", ""), "source_version": source.get("version", ""),
                                 "submitted_at": submitted_at, "assignment": title, "date_basis": date_basis,
                                 "identity_status": version_person["identity_status"], "identity_basis": version_person["basis"],
@@ -862,13 +883,17 @@ def archive_work(token, write_token, config, class_key, found):
                                 "source_context": {"week": found["week"], "form_label": form.get("label", ""),
                                                    "source": version.get("source"), "source_created_at": source.get("createdTime"),
                                                    "parents": source.get("parents", []), "via": file.get("via"),
-                                                   "named_week": file.get("other_week")}})
+                                                   "named_week": file.get("other_week"), "source_form_id": source_form_id,
+                                                   "assignment_form_id": assignment_form_id, "accepted_intake": file.get("accepted_intake") is True,
+                                                   "source_response_id": file.get("source_response_id"), "source_submitted_at": file.get("source_submitted_at")}})
                         # Keep observations as immutable index records; the shortcut
                         # remains one per original Drive ID as that file changes.
                         observation = {"source_file_id": file["id"], "modified_at": source.get("modifiedTime", ""),
                                        "version": source.get("version", ""), "submitted_at": submitted_at,
                                        "identity_status": version_person["identity_status"], "lesson_status": lesson_status,
-                                       "date_basis": date_basis, "source_context": {"week": found["week"], "form_id": form.get("form_id")}}
+                                       "date_basis": date_basis, "source_context": {"week": found["week"], "form_id": source_form_id,
+                                           "assignment_form_id": assignment_form_id, "accepted_intake": file.get("accepted_intake") is True,
+                                           "source_response_id": file.get("source_response_id"), "source_submitted_at": file.get("source_submitted_at")}}
                         observation_key = key("archiveobservation", [artifact_key, observation])
                         if not _read(run.port, observation_key):
                             run.put(observation_key, observation)
@@ -944,6 +969,12 @@ def _feedback_metadata(artifact, student, course):
             "class_folder_id": course["id"], "class_folder_name": course.get("name", ""),
             "created_at": artifact["created_at"], "saved_at": artifact["saved_at"],
             "source_sha256": artifact.get("source_sha256"), "drive_md5": artifact.get("pdf_md5"),
+            "pdf_sha256": artifact.get("pdf_sha256"),
+            "shared_source_key": artifact.get("shared_source_key"),
+            "shared_source_document_id": artifact.get("shared_source_document_id"),
+            "shared_pdf_sha256": artifact.get("shared_pdf_sha256"),
+            "covered_by_packet_manifest": artifact.get("covered_by_packet_manifest"),
+            "covered_by_packet_id": artifact.get("covered_by_packet_id"),
             "drive_version": artifact.get("drive_version"),
             "source_file_id": artifact.get("source_file_id"), "source_span": artifact.get("source_span"),
             "feedback_origin": artifact.get("feedback_origin", "native_saved"),
@@ -1024,6 +1055,16 @@ def _indexed(token, config, cls, *, feedback_only=False):
                 if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
                     raise Held("An archived feedback PDF changed and needs review.")
                 artifact["drive_version"] = meta.get("version")
+            elif artifact.get("source_kind") == "teacher_attributed_joint_copy":
+                if (meta.get("mimeType") not in work.STUDENT_WORK
+                        or meta.get("mimeType") != artifact.get("mime")
+                        or meta.get("version") != artifact.get("drive_version")
+                        or (meta.get("properties") or {}).get("hubCopiedSource") != artifact.get("source_file_id")
+                        or (meta.get("properties") or {}).get("hubSharedSource") != artifact.get("shared_source_key")
+                        or not re.fullmatch(r"sharedfeedbacksource_[a-f0-9]{64}", artifact.get("shared_source_key") or "")
+                        or not re.fullmatch(r"[a-f0-9]{64}", artifact.get("copied_slide_content_sha256") or "")
+                        or artifact.get("teacher_joint_attribution") is not True):
+                    raise Held("An archived joint work copy changed or no longer matches its verified source.")
             elif (meta.get("mimeType") != SHORTCUT
                   or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
                 raise Held("An archived work shortcut no longer points to its verified source.")
@@ -1079,9 +1120,12 @@ def archive_listing(token, config, class_key, section=None):
                         "date_basis": a.get("date_basis"), "lesson_status": a.get("lesson_status", "verified"),
                         "original_filename": a.get("original_filename"), "source_context": a.get("source_context")} for a in artifacts]
             records.sort(key=lambda a: (a["date"], a["name"]), reverse=True)
+            roster_status = _confirmed_roster_status(student, class_key)
             base["students"].append({"student_key": student["student_key"], "name": student["name"],
-                "section": student["section"], "status": "identity_unverified" if student.get("identity_status") == "identity_unverified"
+                "section": student["section"], "status": "withdrawn" if roster_status and roster_status["status"] == "withdrawn"
+                    else "identity_unverified" if student.get("identity_status") == "identity_unverified"
                     else "unverified" if active is None else "current" if active else "retained",
+                "roster_status": roster_status,
                 "identity_basis": student.get("basis"),
                 "folder_url": student["url"], "latest_record_date": records[0]["date"] if records else None,
                 "records": records})
@@ -1118,6 +1162,22 @@ def archive_listing(token, config, class_key, section=None):
         base.update(status="held", students=[], problems=[_problem(error)],
                     counts={"students": 0, "work": 0, "feedback": 0, "held": 1})
     return base
+
+
+def _confirmed_roster_status(student, cls):
+    value = student.get("roster_status")
+    if (not isinstance(value, dict) or value.get("verified") is not True
+            or value.get("basis") != "verified_selected_ic_roster" or value.get("class_key") != cls
+            or value.get("section") != student.get("section")
+            or value.get("status") not in ("active", "withdrawn")
+            or value.get("active") is not (value.get("status") == "active")):
+        return None
+    if value["status"] == "withdrawn":
+        try:
+            datetime.strptime(value.get("end_date", ""), "%Y-%m-%d")
+        except (ValueError, TypeError):
+            return None
+    return {k: value.get(k) for k in ("status", "active", "end_date", "school_year", "checked_at", "basis", "verified")}
 
 
 def list_feedback(token, config):

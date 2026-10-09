@@ -143,6 +143,83 @@ class DailyFeedbackPacketTests(unittest.TestCase):
 
 
 class DailySourceSelectionTests(unittest.TestCase):
+    def joint_sources(self):
+        reference = 'feedbackpacketmanifest_' + 'c' * 64
+        digest = 'd' * 64
+        packet = {'id': 'FictionalJointClassPdf001', 'name': 'Student feedback class packet.pdf', 'course': 'forensics',
+                  'created_day': DAY, 'feedback_day': DAY, 'feedback_ids': [], 'student_only': True,
+                  'source_manifest': reference, 'original_source_id': 'FictionalJointOriginalDoc001',
+                  'audited_source_pdf_sha256': digest, 'proven_revision': {'version': '3'}}
+        copies = [{'id': 'FictionalStudentCopy%03d' % number, 'name': 'Joint Feedback.pdf', 'course': 'forensics',
+                   'created_day': '2026-10-09', 'feedback_day': DAY, 'archived': True, 'saved_at': DAY + 'T15:00:00Z',
+                   'feedback_id': 'feedbacksource_' + 'a' * 64,
+                   'shared_source_key': 'sharedfeedbacksource_' + 'b' * 64,
+                   'shared_source_document_id': packet['original_source_id'], 'shared_pdf_sha256': digest,
+                   'pdf_sha256': digest, 'covered_by_packet_manifest': reference, 'covered_by_packet_id': packet['id']}
+                  for number in (1, 2)]
+        return packet, copies
+
+    def test_two_joint_student_copies_leave_existing_dated_packet_selection_unchanged_with_exact_readback_proof(self):
+        from hub_v2 import student_archive
+        packet, copies = self.joint_sources()
+        port = MemoryCAS()
+        meta = {'id': packet['id'], 'version': '3', 'modifiedTime': DAY + 'T15:00:00Z', 'trashed': False,
+                'md5Checksum': 'e' * 32, 'size': '400'}
+        proof_record = {'schema': 'hub-feedback-source-manifest/v1', 'drive_file_id': packet['id'],
+                        'source_revision': daily._revision(meta), 'student_only': True, 'feedback_date': DAY,
+                        'feedback_ids': [], 'original_source_id': packet['original_source_id'],
+                        'audited_source_pdf_sha256': packet['audited_source_pdf_sha256']}
+        port.commit({packet['source_manifest']: (proof_record, None)})
+        stored = deepcopy(port.rows)
+        archived = [{**item, 'drive_file_id': item['id'], 'status': 'verified', 'mime': 'application/pdf',
+                     'class_key': item['course'], 'created_at': '2026-10-09T14:00:00Z', 'date': DAY,
+                     'class_folder_id': 'FictionalForensicsCourse001'} for item in copies]
+        with patch.object(native_feedback, 'configured_store', return_value=port), \
+                patch.object(google, 'drive_file', return_value=meta), \
+                patch.object(student_archive, 'enabled', return_value=True), \
+                patch.object(student_archive, 'list_feedback', return_value=archived):
+            actual_proof = native_feedback._legacy_packet_proof('read', {},
+                {'id': packet['id'], 'properties': {'hubFeedbackManifest': packet['source_manifest']}}, DAY)
+            fresh_packet = {**packet, **actual_proof}
+            with patch.object(native_feedback, '_legacy_feedback_files', return_value={
+                    'configured': True, 'files': [fresh_packet], 'problem': None}):
+                available = native_feedback._feedback_files('read', {})
+                for copy in (item for item in available['files'] if item.get('archived')):
+                    self.assertEqual(copy['pdf_sha256'], copy['shared_pdf_sha256'])
+                    self.assertEqual(copy['covered_by_packet_id'], packet['id'])
+                self.assertEqual([item['id'] for item in native_feedback.daily_sources('read', {}, DAY)], [packet['id']])
+        self.assertEqual(port.rows, stored)  # Existing class proof and dated snapshot need no rewrite.
+
+    def test_joint_copies_print_once_when_their_covering_class_packet_is_absent(self):
+        _, copies = self.joint_sources()
+        with patch.object(native_feedback, '_feedback_files', return_value={'configured': True, 'files': copies}):
+            selected = native_feedback.daily_sources('read', {}, DAY)
+        self.assertEqual([item['id'] for item in selected], [copies[0]['id']])
+        self.assertEqual(selected[0]['feedback_id'], copies[1]['feedback_id'])
+        self.assertEqual(selected[0]['feedback_day'], DAY)
+
+    def test_joint_coverage_does_not_hide_copies_on_partial_or_mismatched_source_proof(self):
+        packet, copies = self.joint_sources()
+        mismatches = {'shared_source_key': None, 'shared_source_document_id': 'AnotherOriginalSource001',
+                      'shared_pdf_sha256': 'f' * 64, 'pdf_sha256': 'f' * 64,
+                      'covered_by_packet_manifest': 'feedbackpacketmanifest_' + 'f' * 64,
+                      'covered_by_packet_id': 'AnotherClassPacket001'}
+        for field, value in mismatches.items():
+            weak = [{**item, field: value} for item in copies]
+            with self.subTest(field=field), patch.object(native_feedback, '_feedback_files', return_value={
+                    'configured': True, 'files': [packet] + weak}):
+                self.assertEqual([item['id'] for item in native_feedback.daily_sources('read', {}, DAY)],
+                                 [packet['id'], copies[0]['id']])
+        for field, value in {'source_manifest': None, 'original_source_id': None,
+                             'audited_source_pdf_sha256': None, 'proven_revision': None, 'course': 'biology'}.items():
+            with self.subTest(packet_field=field), patch.object(native_feedback, '_feedback_files', return_value={
+                    'configured': True, 'files': [{**packet, field: value}] + copies}):
+                self.assertEqual([item['id'] for item in native_feedback.daily_sources('read', {}, DAY)],
+                                 [packet['id'], copies[0]['id']])
+        other_day = {**packet, 'feedback_day': '2026-10-08'}
+        with patch.object(native_feedback, '_feedback_files', return_value={'configured': True, 'files': [other_day] + copies}):
+            self.assertEqual([item['id'] for item in native_feedback.daily_sources('read', {}, DAY)], [copies[0]['id']])
+
     def test_native_saved_dates_beat_migration_creation_dates_and_known_batch_overlap_is_suppressed(self):
         native = {'id': 'native', 'name': 'Feedback.pdf', 'course': 'biology', 'created_day': '2026-10-08',
             'feedback_day': DAY, 'archived': True, 'saved_at': DAY + 'T15:00:00Z', 'feedback_id': 'feedbackdraft_' + 'a' * 64}

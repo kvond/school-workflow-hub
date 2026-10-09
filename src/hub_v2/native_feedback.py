@@ -488,7 +488,8 @@ def _legacy_packet_proof(token, config, item, created_day):
     return {'feedback_day': daily_feedback_packet.date_value(value.get('feedback_date')),
             'feedback_ids': _packet_feedback_ids({'hubFeedbackIds': json.dumps(value.get('feedback_ids'))}),
             'student_only': True, 'proven_revision': value['source_revision'], 'source_manifest': reference,
-            'canonical_source_id': canonical}
+            'canonical_source_id': canonical, 'original_source_id': value.get('original_source_id'),
+            'audited_source_pdf_sha256': value.get('audited_source_pdf_sha256')}
 
 
 def _feedback_files(token, config):
@@ -527,7 +528,9 @@ def _feedback_files(token, config):
                            'saved_at': item.get('saved_at'),
                            'feedback_day': item.get('date') or (feedback_date(item.get('saved_at')) if item.get('saved_at') else created_day),
                            'url': item.get('url') or 'https://drive.google.com/open?id=' + ident,
-                           'feedback_id': item.get('feedback_id'), 'archived': True}
+                           'feedback_id': item.get('feedback_id'), 'archived': True,
+                           **{field: item[field] for field in ('pdf_sha256', 'shared_source_key', 'shared_source_document_id',
+                              'shared_pdf_sha256', 'covered_by_packet_manifest', 'covered_by_packet_id') if item.get(field)}}
     return {'configured': legacy['configured'] or archive_on, 'files': list(by_id.values()),
             'problem': None if legacy['configured'] or archive_on else legacy['problem']}
 
@@ -540,6 +543,26 @@ def feedback_date(stamp):
         return moment.astimezone(ZoneInfo('America/New_York')).date().isoformat()
     except (ValueError, TypeError, AttributeError):
         raise Held('A saved feedback report has no verified date.') from None
+
+
+def _shared_packet_covers(copy, selected):
+    """A joint student copy is covered only by the exact audited whole source."""
+    source, digest = copy.get('shared_source_document_id'), copy.get('shared_pdf_sha256')
+    manifest, packet_id = copy.get('covered_by_packet_manifest'), copy.get('covered_by_packet_id')
+    shared_key = copy.get('shared_source_key')
+    if (not isinstance(shared_key, str) or not re.fullmatch(r'sharedfeedbacksource_[a-f0-9]{64}', shared_key)
+            or not isinstance(source, str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', source)
+            or not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest)
+            or copy.get('pdf_sha256') != digest
+            or not isinstance(manifest, str) or not re.fullmatch(r'feedbackpacketmanifest_[a-f0-9]{64}', manifest)):
+        return False
+    return any(packet.get('student_only') is True and packet.get('proven_revision')
+               and packet.get('course') == copy.get('course')
+               and packet.get('feedback_day', packet.get('created_day')) == copy.get('feedback_day', copy.get('created_day'))
+               and packet.get('id') == packet_id and packet.get('source_manifest') == manifest
+               and packet.get('original_source_id') == source and packet.get('audited_source_pdf_sha256') == digest
+               for packet in selected if not packet.get('archived'))
 
 
 def daily_sources(token, config, date_et):
@@ -575,6 +598,8 @@ def daily_sources(token, config, date_et):
     for item in (item for item in sources if item.get('archived')):
         if not item.get('saved_at') or not item.get('feedback_id'):
             raise Held('An individual feedback PDF needs its verified saved date and report identity before daily printing.')
+        if _shared_packet_covers(item, selected):
+            continue
         if item['feedback_id'] in covered or item['feedback_id'] in seen_feedback:
             continue
         seen_feedback.add(item['feedback_id'])
