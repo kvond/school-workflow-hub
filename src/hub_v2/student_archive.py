@@ -28,6 +28,9 @@ SHORTCUT = "application/vnd.google-apps.shortcut"
 PDF = "application/pdf"
 TAG = "hubArchiveKey"
 FIELDS = "id,name,mimeType,parents,driveId,trashed,permissions,capabilities,properties,shortcutDetails,createdTime,modifiedTime,version,md5Checksum,size"
+# Original uploads need read access, not authority to list their private ACL.
+# Keep full access checks on every archive destination and saved artifact.
+SOURCE_FIELDS = ",".join(f for f in FIELDS.split(",") if f not in {"permissions", "capabilities", "shortcutDetails"})
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
 
@@ -706,7 +709,7 @@ def archive_work(token, write_token, config, class_key, found):
 
         def source_reader(ident):
             if ident not in source_metadata:
-                source_metadata[ident] = google.drive_file(token, ident, FIELDS)
+                source_metadata[ident] = google.drive_file(token, ident, SOURCE_FIELDS)
             return source_metadata[ident]
 
         candidates, emails, conflicts = [], {}, set()
@@ -790,7 +793,7 @@ def archive_work(token, write_token, config, class_key, found):
                         if file.get("trashed") or file.get("problem"):
                             result["held"].append({**context, "problem": "This source file's lesson or availability needs checking."})
                             continue
-                        source = google.drive_file(token, file["id"], FIELDS)
+                        source = google.drive_file(token, file["id"], SOURCE_FIELDS)
                         if source.get("trashed") is not False or source.get("mimeType") not in work.STUDENT_WORK:
                             raise Held("A source upload is unavailable or is itself a shortcut. Leave it for review.")
                         if version_person["identity_status"] == "identity_unverified":

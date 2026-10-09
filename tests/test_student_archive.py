@@ -233,6 +233,56 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(listing["students"][0]["latest_record_date"], "2026-10-07")
         self.assertEqual(listing["students"][0]["status"], "unverified")
 
+    def _reader_only_source_metadata(self, token, ident, fields=None):
+        metadata = self.drive.metadata(token, ident, fields)
+        if ident in {SOURCE, EARLIER}:
+            if "permissions" in (fields or "").split(","):
+                raise google.GoogleError("The file reader cannot list its access permissions.", 403)
+            # Drive hides an unshared source parent from its file-only reader.
+            for field in ("permissions", "capabilities", "shortcutDetails", "parents"):
+                metadata.pop(field, None)
+        else:
+            self.assertIn("permissions", (fields or "").split(","))
+        return metadata
+
+    def test_reader_only_original_files_preserve_form_dates_and_source_ids(self):
+        self.drive.items[SOURCE]["modifiedTime"] = "2026-10-09T03:39:00Z"
+        original = deepcopy(self.drive.items[SOURCE])
+        with patch.object(google, "drive_file", side_effect=self._reader_only_source_metadata):
+            result = self.archive()
+        self.assertEqual((result["status"], result["filed"]), ("verified", 1))
+        artifact = self.port.rows[archive.key("archivework", [ROOT, "biology", SOURCE])].value
+        self.assertEqual(artifact["source_file_id"], SOURCE)
+        self.assertEqual(artifact["form_id"], "FictionalForm000000001")
+        self.assertEqual(artifact["submitted_at"], row()["submitted_at"])
+        self.assertEqual((artifact["date"], artifact["date_basis"]), ("2026-10-07", "form_receipt"))
+        self.assertEqual(artifact["source_context"]["parents"], [])
+        self.assertEqual(self.drive.items[SOURCE], original)
+        self.assertEqual(self.drive.moved, [])
+        shortcut = self.drive.items[artifact["drive_file_id"]]
+        self.assertEqual(shortcut["shortcutDetails"]["targetId"], SOURCE)
+
+    def test_reader_only_original_supports_unique_name_filing_with_unverified_identity(self):
+        original = deepcopy(self.drive.items[SOURCE])
+        candidate = row(email="", matched_by="file name", source="folder")
+        with patch.object(google, "drive_file", side_effect=self._reader_only_source_metadata), \
+                patch.object(archive, "_filing_roster", return_value=name_roster()):
+            result = self.archive(found(candidate))
+        self.assertEqual((result["status"], result["filed"]), ("verified", 1))
+        artifact = self.port.rows[archive.key("archivework", [ROOT, "biology", SOURCE])].value
+        self.assertEqual(artifact["identity_status"], "identity_unverified")
+        self.assertEqual((artifact["date"], artifact["date_basis"]), ("2026-10-08", "file_created"))
+        self.assertEqual(artifact["source_context"]["parents"], [])
+        self.assertEqual(self.drive.items[SOURCE], original)
+
+    def test_reader_only_original_never_weakens_private_destination_checks(self):
+        self.drive.items[COURSES["biology"]]["permissions"].append({"type": "anyone", "role": "reader"})
+        with patch.object(google, "drive_file", side_effect=self._reader_only_source_metadata):
+            result = self.archive()
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(self.drive.created, [])
+        self.assertEqual(self.drive.moved, [])
+
     def test_earlier_form_version_needs_its_own_email_identity(self):
         prior = {"source": "form", "submitted_at": "2026-10-06T13:00:00Z",
                  "files": [{"id": EARLIER, "name": "Earlier deck", "mime": google.PPTX}]}
