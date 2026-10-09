@@ -421,6 +421,47 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(len(observations), 2)
         self.assertEqual(archive.archive_listing("read", self.config, "biology")["students"][0]["latest_record_date"], "2026-10-07")
 
+    def test_unverified_lesson_with_strong_form_retains_provenance_after_later_loose_name_scan(self):
+        self.drive.items[SOURCE]["name"] = "s.ana.rivera — 10-09 10.00 — Wk07 Energy Flow.pptx"
+        original = deepcopy(self.drive.items[SOURCE])
+        strong = found(row(files=[{"id": SOURCE, "mime": google.PPTX, "other_week": 7}]))
+        strong["week"] = "Wk 06"
+        form = strong["lessons"][0]["forms"][0]
+        form.update(form_id="FictionalVerifiedWeek06Form01", label="Week 06 Energy Flow — Turn In")
+        first = self.archive(strong)
+        self.assertEqual((first["status"], first["filed"]), ("verified", 1))
+        ident = archive.key("archivework", [ROOT, "biology", SOURCE])
+        before = deepcopy(self.port.rows[ident].value)
+        self.assertEqual((before["lesson_status"], before["identity_status"], before["date_basis"]),
+                         ("unverified", "verified", "form_receipt"))
+        initial_observations = {key: deepcopy(doc) for key, doc in self.port.rows.items()
+                                if key.startswith("archiveobservation_")}
+        created = len(self.drive.created)
+        weak = row(matched=False, email="", matched_by="file name", source="folder",
+                   files=[{"id": SOURCE, "mime": google.PPTX, "other_week": 7}])
+        loose = {"class_key": "biology", "week": "Wk 05", "lessons": [], "other_files": [weak], "problems": []}
+        with patch.object(archive, "_filing_roster", return_value=name_roster()):
+            result = self.archive(loose)
+        self.assertEqual((result["status"], result["filed"]), ("verified", 1))
+        after = self.port.rows[ident].value
+        for field in ("name", "form_id", "source_context", "date", "date_basis", "submitted_at", "assignment",
+                      "lesson_status", "identity_status", "identity_basis", "original_filename"):
+            self.assertEqual(after[field], before[field], field)
+        self.assertEqual(after["source_context"]["week"], "Wk 06")
+        self.assertNotIn("filed by name", after["name"])
+        self.assertEqual(self.drive.items[after["drive_file_id"]]["name"], before["name"])
+        self.assertEqual(self.drive.items[SOURCE], original)
+        self.assertEqual((len(self.drive.created), self.drive.renamed, self.drive.moved), (created, [], []))
+        observations = {key: doc for key, doc in self.port.rows.items() if key.startswith("archiveobservation_")}
+        self.assertEqual(len(observations), 2)
+        for key, doc in initial_observations.items():
+            self.assertEqual(observations[key], doc)
+        fresh = next(doc.value for key, doc in observations.items() if key not in initial_observations)
+        self.assertEqual(fresh["source_context"], {"week": "Wk 05", "form_id": None})
+        self.assertEqual((fresh["identity_status"], fresh["lesson_status"], fresh["date_basis"]),
+                         ("identity_unverified", "unverified", "filename_submission"))
+        self.assertEqual(fresh["submitted_at"], "2026-10-09T14:00:00Z")
+
     def test_current_native_identity_cannot_authorize_an_unverified_earlier_upload(self):
         prior = {"source": "form", "submitted_at": "2026-10-06T13:00:00Z",
                  "files": [{"id": EARLIER, "mime": google.PPTX}]}

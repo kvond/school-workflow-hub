@@ -458,7 +458,10 @@ class _Run:
                           and (attributes.get("date_basis") == "file_created"
                                or (work.when(attributes.get("submitted_at"))
                                    and work.when(record["submitted_at"]) > work.when(attributes["submitted_at"]))))
-                         or (record.get("lesson_status") == "verified" and attributes.get("lesson_status") == "unverified"))):
+                         or (record.get("lesson_status") == "verified" and attributes.get("lesson_status") == "unverified")
+                         or (isinstance(record.get("form_id"), str)
+                             and re.fullmatch(r"[A-Za-z0-9_-]{10,200}", record["form_id"])
+                             and not attributes.get("form_id")))):
                 name = record["name"]
                 attributes = {k: record[k] if k in record else v for k, v in attributes.items()}
                 if work.when(record.get("submitted_at")) and "date_basis" not in record:
