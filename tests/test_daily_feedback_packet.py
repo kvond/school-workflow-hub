@@ -52,6 +52,13 @@ class DailyFeedbackPacketTests(unittest.TestCase):
     def build(self):
         return daily.build('read', 'write', self.config, DAY)
 
+    def bind_private_student_folders(self):
+        for index, source in enumerate(self.sources):
+            folder = 'FictionalStudentFeedbackFolder' + str(index)
+            self.drive.add(folder, 'Private student feedback', google.FOLDER)
+            self.drive.items[source['id']]['parents'] = [folder]
+            source['student_folder_url'] = 'https://drive.google.com/drive/folders/' + folder
+
     def test_all_classes_merge_once_with_original_dates_and_repeat_reuses_the_saved_pdf(self):
         one, again = self.build(), self.build()
         self.assertEqual(one['id'], again['id'])
@@ -86,6 +93,86 @@ class DailyFeedbackPacketTests(unittest.TestCase):
         self.assertEqual(len(self.drive.created), 1)
         self.assertFalse(daily.matches_sources('read', saved, self.sources[:-1]))
         self.drive.items[self.sources[0]['id']]['permissions'] = [{'type': 'anyone', 'role': 'reader'}]
+        with self.assertRaisesRegex(daily.Held, 'private access'):
+            daily.matches_sources('read', saved, self.sources)
+
+    def test_metadata_only_version_drift_reuses_saved_pdf_after_complete_byte_proof_without_writing(self):
+        self.bind_private_student_folders()
+        saved = self.build()
+        state = deepcopy(self.port.rows)
+        for source in self.sources:
+            self.drive.items[source['id']]['version'] = '3'
+        with patch.object(google, 'printable_pdf_bytes', wraps=google.printable_pdf_bytes) as download:
+            self.assertTrue(daily.matches_sources('read', saved, self.sources))
+            self.assertEqual(download.call_count, 3)
+        self.assertEqual(self.port.rows, state)
+        self.assertEqual(len(self.drive.created), 1)
+        self.assertEqual(daily.status('read', self.config, DAY)['id'], saved['id'])
+
+    def test_unchanged_revisions_keep_the_existing_fast_path_without_export(self):
+        saved = self.build()
+        with patch.object(google, 'printable_pdf_bytes', side_effect=AssertionError('no export needed')):
+            self.assertTrue(daily.matches_sources('read', saved, self.sources))
+
+    def test_metadata_fallback_requires_trusted_hash_context_and_known_private_parent(self):
+        self.bind_private_student_folders()
+        saved = self.build()
+        ident = self.sources[0]['id']
+        self.drive.items[ident]['version'] = '2'
+        for field in ('source_pdf_sha256', 'source_identities'):
+            weak = {k: v for k, v in saved.items() if k != field}
+            with self.subTest(missing=field):
+                self.assertFalse(daily.matches_sources('read', weak, self.sources))
+        for field in ('md5Checksum', 'size', 'modifiedTime'):
+            prior = self.drive.items[ident][field]
+            self.drive.items[ident][field] = 'different'
+            with self.subTest(content_metadata=field):
+                self.assertFalse(daily.matches_sources('read', saved, self.sources))
+            self.drive.items[ident][field] = prior
+        self.drive.items[ident]['parents'] = ['AnotherPrivateFolder001']
+        self.assertFalse(daily.matches_sources('read', saved, self.sources))
+
+    def test_changed_dates_class_and_feedback_members_cannot_match_identical_pdf_bytes(self):
+        self.bind_private_student_folders()
+        saved = self.build()
+        for field, value in (('feedback_day', '2026-10-09'), ('saved_at', '2026-10-09T15:00:00Z'),
+                             ('course', 'another-class'), ('feedback_id', 'another-report'),
+                             ('feedback_ids', ['another-member'])):
+            sources = deepcopy(self.sources); sources[0][field] = value
+            with self.subTest(field=field):
+                self.assertFalse(daily.matches_sources('read', saved, sources))
+
+    def test_changed_pdf_or_native_document_revision_never_uses_metadata_fallback(self):
+        self.bind_private_student_folders()
+        saved = self.build(); ident = self.sources[0]['id']
+        self.drive.items[ident]['version'] = '2'
+        original = self.bytes[ident]
+        self.bytes[ident] = pdf_bytes(620)  # Same metadata cannot certify different downloaded bytes.
+        self.assertFalse(daily.matches_sources('read', saved, self.sources))
+        self.bytes[ident] = original
+        native = deepcopy(saved); sources = deepcopy(self.sources)
+        native['source_identities'][ident]['mime'] = google.DOC
+        sources[0]['mime'] = google.DOC; self.drive.items[ident]['mimeType'] = google.DOC
+        with patch.object(google, 'printable_pdf_bytes', side_effect=AssertionError('no native export fallback')):
+            self.assertFalse(daily.matches_sources('read', native, sources))
+
+    def test_privacy_or_location_loss_during_read_holds_the_saved_source(self):
+        self.bind_private_student_folders()
+        saved = self.build(); source = self.sources[0]; ident = source['id']
+        self.drive.items[ident]['version'] = '2'
+        original = deepcopy(self.drive.items[ident])
+        for changed in ({'parents': ['AnotherPrivateFolder001']},
+                        {'permissions': [{'type': 'anyone', 'role': 'reader'}]}):
+            self.drive.items[ident] = deepcopy(original)
+            def download(token, file_id, mime):
+                self.drive.items[file_id].update(deepcopy(changed))
+                return self.bytes[file_id]
+            with self.subTest(change=changed), patch.object(google, 'printable_pdf_bytes', side_effect=download):
+                with self.assertRaisesRegex(daily.Held, 'private access'):
+                    daily.matches_sources('read', saved, self.sources)
+        self.drive.items[ident] = deepcopy(original)
+        folder = self.drive.items[ident]['parents'][0]
+        self.drive.items[folder]['permissions'] = [{'type': 'group', 'role': 'reader', 'emailAddress': 'group@example.test'}]
         with self.assertRaisesRegex(daily.Held, 'private access'):
             daily.matches_sources('read', saved, self.sources)
 

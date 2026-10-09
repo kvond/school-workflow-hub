@@ -26,6 +26,15 @@ destination is unchanged. Its same reserved ID can resume only after folder
 metadata proves migration into a different actual Shared Drive. A reservation
 interrupted before upload can re-export unchanged sources using its same ID.
 
+Today normally compares the saved source revisions with the current catalog.
+If only a binary PDF's Drive version changed, it can keep the saved document
+current after a fresh complete download matches the snapshot's SHA-256, MD5,
+size and modification time, with unchanged report identities, dates and
+membership and verified private file/parent readback. Missing proof, changed
+native Docs, changed bytes or changed context do not use this fallback. This
+read-only check neither rewrites the historical manifest nor creates another
+identical PDF.
+
 Native feedback must be verified in the individual student folder before it
 can enter a daily document. Its immutable ID uses `feedbackdraft_<hash>`.
 Losslessly imported, audited legacy student reports use the separate

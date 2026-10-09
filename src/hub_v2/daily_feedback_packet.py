@@ -124,6 +124,10 @@ def _reply(record, cached=False):
             'manifest_hash': record['manifest_hash'], 'compiled_at': record['compiled_at'],
             'source_file_ids': [item['file_id'] for item in record['manifest']],
             'source_revisions': {item['file_id']: item['revision'] for item in record['manifest']},
+            'source_pdf_sha256': dict(record.get('source_pdf_sha256') or {}),
+            'source_identities': {item['file_id']: {field: item.get(field) for field in
+                ('course', 'mime', 'feedback_id', 'included_feedback_ids', 'feedback_date', 'saved_at', 'created_at')}
+                for item in record['manifest']},
             'drive_file_id': record['drive_file_id'], 'url': 'https://drive.google.com/open?id=' + record['drive_file_id'],
             'pdf_url': '/v2/api/feedback/daily/pdf?id=' + record['id'], 'cached': cached,
             'delivery_changed': False}
@@ -149,12 +153,21 @@ def _point(port, folder_id, record, observed_at):
 
 
 def matches_sources(token, packet, sources):
-    """Catalog membership and fresh revisions must both match the saved snapshot."""
+    """Match revisions, or prove that a private PDF has exactly the saved bytes."""
     revisions = packet.get('source_revisions')
     if not isinstance(revisions, dict):
         return None
     if set(revisions) != {item['id'] for item in sources}:
         return False
+    identities = packet.get('source_identities')
+    if isinstance(identities, dict):
+        for item in sources:
+            identity = {'course': item.get('course'), 'mime': item.get('mime'),
+                'feedback_id': item.get('feedback_id'), 'included_feedback_ids': item.get('feedback_ids') or [],
+                'feedback_date': item.get('feedback_day', item.get('created_day')),
+                'saved_at': item.get('saved_at'), 'created_at': item.get('created_at')}
+            if identities.get(item['id']) != identity:
+                return False
     with ThreadPoolExecutor(max_workers=4) as pool:
         actual = list(pool.map(lambda item: google.drive_file(token, item['id'], FIELDS), sources))
     for meta in actual:
@@ -162,7 +175,57 @@ def matches_sources(token, packet, sources):
             student_archive._private(meta)
         except student_archive.Held as error:
             raise Held('A current feedback source needs verified private access: ' + str(error)) from None
-    return all(_revision(meta) == revisions[item['id']] for item, meta in zip(sources, actual))
+    changed = []
+    for item, meta in zip(sources, actual):
+        if meta.get('id') != item['id'] or meta.get('mimeType') != item['mime']:
+            return False
+        if _revision(meta) != revisions[item['id']]:
+            changed.append((item, meta))
+    if not changed:
+        return True
+    hashes = packet.get('source_pdf_sha256')
+    if not isinstance(identities, dict) or not isinstance(hashes, dict):
+        return False
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        return all(pool.map(lambda pair: _same_saved_pdf(token, pair[0], pair[1],
+            revisions[pair[0]['id']], hashes.get(pair[0]['id'])), changed))
+
+
+def _same_saved_pdf(token, item, before, revision, digest):
+    """Version-only drift never grants content, date, identity or location authority."""
+    if (item.get('mime') != PDF or not re.fullmatch(r'[a-f0-9]{64}', str(digest or ''))
+            or not re.fullmatch(r'[a-f0-9]{32}', str(revision.get('md5Checksum') or ''))):
+        return False
+    content_revision = {k: v for k, v in revision.items() if k != 'version'}
+    if {k: v for k, v in _revision(before).items() if k != 'version'} != content_revision:
+        return False
+    try:
+        size = int(revision['size'])
+    except (KeyError, ValueError, TypeError):
+        return False
+    if not 0 < size <= MAX_BYTES:
+        return False
+    location = item.get('student_folder_url') or item.get('course_folder_url') or ''
+    parent = re.fullmatch(r'https://drive\.google\.com/drive/folders/([A-Za-z0-9_-]{10,200})', location)
+    if not parent or before.get('parents') != [parent[1]]:
+        return False
+    try:
+        parent_before = student_archive._private(google.drive_file(token, parent[1], FIELDS), folder=True)
+        if parent_before['id'] != parent[1]:
+            return False
+        raw = google.printable_pdf_bytes(token, item['id'], PDF)
+        after = google.drive_file(token, item['id'], FIELDS)
+        student_archive._private(after, parent=parent[1])
+        parent_after = student_archive._private(google.drive_file(token, parent[1], FIELDS), folder=True)
+    except student_archive.Held as error:
+        raise Held('A current feedback PDF needs verified private access: ' + str(error)) from None
+    return (isinstance(raw, bytes) and len(raw) == size and raw.startswith(b'%PDF')
+            and hashlib.sha256(raw).hexdigest() == digest
+            and hashlib.md5(raw).hexdigest() == revision['md5Checksum']
+            and after.get('id') == item['id'] and after.get('mimeType') == PDF
+            and parent_after['id'] == parent[1] and parent_after.get('parents') == parent_before.get('parents')
+            and after.get('properties') == before.get('properties')
+            and {k: v for k, v in _revision(after).items() if k != 'version'} == content_revision)
 
 
 def _assemble(token, sources, manifest, day):
