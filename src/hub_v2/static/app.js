@@ -715,7 +715,7 @@ function studentFilingNote(data) {
     const context = [CLASSES.find(([key]) => key === data.class_key)?.[1] || recordLabel(data.class_name),
       recordLabel(scan.week) || 'Week unavailable'].filter(Boolean).join(' · ');
     const held = Array.isArray(scan.held) ? scan.held : [];
-    for (const row of held) pending.push([context, recordLabel(row?.name), recordLabel(row?.section), recordLabel(row?.assignment)].filter(Boolean).join(' · ') + ': ' + recordProblem(row?.problem));
+    for (const row of held) pending.push([context, recordLabel(row?.name), recordLabel(row?.section), recordLabel(row?.assignment), recordLabel(row?.source_file_names)].filter(Boolean).join(' · ') + ': ' + recordProblem(row?.problem));
     for (const problem of Array.isArray(scan.problems) ? scan.problems : []) pending.push(context + ': ' + recordProblem(problem));
     if (!held.length && !scan.problems?.length) pending.push(context + ': The filing check did not finish. Existing records are preserved.');
   }

@@ -629,8 +629,11 @@ def _scan_scope(cls, found):
 def _hold_context(row, assignment=""):
     first, last = _clean(row.get("first"), 100), _clean(row.get("last"), 100)
     name = last + ", " + first if first and last else last or first or _clean(row.get("who"), 100)
+    source_names = list(dict.fromkeys(_clean(file.get("name"), 160)
+        for version in [row] + row.get("earlier", []) for file in version.get("files", [])
+        if isinstance(file, dict) and file.get("name")))
     return {k: value for k, value in {"name": name, "section": _clean(row.get("section"), 100),
-                                    "assignment": _clean(assignment, 160)}.items() if value}
+        "assignment": _clean(assignment, 160), "source_file_names": _clean("; ".join(source_names[:8]), 400)}.items() if value}
 
 
 def _filing_receipt(cls, week, result):
@@ -646,8 +649,8 @@ def _filing_receipt(cls, week, result):
     for item in raw_held[:MAX_HOLDS]:
         if not isinstance(item, dict) or not item.get("problem"):
             raise Held("This filing result's review details need a readable reason.")
-        held.append({k: _clean(item[k], 400 if k == "problem" else 160)
-                     for k in ("name", "section", "assignment", "problem") if item.get(k)})
+        held.append({k: _clean(item[k], 400 if k in ("problem", "source_file_names") else 160)
+                     for k in ("name", "section", "assignment", "source_file_names", "problem") if item.get(k)})
     problems = [_clean(p, 400) for p in raw_problems[:MAX_HOLDS] if p]
     held_count = len(raw_held) + len([p for p in raw_problems if p])
     if result.get("status") != "verified" and not held_count:

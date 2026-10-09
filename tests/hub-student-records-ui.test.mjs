@@ -139,13 +139,13 @@ test('pending filing retains dated folders and names the exact class, week and i
     {name: 'Ann Avery', section: 'A4 Fictional', status: 'unverified', folder_url: 'https://drive.google.com/drive/folders/STUDENT_CURRENT', latest_record_date: '2032-01-07'}],
     filing: {coverage: 'holds_remain', held_count: 1, scans: [
       {class_key: 'biology', class_name: 'Biology', week: 'Wk 03', status: 'held', held_count: 1, held: [
-        {name: 'Rivera, Ana', section: 'A4 Fictional', assignment: 'Energy Flow — Turn In', problem: 'This record needs a verified school email or IC student identity; a name alone is not enough.'}], problems: []},
+        {name: 'Rivera, Ana', section: 'A4 Fictional', assignment: 'Energy Flow — Turn In', source_file_names: 'Untitled presentation.pptx', problem: 'This record needs a verified school email or IC student identity; a name alone is not enough.'}], problems: []},
       {class_key: 'biology', week: 'Wk 06', status: 'verified', held_count: 0, held: [], problems: []},
       {class_key: 'forensics', week: 'Wk 99', status: 'held', held_count: 1, held: [], problems: ['Do not show another class.']}]
     }}));
   h.panel.open = true; await h.ui.loadStudentRecords();
   assert.match(h.body.textContent, /1 filing hold remains. Checks cover recorded weeks only/);
-  assert.match(h.body.textContent, /Biology · Wk 03 · Rivera, Ana · A4 Fictional · Energy Flow — Turn In: This record needs a verified school email or IC student identity/);
+  assert.match(h.body.textContent, /Biology · Wk 03 · Rivera, Ana · A4 Fictional · Energy Flow — Turn In · Untitled presentation.pptx: This record needs a verified school email or IC student identity/);
   assert.doesNotMatch(h.body.textContent, /Forensics · Wk 99|Do not show another class|all caught up/);
   assert.match(h.body.textContent, /Ann AveryA4 FictionalRoster unverifiedJan 7, 2032/);
   assert.ok(walk(h.body).some(node => node.tagName === 'a' && node.href.endsWith('/STUDENT_CURRENT')));

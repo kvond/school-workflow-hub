@@ -687,6 +687,22 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual((result["status"], result["filed"]), ("held", 1))
         self.assertIn("different student", result["held"][0]["problem"])
 
+    def test_unnamed_source_hold_retains_exact_filename_for_a_named_resubmission(self):
+        self.drive.items[SOURCE]["name"] = "Untitled presentation.pptx"
+        original = deepcopy(self.drive.items[SOURCE])
+        candidate = row(email="", matched_by="file name", first="", last="", section="")
+        candidate["files"][0]["name"] = original["name"]
+        with patch.object(archive, "_filing_roster", return_value=name_roster()):
+            result = self.archive(found(candidate))
+        self.assertEqual((result["status"], result["filed"]), ("held", 0))
+        held = result["held"][0]
+        self.assertIn("resubmission", held["problem"])
+        self.assertEqual(held["source_file_names"], original["name"])
+        receipt = archive._filing_receipt("biology", "Wk 03", result)
+        self.assertEqual(receipt["held"][0]["source_file_names"], original["name"])
+        self.assertEqual(self.drive.items[SOURCE], original)
+        self.assertFalse(any(i["mimeType"] == archive.SHORTCUT for i in self.drive.created))
+
     def test_actual_roster_reader_retains_duplicate_rows_for_name_collision_checks(self):
         self.config["HUB_ROSTER_SPREADSHEET_ID"] = "FictionalRosterWorkbook001"
         cells = {(1, 1): {"formattedValue": "Last name"}, (1, 2): {"formattedValue": "First name"},
