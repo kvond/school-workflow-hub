@@ -275,6 +275,24 @@ class NativeFeedbackTests(unittest.TestCase):
             with self.assertRaisesRegex(fb.Held, 'Private access unverified'):
                 fb.today_files('token', config, date_et='2026-10-08')
 
+    def test_provider_timeout_keeps_a_verified_saved_daily_snapshot_available(self):
+        from hub_v2 import daily_feedback_packet
+        saved = {'status': 'ready', 'configured': True, 'date': '2026-10-07',
+                 'id': 'dailyfeedbackpacket_' + 'a' * 64, 'pages': 2}
+        error = google.GoogleError("Google didn't answer in time. Try again.")
+        with patch.object(fb, '_feedback_files', side_effect=error), \
+                patch.object(daily_feedback_packet, 'status', return_value=saved):
+            result = fb.today_files('token', {}, date_et='2026-10-08')
+        self.assertEqual(result['date'], '2026-10-07')
+        self.assertEqual(result['requested_date'], '2026-10-08')
+        self.assertEqual(result['files'], [])
+        self.assertEqual(result['daily_packet'], saved)
+        self.assertEqual(result['source_problem'], str(error))
+        with patch.object(fb, '_feedback_files', side_effect=error), \
+                patch.object(daily_feedback_packet, 'status', return_value={'status': 'not_saved'}):
+            with self.assertRaises(google.GoogleError):
+                fb.today_files('token', {}, date_et='2026-10-08')
+
     def test_changed_work_policy_identity_reference_or_assignment_blocks_save(self):
         draft = fb.generate(OPENAI_CONFIG, inputs())
         for area, field, value in [('source', 'sha256', 'c' * 64), ('source', 'file', {'modified_at': 'later'}),

@@ -588,7 +588,7 @@ def today_files(token, config, *, date_et=None):
     day = daily_feedback_packet.date_value(date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat())
     try:
         available = _feedback_files(token, config)
-    except Held as error:
+    except (Held, google.GoogleError) as error:
         previous = daily_feedback_packet.status(token, config)
         if previous.get('status') != 'ready':
             raise
