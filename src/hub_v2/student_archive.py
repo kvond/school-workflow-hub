@@ -12,6 +12,7 @@ import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from time import monotonic
 
 from . import google, work
 from school_workflow_hub.adapters.firestore_state import configured_store
@@ -33,6 +34,7 @@ FIELDS = "id,name,mimeType,parents,driveId,trashed,permissions,capabilities,prop
 SOURCE_FIELDS = ",".join(f for f in FIELDS.split(",") if f not in {"permissions", "capabilities", "shortcutDetails"})
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
+LEASE_HEARTBEAT_SECONDS = 40
 
 
 class Held(ValueError):
@@ -406,16 +408,42 @@ class _Run:
         request = "archive-" + uuid.uuid4().hex
         self.claim = self.cloud.claim(task, owner="student-archive", request_id=request,
                                       input_hash=content_hash([self.root, cls, request]))
+        self._renewed_at, self._lease_error = monotonic(), None
         self.index_key = key("archiveclass", [self.root, cls])
         self.student_records = None
 
     def renew(self):
-        self.claim = self.cloud.renew(self.claim)
+        if self._lease_error is not None:
+            raise self._lease_error
+        try:
+            self.claim = self.cloud.renew(self.claim)
+        except (Conflict, StoreUnavailable) as error:
+            self._lease_error = error
+            raise
+        self._renewed_at = monotonic()
+
+    def heartbeat(self, *, force=False):
+        if self._lease_error is not None:
+            raise self._lease_error
+        # Monotonic time only schedules checks. The cloud's current ownership,
+        # fencing counter and server clock decide whether renewal is allowed.
+        if force or monotonic() - self._renewed_at >= LEASE_HEARTBEAT_SECONDS:
+            self.renew()
+
+    def put(self, ident, value, old=None):
+        self.heartbeat()
+        return _put(self.port, ident, value, old)
 
     def finish(self, result):
-        self.cloud.finish(self.claim, records={"archive": result})
+        self.heartbeat(force=True)
+        try:
+            self.cloud.finish(self.claim, records={"archive": result})
+        except (Conflict, StoreUnavailable) as error:
+            self._lease_error = error
+            raise
 
     def create(self, ident, name, parent, mime, *, target=None, pdf=None, attributes=None):
+        self.heartbeat()
         old = _read(self.port, ident)
         expected = {"name": name, "parent": parent, "mime": mime, "target": target}
         if old:
@@ -452,7 +480,7 @@ class _Run:
                       "status": "reserved", **expected, **(attributes or {})}
             if pdf is not None:
                 record.update(pdf_sha256=hashlib.sha256(pdf).hexdigest(), pdf_md5=hashlib.md5(pdf).hexdigest(), size=len(pdf))
-            old = _put(self.port, ident, record)
+            old = self.put(ident, record)
         file_id = record["drive_file_id"]
         try:
             meta = google.drive_file(self.token, file_id, FIELDS)
@@ -463,12 +491,13 @@ class _Run:
                 raise Held("An earlier archive creation was not confirmed. Check its reserved file before retrying.") from None
             self.renew()
             record = {**record, "status": "creating"}
-            old = _put(self.port, ident, record, old)
+            old = self.put(ident, record, old)
             metadata = {"id": file_id, "name": name, "mimeType": mime, "parents": [parent], "properties": {TAG: ident}}
             if target:
                 metadata["shortcutDetails"] = {"targetId": target}
             creation_error = None
             known_quota = False
+            self.renew()
             try:
                 google.archive_create(self.write_token, metadata, pdf)
             except google.GoogleError as error:
@@ -482,7 +511,7 @@ class _Run:
                     record = {**record, "creation_failure": "storage_quota", "failure_absence_verified": True,
                               "failure_checked_at": datetime.now(timezone.utc).isoformat(),
                               "attempt_parent_drive_id": self.course.get("driveId")}
-                    old = _put(self.port, ident, record, old)
+                    old = self.put(ident, record, old)
                 raise Held(creation_error or "Drive did not confirm the reserved archive file. Its creation is held for review.") from None
         _private(meta, parent=parent, folder=mime == google.FOLDER)
         if (meta.get("mimeType") != mime or (meta.get("properties") or {}).get(TAG) != ident
@@ -504,7 +533,7 @@ class _Run:
                       drive_version=meta.get("version"), url=_url(file_id, mime == google.FOLDER))
         if mime == SHORTCUT:
             record.update(attributes or {})
-        return _put(self.port, ident, record, old).value
+        return self.put(ident, record, old).value
 
     def _student_record(self, ident):
         seen = set()
@@ -519,6 +548,7 @@ class _Run:
         raise Held("The student archive's identity links need review. Existing folders are preserved.")
 
     def student(self, person):
+        self.heartbeat()
         section_key = key("archivesection", [self.root, self.cls, person["section"]])
         section = self.create(section_key, person["section"], self.course["id"], google.FOLDER)
         primary_key = key("archivestudent", [self.root, self.cls, person["identity"]])
@@ -571,47 +601,48 @@ class _Run:
             except google.GoogleError:
                 pass
             _private(google.drive_file(self.token, meta["id"], FIELDS), parent=section["drive_file_id"], folder=True)
-            prior = _put(self.port, student_key, {**prior.value, "parent": section["drive_file_id"]}, prior)
+            prior = self.put(student_key, {**prior.value, "parent": section["drive_file_id"]}, prior)
         student = self.create(student_key, person["name"], section["drive_file_id"], google.FOLDER,
                               attributes={**person, "items": {}})
         doc = _read(self.port, student_key)
-        student = _put(self.port, student_key, {**student, **person, "student_key": student_key}, doc).value
+        student = self.put(student_key, {**student, **person, "student_key": student_key}, doc).value
         self.student_records[student_key] = _read(self.port, student_key)
         for ident in dict.fromkeys(identities):
             if ident != student_key:
                 old = _read(self.port, ident)
-                _put(self.port, ident, {"schema": SCHEMA, "alias_of": student_key}, old)
+                self.put(ident, {"schema": SCHEMA, "alias_of": student_key}, old)
         index = _read(self.port, self.index_key)
         values = dict((index.value if index else {}).get("students", {}))
         values[student_key] = student["drive_file_id"]
         if len(values) > MAX_STUDENTS:
             raise Held("The student archive exceeds its verified class size limit.")
-        _put(self.port, self.index_key, {**(index.value if index else {}), "schema": SCHEMA, "students": values}, index)
+        self.put(self.index_key, {**(index.value if index else {}), "schema": SCHEMA, "students": values}, index)
         return student
 
     def filing_receipt(self, found, result):
         week = _scan_scope(self.cls, found)
         receipt = _filing_receipt(self.cls, week, result)
         ident = key("archivescan", [self.root, self.cls, week])
-        self.renew()
-        _put(self.port, ident, receipt, _read(self.port, ident))
+        self.heartbeat(force=True)
+        self.put(ident, receipt, _read(self.port, ident))
         index = _read(self.port, self.index_key)
         scans = dict((index.value if index else {}).get("filing_scans", {}))
         scans[week] = ident
         if len(scans) > MAX_SCANS:
             raise Held("The archive's recorded week coverage needs its size checked.")
-        _put(self.port, self.index_key, {**(index.value if index else {}), "schema": SCHEMA,
-                                       "filing_scans": scans}, index)
+        self.put(self.index_key, {**(index.value if index else {}), "schema": SCHEMA,
+                                  "filing_scans": scans}, index)
         return receipt
 
     def attach(self, student, artifact):
+        self.heartbeat()
         ident = student["student_key"]
         doc = _read(self.port, ident)
         items = dict(doc.value.get("items", {}))
         items[artifact["record_key"]] = {"kind": artifact["kind"], "date": artifact["date"]}
         if len(items) > MAX_ITEMS:
             raise Held("This student's archive exceeds its verified record limit.")
-        _put(self.port, ident, {**doc.value, "items": items}, doc)
+        self.put(ident, {**doc.value, "items": items}, doc)
 
 
 def _result(cls, **more):
@@ -708,6 +739,7 @@ def archive_work(token, write_token, config, class_key, found):
             return roster_rows
 
         def source_reader(ident):
+            run.heartbeat()
             if ident not in source_metadata:
                 source_metadata[ident] = google.drive_file(token, ident, SOURCE_FIELDS)
             return source_metadata[ident]
@@ -738,6 +770,7 @@ def archive_work(token, write_token, config, class_key, found):
                     result["held"].append({"assignment": form.get("label", ""), "problem": form["problem"]})
                     continue
                 for row in form.get("students", []) + form.get("late", []):
+                    run.heartbeat()
                     if not row.get("files") and not any(v.get("files") for v in row.get("earlier", [])):
                         continue
                     try:
@@ -757,12 +790,14 @@ def archive_work(token, write_token, config, class_key, found):
         # the first candidate encountered, rather than creating a first-wins folder.
         filed_ids = set()
         for lesson, form, row, person in candidates:
+            run.heartbeat()
             context = _hold_context(row, form.get("label") or lesson.get("topic") or "")
             if (person["school_email"] or person["identity"]) in conflicts:
                 continue
             try:
                 student = run.student(person)
                 for version in [row] + row.get("earlier", []):
+                    run.heartbeat()
                     try:
                         evidence = row if version is row else {**row, **version, "email": version.get("email", ""),
                             "school_email": version.get("school_email") or version.get("email", ""),
@@ -790,6 +825,7 @@ def archive_work(token, write_token, config, class_key, found):
                         result["held"].append({**context, "problem": str(error)})
                         continue
                     for file in version.get("files", []):
+                        run.heartbeat()
                         if file.get("trashed") or file.get("problem"):
                             result["held"].append({**context, "problem": "This source file's lesson or availability needs checking."})
                             continue
@@ -832,7 +868,7 @@ def archive_work(token, write_token, config, class_key, found):
                                        "date_basis": date_basis, "source_context": {"week": found["week"], "form_id": form.get("form_id")}}
                         observation_key = key("archiveobservation", [artifact_key, observation])
                         if not _read(run.port, observation_key):
-                            _put(run.port, observation_key, observation)
+                            run.put(observation_key, observation)
                         run.attach(student, artifact)
                         filed_ids.add(artifact["drive_file_id"])
                         result["filed"] = len(filed_ids)

@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from hub_v2 import google, student_archive as archive
+from school_workflow_hub.core.cloud_state import CloudState, StoreUnavailable
 from tests.test_cloud_state import MemoryCAS
 
 ROOT = "FictionalArchiveRoot00001"
@@ -129,6 +130,122 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertFalse(result["configured"])
         self.assertEqual(self.drive.created, [])
         self.assertEqual(self.port.rows, {})
+
+    def test_all_existing_long_scan_renews_server_lease_and_records_one_completed_receipt(self):
+        sources = []
+        for number in range(29):
+            ident = "FictionalExistingSource%03d" % number
+            self.drive.add(ident, "Energy Flow - Ana Rivera.pptx", google.PPTX, ["OriginalFormUploadFolder"])
+            sources.append({"id": ident, "name": "Energy Flow - Ana Rivera.pptx", "mime": google.PPTX})
+        data = found(row(files=sources))
+        self.assertEqual(self.archive(data)["filed"], 29)
+        created, elapsed, commits = len(self.drive.created), [0.0], []
+        source_ids = {item["id"] for item in sources}
+        original_commit = self.port.commit
+
+        def metadata(token, ident, fields=None):
+            if ident in source_ids:
+                elapsed[0] += 9
+                self.port.advance(9)
+            return self.drive.metadata(token, ident, fields)
+
+        def commit(changes):
+            commits.append(deepcopy(changes))
+            return original_commit(changes)
+
+        with patch.object(archive, "monotonic", side_effect=lambda: elapsed[0]), \
+                patch.object(google, "drive_file", side_effect=metadata), \
+                patch.object(self.port, "commit", side_effect=commit):
+            result = self.archive(data)
+        self.assertEqual((result["status"], result["filed"], result["held"], result["problems"]), ("verified", 29, [], []))
+        self.assertGreater(elapsed[0], 240)
+        self.assertEqual(len(self.drive.created), created)
+        self.assertEqual((self.drive.renamed, self.drive.moved), ([], []))
+        receipt_id = archive.key("archivescan", [ROOT, "biology", data["week"]])
+        self.assertEqual(sum(receipt_id in change for change in commits), 1)
+        self.assertEqual(self.port.rows[receipt_id].value["status"], "verified")
+        task_id = next(ident for ident, doc in self.port.rows.items() if ident.startswith("task_")
+                       and doc.value["scope"]["workflow"] == "student-archive")
+        task = self.port.rows[task_id].value
+        self.assertIsNone(task["active_run"])
+        completed = self.port.rows[task["last_result"]["record_ids"]["archive"]].value["payload"]
+        self.assertEqual((completed["status"], completed["filed"]), ("verified", 29))
+        renewals = sum(task_id in change and change[task_id][0].get("status") == "Working" for change in commits)
+        self.assertGreaterEqual(renewals, 7)
+        self.assertLess(renewals, len(sources))  # Heartbeats are throttled, not one per metadata GET.
+
+    def test_lost_ownership_after_slow_source_read_stops_all_later_drive_and_state_writes(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        receipt_id = archive.key("archivescan", [ROOT, "biology", "Wk 04"])
+        prior_receipt = self.port.rows[receipt_id]
+        elapsed, lost = [0.0], {}
+
+        def metadata(token, ident, fields=None):
+            if ident == SOURCE and not lost:
+                elapsed[0] += 121
+                self.port.advance(121)
+                task_id = next(i for i, doc in self.port.rows.items() if i.startswith("task_"))
+                successor = CloudState(self.port).claim(task_id, owner="other-archive-worker",
+                    request_id="separate-live-operation", input_hash="different-input")
+                lost.update(claim=successor, rows=deepcopy(self.port.rows), items=deepcopy(self.drive.items),
+                            created=len(self.drive.created), renamed=len(self.drive.renamed), moved=len(self.drive.moved))
+            return self.drive.metadata(token, ident, fields)
+
+        with patch.object(archive, "monotonic", side_effect=lambda: elapsed[0]), \
+                patch.object(google, "drive_file", side_effect=metadata):
+            result = self.archive()
+        self.assertTrue(lost)
+        self.assertEqual(result["status"], "held")
+        self.assertIn("Another student-records operation", result["problems"][0])
+        self.assertEqual(self.port.rows, lost["rows"])
+        self.assertEqual(self.drive.items, lost["items"])
+        self.assertEqual((len(self.drive.created), len(self.drive.renamed), len(self.drive.moved)),
+                         (lost["created"], lost["renamed"], lost["moved"]))
+        self.assertEqual(self.port.rows[receipt_id], prior_receipt)
+        task = self.port.rows[lost["claim"].task_id].value
+        self.assertEqual(task["active_run"], lost["claim"].run_id)
+
+    def test_finish_forces_server_renewal_even_before_throttled_heartbeat_is_due(self):
+        elapsed = [0.0]
+        with patch.object(archive, "monotonic", side_effect=lambda: elapsed[0]):
+            run = archive._Run("read", "write", self.config, "biology")
+            first_expiry = run.claim.expires_at
+            # Server time is authoritative, independently of the scheduling clock.
+            self.port.advance(119); elapsed[0] = 39
+            original_read, delayed = self.port.read, []
+
+            def read(ids):
+                if not delayed and any(ident.startswith("record_") for ident in ids):
+                    delayed.append(True)
+                    self.port.advance(2)
+                return original_read(ids)
+
+            with patch.object(self.port, "read", side_effect=read):
+                run.finish({"status": "verified"})
+        self.assertTrue(delayed)
+        self.assertGreater(run.claim.expires_at, first_expiry)
+        task = self.port.rows[run.claim.task_id].value
+        self.assertIsNone(task["active_run"])
+        self.assertEqual(self.port.rows[task["last_result"]["record_ids"]["archive"]].value["payload"], {"status": "verified"})
+
+    def test_uncertain_renewal_is_not_retried_and_blocks_later_archive_mutations(self):
+        with patch.object(archive, "monotonic", return_value=0.0):
+            run = archive._Run("read", "write", self.config, "biology")
+            self.port.fail_after_commit = True
+            with self.assertRaises(StoreUnavailable):
+                run.renew()
+            after_failure = deepcopy(self.port.rows)
+            sequence = self.port.sequence
+            for operation in (lambda: run.put("archive_unexpected", {}),
+                              lambda: run.create("archive_unexpected", "Example", COURSES["biology"], google.FOLDER),
+                              lambda: run.student({}), lambda: run.attach({}, {}),
+                              lambda: run.filing_receipt(found(), {"status": "verified", "filed": 0}),
+                              lambda: run.finish({"status": "held"})):
+                with self.assertRaises(StoreUnavailable):
+                    operation()
+        self.assertEqual(self.port.rows, after_failure)
+        self.assertEqual(self.port.sequence, sequence)
+        self.assertEqual((self.drive.created, self.drive.renamed, self.drive.moved), ([], [], []))
 
     def test_default_identity_scope_is_the_actual_root(self):
         self.assertEqual(archive._scope_root(self.config, ROOT), ROOT)
