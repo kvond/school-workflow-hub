@@ -595,7 +595,8 @@ def nearby_forms(token, agenda, class_key, week_label, skip):
                       for form in lesson["forms"] if form["form_id"]]
             deck_ids = {m.group(1) for material in lesson["materials"]
                         for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
-            names = [info.get("name", "") for info in _metadata(token, deck_ids).values()]
+            names = [info.get("name", "") for info in _metadata(token, deck_ids).values()
+                     if not info.get("trashed") and not info.get("problem")]
             pair_decks(paired, [deck_stem(name) for name in names], names)
             for form in lesson["forms"]:
                 if not form["form_id"] or form["form_id"] in skip:
@@ -1021,7 +1022,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
     # its weeks are its Agenda week and the week its own decks are named for.
     deck_ids = {m.group(1) for lesson in lessons for material in lesson["materials"]
                 for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
-    numbers = _weeks(number) | {folder_week(info.get("name", "")) for info in _metadata(token, deck_ids).values()}
+    numbers = _weeks(number) | {folder_week(info.get("name", "")) for info in _metadata(token, deck_ids).values()
+                              if not info.get("trashed") and not info.get("problem")}
     numbers.discard(None)
     layout = agenda.classes[class_key]["layout"] or {"rows": []}
     other_titles = [f["label"] for label in {lbl for _, lbl in layout["rows"] if norm(lbl) != norm(week_label)}
@@ -1122,7 +1124,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
             index += len(lesson["forms"])
             deck_ids = {m.group(1) for material in lesson["materials"]
                         for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
-            named = [(deck_stem(info.get("name", "")), info.get("name", "")) for info in _metadata(token, deck_ids).values()]
+            named = [(deck_stem(info.get("name", "")), info.get("name", "")) for info in _metadata(token, deck_ids).values()
+                     if not info.get("trashed") and not info.get("problem")]
             named = [(stem, name) for stem, name in named if len(stem) >= 8]
             pair_decks(lesson_forms, [stem for stem, _ in named], [name for _, name in named])
         for submission in pending:
@@ -1141,7 +1144,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
     for lesson in lessons:
         deck_ids = {m.group(1) for material in lesson["materials"]
                     for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
-        titles = [info.get("name", "") for info in _metadata(token, deck_ids).values()]
+        titles = [info.get("name", "") for info in _metadata(token, deck_ids).values()
+                  if not info.get("trashed") and not info.get("problem")]
         lesson_forms = forms[index:index + len(lesson["forms"])]
         for form in lesson_forms:
             form.setdefault("signature", set())
@@ -1250,6 +1254,12 @@ def lesson_work(token, config, agenda, class_key, week_label):
                    and not (str(name).startswith("_") and fid not in holding)]
     check = roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
     folder_reviews = shared_folder_reviews(forms, roots, parents)
+    # Read-only grading context is separate from discovery/filing eligibility.
+    # It also covers an empty Form, where no score_file call could block zeros.
+    from . import completion
+    for lesson in result:
+        for form in lesson["forms"]:
+            form["grade_readiness"] = completion.assignment_readiness(token, config, agenda, class_key, week_label, form["form_id"])
     return {"class_key": class_key, "week": week_label, "week_policy": policy, "assessment_problem": route_problem,
             "lessons": result, "other_files": other_rows,
             "roster_check": check,

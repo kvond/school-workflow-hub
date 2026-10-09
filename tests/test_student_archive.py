@@ -155,6 +155,79 @@ class StudentArchiveTests(unittest.TestCase):
     def archive(self, data=None):
         return archive.archive_work("read", "write", self.config, "biology", data or found())
 
+    def former_student_fixture(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        owner_doc = next(d for d in self.port.rows.values() if d.value.get("student_key") and d.value.get("items"))
+        copied_doc = next(d for d in self.port.rows.values() if d.value.get("source_kind") == "submitted_work_copy")
+        teacher = {"basis": "teacher_confirmed_former_student", "status": "former_student", "class_key": "biology",
+                   "name": "Rivera, Ana", "current_ic_verified": False, "confirmed_on": "2026-10-09"}
+        run = archive._Run("read", "write", self.config, "biology")
+        folder = run.create(archive.key("archiveformersection", [ROOT, "biology"]), "Former students", COURSES["biology"], google.FOLDER)
+        self.drive.move("write", owner_doc.value["drive_file_id"], folder["drive_file_id"], [owner_doc.value["parent"]])
+        owner_doc.value.update(parent=folder["drive_file_id"], class_key="biology", section="Former students",
+            historical_status="former_student", current_roster_member=False, grade_authority=False,
+            identity_status="identity_unverified", former_student_proof=teacher)
+        copied_doc.value.update(historical_status="former_student", identity_status="identity_unverified")
+        index = self.port.rows[run.index_key].value
+        index["historical_sources"] = {SOURCE: {"basis": "teacher_confirmed_former_student_with_verified_work_copy",
+            "teacher_status": teacher, "source_revision": deepcopy(copied_doc.value["source_revision"]),
+            "student_key": owner_doc.value["student_key"], "student_folder_id": owner_doc.value["drive_file_id"],
+            "copy_record_key": copied_doc.value["record_key"], "copy_id": copied_doc.value["drive_file_id"]}}
+        run.finish({"status": "verified"})
+        return owner_doc.value, copied_doc.value, folder
+
+    def test_known_unchanged_former_source_stays_historical_without_current_roster_or_copy_retry(self):
+        owner, copied, folder = self.former_student_fixture()
+        data = found(row(matched=False, first="", last="", section="", source="folder", email=""))
+        original_data = deepcopy(data); original_source = deepcopy(self.drive.items[SOURCE]); prior_owner = deepcopy(owner)
+        copies, folders = len(self.drive.copied), len(self.drive.created)
+        with patch.object(archive, "_filing_roster", side_effect=AssertionError("Historical work must not reclaim the active roster")):
+            result = self.archive(data)
+        self.assertEqual(result["status"], "verified", result)
+        self.assertEqual(result["historical_preserved"], 1)
+        self.assertEqual(result["filed"], 0)
+        self.assertEqual(result["held"], [])
+        self.assertEqual(data, original_data)
+        self.assertEqual(self.drive.items[SOURCE], original_source)
+        self.assertEqual(self.port.rows[owner["student_key"]].value, prior_owner)
+        self.assertEqual((len(self.drive.copied), len(self.drive.created)), (copies, folders))
+
+    def test_historical_revision_owner_copy_and_private_location_changes_cannot_skip_filing(self):
+        owner, copied, folder = self.former_student_fixture()
+        snapshot = deepcopy(self.port.rows); drive = deepcopy(self.drive.items)
+        data = found(row(matched=False, first="", last="", section="", source="folder", email=""))
+        index_key = archive.key("archiveclass", [ROOT, "biology"])
+        mutations = [lambda: self.drive.items[SOURCE].update(version="2"),
+            lambda: self.drive.items[copied["drive_file_id"]].update(modifiedTime="2026-10-10T12:00:00Z"),
+            lambda: self.drive.items[copied["drive_file_id"]].update(md5Checksum="ChangedContent"),
+            lambda: self.drive.items[copied["drive_file_id"]]["permissions"].append({"type": "anyone", "role": "reader"}),
+            lambda: self.port.rows[owner["student_key"]].value.update(current_roster_member=True),
+            lambda: self.port.rows[owner["student_key"]].value.update(grade_authority=True),
+            lambda: self.port.rows[owner["student_key"]].value["items"].pop(copied["record_key"]),
+            lambda: self.port.rows[index_key].value["historical_sources"][SOURCE].update(copy_id="DifferentCopy"),
+            lambda: self.drive.items[folder["drive_file_id"]]["properties"].update({archive.TAG: "DifferentHistoryFolder"})]
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                self.port.rows = deepcopy(snapshot); self.drive.items = deepcopy(drive); mutate()
+                before = len(self.drive.copied)
+                result = self.archive(data)
+                self.assertEqual(result["status"], "held")
+                self.assertNotIn("historical_preserved", result)
+                self.assertEqual(len(self.drive.copied), before)
+
+    def test_historical_skip_does_not_hide_a_new_source_or_conflicting_current_student(self):
+        owner, copied, folder = self.former_student_fixture()
+        unknown = row(matched=False, first="", last="", section="", source="folder", email="",
+            files=[{"id": EARLIER, "name": "Unconfirmed current student submission", "mime": google.PPTX}])
+        with patch.object(archive, "_filing_roster", return_value=name_roster()):
+            result = self.archive(found(row(matched=False, first="", last="", section="", source="folder", email=""), unknown))
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["historical_preserved"], 1)
+        self.assertEqual(len(result["held"]), 1)
+        conflicting = self.archive(found(row(first="Different", last="Student")))
+        self.assertEqual(conflicting["status"], "held")
+        self.assertIn("attributed to another student", conflicting["held"][0]["problem"])
+
     def test_unconfigured_archive_makes_no_drive_or_state_write(self):
         result = archive.archive_work("read", "write", {}, "biology", found())
         self.assertFalse(result["configured"])

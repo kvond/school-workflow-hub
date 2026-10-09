@@ -19,6 +19,7 @@ denominator is N/A. Writing in a box with no code is ignored for the scores
 and reported by slide, so the deck can be coded next time.
 """
 import difflib
+from collections import Counter
 import io
 import re
 import zipfile
@@ -36,6 +37,7 @@ MAX_SLIDE_BYTES = 5_000_000
 MAX_SLIDES = 200
 COPY_WORDS = 6
 MAX_ANSWER = 4000
+NEEDS_CODES = "Needs embedded codes"
 
 
 class Unreadable(Exception):
@@ -188,12 +190,26 @@ def _parse_header(header, census):
     A category the list gives a count for but no ids (BANK_TERMS=6 with no BANK_IDS=)
     uses the deck's own codes for it."""
     lists = {c: list(census[c]) for c in CATEGORIES}
-    for category, values in ID_LIST.findall(header):
-        lists[category] = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
     counts = {("BANK" if k == "BANK_TERMS" else k): int(v) for k, v in COUNT.findall(header)}
+    for category, values in ID_LIST.findall(header):
+        parsed = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
+        lists[category] = [] if parsed == ["-"] and counts.get(category) == 0 else parsed
     if any(lists.values()) and all(counts.get(c, len(lists[c])) == len(lists[c]) for c in CATEGORIES):
         return lists
     return None
+
+
+def _inventory_text(units):
+    """Inventory-bearing boxes only: adjacent lesson prose is not an ID list."""
+    pieces = []
+    for unit in units:
+        value = unit["text"]
+        marker = INVENTORY.search(value)
+        if marker:
+            value = value[marker.start():]
+        if marker or COUNT.search(value) or re.search(r"\b(?:NOTES|DRAFT|OPTIONAL|BANK)_IDS=", value):
+            pieces.append(value)
+    return "\n".join(pieces)
 
 
 def inventory(deck):
@@ -213,7 +229,7 @@ def inventory(deck):
     # order first, then the order the boxes were made in.
     by_position = sorted(slide["units"], key=lambda u: (u["box"][1], u["box"][0]) if u["box"] else (0, 0))
     for units in (by_position, slide["units"]):
-        lists = _parse_header("\n".join(u["text"] for u in units if u["text"]), census)
+        lists = _parse_header(_inventory_text(units), census)
         if lists:
             return code, lists, "header", None
     return code, census, "census", "The deck's code list doesn't match its own counts, so every code in it was used."
@@ -470,6 +486,77 @@ def coding_issues(deck):
             "extra": sorted("%s %s" % key for key in present - listed)}
 
 
+def readiness(deck, *, revision=""):
+    """Completion marker gate; curriculum/teacher-reference checks are separate.
+
+    Read the complete first-slide inventory, including exported line breaks
+    and separate text boxes. A marker census is diagnostic, never permission
+    to score a missing or inconsistent inventory.
+    """
+    headers = [(slide, unit, match) for slide in deck["slides"] for unit in slide["units"]
+               for match in INVENTORY.finditer(unit["text"])]
+    codes = markers(deck)
+    observed = Counter(m["category"] for m in codes)
+    issues, messages, missing, extra = [], [], [], []
+
+    def issue(ident, message):
+        if ident not in issues:
+            issues.append(ident); messages.append(message)
+
+    cycle, line, declared = "", "", {}
+    if len(headers) != 1:
+        issue("marker_inventory_missing_or_duplicated",
+              "The deck needs exactly one readable marker inventory on slide 1; found %d." % len(headers))
+    else:
+        slide, _, match = headers[0]
+        cycle = match.group(1)
+        if slide["number"] != 1:
+            issue("marker_inventory_not_on_first_slide", "The marker inventory is on slide %d, rather than slide 1." % slide["number"])
+        units = sorted(slide["units"], key=lambda u: (u["box"][1], u["box"][0]) if u["box"] else (0, 0))
+        line = _inventory_text(units)
+        fields = COUNT.findall(line)
+        declared = {("BANK" if k == "BANK_TERMS" else k): int(v) for k, v in fields}
+        if set(declared) != set(CATEGORIES) or len(fields) != len(CATEGORIES):
+            issue("marker_inventory_counts_unparsed",
+                  "The inventory must give one numeric total each for NOTES, DRAFT, OPTIONAL and BANK_TERMS.")
+        else:
+            for category in CATEGORIES:
+                if declared[category] != observed[category]:
+                    issue("marker_inventory_count_mismatch",
+                          "%s lists %d in the inventory, but the deck carries %d markers." %
+                          (category, declared[category], observed[category]))
+        lists = {}
+        for category, values in ID_LIST.findall(line):
+            parsed = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
+            if parsed == ["-"] and declared.get(category) == 0:
+                parsed = []  # explicit empty-list sentinel used in marked Forensics decks
+            if category in lists or len(parsed) != len(set(parsed)):
+                issue("marker_inventory_id_mismatch", "The inventory repeats a list or question ID.")
+            lists[category] = parsed
+        for category, listed in lists.items():
+            actual = [m["id"] for m in codes if m["category"] == category]
+            missing.extend("%s %s" % (category, ident) for ident in set(listed) - set(actual))
+            extra.extend("%s %s" % (category, ident) for ident in set(actual) - set(listed))
+            if Counter(listed) != Counter(actual):
+                issue("marker_inventory_id_mismatch", "The inventory's question IDs do not match the embedded markers.")
+    if any(count > 1 for count in Counter((m["category"], m["code"], m["id"]) for m in codes).values()):
+        issue("duplicate_feedback_marker", "A response marker is repeated; each category/question ID must appear once.")
+    if cycle and any(m["code"] != cycle for m in codes):
+        issue("feedback_marker_cycle_mismatch", "A response marker names a different cycle than the inventory.")
+    if not {m["id"] for m in codes if m["category"] == "DRAFT"} <= {m["id"] for m in codes if m["category"] == "NOTES"}:
+        issue("draft_without_matching_notes", "A DRAFT question has no matching NOTES question ID.")
+    return {"schema_version": "hub-completion-readiness/v1", "workflow": "completion",
+            "status": "NOT_READY" if issues else "READY", "revision": str(revision or ""),
+            "label": NEEDS_CODES if issues else "Ready",
+            "inventory_cycle": cycle, "inventory_text": line, "counts": dict(observed),
+            "declared_counts": declared, "missing_ids": sorted(missing), "extra_ids": sorted(extra),
+            "issues": issues, "warnings": [], "critical_aspects": [],
+            "problem": NEEDS_CODES + ". " + messages[0] if messages else None, "diagnostics": messages,
+            "action": ("Move the existing code-summary inventory to slide 1, preserving the question markers and lesson content; then recheck and rerun grading.")
+                      if issues == ["marker_inventory_not_on_first_slide"] else None,
+            "receipt": {"revision": str(revision or "")}, "external_writes": 0}
+
+
 def score(done, required):
     return None if not required else round(10 * done / required, 1)
 
@@ -589,14 +676,18 @@ def _remember(cache, key, value, limit):
 
 def _read(token, file_id, meta):
     from . import google
+    if meta.get("trashed"):
+        raise Unreadable("This exact deck is in trash; no contents were scored or restored.")
     return read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
 
 
 def _template(token, deck_id):
     """(metadata, parsed deck) for a handed-out deck, re-read only when it changes."""
     from . import google
-    meta = google.drive_file(token, deck_id)
-    key = (deck_id, meta.get("modifiedTime", ""))
+    meta = google.drive_file(token, deck_id, google.FILE_FIELDS + ",version")
+    if meta.get("trashed"):
+        raise Unreadable("This linked deck is in trash. It is not a current lesson source; it was not restored.")
+    key = (deck_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
     if key not in _templates:
         _remember(_templates, key, _read(token, deck_id, meta), MAX_CACHED_TEMPLATES)
     return meta, _templates[key]
@@ -607,14 +698,14 @@ FOLDER_CACHE_SECONDS = 600
 
 
 def _siblings(token, folder_id):
-    """The Slides decks in a lesson folder, re-listed at most every ten minutes."""
+    """Supported decks in a lesson folder, re-listed at most every ten minutes."""
     import time
     from . import google
     cached = _folders.get(folder_id)
     if cached and time.time() - cached[0] < FOLDER_CACHE_SECONDS:
         return cached[1]
     try:
-        decks = [f for f in google.folder_children(token, folder_id) if f.get("mimeType") == SLIDES][:60]
+        decks = [f for f in google.folder_children(token, folder_id) if f.get("mimeType") in (SLIDES, google.PPTX)][:60]
     except google.GoogleError:
         decks = []
     _remember(_folders, folder_id, (time.time(), decks), 50)
@@ -644,6 +735,129 @@ def lesson_decks(agenda, class_key, week_label, form_id):
     return []
 
 
+def lesson_sources(token, lesson):
+    """Fresh actual-folder/current-link evidence, never a lesson-name search.
+
+    Stale/trash links are reported separately. An inaccessible or empty named
+    folder is a hold; a listing alone cannot prove its folder was readable.
+    """
+    from . import google
+    materials = lesson.get("materials", [])
+    folders = list(dict.fromkeys(m.group(1) for item in materials
+                 if item.get("label") == "Lesson folder"
+                 if (m := re.search(r"/folders/([A-Za-z0-9_-]+)", item.get("url", "")))))
+    linked = {}
+    for item in materials:
+        match = re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", item.get("url", ""))
+        if match:
+            linked.setdefault(match.group(1), item.get("label", "Deck"))
+    result = {"decks": [], "stale_links": [], "folders": [], "problem": None}
+    members = set()
+    for fid in folders:
+        try:
+            meta = google.drive_file(token, fid)
+            if meta.get("mimeType") != google.FOLDER or meta.get("trashed"):
+                raise Unreadable("The Agenda lesson folder is unavailable or in trash.")
+            children = google.folder_children(token, fid)
+            present = {f["id"] for f in children if f.get("mimeType") in (SLIDES, google.PPTX) and not f.get("trashed")}
+            if not present:
+                raise Unreadable("The readable Agenda lesson folder contains no current slide deck.")
+            members.update(present)
+            result["folders"].append({"id": fid, "name": meta.get("name", ""), "deck_ids": sorted(present)})
+        except (google.GoogleError, Unreadable) as error:
+            result["problem"] = "Cannot verify the actual Agenda lesson folder: %s" % error
+            return result
+    for fid, label in linked.items():
+        try:
+            meta = google.drive_file(token, fid)
+            if meta.get("trashed") or (folders and fid not in members):
+                result["stale_links"].append({"id": fid, "label": label, "reason": "in trash" if meta.get("trashed") else "outside the current lesson folder"})
+                continue
+            if meta.get("mimeType") not in (SLIDES, google.PPTX):
+                raise Unreadable("The exact linked source is not a supported slide deck.")
+            result["decks"].append({"id": fid, "label": label, "title": meta.get("name", ""), "metadata": meta})
+        except (google.GoogleError, Unreadable) as error:
+            result["problem"] = "Cannot read the exact %s link: %s" % (label, error)
+            return result
+    if not result["decks"]:
+        result["problem"] = "No current deck is linked inside the verified lesson folder." if folders else "No current handed-out deck is linked for this lesson."
+    return result
+
+
+def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
+    """Fresh linked-source coding and persisted teacher decision, no scoring.
+
+    All assignment entry paths must call this before creating absence zeros.
+    Submitted copies still need their own gate in score_file.
+    """
+    from . import google, completion_holds
+    lessons = [lesson for lesson in agenda.lessons(class_key, week_label)
+               if any(f.get("form_id") == form_id for f in lesson["forms"])]
+    if len(lessons) != 1:
+        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Needs check", "problem": "The exact assignment's Agenda lesson is not confirmed.",
+                "action": "Confirm this Form's Agenda lesson before rerunning grading."}
+    lesson = lessons[0]
+    context = "%s · %s · %s" % (agenda.classes[class_key]["name"], week_label, lesson["topic"])
+    hold = completion_holds.check(config, agenda, class_key, week_label, form_id)
+    if hold["held"]:
+        return {**hold, "context": context, "problem": context + ": " + hold["problem"],
+                "student_copies_checked": False, "scope": "assignment"}
+    sources = lesson_sources(token, lesson)
+    if sources["problem"]:
+        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson", "context": context,
+                "source_resolution": sources, "problem": context + ": " + sources["problem"],
+                "action": "Check this exact Agenda lesson folder and current deck links, then recheck; no title-based replacement was selected."}
+    ids = [item["id"] for item in sources["decks"]]
+    results = []
+    for deck_id in ids:
+        try:
+            meta, deck = _template(token, deck_id)
+            checked = readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""))
+            checked.update(deck_id=deck_id, title=meta.get("name", ""))
+        except (google.GoogleError, Unreadable) as error:
+            checked = {"status": "NOT_READY", "deck_id": deck_id, "code": "deck_not_ready", "label": "Cannot read lesson", "problem": str(error)}
+        results.append(checked)
+    failed = next((r for r in results if r["status"] != "READY"), None)
+    return {"status": "NOT_READY" if failed else "READY", "code": "deck_not_ready" if failed else None,
+            "label": failed.get("label", "Needs check") if failed else "Ready",
+            "scope": "assignment", "context": context, "student_copies_checked": False, "linked_decks": results,
+            "source_resolution": sources,
+            "problem": context + ": " + failed["problem"] if failed else None,
+            "action": failed.get("action") if failed and failed.get("action") else
+                      ("Check this exact linked lesson's access or readability, then recheck before rerunning grading.")
+                      if failed and failed.get("label") == "Cannot read lesson" else
+                      ("Repair or embed this lesson's completion codes, preserving content and student answers; "
+                       "then recheck and rerun grading. No scores or missing-work zeros may be entered while it is held.") if failed else
+                      "Linked completion codes are ready; every submitted student copy must also pass before entry."}
+
+
+def submitted_readiness(token, form):
+    """Fresh copy revisions/codes only, without completion arithmetic or writes."""
+    from . import google
+    checked, seen = [], set()
+    for row in form.get("students", []) + form.get("late", []):
+        if not row.get("matched"):
+            continue
+        for upload in row.get("files", []):
+            if upload["id"] in seen:
+                continue
+            seen.add(upload["id"])
+            try:
+                meta, deck = _template(token, upload["id"])
+                result = readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""))
+            except (google.GoogleError, Unreadable) as error:
+                result = {"status": "NOT_READY", "label": "Cannot read lesson", "problem": str(error)}
+            result.update(file_id=upload["id"], name=upload.get("name", ""))
+            checked.append(result)
+            if result["status"] != "READY":
+                return {"status": "NOT_READY", "code": "deck_not_ready", "copies": checked,
+                        "label": result.get("label", "Needs check"),
+                        "problem": "Submitted copy “%s”: %s" % (result["name"], result["problem"]),
+                        "action": "Check access to this exact submitted file, then recheck before rerunning grading." if result.get("label") == "Cannot read lesson" else
+                                  "Repair or embed codes in this existing copy, preserving answers; then rerun grading. No assignment scores or missing-work zeros may be entered."}
+    return {"status": "READY", "label": "Ready", "copies": checked, "student_copies_checked": len(checked)}
+
+
 def score_file(token, agenda, class_key, week_label, form_id, file_id, work_result):
     """Scores for one student's current, on-time file in one Form's list."""
     from . import google
@@ -654,6 +868,16 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         raise ValueError("file")
     upload = next(f for f in row["files"] if f["id"] == file_id)
     out = {"file_id": file_id, "problem": None}
+
+    def not_ready(check, name, kind):
+        lesson = next((l for l in work_result.get("lessons", []) if form in l["forms"]), {})
+        class_name = agenda.classes.get(class_key, {}).get("name", class_key)
+        context = "%s · %s · %s" % (class_name, week_label, lesson.get("topic") or form.get("label") or "this assignment")
+        action = check.get("action") or ("Run the embed-coding program on this existing %s, preserving its answers and lesson content; "
+                  "then rerun grading. No scores were calculated." % kind)
+        return {**out, "code": "deck_not_ready", "label": check["label"], "readiness": check, "action": action,
+                "problem": "%s: %s “%s”. %s %s" %
+                           (context, kind, name, check["problem"], action)}
     if work_result.get("assessment_problem"):
         return {**out, "code": "coverage_incomplete", "problem": work_result["assessment_problem"]}
     policy = work_result.get("week_policy") or {}
@@ -675,38 +899,44 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         return {**out, "code": "source_week_mismatch", "problem":
                 "This submission names Week %s, outside this assignment's Agenda and teacher-deck weeks. "
                 "Confirm its lesson before scoring or entering a grade." % upload["other_week"]}
+    assignment_check = form.get("grade_readiness")
+    if assignment_check and assignment_check.get("status") != "READY":
+        return {**out, "code": "deck_not_ready", "label": assignment_check.get("label", "Needs check"), "problem": assignment_check.get("problem") or
+                "This assignment's completion readiness is held.", "readiness": assignment_check,
+                "action": assignment_check.get("action")}
     if upload.get("mime") not in (SLIDES, google.PPTX):
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []
-    for deck_id in lesson_decks(agenda, class_key, week_label, form_id):
+    eligible = (assignment_check or {}).get("source_resolution")
+    deck_ids = [d["id"] for d in eligible["decks"]] if eligible else lesson_decks(agenda, class_key, week_label, form_id)
+    for deck_id in deck_ids:
         try:
             templates.append((deck_id,) + _template(token, deck_id))
         except (google.GoogleError, Unreadable):
             continue
     try:
-        meta = google.drive_file(token, file_id)
+        meta = google.drive_file(token, file_id, google.FILE_FIELDS + ",version")
         out["file_updated"] = meta.get("modifiedTime", "")
-        cached = _results.get((file_id, meta.get("modifiedTime", "")))
-        if cached and any((t[0], t[1].get("modifiedTime", "")) == cached["template"] for t in templates):
-            return {**out, **cached["result"]}
         deck = _read(token, file_id, meta)
     except (google.GoogleError, Unreadable) as error:
-        return {**out, "problem": "Couldn't read this deck (%s). Open it yourself." % error}
+        return {**out, "code": "deck_not_ready", "label": "Cannot read lesson",
+                "problem": "Couldn't read this exact submitted deck (%s)." % error,
+                "action": "Check this file's access or readability, then recheck before rerunning grading."}
+    check = readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""))
+    if check["status"] != "READY":
+        return not_ready(check, upload.get("name") or meta.get("name", ""), "student copy")
     best = pick_template(deck, [t[2] for t in templates])
     if coverage(deck, best) < 0.8:
-        # The Agenda row links another assignment's deck: look for the
-        # original this copy was made from, by its name — anywhere the
-        # dashboard can search, then in the folder beside each linked deck
-        # (a deck shared by link can be opened but not searched for).
+        # Look only in the actual linked lesson/source folders. A same-title
+        # file elsewhere, including an obsolete lesson, is not a replacement.
         title = original_title(upload.get("name") or meta.get("name", ""))
         found = []
         if title:
-            try:
-                found += google.files_named(token, title, SLIDES)[:5]
-            except google.GoogleError:
-                pass
-            for parent in {p for t in list(templates) for p in (t[1].get("parents") or [])[:1]}:
-                found += [f for f in _siblings(token, parent) if f["name"].strip() == title]
+            parents = {p for t in list(templates) for p in (t[1].get("parents") or [])[:1]}
+            parents.update(f["id"] for f in (eligible or {}).get("folders", []))
+            for parent in parents:
+                found += [f for f in _siblings(token, parent)
+                          if re.sub(r"\.pptx$", "", f["name"].strip(), flags=re.I) == title]
         for item in found:
             if item["id"] != file_id and not any(t[0] == item["id"] for t in templates):
                 try:
@@ -718,8 +948,15 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if chosen is None:
         return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
                                   "(Student copy or Teacher deck), so its boxes can't be checked."}
+    check = readiness(chosen[2], revision=chosen[1].get("version") or chosen[1].get("modifiedTime", ""))
+    if check["status"] != "READY":
+        return not_ready(check, chosen[1].get("name", ""), "handed-out deck")
+    source_key = (file_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
+    template_key = (chosen[0], chosen[1].get("modifiedTime", ""), str(chosen[1].get("version") or ""))
+    cached = _results.get(source_key)
+    if cached and cached["template"] == template_key:
+        return {**out, **cached["result"]}
     result = {**assess(deck, chosen[2]), "template": chosen[1].get("name", ""),
               "template_id": chosen[0], "template_updated": chosen[1].get("modifiedTime", "")}
-    _remember(_results, (file_id, meta.get("modifiedTime", "")),
-              {"template": (chosen[0], chosen[1].get("modifiedTime", "")), "result": result}, MAX_CACHED_RESULTS)
+    _remember(_results, source_key, {"template": template_key, "result": result}, MAX_CACHED_RESULTS)
     return {**out, **result}

@@ -36,3 +36,15 @@ class RosterSyncStatusTests(unittest.TestCase):
         self.assertEqual(result["last_check_at"], port.now.isoformat())
         self.assertEqual(len(port.rows), before)
 
+    def test_study_hall_scope_is_redacted_and_does_not_enable_or_expand_grading(self):
+        self.config["HUB_ROSTER_ONLY_SECTIONS"] = {"B4 Study Hall": {
+            "class_key": "study_hall", "section_id": "55555", "tab_id": 99,
+            "school_year": "2026-27"}}
+        with patch.object(roster_sync, "authorize"), patch.object(
+                roster_sync, "configured_store", side_effect=roster_sync.StoreUnavailable("no store")):
+            result = roster_sync.read_roster_sync_status("assertion", self.config)
+        self.assertEqual(result["roster_scope"], {"instructional_sections": 4,
+            "roster_only_sections": 1, "study_hall_included": True})
+        self.assertFalse(result["run_enabled"])
+        self.assertNotIn("55555", str(result))
+        self.assertNotIn("B4 Study Hall", str(result))

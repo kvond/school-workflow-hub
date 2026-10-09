@@ -37,6 +37,15 @@ function boot(items) {
 const allNodes = element => [element, ...element.children.filter(child => child instanceof Element).flatMap(allNodes)];
 const attention = element => allNodes(element).filter(node => node.className === 'attention-list');
 
+test('readiness labels name embedded-code repairs while keeping access failures distinct', () => {
+  const {context} = boot([]);
+  vm.runInContext('globalThis.readinessBadge = releaseBadge;', context);
+  assert.equal(context.readinessBadge({status: 'NOT_READY', issues: ['marker_inventory_counts_unparsed']}).textContent, 'Needs embedded codes');
+  assert.equal(context.readinessBadge({status: 'NOT_READY', label: 'Needs embedded codes', issues: ['teacher_distributed_uncoded_copies']}).textContent, 'Needs embedded codes');
+  assert.equal(context.readinessBadge({status: 'UNKNOWN', issues: ['deck_release_unreadable']}).textContent, 'Cannot read lesson');
+  assert.equal(context.readinessBadge({status: 'READY', issues: []}).textContent, 'Ready');
+});
+
 test('Routine explains dated student filing and separate teacher reports without adding controls', () => {
   const {context, document} = boot([]);
   const routine = source.slice(source.indexOf('function renderRoutine()'), source.indexOf('// ---------- Link check ----------'));
@@ -129,7 +138,7 @@ test('unresolved submission matches prevent score requests and IC handoff of cac
   const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
   vm.runInContext(studentWork + '\nfunction renderWork() {}\nglobalThis.client = {work, scoreForm, helperRows, sendList, weekToEnter, sendWeek, icPanel, icStatus};', context);
   const {client} = context;
-  const form = {form_id: 'FICTIONALFORM123', students: [{matched: true, last: 'Avery', first: 'Ann', section: 'A4 Biology',
+  const form = {form_id: 'FICTIONALFORM123', grade_readiness: {status: 'READY'}, students: [{matched: true, last: 'Avery', first: 'Ann', section: 'A4 Biology',
     files: [{id: 'FICTIONALFILE123', mime: 'application/vnd.google-apps.presentation'}]}], missing: [], late: [], excused: [], elsewhere: []};
   const cached = {notes_score: 8, revision_score: 9};
   client.work.data = {other_files: [{files: [{id: 'UNRESOLVED123'}]}], lessons: [{forms: [form]}]};
@@ -161,7 +170,7 @@ test('accepted intake is not a source-assignment zero but unresolved evidence st
   const {client} = context;
   const person = {first: 'Ann', last: 'Avery', section: 'A4 Biology'};
   const intake = {who: 'Avery, Ann', section: person.section, accepted_intake: true, to: 'Other lesson — Turn in'};
-  const form = {form_id: 'FICTIONALFORM123', window: {started: true}, students: [], missing: [person], late: [], excused: [], elsewhere: [intake]};
+  const form = {form_id: 'FICTIONALFORM123', grade_readiness: {status: 'READY'}, window: {started: true}, students: [], missing: [person], late: [], excused: [], elsewhere: [intake]};
   client.work.data = {other_files: [], lessons: [{forms: [form]}]};
   client.work.section = 'all'; client.work.scores = {[form.form_id]: {}};
   assert.equal(client.helperRows(form)[0].kind, 'none');
@@ -201,6 +210,38 @@ test('excluded or uncertain assessment scope never scores or sends cached result
   assert.equal(client.helperRows(form).length, 0);
   assert.equal(await client.sendList(form, {}), 'assessment_scope_held');
   assert.match(client.icPanel(form, {}, {}).textContent, /submission route needs confirmation/);
+});
+
+test('unverified assignment codes and one unmarked copy block cached scores and every missing zero', async () => {
+  const {context} = boot([]), requests = [], messages = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.window = {postMessage: message => messages.push(message)};
+  const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
+  vm.runInContext(studentWork + '\nfunction renderWork() {}\nglobalThis.client = {work, scoreForm, helperRows, sendList, sendWeek, weekToEnter, icPanel, icStatus};', context);
+  const {client} = context;
+  const form = {form_id: 'FICTIONALFORM123', label: 'Photosynthesis', window: {started: true},
+    students: [{matched: true, first: 'Ann', last: 'Avery', section: 'A4 Biology', files: [{id: 'FICTIONALFILE123'}]}],
+    missing: [{first: 'Ben', last: 'Brook', section: 'A4 Biology'}], late: [], excused: [], elsewhere: []};
+  client.work.data = {other_files: [], lessons: [{forms: [form]}]};
+  client.work.scores = {[form.form_id]: {FICTIONALFILE123: {notes_score: 9, revision_score: 10}}};
+  for (const readiness of [undefined, {status: 'NOT_READY', action: 'Embed the codes in the student copies.'}]) {
+    form.grade_readiness = readiness;
+    await client.scoreForm(form);
+    assert.equal(client.helperRows(form).length, 0);
+    assert.equal(await client.sendList(form, {}), 'deck_not_ready');
+    assert.equal(client.icStatus(form).kind, 'held');
+    assert.doesNotMatch(client.icPanel(form, {}, {}).textContent, /Enter these scores|Notes \/10/);
+    const status = new Element('span'); await client.sendWeek(status, new Element('details'));
+    assert.match(status.textContent, /codes|readiness/);
+  }
+  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+  form.grade_readiness = {status: 'READY'};
+  client.work.scores[form.form_id].FICTIONALFILE123 = {code: 'deck_not_ready', problem: 'Required markers are missing.'};
+  assert.equal(client.helperRows(form).length, 0);
+  assert.equal(await client.sendList(form, {}), 'deck_not_ready');
+  assert.equal(client.weekToEnter().ready.length, 0);
+  assert.match(client.icPanel(form, {}, {}).textContent, /no missing-work zero/i);
+  assert.equal(messages.length, 0);
 });
 
 test('link audit explains excluded weeks without a missing Form warning', () => {

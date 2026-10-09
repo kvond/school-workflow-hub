@@ -1635,6 +1635,8 @@ class RecordEndpointTests(unittest.TestCase):
                 patch.object(google, "service_token", return_value="token"), \
                 patch.object(app, "load_agenda", return_value=fixture()), \
                 patch.object(app, "_form_context", return_value=(context, {}, {})), \
+                patch.object(completion, "assignment_readiness", return_value={"status": "READY"}), \
+                patch.object(completion, "submitted_readiness", return_value={"status": "READY"}), \
                 patch.object(ledger, "read", return_value={"configured": True}), \
                 patch.object(ledger, "record", return_value=1) as record:
             b"".join(app.application(environ, lambda s, h: seen.setdefault("status", s), config=config))
@@ -2101,7 +2103,7 @@ def bank_deck(**changes):
     return pptx([
         [("TITLE", "Biology 09 — response manifest", (0, 0, 900, 30)),
          ("HEAD", "[[MARKER-INVENTORY:C09]]\nVERSION=C09-r1\nNOTES=1  DRAFT=0  OPTIONAL=0  BANK_TERMS=2", (0, 40, 900, 60)),
-         ("LISTS", "NOTES_IDS=\nSQUID-CLASSIFY\nDRAFT_IDS=\n\nOPTIONAL_IDS=\n\nBANK_IDS=\nProducer\nTrophic level\n"
+         ("LISTS", "NOTES_IDS=\n" + changes.get("NOTES_ID", "SQUID-CLASSIFY") + "\nDRAFT_IDS=\n\nOPTIONAL_IDS=\n\nBANK_IDS=\nProducer\nTrophic level\n"
                    "CHECKPOINTS=UNVERIFIED; do not infer due dates.", (0, 110, 900, 300))],
         [("Q", "Name the type of symbiosis.", (20, 20, 800, 60)),
          ("A", text("A", ""), (20, 100, 800, 200)),
@@ -2164,8 +2166,8 @@ class RealDeckShapeTests(unittest.TestCase):
         completion._templates.clear()
         completion._results.clear()
         completion._folders.clear()
-        decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(),
-                 "STUDENTDECK123": bank_deck(A2="one step in a food chain")}
+        decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(NOTES_ID="The bobtail squid"),
+                 "STUDENTDECK123": bank_deck(NOTES_ID="The bobtail squid", A2="one step in a food chain")}
         row = {"matched": True, "last": "Ennis", "first": "Tre", "section": "A2 Forensics", "earlier": [], "late": False,
                "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES,
                           "name": "s.tre.ennis — 09-16 11.29 — Copy of Bank_Deck_markered - Tre Ennis"}]}
@@ -2183,20 +2185,21 @@ class RealDeckShapeTests(unittest.TestCase):
         self.assertIsNone(result["problem"])
         self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})
 
-    def test_the_handed_out_deck_is_found_by_name_when_the_agenda_links_another(self):
+    def test_the_handed_out_deck_is_found_in_its_actual_folder_when_agenda_links_another(self):
         completion._templates.clear()
         completion._results.clear()
-        decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(),
-                 "STUDENTDECK123": bank_deck(A2="one step in a food chain")}
+        decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(NOTES_ID="The bobtail squid"),
+                 "STUDENTDECK123": bank_deck(NOTES_ID="The bobtail squid", A2="one step in a food chain")}
         row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics", "earlier": [], "late": False,
                "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES, "name": "Copy of Bank Deck - Ana Rivera"}]}
         found = {"lessons": [{"forms": [{"form_id": ScoreFileTests.FORM, "students": [row], "late": []}]}]}
         with patch.object(google, "drive_file", side_effect=lambda t, fid, fields=None: {
-                    "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "t"}), \
+                    "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "t", "parents": ["CURRENTFOLDER"]}), \
                 patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]), \
+                patch.object(completion, "_siblings", return_value=[{"id": "ORIGINALDECK123456789", "name": "Bank Deck"}]), \
                 patch.object(google, "files_named", return_value=[{"id": "ORIGINALDECK123456789"}]) as search:
             result = completion.score_file("token", fixture(), "forensics", "Wk 04", ScoreFileTests.FORM,
                                            "STUDENTDECK123", found)
-        search.assert_called_once_with("token", "Bank Deck", completion.SLIDES)
+        search.assert_not_called()
         self.assertIsNone(result["problem"])
         self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})

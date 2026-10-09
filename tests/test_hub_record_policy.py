@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from hub_v2 import app, google, ledger, work
+from hub_v2 import app, completion, google, ledger, work
 
 
 class RecordPolicyTests(unittest.TestCase):
@@ -15,6 +15,8 @@ class RecordPolicyTests(unittest.TestCase):
                 patch.object(app, "load_agenda", return_value=object()) as agenda, \
                 patch.object(work, "week_policy", return_value=policy), \
                 patch.object(app, "_form_context", return_value=({}, {}, found or {})) as context, \
+                patch.object(completion, "assignment_readiness", return_value={"status": "READY"}), \
+                patch.object(completion, "submitted_readiness", return_value={"status": "READY"}), \
                 patch.object(ledger, "record") as record, \
                 patch.object(ledger, "read", return_value={}):
             result = app.record_post({}, lambda status, value: (status, value), {})

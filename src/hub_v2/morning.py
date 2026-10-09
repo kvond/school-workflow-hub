@@ -124,6 +124,10 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     # folders still lack a safe lesson match.
     if found.get("other_files"):
         return {"code": "coverage_incomplete"}
+    ready = completion.assignment_readiness(token, config, agenda, cls, week, fid)
+    form["grade_readiness"] = ready
+    if ready["status"] != "READY":
+        return {"code": "coverage_incomplete", "readiness": ready, "problem": ready["problem"], "action": ready.get("action")}
     now = datetime.now(timezone.utc)
     mark = ledger.read(token, config, fid)
     if not mark.get("configured") or mark.get("problem"):
@@ -133,6 +137,10 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     if closed and mark.get("entered_at") and work.when(mark["entered_at"]["at"]) >= work.when(window["at"]):
         return {"code": "no_scores"}
     scored = score_rows(token, agenda, cls, week, fid, form, found)
+    blocked = next((score for _, score in scored if score.get("code") == "deck_not_ready"), None)
+    if blocked:
+        return {"code": "coverage_incomplete", "readiness": blocked.get("readiness"),
+                "problem": blocked["problem"], "action": blocked.get("action")}
     values = rows(form, scored, now)
     if not any(r["kind"] in ("score", "zero") for r in values):
         return {"code": "no_scores"}

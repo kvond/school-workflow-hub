@@ -17,6 +17,15 @@ creation date, explicitly labeled **file created**. Multiple dated observations 
 one evolving source are retained in the private index. Class-level packets
 containing several students' feedback remain at class level.
 
+Teacher-confirmed former-student work can stay in a tagged private class
+`Former students` container with an explicitly unconfirmed former section.
+The class index's `historical_sources` binding must match the saved student,
+teacher confirmation, exact original revision and verified private work copy.
+Routine filing preserves that unchanged historical source without asking the
+active roster to reclaim it. A changed source, copy, ownership or private
+location holds for verification. This grants no active-roster, assessment or
+grade authority, and never invents an IC ID or former section.
+
 ## Runtime configuration
 
 - `HUB_STUDENT_RECORDS_ROOT_FOLDER`: private archive root, outside Turn-In.

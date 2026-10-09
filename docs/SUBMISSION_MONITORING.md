@@ -299,3 +299,69 @@ versions, and exposes concrete coverage gaps. Report source-access and mapping
 results before deployment; verify the new dashboard path after a separately
 authorized deployment. Grading remains off. Code tests and a stored preview are
 not evidence of completed live school operations.
+
+## Completion coding readiness
+
+Completion grading checks the submitted copy and the selected handed-out deck
+before using any cached score. Each must have one readable inventory on slide 1,
+all four numeric category totals, matching marker counts/declared IDs, unique
+markers, one cycle and a NOTES partner for each DRAFT. A diagnostic marker census
+never approves a missing or inconsistent inventory. The reader accepts inventory
+text split over lines or text boxes and `OPTIONAL_IDS=-` only when OPTIONAL is zero.
+Unmarked copies produce a contextual class/week/lesson hold: embed codes in that
+existing copy while preserving answers, then rerun grading. They produce no zero
+scores and do not overwrite prior results. Cache keys also bind the Drive version.
+
+The lesson-readiness panel verifies the linked deck's completion codes only; it
+explicitly does not certify distributed student copies. Teacher-reference and VT
+curriculum checks remain a separate optional deck audit and are not prerequisites
+for completion scores. A metadata HTTP 404 is a link/access failure before content
+parsing, not evidence that every PowerPoint must be converted. Uploaded PPTX and
+native Slides remain supported without modifying source files.
+
+The public status for a confirmed marker/inventory problem or an explicitly
+uncoded-copy teacher hold is **Needs embedded codes**. Numerical diagnostics and
+the exact class/week/lesson/copy explain the repair; internal issue identifiers
+are not teacher instructions. Access or file-reading failures are **Cannot read
+lesson**; an unverified decision is **Needs check**, never a claim that codes are
+missing. These labels do not weaken any grading hold.
+
+Readiness applies to the whole assignment before preparing missing-work zeros.
+Student-work responses carry `form.grade_readiness`; morning entry freshly checks
+linked-source coding and the teacher decision before reading scores into an IC
+list. One submitted copy marked `deck_not_ready` stops the assignment list. The
+IC-receipt endpoint independently repeats linked/copy coding checks before
+recording entry, so a cached or forged browser READY value cannot bypass a hold.
+These checks do not compute grades, call a model, alter source files, or affect
+saved feedback/delivery history. A ready assignment retains the existing verified
+missing-work policy.
+
+`HUB_COMPLETION_READINESS_HOLDS` optionally registers exact private descriptors
+`{school_year, class_key, week, form_id}`. Their existing CAS decision key is
+`completionreadinesshold_<hash(Agenda ID, year, class, exact week, exact Form)>`.
+The `hub-completion-teacher-hold/v1` record binds that scope plus `record_key`,
+`status`, `reason`, `teacher_action` and `updated_at`. Missing, malformed, unavailable
+or mismatched registered decisions fail closed. A held distributed-copy decision
+remains held even when the linked teacher deck is READY; Today preserves the
+linked-source status/counts and displays the separate teacher action. Discovery,
+filing and historical source records remain available.
+
+No browser clearance endpoint exists. A trusted host may change the exact decision
+with an expected-version CAS after explicit teacher confirmation and actual copy
+readback. A `cleared` record must retain the original scope/reason/action and include
+`clearance={basis:"teacher_confirmed_distributed_copies_coded", teacher_confirmed_at,
+verified_at, copies:[{file_id, version, status:"READY"}]}` with nonempty verified
+copy evidence. Neither a zero-response Form nor a changed teacher deck automatically
+clears the teacher's hold. Registration remains in place after clearance.
+
+Source lookup reads the current Agenda's exact linked IDs and verifies the actual
+Lesson folder before listing it. An unavailable/incomplete folder read is not an
+empty folder. Trash and links outside the current verified folder are reported as
+stale pointers, never restored or required. A differently numbered title may be
+intentionally taught in the current Agenda week; exact links/folder membership
+take precedence over its title. No global lesson-name search selects replacements.
+Supported PPTX/native siblings remain available in actual source folders. The
+reserved hidden second-deck URL slot and explicit `_deck2URL` headers preserve the
+second-deck role. Inventory parsing uses inventory-bearing text boxes, excluding
+adjacent lesson prose; an otherwise valid summary on a later slide asks the teacher
+to move that existing summary to slide 1, rather than invent missing question IDs.

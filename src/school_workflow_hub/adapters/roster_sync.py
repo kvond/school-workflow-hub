@@ -12,6 +12,7 @@ from school_workflow_hub.adapters.hosted_agenda import (
     authorize,
 )
 from school_workflow_hub.core.cloud_state import CloudState, StoreUnavailable, key
+from school_workflow_hub.adapters.roster_only import configured_targets
 
 
 ROSTER_SYNC_SCOPE = {
@@ -42,6 +43,17 @@ def read_roster_sync_status(assertion, config):
         "next_action": "verify_infinite_campus_reader_and_roster_workbook_writer",
         "external_writes": 0,
     }
+    # Roster-only sections are explicit scope, never extra grading populations.
+    try:
+        targets = configured_targets(config)
+        result["roster_scope"] = {"instructional_sections": 4,
+                                  "roster_only_sections": len(targets),
+                                  "study_hall_included": bool(targets)}
+    except ConnectionError:
+        result["roster_scope"] = {"instructional_sections": 4,
+                                  "roster_only_sections": 0,
+                                  "study_hall_included": False,
+                                  "problem": "roster_only_configuration_invalid"}
     try:
         store = CloudState(configured_store(config))
         task = store.read_task(_task_id())

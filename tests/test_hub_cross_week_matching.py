@@ -94,7 +94,7 @@ class CrossWeekMatchingTests(unittest.TestCase):
         with patch.object(work.roster, "load", return_value=({"forensics": students}, [])), \
                 patch.object(work, "read_form", return_value=current_form), \
                 patch.object(work, "recent_submissions", return_value=[nearby]), \
-                patch.object(google, "drive_file", side_effect=lambda token, fid: {
+                patch.object(google, "drive_file", side_effect=lambda token, fid, fields=None: {
                     "id": fid, "name": names.get(fid, fid), "mimeType": google.PPTX}):
             found = work.lesson_work("token", {"HUB_SCHOOL_EMAIL_DOMAINS": "school.example"},
                                      FakeAgenda(), "forensics", "Wk 05")

@@ -71,16 +71,28 @@ function cockpitPanel(title, ...children) {
 function releaseIssue(value) {
   if (!value) return '';
   const [code, aspect, phase] = String(value).split(':');
+  if (code.startsWith('marker_inventory_')) return 'Needs embedded codes: repair the lesson’s code list and required totals.';
+  if (code === 'student_copies_uncoded' || code === 'teacher_distributed_uncoded_copies') return 'Needs embedded codes in the affected student copies.';
   const words = code.replaceAll('_', ' ');
   if (code === 'critical_aspect_block_missing') return `Missing critical-aspect block: ${aspect}`;
   if (code === 'critical_aspect_phase_missing') return `${aspect}: missing ${String(phase || '').replaceAll('_', ' ')}`;
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+function releaseLabel(release) {
+  if (!release) return 'Not checked';
+  if (release.label) return release.label;
+  if (release.status === 'READY') return 'Ready';
+  const issues = release.issues || [];
+  if (issues.some(issue => /^(marker_inventory_|duplicate_feedback_marker|feedback_marker_cycle_mismatch|draft_without_matching_notes|student_copies_uncoded|teacher_distributed_uncoded_copies)/.test(issue))) return 'Needs embedded codes';
+  if (issues.some(issue => /unreadable|unavailable/.test(issue))) return 'Cannot read lesson';
+  return 'Needs check';
+}
+
 function releaseBadge(release) {
   if (!release) return el('span', {class: 'release-badge neutral', text: 'Not checked'});
   const kind = release.status === 'READY' ? 'ready' : release.status === 'NOT_READY' ? 'blocked' : 'stale';
-  return el('span', {class: 'release-badge ' + kind, text: release.status.replaceAll('_', ' ')});
+  return el('span', {class: 'release-badge ' + kind, text: releaseLabel(release)});
 }
 
 async function loadAudits(force = false) {
@@ -226,13 +238,16 @@ function renderNeedsYou(report) {
 }
 
 function issueAction(release) {
+  if (release?.action) return release.action;
+  if (release?.problem) return release.problem;
   const issue = release?.issues?.[0];
-  if (release?.status === 'READY') return 'No fix needed. Teach this lesson.';
+  if (release?.status === 'READY') return release.scope === 'linked_deck'
+    ? 'The linked deck’s embedded codes are ready. Student copies are checked separately before grading.' : 'No fix needed. Teach this lesson.';
   if (!issue) return 'No exact cause was returned. Open this lesson in Lessons / VT and run the link check.';
-  if (issue === 'missing_teacher_reference_contract') return 'Open the teacher deck from Lessons / VT and add or restore its required teacher reference instructions, then recheck readiness.';
-  if (issue === 'teacher_reference_has_no_critical_aspects') return 'Add the required critical aspects to the teacher reference instructions, then recheck readiness.';
+  if (issue === 'missing_teacher_reference_contract' || issue === 'teacher_reference_has_no_critical_aspects'
+      || issue === 'teacher_reference_has_no_week_question') return 'Refresh to check this lesson’s embedded codes. Teacher reference contracts are not a completion-grading requirement.';
   if (issue === 'marker_inventory_missing_or_duplicated') return 'In the teacher deck, keep one complete embed-coding marker inventory and remove or repair any duplicate; then recheck readiness.';
-  if (issue === 'marker_inventory_counts_unparsed' || issue === 'marker_inventory_count_mismatch') return 'In Student work, use the named assignment’s deck-code note; run the embed-coding program on that deck, then recheck readiness.';
+  if (issue === 'marker_inventory_counts_unparsed' || issue === 'marker_inventory_count_mismatch') return 'Repair the required NOTES, BANK and DRAFT totals in this lesson’s marker inventory, then recheck and rerun grades. Submitted student copies must also have matching codes.';
   if (issue === 'marker_inventory_id_mismatch') return 'In the teacher deck, make the marker IDs in the inventory match the IDs embedded in the lesson slides; then recheck readiness.';
   if (issue === 'duplicate_feedback_marker') return 'In the teacher deck, remove or correct the repeated feedback marker so each marker ID appears once; then recheck readiness.';
   if (issue === 'feedback_marker_cycle_mismatch') return 'In the teacher deck, make the feedback marker cycle match the cycle named by its inventory; then recheck readiness.';
@@ -240,7 +255,6 @@ function issueAction(release) {
   if (issue === 'concept_bank_heading_missing') return 'In the teacher deck, add the required “Define these in your own words” heading above the concept bank; then recheck readiness.';
   if (issue === 'required_what_if_missing') return 'In the teacher deck, add the required “What if?” prompt for the scored completion item; then recheck readiness.';
   if (issue === 'agenda_prompt_contract_unavailable') return 'The Agenda prompt details could not be read, so readiness cannot be verified. Restore access to the linked Agenda prompts, then recheck.';
-  if (issue === 'teacher_reference_has_no_week_question') return 'Add the week question to the teacher reference instructions so the readiness check can verify it.';
   if (issue === 'deck_release_unreadable') return 'Open the teacher deck from Lessons / VT and confirm the link opens; if not, correct that deck link in the Agenda.';
   if (issue.startsWith('critical_aspect_block_missing:')) return `In the teacher deck, add the lesson section for ${issue.slice('critical_aspect_block_missing:'.length)}; then recheck readiness.`;
   if (issue.startsWith('critical_aspect_phase_missing:')) {
@@ -268,7 +282,7 @@ async function openAgendaLesson(classKey, week, row) {
 function renderNextLessons(audits) {
   const rows = allReleaseRows(audits);
   if (!rows.length) return cockpitPanel('Next from Agenda',
-    note('No current/upcoming final deck was release-checked. Open Lessons / VT to inspect the Agenda and link audit.', 'info'));
+    note('No current/upcoming lesson code check is available. Open Lessons / VT to inspect the Agenda and links.', 'info'));
   const bodyRows = rows.map(row => {
     return el('tr', {},
       el('td', {text: row.className}),
@@ -459,35 +473,44 @@ async function loadToday(force = false) {
 async function loadLessonReadiness(force = false) {
   const box = $('lesson-readiness-body');
   if (!box) return;
-  box.replaceChildren(el('p', {class: 'muted', text: 'Checking current and upcoming deck releases…'}));
+  box.replaceChildren(el('p', {class: 'muted', text: 'Checking embedded codes in current and upcoming lessons…'}));
   try {
     const audits = await loadAudits(force);
     const rows = allReleaseRows(audits);
     if (!rows.length) {
-      box.replaceChildren(note('No current/upcoming deck release result is available yet.', 'info'));
+      box.replaceChildren(note('No current/upcoming lesson code check is available yet.', 'info'));
       return;
     }
     box.replaceChildren(
-      el('p', {class: 'muted', text: 'Actual final deck + live Prompt 0 / Prompt 2'}),
+      el('p', {class: 'muted', text: 'Linked lesson’s embedded codes; submitted copies are verified before grading.'}),
       el('div', {class: 'release-row'}, ...rows.map(row =>
         el('div', {class: 'release-item'},
           el('span', {text: `${row.className} · ${row.week}`}),
           releaseBadge(row.release),
-          el('small', {text: row.release.status === 'READY' ? row.topic : (releaseIssue(row.release.issues?.[0]) || row.topic)})))));
+          el('small', {text: row.release.status === 'READY' ? row.topic : `${row.topic}: ${issueAction(row.release)}`})))));
   } catch (error) {
     box.replaceChildren(note('Deck readiness could not be checked: ' + error.message));
   }
 }
 
 // ---------- Lesson plans ----------
-const plans = {date: todayISO(), seq: 0, started: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
+const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, started: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
 
 function renderDays(date) {
-  const monday = mondayOf(date);
-  $('days').replaceChildren(...DAYS.map((name, i) => {
-    const day = addDays(monday, i);
-    return el('button', {type: 'button', 'aria-current': day === date ? 'date' : null, onclick: () => loadPlans(day)},
-      el('small', {text: name}), el('strong', {text: String(at(day).getDate())}));
+  if (date < plans.calendarMonday || date > addDays(plans.calendarMonday, 27)) plans.calendarMonday = mondayOf(date);
+  const calendarDays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  $('days').replaceChildren(...Array.from({length: 4}, (_, week) => {
+    const monday = addDays(plans.calendarMonday, week * 7);
+    const end = addDays(monday, 6);
+    return el('div', {class: 'calendar-week'},
+      el('p', {class: 'calendar-caption', text: `${at(monday).toLocaleDateString('en-US', {month: 'short', day: 'numeric'})} – ${at(end).toLocaleDateString('en-US', {month: 'short', day: 'numeric'})}`}),
+      el('div', {class: 'calendar-days'}, ...calendarDays.map((name, i) => {
+        const day = addDays(monday, i);
+        return el('button', {type: 'button', class: i > 4 ? 'weekend-date' : '',
+          'aria-label': at(day).toLocaleDateString('en-US', {weekday: 'long', month: 'long', day: 'numeric', year: 'numeric'}),
+          'aria-current': day === date ? 'date' : null, onclick: () => loadPlans(day)},
+          el('small', {text: name}), el('strong', {text: String(at(day).getDate())}));
+      })));
   }));
 }
 
@@ -972,10 +995,10 @@ function scoreCells(row, scores) {
 }
 
 async function scoreForm(form) {
-  if (sourceMatchesHeld() || weekAssessmentHold()) return;
+  if (sourceMatchesHeld() || weekAssessmentHold() || form.grade_readiness?.status !== 'READY') return;
   const rows = form.students.filter(r => r.files.length);
   const scores = work.scores[form.form_id] = work.scores[form.form_id] || {};
-  const queue = rows.filter(r => !scores[scoreFile(r).id]);
+  const queue = rows.filter(r => !scores[scoreFile(r).id] || scores[scoreFile(r).id].code === 'deck_not_ready');
   const seq = work.seq;
   let done = rows.length - queue.length;
   work.ui[form.form_id] = {...work.ui[form.form_id], progress: `Scoring ${done} of ${rows.length}…`};
@@ -1137,6 +1160,7 @@ const markDate = mark => mark ? when(mark.at) : '';
 function icStatus(form) {
   if (weekAssessmentHold()) return {kind: 'held', text: weekAssessmentHold()};
   if (sourceMatchesHeld()) return {kind: 'held', text: SOURCE_MATCH_HOLD};
+  if (gradeReadinessHold(form)) return {kind: 'held', text: gradeReadinessHold(form)};
   if (!form.window) return null;
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
@@ -1163,6 +1187,7 @@ function marksLine(form) {
 function icPanel(form, scores, lesson) {
   if (weekAssessmentHold()) return el('div', {class: 'ic-panel'}, note(weekAssessmentHold(), 'info'));
   if (sourceMatchesHeld()) return el('div', {class: 'ic-panel'}, note(SOURCE_MATCH_HOLD, 'info'));
+  if (gradeReadinessHold(form)) return el('div', {class: 'ic-panel'}, note(gradeReadinessHold(form), 'info'));
   const section = work.section;
   const ui = work.ui[form.form_id] || {};
   const sheet = work.marks[form.form_id];
@@ -1273,9 +1298,19 @@ function acceptedIntakeKeys(form) {
 
 // Every roster student of the class (all sections) with what to enter, the
 // same rules as the table above.
+function gradeReadinessHold(form) {
+  const readiness = form.grade_readiness;
+  const held = Object.values(work.scores[form.form_id] || {}).find(score => score?.code === 'deck_not_ready');
+  if (readiness?.status === 'READY' && !held) return '';
+  const context = `${CLASSES.find(([key]) => key === work.cls)?.[1] || work.cls} · ${work.week} · ${form.label || 'this assignment'}`;
+  return `${context}: ${releaseLabel(readiness || held?.readiness)}. ${readiness?.action || held?.readiness?.action || readiness?.problem || held?.problem || 'Embedded codes are not verified. Recheck the lesson and student copies before rerunning grades.'} Scoring and IC entry are held; no missing-work zero is prepared.`;
+}
+
 function helperRows(form) {
   if (sourceMatchesHeld() || weekAssessmentHold()) return [];
+  if (form.grade_readiness?.status !== 'READY') return [];
   const scores = work.scores[form.form_id] || {};
+  if (Object.values(scores).some(score => score?.code === 'deck_not_ready')) return [];
   const started = startedFor(form), elsewhere = elsewhereKeys(form), accepted = acceptedIntakeKeys(form);
   const rows = new Map();
   const add = (r, kind, notes = null, revision = null, reason = '') => {
@@ -1323,6 +1358,7 @@ function formName(form, lesson) {
 
 const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
   coverage_incomplete: SOURCE_MATCH_HOLD,
+  deck_not_ready: 'Needs embedded codes. Embed or repair the required codes in this lesson and the affected student copies, recheck, then rerun grading. No missing-work zero was sent.',
   assessment_scope_held: 'This week is not eligible for scoring or IC entry. Check its assessment scope note.',
   helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'};
 const helperError = code => HELPER_ERRORS[code]
@@ -1341,6 +1377,7 @@ async function sendToHelper(form, lesson) {
 async function sendList(form, lesson) {
   if (weekAssessmentHold()) return 'assessment_scope_held';
   if (sourceMatchesHeld()) return 'coverage_incomplete';
+  if (gradeReadinessHold(form)) return 'deck_not_ready';
   const rows = helperRows(form);
   const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
     class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
@@ -1372,7 +1409,7 @@ function weekToEnter() {
     .filter(({form}) => form.form_id && form.window && icStatus(form)?.kind !== 'final');
   const waiting = all.some(({form}) => form.students.length && (!work.scores[form.form_id] || work.ui[form.form_id]?.progress));
   const ready = all.map(x => ({...x, need: helperNeed(helperRows(x.form))})).filter(x => x.need.length);
-  return {ready, waiting};
+  return {ready, waiting, held: all.map(({form}) => gradeReadinessHold(form)).filter(Boolean)};
 }
 
 function entryPrompt(items) {
@@ -1403,7 +1440,8 @@ STEPS
 async function sendWeek(status, promptBox) {
   if (weekAssessmentHold()) { status.textContent = weekAssessmentHold(); return; }
   if (sourceMatchesHeld()) { status.textContent = SOURCE_MATCH_HOLD; return; }
-  const {ready} = weekToEnter();
+  const {ready, held = []} = weekToEnter();
+  if (!ready.length && held.length) { status.textContent = held.join(' '); return; }
   status.textContent = ' Sending to the Chrome helper…';
   const failed = [];
   for (const {form, lesson} of ready) {
@@ -1420,7 +1458,8 @@ async function sendWeek(status, promptBox) {
 
 function weekEntryBox() {
   if (helper.state !== 'ready') return null;
-  const {ready, waiting} = weekToEnter();
+  const {ready, waiting, held = []} = weekToEnter();
+  if (!ready.length && held.length) return note(held.join(' '), 'info');
   if (!ready.length && !waiting) return null;
   const status = el('span', {class: 'muted'});
   const promptBox = el('details', {hidden: true});
@@ -1958,7 +1997,7 @@ function renderRoutine() {
     el('h2', {text: 'Morning score check'}),
     el('ol', {},
       el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
-      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first. Verified work is filed as dated links in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
+      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, including Study Hall. Verified work is filed as dated links in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
       el('li', {}, el('strong', {text: 'At or after 7:00.'}), ' With weekday entry enabled, the Chrome helper processes mapped assignments across classes, fills blanks and raises lower scores only, then saves, reloads and verifies. Review the gradebook afterward; adjust any score that needs correction.'),
       el('li', {}, el('strong', {text: 'At 7:30.'}), ' Student feedback goes in those same student folders. Teacher summaries, growth reports and notes go in separate private teacher report folders for each class.'),
     ),
@@ -1980,9 +2019,8 @@ function linkCheckResult(name, data) {
   const notReady = releases.filter(r => r.release.status !== 'READY');
   const releaseText = release => {
     if (!release) return '—';
-    if (release.status === 'READY') return `READY · revision ${release.revision || 'verified'}`;
-    const first = (release.issues || [])[0];
-    return `${release.status}${first ? ' · ' + first.replaceAll('_', ' ') : ''}`;
+    if (release.status === 'READY') return `Ready · revision ${release.revision || 'verified'}`;
+    return `${releaseLabel(release)} · ${issueAction(release)}`;
   };
   return [
     data.problem ? note(data.problem) : null,
@@ -1992,7 +2030,7 @@ function linkCheckResult(name, data) {
       : el('p', {class: 'ok', text: `✓ No other Agenda link problems found for ${name}.`}),
     noAgendaForm.length ? el('p', {class: 'muted', text: `${noAgendaForm.map(f => `${f.week} · ${f.topic}`).join('; ')}: no Google Form is linked in the Agenda. If students turn work in through Schoology, this is expected; the Hub can’t check Schoology.`}) : null,
     releases.length ? (notReady.length
-      ? el('p', {class: 'muted', text: `Deck release gate: ${releases.length - notReady.length} READY · ${notReady.length} needs attention in the current/upcoming window.`})
+      ? el('p', {class: 'muted', text: `Embedded-code check: ${releases.length - notReady.length} ready · ${notReady.length} need attention in the current/upcoming window. Each lesson below gives its exact status and action.`})
       : el('p', {class: 'ok', text: `✓ Current/upcoming ${name} decks passed the deterministic content/code gate.`})) : null,
     shared.length ? el('details', {class: 'muted'},
       el('summary', {text: `${shared.length} Form${shared.length === 1 ? ' is' : 's are'} used for more than one week (fine when a lesson spans those weeks)`}),

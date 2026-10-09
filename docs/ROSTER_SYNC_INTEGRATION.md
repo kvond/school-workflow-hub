@@ -47,6 +47,35 @@ The roster workbook is a downstream mirror for existing readers, not the
 authority for current membership. After any workbook update, read it back and
 verify the current active names against the IC snapshot.
 
+### Study Hall is roster-only
+
+The roster update scope includes Study Hall as well as the four instructional
+sections. Configure `HUB_ROSTER_ONLY_SECTIONS` separately from the instructional
+`HUB_ROSTER_TABS` and `HUB_ROSTER_SECTION_IDS` mappings. Each entry supplies its
+teacher-facing section name and the exact private `class_key` (`study_hall`),
+`section_id`, stable `tab_id`, and `school_year`. Bind those values to a complete
+current IC roster and the existing native workbook tab; do not guess from a
+Teaching Center attendance count or from a tab title. IDs and names belong only
+in private runtime configuration and receipts.
+
+`adapters.roster_only.plan_mirror` accepts that complete, matching section/year
+observation only within one hour of its actual capture. Observed counts must
+match all names; ambiguous names, incomplete scans and stale input hold the
+update. The mirror's five owned columns are Full name, Roster status, Start
+date, End date, and IC checked at. Active, incoming, and dropped rows retain
+their explicit IC statuses; older names absent from a complete scan remain
+inactive history. An incoming learner is never active before IC says so.
+`verify_mirror` requires the exact native post-write readback. An authorized
+worker must bind the original workbook baseline before applying this plan and
+preserve all other tabs, teacher columns, formulas and attendance records.
+
+`active_rows` reads only active mirror rows. Study Hall remains excluded from
+the submission and grade-matching readers, which still read only the four
+instructional sections. A Study Hall name is display evidence, not a school
+email, student ID, grade identity, or membership in another course. The
+authenticated status exposes only the scope count; configuring this mirror
+does not enable or certify an unattended IC reader.
+
 ## Current state
 
 `/api/roster-sync` is status-only. It returns `run_enabled: false` and does

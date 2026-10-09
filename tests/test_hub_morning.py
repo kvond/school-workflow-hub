@@ -38,7 +38,8 @@ class MorningTests(unittest.TestCase):
         loader = Mock(return_value=found)
         scorer = Mock(return_value=[(ROW, {"notes_score": 8, "revision_score": None})])
         binding = {"class_key": "biology", "form_id": FORM["form_id"], "targets": []}
-        with patch.object(morning.ledger, "read", return_value={"configured": True}):
+        with patch.object(morning.ledger, "read", return_value={"configured": True}), \
+                patch.object(morning.completion, "assignment_readiness", return_value={"status": "READY"}):
             for bindings in ([], [binding, binding]):
                 result = morning.make_list("t", {"HUB_IC_ASSIGNMENT_MAP": json.dumps(bindings)}, agenda, "biology", "Wk 05", FORM["form_id"], loader, scorer)
                 self.assertEqual(result["code"], "mapping_required")

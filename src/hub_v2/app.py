@@ -351,9 +351,16 @@ def record_post(environ, respond, config):
             if policy.get("problem") or policy.get("excluded"):
                 return respond("409 Conflict", {"error": policy.get("problem") or policy["reason"],
                                                 "code": "coverage_incomplete" if policy.get("problem") else "excluded_week"})
-        context, _, found = _form_context(token, config, agenda, class_key, week, form_id)
+        context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
         if kind == "ic" and found.get("assessment_problem"):
             return respond("409 Conflict", {"error": found["assessment_problem"], "code": "coverage_incomplete"})
+        if kind == "ic":
+            ready = completion.assignment_readiness(token, config, agenda, class_key, week, form_id)
+            if ready["status"] == "READY":
+                ready = completion.submitted_readiness(token, form)
+            if ready["status"] != "READY":
+                return respond("409 Conflict", {"error": ready["problem"], "action": ready.get("action"),
+                                                "code": "coverage_incomplete", "readiness": ready})
         ledger.record(token, google.service_token(config, write=True), config, kind, context, note)
         return respond("200 OK", {"recorded": 1, "sheet": ledger.read(token, config, form_id)})
     except (ValueError, KeyError, TypeError, AttributeError):

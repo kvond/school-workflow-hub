@@ -159,6 +159,17 @@ def parse_class_tab(cells):
         "turnin": col("turnitin"), "turnin_url": col("turninurl"),
         "turnin2": col("2ndturnitin", "secondturnitin", "turnitin2"),
     }
+    # Some existing tabs reserve a hidden URL slot between _teacherURL and
+    # _folderURL for the visible 2nd-deck control, but omitted its header.
+    # Recognize only this exact layout; arbitrary unnamed links keep no role.
+    second_url = col("2nddeckurl", "seconddeckurl", "deck2url", "teacher2url")
+    teacher, folder = columns["teacher_url"], columns["folder_url"]
+    if (not second_url and columns["second_deck"] and teacher and folder == teacher + 2
+            and not headers[teacher + 1]):
+        second_url = teacher + 1
+    if second_url:
+        columns["second_deck_display"] = columns["second_deck"]
+        columns["second_deck"] = second_url
     plans = {}
     for c, h in headers.items():
         match = re.fullmatch(r"(mon|tue|wed|thu|fri)[a-z]*(plan|note)", h)
@@ -206,7 +217,7 @@ def build_lesson(cells, layout, row, edit_url):
     for hidden, visible, label in (("teacher_url", "teacher_deck", "Teacher deck"),
                                    ("student_url", "student_deck", "Student copy"),
                                    ("folder_url", "folder", "Lesson folder"),
-                                   ("second_deck", None, "2nd deck"),
+                                   ("second_deck", "second_deck_display", "2nd deck"),
                                    ("extra_url", None, "Extra material")):
         found = links(cell(hidden)) or (links(cell(visible)) if visible else [])
         if found:

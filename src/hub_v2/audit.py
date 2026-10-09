@@ -21,8 +21,9 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
-from school_workflow_hub.workflows.deck_release import pptx_slide_texts, validate_release
 from . import feedback as feedback_module
+from . import completion
+from . import completion_holds
 from . import google
 from . import work
 from .agenda import build_lesson, form_link, links, norm
@@ -44,7 +45,8 @@ def _forms_in(cell):
 def _titles(token, ids):
     def fetch(file_id):
         try:
-            return google.drive_file(token, file_id).get("name", "")
+            meta = google.drive_file(token, file_id)
+            return {"problem": "in trash", "trashed": True} if meta.get("trashed") else meta.get("name", "")
         except google.GoogleError as error:
             return {"problem": "can't be opened by the dashboard (%s)" % error}
     ids = sorted(set(ids))
@@ -52,25 +54,32 @@ def _titles(token, ids):
         return dict(zip(ids, pool.map(fetch, ids)))
 
 
-def _release_deck(token, deck_id, prompt0, prompt2):
-    """Read-only validation of the actual exported final-deck revision."""
+def _release_deck(token, deck_id, prompt0="", prompt2=""):
+    """Read-only completion coding validation; VT curriculum audit is separate."""
+    stage, meta = "metadata", {}
     try:
         meta = google.drive_file(
-            token, deck_id, "id,name,mimeType,modifiedTime,version"
+            token, deck_id, "id,name,mimeType,trashed,modifiedTime,version"
         )
+        if meta.get("trashed"):
+            raise completion.Unreadable("This linked deck is in trash; it was not restored or used as a current lesson source.")
+        stage = "download"
         raw = google.deck_bytes(token, deck_id, meta.get("mimeType", ""))
-        result = validate_release(
-            pptx_slide_texts(raw),
+        stage = "parse"
+        result = completion.readiness(
+            completion.read_deck(raw),
             revision=str(meta.get("version") or meta.get("modifiedTime") or ""),
-            prompt0=prompt0 or "",
-            prompt2=prompt2 or "",
         )
         result["title"] = meta.get("name", "")
+        result.update(deck_id=deck_id, scope="linked_deck", student_copies_checked=False)
         return result
-    except (google.GoogleError, ValueError) as error:
+    except (google.GoogleError, completion.Unreadable, ValueError) as error:
+        status = getattr(error, "status", None)
+        problem = ("The exact Agenda deck link could not be opened%s. This failed before file contents were read; "
+                   "no file-format problem has been established." % (" (Google HTTP %s)" % status if status else "")) if stage == "metadata" else str(error)
         return {
-            "schema_version": "hub-deck-release/v1",
-            "status": "NOT_READY",
+            "schema_version": "hub-completion-readiness/v1", "workflow": "completion",
+            "status": "NOT_READY", "label": "Cannot read lesson",
             "revision": "",
             "critical_aspects": [],
             "inventory_cycle": "",
@@ -79,7 +88,9 @@ def _release_deck(token, deck_id, prompt0, prompt2):
             "warnings": [],
             "receipt": {},
             "external_writes": 0,
-            "problem": str(error),
+            "problem": problem, "title": meta.get("name", ""), "deck_id": deck_id,
+            "scope": "linked_deck", "student_copies_checked": False,
+            "readability": {"stage": stage, "http_status": status, "mime": meta.get("mimeType", "")},
         }
 
 
@@ -122,6 +133,7 @@ def check(token, agenda, class_key, config=None):
         rows.append({"row": row, "week": label, "topic": topic, "visible": _forms_in(cell("turnin")),
                      "hidden": _forms_in(cell("turnin_url")), "second": _forms_in(cell("turnin2")),
                      "decks": decks, "release_deck": release_deck,
+                     "lesson": lesson,
                      "week_policy": work.week_policy(config or {}, agenda, class_key, label)})
     ids = [f["form_id"] for r in rows for f in r["visible"] + r["hidden"] + r["second"] if f["form_id"]]
     ids += [d["id"] for r in rows for d in r["decks"]]
@@ -132,8 +144,6 @@ def check(token, agenda, class_key, config=None):
     # Release checks are heavier than title checks, so run them only for the
     # current and next two planned lessons in this class. Older lessons remain
     # available in the ordinary link audit without re-exporting every deck.
-    prompt0, _ = feedback_module.load_embed_prompt(token, agenda)
-    prompt2, _ = feedback_module.load_prompt(token, agenda)
     current = agenda.week_for(date.today())
     active_rows = []
     if current:
@@ -143,15 +153,54 @@ def check(token, agenda, class_key, config=None):
             active_rows = rows[start:start + 3]
         except ValueError:
             active_rows = []
-    release_ids = [r["release_deck"] for r in active_rows if r["release_deck"]]
+    for r in active_rows:
+        r["source_resolution"] = completion.lesson_sources(token, r["lesson"])
+        selected = r["source_resolution"]["decks"]
+        r["release_deck"] = selected[0]["id"] if selected else ""
+    release_ids = list(dict.fromkeys(d["id"] for r in active_rows
+                    if not r["source_resolution"]["problem"] for d in r["source_resolution"]["decks"]))
     releases = {}
     if release_ids:
         with ThreadPoolExecutor(max_workers=3) as pool:
             results = pool.map(
-                lambda deck_id: _release_deck(token, deck_id, prompt0, prompt2),
+                lambda deck_id: _release_deck(token, deck_id),
                 release_ids,
             )
             releases = dict(zip(release_ids, results))
+
+    for r in active_rows:
+        source = r["source_resolution"]
+        checks = [releases[d["id"]] for d in source["decks"] if d["id"] in releases]
+        if source["problem"]:
+            result = {"status": "NOT_READY", "label": "Cannot read lesson", "issues": ["lesson_folder_unverified"],
+                      "problem": source["problem"], "counts": {}, "readability": {"stage": "folder"}}
+        else:
+            result = dict(next((v for v in checks if v["status"] != "READY"), checks[0] if checks else {}))
+        r["release_result"] = result or None
+        if result:
+            result.update(source_resolution=source, linked_decks=checks)
+            context = "%s · %s · %s" % (entry["name"], r["week"], r["topic"])
+            result["context"] = context
+            holds = [completion_holds.check(config or {}, agenda, class_key, r["week"], fid)
+                     for fid in dict.fromkeys(f["form_id"] for f in r["visible"] + r["second"] + r["hidden"] if f["form_id"])]
+            active_holds = [h for h in holds if h["held"]]
+            if active_holds:
+                result.update(linked_source_status=result["status"], status="NOT_READY", scope="assignment",
+                              label=active_holds[0].get("label", "Needs check"),
+                              teacher_holds=active_holds, problem=context + ": " + active_holds[0]["problem"],
+                              action=context + ": " + active_holds[0]["action"])
+                result["issues"] = ["teacher_readiness_hold"] + result["issues"]
+                continue
+            if result["status"] == "READY":
+                result["action"] = ("The linked deck's completion codes are ready; this does not verify distributed student copies. "
+                                    "If their copies lack codes, run the embed-coding program on those copies, preserving answers, then rerun grading.")
+            elif result.get("readability"):
+                result["action"] = "%s: check the exact Agenda deck link and access, then recheck. %s" % (context, result["problem"])
+            elif result.get("action"):
+                result["action"] = context + ": " + result["action"]
+            else:
+                result["action"] = ("%s: %s Run the embed-coding program on this existing deck, preserving content; "
+                                    "then recheck and rerun grading. Unmarked copies are held without scores." % (context, result["problem"]))
 
     flags = []
 
@@ -188,11 +237,17 @@ def check(token, agenda, class_key, config=None):
                      % (title if isinstance(title, str) else "one the Hub can't open"))
         for d in r["decks"]:
             title = titles.get(d["id"])
+            stale = {s["id"]: s for s in r.get("source_resolution", {}).get("stale_links", [])}
+            if d["id"] in stale or (isinstance(title, dict) and title.get("trashed")):
+                flag(r, "stale-deck-link", "%s points to an old deck %s; it is not a required current source." %
+                     (d["label"], stale.get(d["id"], {}).get("reason", "in trash")))
+                continue
             if isinstance(title, dict):
                 flag(r, "deck-unreadable", "The Hub can't open the %s." % d["label"])
                 continue
             named = _week(title)
-            if number is not None and named is not None and named != number:
+            if (number is not None and named is not None and named != number
+                    and not r.get("source_resolution", {}).get("folders")):
                 flag(r, "deck-week", "%s is for Week %d: “%s”." % (d["label"], named, title))
     for form_id, weeks in used.items():
         if len(weeks) > 1:
@@ -210,7 +265,7 @@ def check(token, agenda, class_key, config=None):
         return {"where": where, "label": f["label"], "form_id": f["form_id"] or "", "published_id": pub,
                 "title": title if isinstance(title, str) else "", "student_title": student_title}
     summary = [{"week": r["week"], "topic": r["topic"], "week_policy": r["week_policy"],
-                "release": releases.get(r["release_deck"]) if r["release_deck"] else None,
+                "release": r.get("release_result"),
                 "forms": [form_row(f, "Turn it in") for f in r["visible"]]
                 + [form_row(f, "2nd turn it in") for f in r["second"]]
                 + [form_row(f, "_turnInURL") for f in r["hidden"]],

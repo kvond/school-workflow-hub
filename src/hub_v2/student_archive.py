@@ -801,6 +801,57 @@ class _Run:
         return self.create(key("archivefeedbackhistory", [self.root, self.cls]),
                            "Previous feedback versions", self.course["id"], google.FOLDER)
 
+    def verify_historical_work(self, source, binding, row):
+        """A teacher-retained exact source is history, never current roster authority."""
+        if not isinstance(binding, dict):
+            raise Held("This former-student source has no verified historical filing binding.")
+        owner_doc = _read(self.port, binding.get("student_key", ""))
+        copy_doc = _read(self.port, binding.get("copy_record_key", ""))
+        index = _read(self.port, self.index_key)
+        owner, copied = (owner_doc.value if owner_doc else None), (copy_doc.value if copy_doc else None)
+        teacher = binding.get("teacher_status")
+        if (binding.get("basis") != "teacher_confirmed_former_student_with_verified_work_copy"
+                or not isinstance(teacher, dict) or teacher.get("basis") != "teacher_confirmed_former_student"
+                or teacher.get("status") != "former_student" or teacher.get("class_key") != self.cls
+                or teacher.get("current_ic_verified") is not False or not teacher.get("confirmed_on")
+                or not owner or owner.get("status") != "verified" or owner.get("schema") != SCHEMA
+                or owner.get("record_key") != binding.get("student_key") or owner.get("student_key") != binding.get("student_key")
+                or owner.get("class_key") != self.cls or owner.get("historical_status") != "former_student"
+                or owner.get("former_student_proof") != teacher or owner.get("current_roster_member") is not False
+                or owner.get("grade_authority") is not False
+                or owner.get("identity_status") != "identity_unverified"
+                or work.roster.compact(teacher.get("name")) != work.roster.compact(owner.get("last", "") + owner.get("first", ""))
+                or not index or index.value.get("students", {}).get(owner["student_key"]) != owner.get("drive_file_id")
+                or binding.get("student_folder_id") != owner.get("drive_file_id")
+                or not copied or copied.get("schema") != SCHEMA or copied.get("status") != "verified"
+                or copied.get("record_key") != binding.get("copy_record_key") or copied.get("kind") != "work"
+                or copied.get("class_key") != self.cls or copied.get("student_key") != owner["student_key"]
+                or copied.get("source_file_id") != source.get("id") or copied.get("drive_file_id") != binding.get("copy_id")
+                or copied.get("record_key") not in owner.get("items", {})
+                or copied.get("historical_status") != "former_student"
+                or copied.get("source_kind") not in {"submitted_work_copy", "submitted_work_export"}
+                or copied.get("source_revision") != binding.get("source_revision")
+                or _source_revision(source) != binding.get("source_revision")
+                or copied.get("parent") != owner.get("drive_file_id")):
+            raise Held("This former-student source or private copy changed; preserve its history for verification.")
+        if row.get("matched") and row.get("first") and row.get("last") and (
+                work.roster.compact(row["first"] + row["last"]) != work.roster.compact(owner["first"] + owner["last"])):
+            raise Held("This historical file is now attributed to another student; check that source without changing history.")
+        container = _private(google.drive_file(self.token, owner["parent"], FIELDS), parent=self.course["id"], folder=True)
+        if (container.get("properties") or {}).get(TAG) != key("archiveformersection", [self.root, self.cls]):
+            raise Held("The former-student container no longer matches its tagged private class location.")
+        folder = _private(google.drive_file(self.token, owner["drive_file_id"], FIELDS), parent=owner["parent"], folder=True)
+        if (folder.get("properties") or {}).get(TAG) != owner["student_key"]:
+            raise Held("The former student's folder no longer matches its private archive key.")
+        meta = google.drive_file(self.token, copied["drive_file_id"], FIELDS)
+        if copied["source_kind"] == "submitted_work_copy":
+            if not isinstance(copied.get("content_proof"), dict) or not re.fullmatch(r"[a-f0-9]{64}", str(copied["content_proof"].get("sha256"))):
+                raise Held("The historical work copy has no immutable original-content proof.")
+            _verify_work_copy(meta, copied)
+        else:
+            _verify_work_export(meta, copied)
+        return copied
+
     def retire_navigation(self, student_key, shortcut_key, copy_key):
         """Move only a verified source shortcut; preserve its ID and original source."""
         student_doc, shortcut_doc, copy_doc = (_read(self.port, i) for i in (student_key, shortcut_key, copy_key))
@@ -1269,6 +1320,11 @@ def archive_work(token, write_token, config, class_key, found):
             return source_metadata[ident]
 
         candidates, emails, conflicts = [], {}, set()
+        index = _read(run.port, run.index_key)
+        historical = (index.value if index else {}).get("historical_sources", {})
+        if not isinstance(historical, dict):
+            raise Held("The class's retained former-student source index needs verification.")
+        preserved_history = set()
         lessons = list(found.get("lessons", []))
         forms_not_required = _forms_not_required(config, class_key, found)
         calendar_week = bool(lessons) and all(l.get("calendar_only") is True and not l.get("forms") for l in lessons)
@@ -1299,6 +1355,26 @@ def archive_work(token, write_token, config, class_key, found):
                     if not row.get("files") and not any(v.get("files") for v in row.get("earlier", [])):
                         continue
                     try:
+                        # Keep captured source rows unchanged. Remove only exact
+                        # former-student sources with current original-revision,
+                        # private-copy and teacher-status proof before asking
+                        # the active roster to own them.
+                        versions = []
+                        for version in [row] + row.get("earlier", []):
+                            kept = []
+                            for file in version.get("files", []):
+                                binding = historical.get(file.get("id"))
+                                if binding is None:
+                                    kept.append(file)
+                                    continue
+                                if file.get("trashed") or file.get("problem"):
+                                    raise Held("This retained historical source is unavailable; preserve it for verification.")
+                                copied = run.verify_historical_work(source_reader(file["id"]), binding, {**row, **version})
+                                preserved_history.add(copied["record_key"])
+                            versions.append({**version, "files": kept})
+                        if not any(v["files"] for v in versions):
+                            continue
+                        row = {**versions[0], "earlier": versions[1:]}
                         person = _filing_identity(config, class_key, row, roster_reader, source_reader)
                         previous = emails.setdefault(person["school_email"] or person["identity"], person)
                         if any(previous[k] != person[k] for k in ("first", "last", "section")):
@@ -1430,6 +1506,8 @@ def archive_work(token, write_token, config, class_key, found):
             except (Held, google.GoogleError) as error:
                 result["held"].append({**context, "problem": str(error)})
         result["problems"].extend(_clean(p, 400) for p in found.get("problems", []) if p)
+        if preserved_history:
+            result["historical_preserved"] = len(preserved_history)
         calendar_not_found = (calendar_week and not found.get("other_files") and not found.get("folder_files")
             and found.get("folder_note") == "No turn-in folder for %s %s was found in %s." % (
                 CLASSES[class_key], found["week"], CLASSES[class_key]))
