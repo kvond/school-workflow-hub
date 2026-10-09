@@ -1157,14 +1157,31 @@ def _forms_not_required(config, cls, found):
         return False
 
 
+def _held_source_files(value):
+    """Exact source locators for review, never a student identity or supplied URL."""
+    sources, seen = [], set()
+    for source in (value if isinstance(value, list) else [])[:8]:
+        if not isinstance(source, dict):
+            continue
+        ident = source.get("id")
+        if not isinstance(ident, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", ident) or ident in seen:
+            continue
+        seen.add(ident)
+        sources.append({"id": ident, "name": _clean(source.get("name"), 400)})
+    return sources
+
+
 def _hold_context(row, assignment=""):
     first, last = _clean(row.get("first"), 100), _clean(row.get("last"), 100)
     name = last + ", " + first if first and last else last or first or _clean(row.get("who"), 100)
     source_names = list(dict.fromkeys(_clean(file.get("name"), 160)
         for version in [row] + row.get("earlier", []) for file in version.get("files", [])
         if isinstance(file, dict) and file.get("name")))
+    sources = _held_source_files([file for version in [row] + row.get("earlier", [])
+        for file in version.get("files", []) if isinstance(file, dict)])
     return {k: value for k, value in {"name": name, "section": _clean(row.get("section"), 100),
-        "assignment": _clean(assignment, 160), "source_file_names": _clean("; ".join(source_names[:8]), 400)}.items() if value}
+        "assignment": _clean(assignment, 160), "source_file_names": _clean("; ".join(source_names[:8]), 400),
+        "source_files": sources}.items() if value}
 
 
 def _filing_receipt(cls, week, result):
@@ -1180,14 +1197,20 @@ def _filing_receipt(cls, week, result):
     for item in raw_held[:MAX_HOLDS]:
         if not isinstance(item, dict) or not item.get("problem"):
             raise Held("This filing result's review details need a readable reason.")
-        held.append({k: _clean(item[k], 400 if k in ("problem", "source_file_names") else 160)
-                     for k in ("name", "section", "assignment", "source_file_names", "problem") if item.get(k)})
+        detail = {k: _clean(item[k], 400 if k in ("problem", "source_file_names") else 160)
+                  for k in ("name", "section", "assignment", "source_file_names", "problem") if item.get(k)}
+        sources = _held_source_files(item.get("source_files"))
+        if sources:
+            detail["source_files"] = sources
+        held.append(detail)
     problems = [_clean(p, 400) for p in raw_problems[:MAX_HOLDS] if p]
     held_count = len(raw_held) + len([p for p in raw_problems if p])
     if result.get("status") != "verified" and not held_count:
         problems.append("This filing scan did not finish with a confirmed receipt. Its source work is preserved.")
         held_count = 1
-    truncated = len(raw_held) > MAX_HOLDS or len(raw_problems) > MAX_HOLDS
+    truncated = (len(raw_held) > MAX_HOLDS or len(raw_problems) > MAX_HOLDS
+                 or any(isinstance(item.get("source_files"), list) and len(item["source_files"]) > 8
+                        for item in raw_held if isinstance(item, dict)))
     if truncated:
         problems.append("Further filing checks are retained in the private run receipt; this list reached its safe display limit.")
     return {"schema": SCHEMA, "class_key": cls, "class_name": CLASSES[cls], "week": week,
@@ -2006,9 +2029,19 @@ def work_index_rows(token, config):
             for number, held in enumerate(scan.get("held", [])):
                 problem = _clean(held.get("problem"), 600)
                 holds.append({"class_key": cls, "week": scan.get("week"), **held})
-                rows.append([class_name, held.get("section", ""), held.get("name", ""), held.get("assignment", ""),
-                    scan.get("week", ""), "", "", "", "", "", "", "Filing held: " + problem, "",
-                    key("workindexrow", [cls, scan.get("week"), number, held])])
+                sources = _held_source_files(held.get("source_files"))
+                # The first source row keeps the pre-locator key, protecting
+                # a teacher note when an older receipt gains exact source IDs.
+                prior_detail = {k: v for k, v in held.items() if k != "source_files"}
+                for source_number, source in enumerate(sources or [{}]):
+                    filename = source.get("name") or held.get("source_file_names", "")
+                    student_label = held.get("name", "") or ("Unconfirmed submission: " + filename if filename else "")
+                    status = "Filing held: " + problem + (" Source filename: " + filename if filename else "")
+                    row_key = key("workindexrow", [cls, scan.get("week"), number, prior_detail] + (
+                        [source["id"]] if source_number else []))
+                    rows.append([class_name, held.get("section", ""), student_label, held.get("assignment", ""),
+                        scan.get("week", ""), "", "", "", _link(_url(source["id"]), "Open original") if source else "",
+                        "", "", status, "", row_key])
             for number, problem in enumerate(scan.get("problems", [])):
                 holds.append({"class_key": cls, "week": scan.get("week"), "problem": problem})
                 rows.append([class_name, "", "", "", scan.get("week", ""), "", "", "", "", "", "",

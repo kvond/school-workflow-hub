@@ -90,6 +90,11 @@ It performs no Drive writes and does not depend on Agenda availability.
 registered Agenda `week`. It requires teacher authentication and an allowed
 same-origin JSON request, reloads source evidence and files eligible work.
 Coverage and identity holds remain visible alongside successful filing.
+The work-and-feedback index retains each held submission's exact original-file
+link and filename when available, with its recorded class, week and reason.
+An unconfirmed filename is labeled as a submission, never assigned a student
+identity or presented as a filed work copy. Adding an original locator to an
+older receipt retains its first index-row key and teacher note.
 The 6:30 routine invokes this bounded operation; browsing Student work does
 not start writes. A successful existing tidy can additionally file records,
 and any later archive failure is reported separately from completed moves.

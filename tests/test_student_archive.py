@@ -1480,8 +1480,35 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(held["source_file_names"], original["name"])
         receipt = archive._filing_receipt("biology", "Wk 03", result)
         self.assertEqual(receipt["held"][0]["source_file_names"], original["name"])
+        self.assertEqual(receipt["held"][0]["source_files"], [{"id": SOURCE, "name": original["name"]}])
+        index = archive.work_index_rows("read", self.config)
+        review = next(r for r in index["rows"] if "Filing held:" in r[11])
+        self.assertEqual(review[2], "Unconfirmed submission: " + original["name"])
+        self.assertEqual(review[7], "")
+        self.assertEqual(review[8], archive._link(archive._url(SOURCE), "Open original"))
+        self.assertEqual(review[9:11], ["", ""])
+        self.assertIn(original["name"], review[11])
+        self.assertEqual(index["summary"]["biology"]["student_folders"], 0)
         self.assertEqual(self.drive.items[SOURCE], original)
         self.assertFalse(any(i["mimeType"] == archive.SHORTCUT for i in self.drive.created))
+
+    def test_held_source_locators_reject_supplied_urls_and_preserve_older_row_key(self):
+        held = {"assignment": "Lesson not confirmed", "source_file_names": "Untitled source.pptx",
+                "problem": "Student and course are not confirmed."}
+        scan = {"week": "Wk 03", "held": [held], "problems": []}
+        with patch.object(archive, "_filing", return_value={"scans": [scan]}):
+            prior = archive.work_index_rows("read", self.config)["rows"][0]
+        held["source_files"] = [{"id": "https://untrusted.example/source", "name": "Unsafe"},
+                                {"id": SOURCE, "name": "Untitled source.pptx", "url": "https://untrusted.example/source"},
+                                {"id": SOURCE, "name": "Duplicate"}]
+        receipt = archive._filing_receipt("biology", "Wk 03", {"status": "held", "held": [held]})
+        self.assertEqual(receipt["held"][0]["source_files"], [{"id": SOURCE, "name": "Untitled source.pptx"}])
+        with patch.object(archive, "_filing", return_value={"scans": [{**scan, "held": receipt["held"]}]}):
+            current = archive.work_index_rows("read", self.config)["rows"][0]
+        self.assertEqual(current[13], prior[13])
+        self.assertEqual(current[8], archive._link(archive._url(SOURCE), "Open original"))
+        self.assertNotIn("untrusted", str(current))
+        self.assertFalse(self.drive.copied)
 
     def test_actual_roster_reader_retains_duplicate_rows_for_name_collision_checks(self):
         self.config["HUB_ROSTER_SPREADSHEET_ID"] = "FictionalRosterWorkbook001"
