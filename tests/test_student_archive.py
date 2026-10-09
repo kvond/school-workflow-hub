@@ -66,6 +66,7 @@ class FakeDrive:
         if metadata.get("shortcutDetails"):
             item["shortcutDetails"] = deepcopy(metadata["shortcutDetails"])
         if pdf is not None:
+            self.contents[metadata["id"]] = pdf
             item.update(md5Checksum=hashlib.md5(pdf).hexdigest(), size=str(len(pdf)))
         if self.fail_after_create:
             self.fail_after_create = False
@@ -322,6 +323,208 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(copied["status"], "creating")
         self.assertIsNone(copied.get("drive_file_id"))
         self.assertIn("copy_error_status", copied)
+
+    def export_fixture(self):
+        self.drive.items[SOURCE]["mimeType"] = "application/vnd.google-apps.presentation"
+        native_proof = {"basis": "native_presentation/v1", "sha256": "d" * 64, "slides": 1, "images": 0}
+        def content(token, meta, heartbeat=None):
+            return native_proof if meta["mimeType"] == "application/vnd.google-apps.presentation" else self.drive.content(token, meta)
+        self.content_patch = patch.object(archive, "_work_content", side_effect=content)
+        self.content_patch.start(); self.addCleanup(self.content_patch.stop)
+        output = BytesIO()
+        with ZipFile(output, "w") as z: z.writestr("ppt/slides/slide1.xml", "<slide><text>Fictional answer</text></slide>")
+        raw = output.getvalue()
+        self.bytes_patch = patch.object(archive, "_work_bytes", side_effect=lambda token, meta, heartbeat=None:
+                                      raw if meta["id"] == SOURCE else self.drive.contents[meta["id"]])
+        self.bytes_mock = self.bytes_patch.start(); self.addCleanup(self.bytes_patch.stop)
+        self.drive.fail_copy = True
+        self.assertEqual(self.archive()["status"], "held")
+        self.drive.fail_copy = False
+        blocked_key = next(k for k, d in self.port.rows.items() if d.value.get("source_kind") == "submitted_work_copy")
+        student_key = self.port.rows[blocked_key].value["student_key"]
+        return {"student_key": student_key, "blocked_copy_key": blocked_key,
+                "expected_revision": archive._source_revision(self.drive.items[SOURCE])}, raw
+
+    def export(self, args):
+        return archive.file_work_export("read", "write", self.config, "biology", args["student_key"], SOURCE,
+            expected_revision=args["expected_revision"], blocked_copy_key=args["blocked_copy_key"])
+
+    def test_explicit_export_preserves_native_uncertainty_and_reuses_exact_snapshot(self):
+        args, raw = self.export_fixture()
+        before = deepcopy(self.port.rows[args["blocked_copy_key"]])
+        original = deepcopy(self.drive.items[SOURCE])
+        result = self.export(args)
+        self.assertEqual(result["status"], "verified")
+        exported = self.port.rows[result["record_key"]].value
+        self.assertEqual(exported["source_kind"], "submitted_work_export")
+        self.assertEqual(exported["mime"], google.PPTX)
+        self.assertIn("Exported work snapshot", exported["name"])
+        self.assertEqual(exported["submitted_at"], row()["submitted_at"])
+        self.assertEqual(self.drive.contents[result["drive_file_id"]], raw)
+        self.assertEqual(self.port.rows[args["blocked_copy_key"]], before)
+        self.assertEqual(self.drive.items[SOURCE], original)
+        self.assertEqual(self.export(args)["drive_file_id"], result["drive_file_id"])
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.copied, [SOURCE])
+        self.assertEqual(sum(a.args[1]["id"] == SOURCE for a in self.bytes_mock.call_args_list), 1)
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["work"], 1)
+        self.drive.items[result["drive_file_id"]]["md5Checksum"] = "f" * 32
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "held")
+
+    def test_export_fence_stops_uncertain_upload_retry_and_recovers_known_created_id(self):
+        args, _ = self.export_fixture()
+        self.drive.fail_after_create = True
+        self.assertEqual(self.export(args)["status"], "verified")
+        self.assertEqual(self.export(args)["status"], "verified")
+        self.assertEqual(sum(i["mimeType"] == google.PPTX for i in self.drive.created), 1)
+        self.drive.items[SOURCE].update(version="2", modifiedTime="2026-10-09T12:00:00Z")
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.copied, [SOURCE, SOURCE])
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["work"], 2)
+
+    def test_absent_export_upload_is_not_repeated(self):
+        args, _ = self.export_fixture()
+        self.drive.fail_create = True
+        self.assertEqual(self.export(args)["status"], "held")
+        self.drive.fail_create = False
+        self.assertEqual(self.export(args)["status"], "held")
+        self.assertEqual(sum(i["mimeType"] == google.PPTX for i in self.drive.created), 1)
+        self.assertEqual(self.drive.copied, [SOURCE])
+
+    def test_export_requires_pinned_source_content_revision_and_private_student(self):
+        args, _ = self.export_fixture()
+        self.drive.items[SOURCE]["version"] = "2"
+        self.assertEqual(self.export(args)["status"], "held")
+        self.assertFalse(any(i["mimeType"] == google.PPTX for i in self.drive.created))
+        self.drive.items[SOURCE]["version"] = "1"
+        student = self.port.rows[args["student_key"]].value
+        self.drive.items[student["drive_file_id"]]["permissions"] = [{"type": "anyone", "role": "reader"}]
+        self.assertEqual(self.export(args)["status"], "held")
+        self.assertFalse(any(i["mimeType"] == google.PPTX for i in self.drive.created))
+
+    def test_export_confirms_legacy_canonical_proof_without_changing_native_fence(self):
+        args, raw = self.export_fixture()
+        blocked = self.port.rows[args["blocked_copy_key"]]
+        value = {**blocked.value, "content_proof": archive._native_parts_proof(raw, "ppt/")}
+        self.port.commit({args["blocked_copy_key"]: (value, blocked.version)})
+        before = deepcopy(self.port.rows[args["blocked_copy_key"]])
+        result = self.export(args)
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(self.port.rows[args["blocked_copy_key"]], before)
+        exported = self.port.rows[result["record_key"]].value
+        self.assertEqual(exported["source_content_proof"]["basis"], "native_presentation/v1")
+        self.assertEqual(before.value["content_proof"]["basis"], "native_document_content/v1")
+
+    def test_export_recovers_uploaded_reserved_id_before_any_fresh_export(self):
+        args, raw = self.export_fixture()
+        failed_ids = set()
+        def created_then_read_fails(*a):
+            result = self.drive.create(*a)
+            failed_ids.add(result["id"])
+            return result
+        def metadata(token, ident, fields=None):
+            if ident in failed_ids:
+                failed_ids.remove(ident)
+                raise google.GoogleError("Temporary read failure", 503)
+            return self.drive.metadata(token, ident, fields)
+        with patch.object(google, "archive_create", side_effect=created_then_read_fails), \
+                patch.object(google, "drive_file", side_effect=metadata):
+            self.assertEqual(self.export(args)["status"], "held")
+        def changed_export(token, meta, heartbeat=None):
+            return b"Different bytes from a later Google export" if meta["id"] == SOURCE else self.drive.contents[meta["id"]]
+        self.bytes_mock.side_effect = changed_export
+        result = self.export(args)
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(self.drive.contents[result["drive_file_id"]], raw)
+        self.assertEqual(sum(a.args[1]["id"] == SOURCE for a in self.bytes_mock.call_args_list), 1)
+        self.assertEqual(sum(i["mimeType"] == google.PPTX for i in self.drive.created), 1)
+        self.assertEqual(self.drive.copied, [SOURCE])
+
+    def test_export_rejects_another_input_revision_even_with_the_same_native_content(self):
+        args, _ = self.export_fixture()
+        self.drive.items[SOURCE]["createdTime"] = "2026-10-07T12:00:00Z"
+        args["expected_revision"] = archive._source_revision(self.drive.items[SOURCE])
+        self.assertEqual(self.export(args)["status"], "held")
+        self.assertFalse(any(i["mimeType"] == google.PPTX for i in self.drive.created))
+
+    def test_source_edit_during_export_prevents_upload(self):
+        args, raw = self.export_fixture()
+        def changed(*a):
+            self.drive.items[SOURCE]["version"] = "2"
+            return raw
+        self.bytes_mock.side_effect = changed
+        self.assertEqual(self.export(args)["status"], "held")
+        self.assertFalse(any(i["mimeType"] == google.PPTX for i in self.drive.created))
+
+    def test_source_edit_after_upload_prevents_attachment_and_native_fence_changes(self):
+        args, _ = self.export_fixture()
+        blocked = deepcopy(self.port.rows[args["blocked_copy_key"]])
+        def upload_then_edit(*a):
+            result = self.drive.create(*a)
+            self.drive.items[SOURCE]["version"] = "2"
+            return result
+        with patch.object(google, "archive_create", side_effect=upload_then_edit):
+            self.assertEqual(self.export(args)["status"], "held")
+        student = self.port.rows[args["student_key"]].value
+        self.assertFalse(any(i.startswith("archiveworkexport_") for i in student["items"]))
+        self.assertEqual(self.port.rows[args["blocked_copy_key"]], blocked)
+
+    def test_later_tagged_native_result_blocks_export_without_retrying_copy(self):
+        args, _ = self.export_fixture()
+        blocked = self.port.rows[args["blocked_copy_key"]].value
+        result = self.drive.add("FictionalLateNativeCopy001", "A late native result", blocked["mime"], [blocked["parent"]])
+        result["properties"][archive.TAG] = args["blocked_copy_key"]
+        self.assertEqual(self.export(args)["status"], "held")
+        self.assertFalse(any(i["mimeType"] == google.PPTX for i in self.drive.created))
+        self.assertEqual(self.drive.copied, [SOURCE])
+
+    def test_export_upload_uses_reserved_id_and_actual_pptx_multipart_type(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {"id": "FictionalReservedExport001"}
+        session = Mock(); session.post.return_value = response
+        metadata = {"id": "FictionalReservedExport001", "name": "Exported work snapshot.pptx", "mimeType": google.PPTX,
+                    "parents": ["FictionalPrivateStudent001"]}
+        raw = b"Fictional exported PPTX bytes"
+        with patch.object(google, "_session", return_value=session):
+            result = REAL_ARCHIVE_CREATE("fictional-token", metadata, raw)
+        self.assertEqual(result["id"], metadata["id"])
+        body = session.post.call_args.kwargs["data"]
+        self.assertIn(("Content-Type: " + google.PPTX).encode(), body)
+        self.assertIn(raw, body)
+        self.assertIn(metadata["id"].encode(), body)
+        self.assertFalse(session.post.call_args.kwargs["allow_redirects"])
+        self.assertEqual(session.post.call_count, 1)
+
+    def test_verified_export_pairs_science_feedback_with_original_form_dates(self):
+        args, _ = self.export_fixture()
+        self.assertEqual(self.export(args)["status"], "verified")
+        student = self.port.rows[args["student_key"]].value
+        raw = b"%PDF Fictional source-grounded science writing"
+        report = {"schema": "science-writing/v1", "report_type": "science_writing", "class_key": "biology",
+            "id": "feedbacksource_" + "c" * 64, "prepared_at": "2026-10-09T12:00:00Z", "pdf_sha256": hashlib.sha256(raw).hexdigest(),
+            "student": {"student_key": student["student_key"], "student_folder_id": student["drive_file_id"],
+                        "name": student["name"], "section": student["section"]},
+            "provenance": {"source_observations": [{"student_key": student["student_key"], "section": student["section"],
+                "source_file_id": SOURCE, "source_revision": "1", "source_modified_at": "2026-10-08T12:00:00Z"}]}}
+        filed = archive.file_science_writing("read", "write", self.config, report, raw)
+        self.assertEqual(filed["status"], "verified")
+        self.assertEqual(filed["source_records"][0]["date"], "2026-10-07")
+        rows = archive.work_index_rows("read", self.config)["rows"]
+        linked = [r for r in rows if "Science writing feedback covers" in r[11]]
+        self.assertEqual(len(linked), 1)
+        self.assertEqual(len([r for r in rows if "Filing held:" in r[11]]), 1)
+
+    def test_export_can_retire_navigation_only_with_binary_and_native_source_proof(self):
+        args, raw = self.export_fixture()
+        self.records_layout()
+        self.assertEqual(self.export(args)["status"], "verified")
+        navigation = next(d.value for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        self.assertTrue(navigation["retired_navigation"])
+        exported = self.port.rows[navigation["work_copy_record_key"]].value
+        self.assertEqual(exported["source_kind"], "submitted_work_export")
+        self.assertEqual(self.drive.contents[exported["drive_file_id"]], raw)
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.copied, [SOURCE])
 
     def test_unconfirmed_absent_copy_is_held_and_never_reposted(self):
         self.drive.fail_copy = True

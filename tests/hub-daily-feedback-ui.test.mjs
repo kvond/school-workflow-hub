@@ -96,6 +96,22 @@ test('a saved dated snapshot remains reprintable when current sources are unavai
   assert.equal(requests[0].options.method, undefined);
 });
 
+test('a source-read failure stays visible above collapsed historical feedback', () => {
+  const {ui} = boot();
+  const problem = 'Fictional course source access needs review.';
+  const rendered = ui.renderTodayFeedback({date: DAY, requested_date: '2026-10-09', files: [],
+    daily_packet: packet, source_problem: problem});
+  assert.match(rendered.textContent, /No new feedback confirmed for 2026-10-09/);
+  const visible = rendered.children.find(node => node instanceof Element && node.tagName !== 'details' && node.textContent.includes(problem));
+  assert.ok(visible, 'The source failure must be visible without opening history.');
+  const history = rendered.children.find(node => node instanceof Element && node.tagName === 'details');
+  assert.equal(history.open, undefined);
+  assert.doesNotMatch(history.textContent, /Fictional course source access/);
+  const unavailable = ui.renderTodayFeedback({date: '2026-10-09', files: [], source_problem: problem});
+  assert.match(unavailable.textContent, /could not be fully checked/);
+  assert.doesNotMatch(unavailable.textContent, /No print-ready feedback documents were found/);
+});
+
 test('two students with the same PDF title remain distinct and earlier daily PDFs stay linked', () => {
   const {ui} = boot();
   const sources = ['Rivera, Ana', 'Avery, Sam'].map((student_name, index) => ({...files[0], id: 'student-' + index,

@@ -138,6 +138,18 @@ not move or edit the submitted source. The index retains the source link but
 removes it from student navigation, and later filing reuses that same central
 link. Missing, changed or ambiguous copies remain held with their links intact.
 
+An explicitly authorized operator can call `file_work_export` with an existing
+student key, original source ID, exact expected source revision and the unresolved
+native-copy reservation key. This creates a separately identified **Exported work
+snapshot** in PPTX format; it does not retry, alter or certify the uncertain native
+copy. The original revision and native content are verified before and after
+export/upload, and a separately reserved Drive ID binds the exact exported bytes.
+Unknown upload outcomes remain fenced. Normal filing never creates this fallback
+automatically; it may reuse an already verified export for the unchanged revision.
+The snapshot retains original Form dates and source links, can pair with feedback,
+and can support source-navigation cleanup only after both byte and native-content
+proofs pass. No source, grade or complete-week receipt is rewritten.
+
 `refresh_work_index` runs after normal work filing and feedback filing when
 configured. The Records tab has one stable record key per source/report row,
 typed source dates, actual-copy/original/feedback/student-folder hyperlinks,

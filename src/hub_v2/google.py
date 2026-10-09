@@ -371,16 +371,19 @@ def archive_file_id(token, *, shortcut=False):
 
 
 def archive_create(token, metadata, pdf_bytes=None):
-    """Create one reserved folder/shortcut/PDF; never modify sharing or source bytes."""
+    """Create one reserved folder/shortcut/PDF/PPTX; never change sharing or sources."""
     fields = "id,name,mimeType,parents,properties,shortcutDetails,createdTime,md5Checksum,size"
     if pdf_bytes is None:
         return get_json("https://www.googleapis.com/drive/v3/files", token,
                         {"fields": fields, "supportsAllDrives": "true"}, method="POST", body=metadata)
     import json
+    media_mime = metadata.get("mimeType")
+    if media_mime not in {"application/pdf", PPTX}:
+        raise GoogleError("This reserved archive upload has an unsupported file type.")
     boundary = "hub-archive-" + hashlib.sha256(pdf_bytes).hexdigest()[:24]
     body = ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n%s\r\n"
-            "--%s\r\nContent-Type: application/pdf\r\n\r\n" %
-            (boundary, json.dumps(metadata), boundary)).encode() + pdf_bytes + \
+            "--%s\r\nContent-Type: %s\r\n\r\n" %
+            (boundary, json.dumps(metadata), boundary, media_mime)).encode() + pdf_bytes + \
         ("\r\n--%s--\r\n" % boundary).encode()
     try:
         response = _session().post("https://www.googleapis.com/upload/drive/v3/files",
@@ -394,14 +397,17 @@ def archive_create(token, metadata, pdf_bytes=None):
             except (ValueError, TypeError, AttributeError):
                 reasons = set()
             if reasons & {"storageQuotaExceeded", "teamDriveFileLimitExceeded"}:
-                raise GoogleError("Drive storage quota prevents this PDF upload. The saved feedback is still downloadable from the Hub.",
+                message = ("Drive storage quota prevents this PDF upload. The saved feedback is still downloadable from the Hub."
+                           if media_mime == "application/pdf" else
+                           "Drive storage quota prevents this work snapshot upload. The original work is preserved.")
+                raise GoogleError(message,
                                   response.status_code)
             raise GoogleError(_status_message(response.status_code), response.status_code)
         return response.json()
     except GoogleError:
         raise
     except Exception:
-        raise GoogleError("Drive did not confirm the archive PDF upload.") from None
+        raise GoogleError("Drive did not confirm the archive file upload.") from None
 
 
 def rename_item(token, item_id, name):

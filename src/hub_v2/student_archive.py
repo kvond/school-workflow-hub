@@ -183,11 +183,9 @@ def _native_presentation_proof(token, ident, heartbeat=None):
     return _presentation_content_proof(presentation, images)
 
 
-def _work_content(token, meta, heartbeat=None):
-    """Read a bounded source/copy; native export ZIP timestamps are not content."""
+def _work_bytes(token, meta, heartbeat=None):
+    """One bounded exact-file download/export; this never writes or follows redirects."""
     mime, ident = meta["mimeType"], meta["id"]
-    if mime == "application/vnd.google-apps.presentation":
-        return _native_presentation_proof(token, ident, heartbeat)
     native = {"application/vnd.google-apps.presentation": google.PPTX,
               "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
     if mime in native:
@@ -215,6 +213,16 @@ def _work_content(token, meta, heartbeat=None):
     raw = b"".join(chunks)
     if not raw:
         raise Held("This submitted work has no readable content to copy.")
+    return raw
+
+
+def _work_content(token, meta, heartbeat=None):
+    """Read a bounded source/copy; native export ZIP timestamps are not content."""
+    mime = meta["mimeType"]
+    if mime == "application/vnd.google-apps.presentation":
+        return _native_presentation_proof(token, meta["id"], heartbeat)
+    raw = _work_bytes(token, meta, heartbeat)
+    native = {"application/vnd.google-apps.presentation", "application/vnd.google-apps.document"}
     if mime in native:
         prefix = "ppt/" if mime.endswith("presentation") else "word/"
         return _native_parts_proof(raw, prefix)
@@ -236,6 +244,24 @@ def _verify_work_copy(meta, record):
     if proof.get("basis") == "file_bytes" and (meta.get("md5Checksum") != proof.get("md5")
             or str(meta.get("size")) != str(proof.get("size"))):
         raise Held("A student's filed work copy changed after verification. The original remains available.")
+    return meta
+
+
+def _verify_work_export(meta, record):
+    _private(meta, parent=record["parent"])
+    revision = record.get("source_revision") or {}
+    if (record.get("source_kind") != "submitted_work_export" or record.get("mime") != google.PPTX
+            or meta.get("mimeType") != google.PPTX or (meta.get("properties") or {}).get(TAG) != record["record_key"]
+            or record.get("source_mime") != "application/vnd.google-apps.presentation"
+            or revision.get("id") != record.get("source_file_id") or revision.get("mimeType") != record.get("source_mime")
+            or str(revision.get("version")) != str(record.get("source_version")) or revision.get("trashed") is not False
+            or not revision.get("modifiedTime") or record.get("source_revision_key") != content_hash(revision)
+            or (record.get("source_content_proof") or {}).get("basis") != "native_presentation/v1"
+            or not re.fullmatch(r"[a-f0-9]{64}", (record.get("source_content_proof") or {}).get("sha256", ""))
+            or not re.fullmatch(r"[a-f0-9]{64}", record.get("media_sha256", ""))
+            or meta.get("md5Checksum") != record.get("media_md5")
+            or str(meta.get("size")) != str(record.get("size"))):
+        raise Held("An exported work snapshot no longer matches its verified private source and bytes.")
     return meta
 
 
@@ -652,12 +678,14 @@ class _Run:
             self._lease_error = error
             raise
 
-    def create(self, ident, name, parent, mime, *, target=None, pdf=None, attributes=None):
+    def create(self, ident, name, parent, mime, *, target=None, pdf=None, media=None, attributes=None):
         self.heartbeat()
         old = _read(self.port, ident)
         expected = {"name": name, "parent": parent, "mime": mime, "target": target}
         if old:
             record = old.value
+            if media is not None and hashlib.sha256(media).hexdigest() != record.get("media_sha256"):
+                raise Held("This reserved work snapshot has different bytes. Preserve its existing reservation.")
             if any(record.get(k) != v for k, v in expected.items() if k != "name"):
                 raise Held("An archive record already belongs to a different source or student. It needs review.")
             # A repeated Drive upload can appear in several Form revisions.
@@ -693,6 +721,8 @@ class _Run:
                       "status": "reserved", **expected, **(attributes or {})}
             if pdf is not None:
                 record.update(pdf_sha256=hashlib.sha256(pdf).hexdigest(), pdf_md5=hashlib.md5(pdf).hexdigest(), size=len(pdf))
+            elif media is not None:
+                record.update(media_sha256=hashlib.sha256(media).hexdigest(), media_md5=hashlib.md5(media).hexdigest(), size=len(media))
             old = self.put(ident, record)
         file_id = record["drive_file_id"]
         try:
@@ -712,7 +742,7 @@ class _Run:
             known_quota = False
             self.renew()
             try:
-                google.archive_create(self.write_token, metadata, pdf)
+                google.archive_create(self.write_token, metadata, pdf if pdf is not None else media)
             except google.GoogleError as error:
                 creation_error = str(error)  # Helpers only emit bounded, redacted explanations.
                 known_quota = (mime == PDF and error.status == 403
@@ -733,6 +763,9 @@ class _Run:
         if mime == PDF and (meta.get("md5Checksum") != record.get("pdf_md5")
                            or int(meta.get("size", -1)) != record.get("size")):
             raise Held("This saved feedback PDF changed after filing. The original report needs checking.")
+        if record.get("media_sha256") and (meta.get("md5Checksum") != record.get("media_md5")
+                                          or str(meta.get("size")) != str(record.get("size"))):
+            raise Held("This exported work snapshot changed after filing. Its original work is preserved.")
         if mime != PDF and meta.get("name") != name:
             self.renew()
             try:
@@ -774,7 +807,7 @@ class _Run:
                 or shortcut.get("mime") != SHORTCUT or shortcut.get("status") != "verified"
                 or shortcut.get("kind") != "work" or shortcut.get("student_key") != student_key
                 or copied.get("status") != "verified" or copied.get("student_key") != student_key
-                or copied.get("source_kind") not in {"submitted_work_copy", "teacher_attributed_joint_copy"}
+                or copied.get("source_kind") not in {"submitted_work_copy", "submitted_work_export", "teacher_attributed_joint_copy"}
                 or copied.get("source_file_id") != shortcut.get("source_file_id")):
             raise Held("The original-work link and real copy do not bind the same student, source and revision.")
         _private(google.drive_file(self.token, student["parent"], FIELDS), parent=self.course["id"], folder=True)
@@ -782,6 +815,8 @@ class _Run:
         copy_meta = _private(google.drive_file(self.token, copied["drive_file_id"], FIELDS), parent=student["drive_file_id"])
         if copied["source_kind"] == "submitted_work_copy":
             _verify_work_copy(copy_meta, copied)
+        elif copied["source_kind"] == "submitted_work_export":
+            _verify_work_export(copy_meta, copied)
         elif ((copy_meta.get("properties") or {}).get(TAG) != copy_key
               or (copy_meta.get("properties") or {}).get("hubCopiedSource") != copied["source_file_id"]
               or (copy_meta.get("properties") or {}).get("hubSharedSource") != copied.get("shared_source_key")
@@ -794,14 +829,17 @@ class _Run:
         source = google.drive_file(self.token, shortcut["source_file_id"], SOURCE_FIELDS)
         if (source.get("trashed") is not False or source.get("mimeType") not in work.STUDENT_WORK
                 or str(source.get("version")) != str(copied.get("source_version"))
-                or (copied["source_kind"] == "submitted_work_copy"
+                or (copied["source_kind"] in {"submitted_work_copy", "submitted_work_export"}
                     and _source_revision(source) != copied.get("source_revision"))):
             raise Held("The original submission has a newer revision. File its real copy before removing this link.")
         self.heartbeat(force=True)
         source_proof = _work_content(self.token, source, self.heartbeat)
         copy_proof = _work_content(self.token, copy_meta, self.heartbeat)
-        if (source_proof != copy_proof or (copied["source_kind"] == "submitted_work_copy"
-                                          and source_proof != copied.get("content_proof"))):
+        export_matches = (copied["source_kind"] == "submitted_work_export"
+                          and source_proof == copied.get("source_content_proof")
+                          and copy_proof.get("sha256") == copied.get("media_sha256"))
+        if (not export_matches and (source_proof != copy_proof or (copied["source_kind"] == "submitted_work_copy"
+                                          and source_proof != copied.get("content_proof")))):
             raise Held("The real copied work does not match the original content. Preserve the navigation link.")
         if (_source_revision(google.drive_file(self.token, source["id"], SOURCE_FIELDS)) != _source_revision(source)
                 or google.drive_file(self.token, copied["drive_file_id"], FIELDS) != copy_meta):
@@ -916,6 +954,79 @@ class _Run:
                       copied_modified_at=final_copy.get("modifiedTime"), created_at=final_copy.get("createdTime"),
                       copied_at=datetime.now(timezone.utc).isoformat(), url=_url(file_id))
         return self.put(ident, record, old).value
+
+    def export_work(self, student, source, artifact, blocked_copy_key):
+        """Explicit independent snapshot; never change or repeat an uncertain native COPY."""
+        revision = _source_revision(source)
+        if (source.get("mimeType") != "application/vnd.google-apps.presentation" or source.get("trashed") is not False
+                or not source.get("version") or not source.get("modifiedTime")):
+            raise Held("Only a readable native presentation can use this explicit exported-work snapshot.")
+        blocked = _read(self.port, blocked_copy_key)
+        if (not blocked or blocked.value.get("schema") != SCHEMA or blocked.value.get("record_key") != blocked_copy_key
+                or not re.fullmatch(r"archiveworkcopy_[a-f0-9]{64}", blocked_copy_key)
+                or blocked.value.get("status") != "creating" or blocked.value.get("drive_file_id")
+                or blocked.value.get("source_kind") != "submitted_work_copy"
+                or blocked.value.get("source_file_id") != source["id"]
+                or blocked.value.get("student_key") != student["student_key"]
+                or blocked.value.get("parent") != student["drive_file_id"]
+                or blocked.value.get("source_revision") != revision
+                or blocked.value.get("source_revision_key") != content_hash(revision)
+                or blocked_copy_key != key("archiveworkcopy", [self.root, self.cls, source["id"],
+                    content_hash(revision), student["student_key"]])):
+            raise Held("This export requires the exact unresolved native-copy reservation; it never replaces a confirmed copy.")
+        if any((item.get("properties") or {}).get(TAG) == blocked_copy_key
+               for item in google.folder_children(self.token, student["drive_file_id"])):
+            raise Held("The native-copy request now has a tagged result. Verify that existing copy before creating an export.")
+        ident = key("archiveworkexport", [self.root, self.cls, source["id"], content_hash(revision), student["student_key"]])
+        proof = _work_content(self.token, source, self.heartbeat)
+        blocked_proof = blocked.value.get("content_proof") or {}
+        if (blocked_proof.get("basis") not in {"native_document_content/v1", "native_presentation/v1"}
+                or (blocked_proof.get("basis") == "native_presentation/v1" and proof != blocked_proof)):
+            raise Held("This source content differs from the unresolved copy request. Preserve that request for review.")
+        old = _read(self.port, ident)
+        if old:
+            record = old.value
+            try:
+                meta = _verify_work_export(google.drive_file(self.token, record["drive_file_id"], FIELDS), record)
+            except google.GoogleError as error:
+                if error.status == 404:
+                    raise Held("The exported-work upload is unconfirmed. Its reserved ID will not be replaced or uploaded again.") from None
+                raise
+            raw = _work_bytes(self.token, meta, self.heartbeat)
+            if (record.get("source_revision") != revision or record.get("source_content_proof") != proof
+                    or hashlib.sha256(raw).hexdigest() != record["media_sha256"]
+                    or record.get("unresolved_native_copy_key") != blocked_copy_key):
+                raise Held("The existing exported snapshot changed. Preserve its stable file ID for review.")
+            if blocked_proof.get("basis") == "native_document_content/v1" and _native_parts_proof(raw, "ppt/") != blocked_proof:
+                raise Held("The exported content does not confirm the unresolved request's original source proof.")
+            if record.get("status") != "verified":
+                record = self.create(ident, record["name"], record["parent"], google.PPTX, media=raw)
+        else:
+            raw = _work_bytes(self.token, source, self.heartbeat)
+            exported_proof = _native_parts_proof(raw, "ppt/")
+            if blocked_proof.get("basis") == "native_document_content/v1" and exported_proof != blocked_proof:
+                raise Held("The current exported content does not confirm the unresolved request's original source proof.")
+            provenance = {k: v for k, v in artifact.items() if k not in {"drive_file_id", "drive_version", "created_at",
+                "url", "record_key", "status", "target", "mime", "parent", "name", "retired_navigation", "archiveparent",
+                "work_copy_record_key", "retired_content_proof", "retired_source_revision"}}
+            self.heartbeat(force=True)
+            if (_source_revision(google.drive_file(self.token, source["id"], SOURCE_FIELDS)) != revision
+                    or _work_content(self.token, source, self.heartbeat) != proof):
+                raise Held("This original changed during export. No work snapshot upload was requested.")
+            record = self.create(ident, artifact["name"].replace(" — Work", " — Exported work snapshot") + ".pptx",
+                student["drive_file_id"], google.PPTX, media=raw, attributes={**provenance,
+                    "source_kind": "submitted_work_export", "source_mime": source["mimeType"], "source_revision": revision,
+                    "source_revision_key": content_hash(revision), "source_content_proof": proof,
+                    "source_version": source["version"], "source_modified_at": source["modifiedTime"],
+                    "unresolved_native_copy_key": blocked_copy_key})
+            meta = _verify_work_export(google.drive_file(self.token, record["drive_file_id"], FIELDS), record)
+            if _work_content(self.token, meta, self.heartbeat).get("sha256") != record["media_sha256"]:
+                raise Held("The exported snapshot did not read back as the exact uploaded bytes.")
+        if (_source_revision(google.drive_file(self.token, source["id"], SOURCE_FIELDS)) != revision
+                or _work_content(self.token, source, self.heartbeat) != proof
+                or _read(self.port, blocked_copy_key) != blocked):
+            raise Held("The source or unresolved copy record changed during snapshot verification. Preserve both.")
+        return record
 
     def student(self, person):
         self.heartbeat()
@@ -1274,10 +1385,14 @@ def archive_work(token, write_token, config, class_key, found):
                         existing_joint = None
                         student_doc = _read(run.port, student["student_key"])
                         for candidate in _batch_read(run.port, list(student_doc.value.get("items", {}))).values():
-                            if (candidate and candidate.value.get("source_kind") == "teacher_attributed_joint_copy"
+                            if (candidate and candidate.value.get("source_kind") in {"teacher_attributed_joint_copy", "submitted_work_export"}
                                     and candidate.value.get("source_file_id") == source["id"]
                                     and candidate.value.get("source_version") == source.get("version")
                                     and candidate.value.get("source_modified_at") == source.get("modifiedTime")):
+                                if candidate.value["source_kind"] == "submitted_work_export":
+                                    if candidate.value.get("source_revision") != _source_revision(source):
+                                        continue
+                                    _verify_work_export(google.drive_file(token, candidate.value["drive_file_id"], FIELDS), candidate.value)
                                 existing_joint = candidate.value
                         copied = existing_joint or run.copy_work(student, source, artifact)
                         run.attach(student, copied)
@@ -1311,6 +1426,55 @@ def archive_work(token, write_token, config, class_key, found):
     return result
 
 
+def file_work_export(token, write_token, config, class_key, student_key, source_file_id, *,
+                     expected_revision, blocked_copy_key):
+    """Explicit operator-only export fallback; no source, native-copy or week-receipt writes."""
+    run = None
+    try:
+        run = _Run(token, write_token, config, class_key)
+        index = _read(run.port, run.index_key)
+        student_doc = _read(run.port, student_key)
+        artifact_doc = _read(run.port, key("archivework", [run.root, class_key, source_file_id]))
+        if (not index or index.value.get("schema") != SCHEMA or not student_doc
+                or student_doc.value.get("schema") != SCHEMA or student_doc.value.get("record_key") != student_key
+                or student_doc.value.get("status") != "verified"
+                or student_doc.value.get("student_key") != student_key
+                or index.value.get("students", {}).get(student_key) != student_doc.value.get("drive_file_id")
+                or not artifact_doc or artifact_doc.value.get("status") != "verified"
+                or artifact_doc.value.get("kind") != "work" or artifact_doc.value.get("mime") != SHORTCUT
+                or artifact_doc.value.get("schema") != SCHEMA or artifact_doc.value.get("class_key") != class_key
+                or artifact_doc.value.get("record_key") != key("archivework", [run.root, class_key, source_file_id])
+                or artifact_doc.value.get("source_file_id") != source_file_id
+                or artifact_doc.value.get("student_key") != student_key):
+            raise Held("The export source must already belong to this exact verified student archive.")
+        student, artifact = student_doc.value, artifact_doc.value
+        _private(google.drive_file(token, student["parent"], FIELDS), parent=run.course["id"], folder=True)
+        _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True, write=True)
+        source = google.drive_file(token, source_file_id, SOURCE_FIELDS)
+        if _source_revision(source) != expected_revision:
+            raise Held("The source revision changed after the explicit export plan. No snapshot was requested.")
+        meta = _private(google.drive_file(token, artifact["drive_file_id"], FIELDS), parent=artifact["parent"])
+        if ((meta.get("properties") or {}).get(TAG) != artifact["record_key"] or meta.get("mimeType") != SHORTCUT
+                or (meta.get("shortcutDetails") or {}).get("targetId") != source_file_id):
+            raise Held("The existing source link changed. Preserve it and the unresolved native request.")
+        exported = run.export_work(student, source, artifact, blocked_copy_key)
+        run.attach(student, exported)
+        if config.get(RECORDS_CONFIG) or artifact.get("retired_navigation"):
+            run.retire_navigation(student_key, artifact["record_key"], exported["record_key"])
+        result = {"status": "verified", "class_key": class_key, "record_key": exported["record_key"],
+                  "drive_file_id": exported["drive_file_id"], "source_kind": exported["source_kind"], "filed": 1}
+        run.finish(result)
+        return result
+    except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
+        result = {"status": "held", "class_key": class_key, "problem": _problem(error)}
+        if run:
+            try:
+                run.finish(result)
+            except (Conflict, StoreUnavailable):
+                pass
+        return result
+
+
 def retire_source_links(token, write_token, config, class_key):
     """Authorized private layout cleanup, with one class claim and exact copy proof."""
     if not config.get(RECORDS_CONFIG):
@@ -1329,12 +1493,13 @@ def retire_source_links(token, write_token, config, class_key):
             try:
                 source = google.drive_file(token, item["source_file_id"], SOURCE_FIELDS)
                 candidates = [copy_key for copy_key, copy_doc in records.items() if copy_doc
-                    and copy_doc.value.get("source_kind") in {"submitted_work_copy", "teacher_attributed_joint_copy"}
+                    and copy_doc.value.get("source_kind") in {"submitted_work_copy", "submitted_work_export", "teacher_attributed_joint_copy"}
                     and copy_doc.value.get("status") == "verified"
                     and copy_doc.value.get("source_file_id") == item.get("source_file_id")
                     and str(copy_doc.value.get("source_version")) == str(source.get("version"))]
                 ordinary = [i for i in candidates if records[i].value["source_kind"] == "submitted_work_copy"]
-                candidates = ordinary or candidates
+                exported = [i for i in candidates if records[i].value["source_kind"] == "submitted_work_export"]
+                candidates = ordinary or exported or candidates
                 if len(candidates) != 1:
                     raise Held("This original-work link needs one verified real copy for its exact revision before cleanup.")
                 run.retire_navigation(student_key, shortcut_key, candidates[0])
@@ -1576,6 +1741,8 @@ def _indexed(token, config, cls, *, feedback_only=False):
                     raise Held("An archived joint work copy changed or no longer matches its verified source.")
             elif artifact.get("source_kind") == "submitted_work_copy":
                 _verify_work_copy(meta, artifact)
+            elif artifact.get("source_kind") == "submitted_work_export":
+                _verify_work_export(meta, artifact)
             elif (meta.get("mimeType") != SHORTCUT
                   or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
                 raise Held("An archived work shortcut no longer points to its verified source.")
@@ -1583,7 +1750,7 @@ def _indexed(token, config, cls, *, feedback_only=False):
         # The original link is carried on the copy's source_file_id. Keeping
         # both in the private CAS history must not double the displayed work.
         copied_sources = {a.get("source_file_id") for a in artifacts
-                          if a.get("source_kind") in {"submitted_work_copy", "teacher_attributed_joint_copy"}}
+                          if a.get("source_kind") in {"submitted_work_copy", "submitted_work_export", "teacher_attributed_joint_copy"}}
         artifacts = [a for a in artifacts if not (a["kind"] == "work" and a.get("mime") == SHORTCUT
                                                   and a.get("source_file_id") in copied_sources)]
         output.append((student, artifacts))

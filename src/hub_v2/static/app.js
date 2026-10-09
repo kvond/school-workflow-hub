@@ -339,8 +339,10 @@ function renderTodayFeedback(data) {
   const packet = data.daily_packet;
   const panel = cockpitPanel('Daily feedback document');
   const historical = data.date && data.date < (data.requested_date || todayISO());
+  const sourceNotice = data.source_problem ? note('Current feedback sources could not be fully checked. ' +
+    (packet?.status === 'ready' ? 'This saved dated document remains available: ' : '') + data.source_problem, 'info') : null;
   if (!files.length && packet?.status !== 'ready') {
-    panel.append(note('No print-ready feedback documents were found in the connected course folders.', 'info'));
+    panel.append(sourceNotice || note('No print-ready feedback documents were found in the connected course folders.', 'info'));
     return panel;
   }
   const status = el('p', {class: 'muted', role: 'status', text: `Feedback dated ${data.date} · all classes · ${packet?.status === 'ready' ? packet.source_count : files.length} source documents. Printing and handing out remain separate.`});
@@ -358,7 +360,6 @@ function renderTodayFeedback(data) {
     savedURL ? el('p', {}, link(`Open saved daily feedback — ${packet.date} (${packet.pages} pages)`, savedURL))
       : note(packet?.configured ? 'Printing saves this day’s all-class document. Verified student copies stay in their folders; existing class packets stay at class level.'
         : 'The daily document folder is not connected yet. The existing feedback can be printed as a preview.', 'info'),
-    data.source_problem ? note('Current feedback sources could not be fully checked. This saved dated document remains available: ' + data.source_problem, 'info') : null,
     data.packet_matches_sources === false ? note('The saved document differs from the current verified feedback list. Print all feedback saves an updated version; the earlier PDF is preserved.', 'info') : null,
     checklist && !historical ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
     el('div', {class: 'action-row'}, button),
@@ -367,9 +368,10 @@ function renderTodayFeedback(data) {
       el('ul', {}, ...dates.map(item => el('li', {}, link(`${item.date} · ${item.pages} pages`, item.pdf_url))))) : null].filter(Boolean);
   if (historical) {
     panel.append(...[el('p', {text: `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${data.requested_date || todayISO()}. Earlier dated feedback remains available to reprint.`}),
+      sourceNotice,
       checklist ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
       el('details', {}, el('summary', {text: `Earlier feedback · latest saved ${data.date}`}), ...contents)].filter(Boolean));
-  } else panel.append(...contents);
+  } else panel.append(...[sourceNotice, ...contents].filter(Boolean));
   return panel;
 }
 
