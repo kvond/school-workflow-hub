@@ -15,16 +15,20 @@
  const item=(entry,code)=>({assignment:String(entry.assignment).slice(0,200),class_name:String(entry.class_name||classNames[entry.class]||entry.class||'Class unavailable').slice(0,100),week:String(entry.week||'Week unavailable').slice(0,100),code,filled:0,raised:0,kept:0,left:0,reasons:reasons()});
  const safe=new Set(['signed_out','hub_unavailable','ic_unavailable','panel_unusable','disabled','source_changed','receipt_unconfirmed','mapping_required','missed_noon','ic_changed','destination_mapping_changed','students_dont_match','several_sections','ic_not_saved','unsupported_points_scale','unsupported_gradebook','list_expired','coverage_incomplete']);
  const code=e=>safe.has(e?.message)?e.message:'panel_unusable';
+ const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
+ const bridgeCause=e=>/Receiving end does not exist/i.test(e?.message||'')?'hub_bridge_missing':/message (?:port|channel) closed|back.forward cache/i.test(e?.message||'')?'hub_bridge_closed':'hub_bridge_unavailable';
  const deadline=(promise,ms=100000)=>{let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('panel_unusable')),ms);})]).finally(()=>clearTimeout(timer));};
  async function hub(tab,action,payload){
-  const current=await chrome.tabs.get(tab);
-  if(new URL(current.url).origin!==C.HUB_ORIGIN)throw Error('signed_out');
-  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}));}catch{throw Error('hub_unavailable');}
-  if(!r?.ok)throw Error(r?.code||'hub_unavailable');return r.data;
+  let current;try{current=await chrome.tabs.get(tab);}catch{throw failure('hub_unavailable','hub_tab_closed');}
+  try{if(new URL(current.url).origin!==C.HUB_ORIGIN)throw Error();}catch{throw failure('signed_out','hub_origin_changed');}
+  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}));}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
+  if(!r?.ok)throw failure(safe.has(r?.code)?r.code:'hub_unavailable',r?.cause||'hub_bridge_unavailable',r?.status);return r.data;
  }
  async function publish(state,tab){
-  try{await hub(tab,'report',state.report);state.report_pending=false;}catch{state.report_pending=true;}
+  let failed=null;
+  try{const reply=await hub(tab,'report',state.report);if(reply?.recorded!==true)throw failure('receipt_unconfirmed','hub_report_not_acknowledged');state.report_pending=false;}catch(e){state.report_pending=true;failed=M.preflight('summary_publish',e);}
   await write(state);
+  return failed;
  }
  async function authorize(message,sender){
   const s=await read(),t=M.clock();
@@ -53,7 +57,7 @@
   const untouched=Array.isArray(s.report?.items)&&s.report.items.every(i=>['signed_out','panel_unusable','mapping_required','coverage_incomplete'].includes(i.code)&&['filled','raised','kept','left'].every(k=>i[k]===0));
   return s.enabled&&t.weekday&&t.minutes>=420&&t.minutes<720&&s.day===t.day
    &&s.report?.day===t.day&&['interrupted','hub_unavailable','receipt_unconfirmed','signed_out','ic_unavailable','panel_unusable'].includes(s.report.code)
-   &&Array.isArray(s.report.items)&&(s.report.items.length===0||neverExecuted&&untouched)&&!s.blocked&&!s.inflight
+   &&Array.isArray(s.report.items)&&neverExecuted&&(s.report.items.length===0||untouched)&&!s.blocked&&!s.inflight
    &&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
  const preflightCodes=new Set(['hub_unavailable','ic_unavailable','panel_unusable','unsupported_gradebook']);
@@ -101,8 +105,9 @@
    }
    if(s.outbox.length>10)s.outbox=s.outbox.slice(-10);
    await write(s);
+   let backlogFailure=null;
    if(hubs.length===1){
-    while(s.outbox.length){try{await hub(hubs[0].id,'report',s.outbox[0]);s.outbox.shift();await write(s);}catch{break;}}
+    while(s.outbox.length){try{const reply=await hub(hubs[0].id,'report',s.outbox[0]);if(reply?.recorded!==true)throw failure('receipt_unconfirmed','hub_report_not_acknowledged');s.outbox.shift();await write(s);}catch(e){backlogFailure=M.preflight('summary_backlog',e);break;}}
    }
    // Summary delivery may retry; no IC operation is repeated.
    if(s.report_pending&&hubs.length===1)await publish(s,hubs[0].id);
@@ -121,11 +126,11 @@
    s.report_pending=true;s.execution_started=false;
    // A durable stamp BEFORE any network or tab action enforces once per day.
    await write(s);
-   if(hubs.length!==1){s.report.code='hub_unavailable';await write(s);return;}
+   if(hubs.length!==1){s.report.code='hub_unavailable';s.report.preflight=M.preflight('hub_connection',{cause:hubs.length?'hub_tab_count':'hub_tab_missing'});await write(s);return;}
    const source=hubs[0].id;sourceTab=source;
-   await publish(s,source);
+   const startingFailure=await publish(s,source);
    if(due.skip||s.blocked)return;
-   if(s.report_pending||s.outbox.length){s.report.code='receipt_unconfirmed';s.report_pending=true;await write(s);return;}
+   if(s.report_pending||s.outbox.length){s.report.code='receipt_unconfirmed';s.report.preflight=startingFailure||backlogFailure||M.preflight('summary_backlog',{cause:'previous_receipt_pending'});s.report_pending=true;await write(s);return;}
    let targetInProgress=null;
    try{
     if(pending.size)throw Error('panel_unusable');

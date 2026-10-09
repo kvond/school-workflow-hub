@@ -1,6 +1,16 @@
 # Signed-in school browser companion ("Chrome helper")
 
-## Weekday batch, current IC roster and missing-work zeros (0.5.16)
+## Weekday batch, current IC roster and missing-work zeros (0.5.17)
+
+An attempt that stops before reading assignments now retains a bounded,
+student-free failure stage and cause in its receipt. The Hub and popup name
+the connection, access, timeout or receipt-delivery issue. Older empty receipts
+honestly say the original cause was not retained. A successful receipt delivery
+does not establish an IC comparison or save. The helper accepts receipt delivery
+only when the Hub explicitly confirms `recorded: true`; delivery retries never
+restart grading. The initial failure still consumes the daily attempt. An empty
+result list cannot permit a manual retry when durable state says execution
+already started. Existing uncertainty blocks and explicit retry limits remain.
 
 The opted-in weekday run processes all exact mapped assignments in one batch,
 without an assignment-by-assignment approval popup. It fills blank scores and

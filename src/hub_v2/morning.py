@@ -156,13 +156,30 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     return {"code": "ready", "list": value, "revision": revision, "targets": matched[0].get("targets", [])}
 
 
+PREFLIGHT_STAGES = frozenset(("summary_publish", "summary_backlog", "hub_connection"))
+PREFLIGHT_CAUSES = frozenset(("hub_tab_missing", "hub_tab_count", "hub_tab_closed", "hub_origin_changed",
+    "hub_bridge_missing", "hub_bridge_closed", "hub_bridge_timeout", "hub_bridge_unavailable",
+    "hub_signed_out", "hub_access_denied", "hub_http_error", "hub_request_timeout", "hub_network_error",
+    "hub_invalid_response", "hub_report_not_acknowledged", "previous_receipt_pending", "unrecorded"))
+
+
 def validate_report(value):
-    if not isinstance(value, dict) or set(value) != {"day", "run_id", "code", "roster", "items"}:
+    fields = {"day", "run_id", "code", "roster", "items"}
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"preflight"}):
         raise ValueError("report")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value["day"])) or str(uuid.UUID(value["run_id"])) != value["run_id"]:
         raise ValueError("report")
     if value["code"] not in CODES or value["roster"] != "unavailable" or not isinstance(value["items"], list) or len(value["items"]) > 300:
         raise ValueError("report")
+    if "preflight" in value:
+        detail = value["preflight"]
+        if (value["items"] or value["code"] not in ("receipt_unconfirmed", "hub_unavailable")
+                or not isinstance(detail, dict)
+                or set(detail) not in ({"stage", "cause"}, {"stage", "cause", "status"})
+                or not isinstance(detail.get("stage"), str) or detail["stage"] not in PREFLIGHT_STAGES
+                or not isinstance(detail.get("cause"), str) or detail["cause"] not in PREFLIGHT_CAUSES
+                or ("status" in detail and (type(detail["status"]) is not int or not 100 <= detail["status"] <= 599))):
+            raise ValueError("report")
     for item in value["items"]:
         legacy_item = {"assignment", "code", "filled", "raised", "kept", "left", "reasons"}
         current_item = legacy_item | {"class_name", "week"}

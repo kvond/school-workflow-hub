@@ -5,16 +5,20 @@
  const C=globalThis.HubPostingConfig,E=globalThis.HubIcEntry,M=globalThis.HubMorning;
  if(!C?.HUB_ORIGIN||location.origin!==C.HUB_ORIGIN||window.top!==window)return;
  const scope=p=>p&&['biology','forensics','anatomy'].includes(p.class)&&typeof p.week==='string'&&p.week.length<=100&&/^[A-Za-z0-9_-]{10,100}$/.test(p.form);
+ const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
  async function call(path,payload){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),90000);
   try{
-   const r=await fetch('/v2/api/'+path,{method:payload?'POST':'GET',credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal,
-    ...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});
-   if(r.status===401||r.status===403)throw Error('signed_out');
-   if(!r.ok)throw Error('hub_unavailable');
+   let r;try{r=await fetch('/v2/api/'+path,{method:payload?'POST':'GET',credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal,
+    ...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});}catch(e){throw failure('hub_unavailable',e?.name==='AbortError'?'hub_request_timeout':'hub_network_error');}
+   if(r.status===401)throw failure('signed_out','hub_signed_out',r.status);
+   if(r.status===403)throw failure('hub_unavailable','hub_access_denied',r.status);
+   if(!r.ok)throw failure('hub_unavailable','hub_http_error',r.status);
    const type=r.headers.get('content-type')||'';
-   if(!type.includes('application/json'))throw Error('signed_out');
-   return await r.json();
+   if(!type.includes('application/json'))throw failure('hub_unavailable','hub_invalid_response',r.status);
+   let value;try{value=await r.json();}catch(e){throw failure('hub_unavailable',e?.name==='AbortError'?'hub_request_timeout':'hub_invalid_response',r.status);}
+   if(path==='morning/reports'&&payload&&value?.recorded!==true)throw failure('receipt_unconfirmed','hub_report_not_acknowledged',r.status);
+   return value;
   }finally{clearTimeout(timer);}
  }
  chrome.runtime.onMessage.addListener((message,sender,reply)=>{
@@ -33,7 +37,7 @@
     return call('record',{...p.scope,kind:'ic',note:'Morning Chrome helper: '+results.map(r=>`${r.section} ${r.column}: ${r.counts.filled} entered, ${r.counts.raised} raised, ${r.counts.left} left`).join('; ').slice(0,440)});
    }
    throw Error('hub_unavailable');
-  })().then(data=>reply({ok:true,data}),error=>reply({ok:false,code:error.message==='signed_out'?'signed_out':error.message==='receipt_unconfirmed'?'receipt_unconfirmed':'hub_unavailable'})).finally(()=>clearInterval(ping));
+  })().then(data=>reply({ok:true,data}),error=>reply({ok:false,code:error.message==='signed_out'?'signed_out':error.message==='receipt_unconfirmed'?'receipt_unconfirmed':'hub_unavailable',...M.preflight('summary_publish',error)})).finally(()=>clearInterval(ping));
   return true;
  });
 })();

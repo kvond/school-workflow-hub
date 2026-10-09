@@ -5,6 +5,21 @@
  const fail=code=>{throw Error(code);};
  const safe=v=>typeof v==='string'&&v.length<=200&&!/[\x00-\x1f\x7f]/.test(v);
  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ const preflightStages=new Set(['summary_publish','summary_backlog','hub_connection']);
+ const preflightCauses=new Set(['hub_tab_missing','hub_tab_count','hub_tab_closed','hub_origin_changed','hub_bridge_missing','hub_bridge_closed','hub_bridge_timeout','hub_bridge_unavailable','hub_signed_out','hub_access_denied','hub_http_error','hub_request_timeout','hub_network_error','hub_invalid_response','hub_report_not_acknowledged','previous_receipt_pending','unrecorded']);
+ function preflight(stage,detail={}){
+  if(!preflightStages.has(stage))return null;
+  const value={stage,cause:preflightCauses.has(detail.cause)?detail.cause:'unrecorded'};
+  if(Number.isInteger(detail.status)&&detail.status>=100&&detail.status<=599)value.status=detail.status;
+  return value;
+ }
+ function preflightText(value){
+  if(!value||!preflightStages.has(value.stage)||!preflightCauses.has(value.cause))return '';
+  const stages={summary_publish:'The helper stopped before reading assignments while saving its starting receipt.',summary_backlog:'The helper stopped before reading assignments because an earlier receipt was still undelivered.',hub_connection:'The helper stopped before reading assignments because it could not connect to one Hub tab.'};
+  const causes={hub_tab_missing:'Open one signed-in Hub tab in this school profile.',hub_tab_count:'Keep exactly one Hub tab open in this school profile.',hub_tab_closed:'The Hub tab closed before the connection check. Reopen it.',hub_origin_changed:'The Hub tab left the configured site. Open the configured Hub.',hub_bridge_missing:'The extension was not connected to the Hub page. Refresh the Hub tab after the extension is loaded.',hub_bridge_closed:'The Hub page connection closed before a reply arrived. Keep the tab open and refresh it.',hub_bridge_timeout:'The Hub page did not reply before the connection timeout.',hub_bridge_unavailable:'The extension could not exchange a message with the Hub page.',hub_signed_out:'The Hub requires sign-in in this school profile.',hub_access_denied:'The Hub refused access to the receipt request; check the signed-in school Hub.',hub_http_error:'The Hub rejected the receipt request.',hub_request_timeout:'The Hub receipt request timed out.',hub_network_error:'The Hub receipt request failed before a usable response arrived.',hub_invalid_response:'The Hub response was not usable JSON.',hub_report_not_acknowledged:'The Hub response did not confirm that the receipt was recorded.',previous_receipt_pending:'An earlier receipt still needs confirmed delivery.',unrecorded:'The underlying connection error was not retained.'};
+  const status=Number.isInteger(value.status)&&value.status>=100&&value.status<=599?` (HTTP ${value.status})`:'';
+  return `${stages[value.stage]} ${causes[value.cause]}${status} No IC score comparison or entry was attempted. Receipt delivery retries do not run grades.`;
+ }
  function clock(now=Date.now()){
   const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit',weekday:'short',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(now)).map(p=>[p.type,p.value]));
   return {day:`${p.year}-${p.month}-${p.day}`,weekday:!['Sat','Sun'].includes(p.weekday),minutes:Number(p.hour)*60+Number(p.minute)};
@@ -97,6 +112,6 @@
   const result=await E.execute(plan,checked);
   return {result:E.hubResult(plan,result,plan.context.title),code:result.code,reasons:reasons(plan),diagnostics:[...new Set([...result.failed,...result.unexpected])]};
  }
- const api={clock,schoolYear,skipByYear,due,missed,need,target,targets,verify,reasons,run};root.HubMorning=Object.freeze(api);
+ const api={clock,schoolYear,skipByYear,due,missed,need,target,targets,verify,reasons,run,preflight,preflightText};root.HubMorning=Object.freeze(api);
  if(typeof module!=='undefined'&&module.exports)module.exports=api;
 })(globalThis);

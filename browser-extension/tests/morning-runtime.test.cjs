@@ -33,6 +33,7 @@ function background(options={}){
   }
    if(m.type==='morning_hub'){
    calls.push(m.action);
+   if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
    if(m.action==='list')return {ok:true,data:{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
    if(m.action==='recovery'){if(options.recoveryFail)throw Error('unavailable');return {ok:true,data:{recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}}};}
@@ -94,6 +95,45 @@ test('morning complete path saves report, exact-route entry, then records once a
  assert.equal(h.state.morning_state.report.code,'finished');assert.equal(h.state.morning_state.blocked,false);
  assert.ok(!JSON.stringify(h.state).includes('Avery'));
 });
+test('failed starting receipt retains a safe cause; later successful delivery does not execute IC',async()=>{
+ const privateMessage='Could not establish connection. Receiving end does not exist. private-student https://secret.example.test/';
+ const h=background({reportReplies:[Error(privateMessage)]});await h.alarm();
+ const first=h.state.morning_state.report,run_id=first.run_id;
+ assert.equal(first.code,'receipt_unconfirmed');assert.deepEqual(first.items,[]);
+ assert.deepEqual(first.preflight,{stage:'summary_publish',cause:'hub_bridge_missing'});
+ assert.equal(h.state.morning_state.execution_started,false);assert.equal(h.state.morning_state.report_pending,true);
+ assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ assert.ok(!JSON.stringify(h.state).includes('private-student'));assert.ok(!JSON.stringify(h.state).includes('secret.example'));
+ await h.alarm();
+ assert.equal(h.state.morning_state.report_pending,false);assert.equal(h.state.morning_state.report.run_id,run_id);
+ assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');
+ assert.equal(h.state.morning_state.report.preflight.cause,'hub_bridge_missing');
+ assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ assert.equal((await h.invoke({type:'morning_status'})).can_retry,true);
+});
+test('HTTP success without an explicit recorded acknowledgement stops before catalog',async()=>{
+ for(const data of [{recorded:false},{recorded:1},{}]){
+  const h=background({reportReplies:[{ok:true,data}]});await h.alarm();
+  assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');
+  assert.equal(h.state.morning_state.report.preflight.cause,'hub_report_not_acknowledged');
+  assert.equal(h.state.morning_state.execution_started,false);assert.ok(!h.calls.includes('catalog'));
+ }
+});
+test('an undelivered older receipt is distinguished from the current starting receipt',async()=>{
+ const old={day:'2026-09-30',run_id:uuid(),code:'finished',roster:'unavailable',items:[]};
+ const h=background({stored:{morning_enabled:true,morning_state:{day:old.day,outbox:[old]}},reportReplies:[{ok:false,code:'hub_unavailable',cause:'hub_http_error',status:503}]});
+ await h.alarm();
+ assert.deepEqual(h.state.morning_state.report.preflight,{stage:'summary_backlog',cause:'hub_http_error',status:503});
+ assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');assert.ok(!h.calls.includes('catalog'));
+ await h.alarm();assert.deepEqual(h.state.morning_state.outbox,[]);assert.equal(h.state.morning_state.report_pending,false);
+ assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+});
+test('empty assignment results cannot permit retry after a write-capable request',async()=>{
+ const prior={day:'2026-10-01',run_id:uuid(),code:'receipt_unconfirmed',roster:'unavailable',items:[]};
+ const h=background({stored:{morning_enabled:true,morning_state:{day:prior.day,execution_started:true,blocked:false,inflight:false,report_pending:false,report:prior}}});
+ await settle();assert.equal((await h.invoke({type:'morning_status'})).can_retry,false);
+ await h.invoke({type:'morning_retry'});await settle();assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+});
 test('morning receipt keeps the catalog class and week for follow-up context',async()=>{
  const h=background({catalogAssignments:[{class:'biology',class_name:'Biology A4',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'}]});
  await h.alarm();
@@ -153,6 +193,56 @@ test('Hub bridge refuses an Entered in IC receipt until every mapped panel read 
  const result={list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'entered',certain:true,counts:{filled:1,raised:0,kept:0,left:0,not_saved:0},at:new Date(Date.now()+1000).toISOString()};
  assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[{...result,certain:false}]})).ok,false);assert.equal(calls.length,0);
  assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[result]})).ok,true);assert.deepEqual(calls,['/v2/api/record']);
+});
+test('receipt bridge reports allowlisted HTTP, connection and acknowledgement failures without raw data',async()=>{
+ const cases=[
+  {status:401,cause:'hub_signed_out',code:'signed_out'},
+  {status:403,cause:'hub_access_denied',code:'hub_unavailable'},
+  {status:503,cause:'hub_http_error',code:'hub_unavailable'},
+  {status:200,type:'text/html',cause:'hub_invalid_response',code:'hub_unavailable'},
+  {status:200,invalidJSON:true,cause:'hub_invalid_response',code:'hub_unavailable'},
+  {status:200,data:{recorded:false},cause:'hub_report_not_acknowledged',code:'receipt_unconfirmed'},
+  {status:200,data:{recorded:1},cause:'hub_report_not_acknowledged',code:'receipt_unconfirmed'},
+  {network:true,cause:'hub_network_error',code:'hub_unavailable'},
+  {abort:true,cause:'hub_request_timeout',code:'hub_unavailable'},
+ ];
+ for(const c of cases){
+  let listener;const window={};window.top=window;
+  vm.runInNewContext(source('morning-hub.js'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,
+   chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:fn=>listener=fn}}},
+   fetch:async()=>{
+    if(c.network||c.abort)throw Object.assign(Error('private provider text https://secret.example.test/'),{name:c.abort?'AbortError':'TypeError'});
+    return {ok:c.status===200,status:c.status,headers:{get:()=>c.type||'application/json'},json:async()=>{if(c.invalidJSON)throw Error('private invalid body');return c.data||{recorded:true};}};
+   }});
+  const result=await new Promise(resolve=>listener({type:'morning_hub',action:'report',payload:{code:'running'}},{id:'extension'},resolve));
+  assert.equal(result.ok,false);assert.equal(result.code,c.code);assert.equal(result.cause,c.cause);
+  assert.equal(result.status,c.status);assert.ok(!JSON.stringify(result).includes('private'));assert.ok(!JSON.stringify(result).includes('secret.example'));
+ }
+});
+test('receipt bridge accepts only an explicit positive acknowledgement',async()=>{
+ let listener;const window={};window.top=window;
+ vm.runInNewContext(source('morning-hub.js'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,
+  chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:fn=>listener=fn}}},
+  fetch:async()=>({ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({recorded:true})})});
+ const result=await new Promise(resolve=>listener({type:'morning_hub',action:'report',payload:{code:'running'}},{id:'extension'},resolve));
+ assert.equal(result.ok,true);assert.equal(result.data.recorded,true);
+});
+test('popup names safe preflight failures and admits an old empty receipt has no retained cause',()=>{
+ const nodes=new Map(),document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',hidden:false,disabled:false});return nodes.get(id);}};
+ const popup=source('popup.js'),start=popup.indexOf('function morningShow('),end=popup.indexOf("chrome.runtime.sendMessage({type:'morning_status'})");
+ const context={HubMorning:M,document,morningBox:document.getElementById('morning-enabled'),morningText:document.getElementById('morning-status')};
+ vm.createContext(context);vm.runInContext(popup.slice(start,end),context);
+ const report={day:'2026-10-01',code:'receipt_unconfirmed',items:[]};
+ context.morningShow({enabled:true,report:{...report,preflight:{stage:'summary_publish',cause:'hub_bridge_missing'}}});
+ assert.match(nodes.get('morning-next').textContent,/Refresh the Hub tab after the extension is loaded/);
+ assert.match(nodes.get('morning-next').textContent,/No IC score comparison or entry was attempted/);
+ assert.doesNotMatch(nodes.get('morning-next').textContent,/Hub morning summary for the exact blocker/);
+ context.morningShow({enabled:true,report});
+ assert.match(nodes.get('morning-next').textContent,/original failure cause was not retained/);
+ assert.doesNotMatch(nodes.get('morning-next').textContent,/signed out|timeout|check its scores/);
+ context.morningShow({enabled:true,report:{...report,preflight:{stage:'private name',cause:'https://secret.example.test/'}}});
+ assert.ok(!nodes.get('morning-next').textContent.includes('secret.example'));
+ assert.ok(source('popup.html').indexOf('src="morning.js"')<source('popup.html').indexOf('src="popup.js"'));
 });
 
 test('explicit popup retry restarts only a same-day interrupted attempt with no assignments',async()=>{

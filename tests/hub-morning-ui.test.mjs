@@ -148,6 +148,33 @@ test('coverage failures explain possible source access or matching repairs witho
   await ui.loadMorningSummary();
   assert.match(document.getElementById('morning-summary').textContent, /Form or roster access/);
 });
+test('empty preflight receipts show the precise safe cause in Today and Routine without an IC hand check', async () => {
+  const held = {day: '2032-01-07', code: 'receipt_unconfirmed', items: [],
+    preflight: {stage: 'summary_publish', cause: 'hub_bridge_missing'}};
+  const {ui, context, document} = boot([]);
+  for (const panel of [ui.renderNeedsYou(held), ui.renderMorningCockpit(held, {})]) {
+    assert.match(panel.textContent, /before reading assignments/);
+    assert.match(panel.textContent, /Refresh the Hub tab after the extension is loaded/);
+    assert.match(panel.textContent, /No IC score comparison or entry was attempted/);
+    assert.doesNotMatch(panel.textContent, /✓ No grade rows need attention/);
+  }
+  context.fetch = async () => ({ok: true, json: async () => ({reports: [held]})});
+  await ui.loadMorningSummary();
+  assert.match(document.getElementById('morning-summary').textContent, /Refresh the Hub tab after the extension is loaded/);
+  assert.match(document.getElementById('morning-summary').textContent, /Receipt delivery retries do not run grades/);
+});
+test('an old empty receipt admits missing failure context without inventing sign-out or a save failure', async () => {
+  const held = {day: '2032-01-07', code: 'receipt_unconfirmed', items: []};
+  const {ui, context, document} = boot([]);
+  const text = ui.renderNeedsYou(held).textContent;
+  assert.match(text, /original failure cause was not retained/);
+  assert.match(text, /No IC score comparison or save is confirmed/);
+  assert.doesNotMatch(text, /signed out|timeout|uncertain save|✓ No grade rows need attention/);
+  context.fetch = async () => ({ok: true, json: async () => ({reports: [held]})});
+  await ui.loadMorningSummary();
+  assert.match(document.getElementById('morning-summary').textContent, /original failure cause was not retained/);
+  assert.ok(!ui.renderNeedsYou({...held, preflight: {stage: 'secret student', cause: 'https://secret.example.test/'}}).textContent.includes('secret.example'));
+});
 
 test('unresolved submission matches prevent score requests and IC handoff of cached scores', async () => {
   const {context} = boot([]), requests = [], messages = [];

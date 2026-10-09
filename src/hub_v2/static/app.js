@@ -164,8 +164,42 @@ function morningRowReview(row) {
   };
 }
 
+function morningPreflight(report) {
+  if (report?.items?.length) return '';
+  const value = report?.preflight;
+  const stages = {
+    summary_publish: 'The helper stopped before reading assignments while saving its starting receipt.',
+    summary_backlog: 'The helper stopped before reading assignments because an earlier receipt was still undelivered.',
+    hub_connection: 'The helper stopped before reading assignments because it could not connect to one Hub tab.',
+  };
+  const causes = {
+    hub_tab_missing: 'Open one signed-in Hub tab in this school profile.',
+    hub_tab_count: 'Keep exactly one Hub tab open in this school profile.',
+    hub_tab_closed: 'The Hub tab closed before the connection check. Reopen it.',
+    hub_origin_changed: 'The Hub tab left the configured site. Open the configured Hub.',
+    hub_bridge_missing: 'The extension was not connected to the Hub page. Refresh the Hub tab after the extension is loaded.',
+    hub_bridge_closed: 'The Hub page connection closed before a reply arrived. Keep the tab open and refresh it.',
+    hub_bridge_timeout: 'The Hub page did not reply before the connection timeout.',
+    hub_bridge_unavailable: 'The extension could not exchange a message with the Hub page.',
+    hub_signed_out: 'The Hub requires sign-in in this school profile.',
+    hub_access_denied: 'The Hub refused access to the receipt request; check the signed-in school Hub.',
+    hub_http_error: 'The Hub rejected the receipt request.',
+    hub_request_timeout: 'The Hub receipt request timed out.',
+    hub_network_error: 'The Hub receipt request failed before a usable response arrived.',
+    hub_invalid_response: 'The Hub response was not usable JSON.',
+    hub_report_not_acknowledged: 'The Hub response did not confirm that the receipt was recorded.',
+    previous_receipt_pending: 'An earlier receipt still needs confirmed delivery.',
+    unrecorded: 'The underlying connection error was not retained.',
+  };
+  if (!value || !Object.hasOwn(stages, value.stage) || !Object.hasOwn(causes, value.cause)) return '';
+  const status = Number.isInteger(value.status) && value.status >= 100 && value.status <= 599 ? ` (HTTP ${value.status})` : '';
+  return `${stages[value.stage]} ${causes[value.cause]}${status} No IC score comparison or entry was attempted. Receipt delivery retries do not run grades.`;
+}
+
 function morningProblem(report) {
   if (!report) return '';
+  if (report.code !== 'finished' && !report.items?.length) return morningPreflight(report)
+    || 'The run did not finish and this receipt contains no assignment results. Its original failure cause was not retained. No IC score comparison or save is confirmed; a delivered receipt does not prove grades ran.';
   if (report.code !== 'finished') return 'Morning run: ' + String(report.code || 'status unavailable').replaceAll('_', ' ') + '. Completion is not verified.';
   if (!report.items?.length) return 'The completed receipt contains no assignment results. No IC save or score comparison is verified.';
   const held = (report.items || []).filter(item => !['read_back', 'nothing_to_enter', 'no_scores'].includes(item.code));
@@ -2160,7 +2194,8 @@ async function loadMorningSummary() {
       const details = morningRecovery.filter(r => r.run_id === report.run_id).map(r =>
         r.type === 'verified' ? el('p', {text: `Manually verified by ${r.by} at ${new Date(r.at).toLocaleString()}: ${r.note}`})
           : el('p', {text: `${r.assignment} · ${r.section} · ${words(r.column)} — students requiring readback: ${r.names.length ? r.names.join('; ') : 'details unavailable; check the full panel'}.`}));
-      box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), lines, ...details));
+      const emptyResult = report.items.length ? null : el('p', {text: morningProblem(report)});
+      box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), emptyResult, lines, ...details));
     });
   } catch { box.replaceChildren(el('h2', {text: 'Morning helper review'}), note('The morning summary could not be read. No successful IC save is confirmed.')); }
 }

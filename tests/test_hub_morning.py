@@ -71,16 +71,30 @@ class MorningTests(unittest.TestCase):
             morning.record("t", "w", {}, report())
             append.assert_not_called()
 
+    def test_preflight_receipt_is_empty_and_contains_only_safe_bounded_diagnostics(self):
+        value = {**report(), "code": "receipt_unconfirmed", "items": [],
+                 "preflight": {"stage": "summary_publish", "cause": "hub_http_error", "status": 503}}
+        self.assertEqual(morning.validate_report(value), value)
+        for change in ({"cause": "Private Person"}, {"stage": "https://secret.example.test/"},
+                       {"headers": {"Authorization": "private"}}, {"status": True}, {"status": 600}, {"cause": []}):
+            invalid = copy.deepcopy(value); invalid["preflight"].update(change)
+            with self.assertRaises(ValueError): morning.validate_report(invalid)
+        for change in ({"code": "finished"}, {"items": report()["items"]}):
+            with self.assertRaises(ValueError): morning.validate_report({**value, **change})
+        with patch.object(morning, "reports", return_value=[value]), patch.object(morning.google, "append_rows") as append:
+            morning.record("t", "w", {}, value)
+            append.assert_not_called()
+
     def test_receipt_requires_destination_readback(self):
         with patch.object(morning, "reports", return_value=[]), patch.object(morning.ledger, "find", return_value={"id": "FICTIONAL"}), patch.object(morning.ledger, "_first_tab", return_value="'Sheet1'"), patch.object(morning.google, "append_rows") as append:
             with self.assertRaises(morning.google.GoogleError): morning.record("t", "w", {}, report())
             append.assert_called_once()
 
 class MorningEndpointTests(unittest.TestCase):
-    def request(self, method, path, origin=None):
+    def request(self, method, path, origin=None, value=None):
         import io
         from hub_v2 import app
-        payload = json.dumps(report()).encode()
+        payload = json.dumps(report() if value is None else value).encode()
         env = {"REQUEST_METHOD": method, "PATH_INFO": path, "HTTP_ORIGIN": origin,
                "CONTENT_TYPE": "application/json", "CONTENT_LENGTH": str(len(payload)),
                "wsgi.input": io.BytesIO(payload)}
@@ -102,5 +116,16 @@ class MorningEndpointTests(unittest.TestCase):
         with patch.object(morning.google, "verify_teacher"), patch.object(morning.google, "service_token", return_value="fictional"), patch.object(morning, "record") as record:
             self.assertEqual(self.request("POST", "/v2/api/morning/reports", "https://hub.example.test"), ("200 OK", {"recorded": True}))
             self.assertEqual(record.call_args.args[-1], report())
+
+    def test_report_route_accepts_safe_preflight_metadata_and_rejects_private_fields(self):
+        value = {**report(), "code": "receipt_unconfirmed", "items": [],
+                 "preflight": {"stage": "summary_publish", "cause": "hub_bridge_missing"}}
+        with patch.object(morning.google, "verify_teacher"), patch.object(morning.google, "service_token", return_value="fictional"), patch.object(morning, "record") as record:
+            self.assertEqual(self.request("POST", "/v2/api/morning/reports", "https://hub.example.test", value), ("200 OK", {"recorded": True}))
+            self.assertEqual(record.call_args.args[-1], value)
+            record.reset_mock()
+            value["preflight"]["raw_error"] = "Private Person"
+            self.assertEqual(self.request("POST", "/v2/api/morning/reports", "https://hub.example.test", value)[0], "400 Bad Request")
+            record.assert_not_called()
 
 if __name__ == '__main__': unittest.main()
