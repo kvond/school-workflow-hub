@@ -286,7 +286,7 @@ def _filename_owner(config, meta, students):
     if not found:
         if surname:
             raise Held("This upload gives only a surname. Ask the student to resubmit with first and last name and section.")
-        raise Held("This upload has no clear full student name. Ask for a resubmission with first and last name and section.")
+        raise Held("This filename does not match a student in this class's roster. Check the student's name, class and section; request a corrected named resubmission if needed.")
     index, basis = next(iter(found.items()))
     return students[index], basis
 
