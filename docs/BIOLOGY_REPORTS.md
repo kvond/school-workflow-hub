@@ -46,3 +46,26 @@ A lost Sheet response triggers one exact readback, never a blind POST retry.
 Unconfirmed tables leave saved feedback and original work available. Private CAS
 claims serialize source-batch saves and refreshes, and server ownership is renewed
 immediately before mutations.
+
+## Student science-writing PDF
+
+`feedback_pdf.render_science_writing` renders two pages without model calls or
+storage writes. Page one preserves the four source examples and explanations,
+colors the observed understanding labels, and plots each writing area separately.
+Charts use only the payload's source-bound observations. Unavailable or unassessed
+samples are gaps, a single rated sample is labeled "No trend", and different
+lessons are not presented as a measured growth score. Original source dates remain
+separate from the preparation date.
+
+Optional `presentation_context.original_submission_times` contains only exact
+source ID, revision and original submission timestamp triples. The filing caller
+must verify these against the original archive source records. The renderer also
+checks their source identities and Eastern dates. Without original timestamps,
+same-day lessons remain unconnected instead of implying a guessed order.
+
+Page two keeps each student's original `target.title` and `target.text`, adds an
+invitation to explain the challenge, and provides writing lines. This does not
+replace a distinct student's challenge with a shared class prompt. Presentation
+version 2 requires a new immutable report ID; verified earlier PDFs and delivery
+history remain preserved. The daily packet must select the verified successor
+rather than printing both presentation versions.

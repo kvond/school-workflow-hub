@@ -345,9 +345,16 @@ function renderTodayFeedback(data) {
     panel.append(sourceNotice || note('No print-ready feedback documents were found in the connected course folders.', 'info'));
     return panel;
   }
-  const status = el('p', {class: 'muted', role: 'status', text: `Feedback dated ${data.date} · all classes · ${packet?.status === 'ready' ? packet.source_count : files.length} source documents. Printing and handing out remain separate.`});
+  const counts = packet?.report_counts;
+  const contentsSummary = counts && ['science_writing', 'missing_work_contract', 'critical_aspects', 'other_sources']
+    .every(key => Number.isInteger(counts[key]) && counts[key] >= 0)
+    ? [['science writing reports', counts.science_writing], ['current work contracts', counts.missing_work_contract],
+       ['lesson feedback reports', counts.critical_aspects], ['other documents', counts.other_sources]]
+        .filter(([, count]) => count).map(([label, count]) => `${count} ${label}`).join(' · ')
+    : `${packet?.status === 'ready' ? packet.source_count : files.length} source documents`;
+  const status = el('p', {class: 'muted', role: 'status', text: `Feedback dated ${data.date} · all classes · ${contentsSummary}. Printing and handing out remain separate.`});
   const list = el('ul', {class: 'feedback-today-list'}, ...files.map(file =>
-    el('li', {}, el('strong', {text: `${file.course_name}${file.student_name ? ` · ${file.student_name}` : ' · class packet'}${file.report_type === 'science_writing' ? ' · science writing' : ''}: `}),
+    el('li', {}, el('strong', {text: `${file.course_name}${file.student_name ? ` · ${file.student_name}` : ' · class packet'}${file.report_type === 'science_writing' ? ' · science writing' : file.report_type === 'missing_work_contract' ? ' · current work contract' : ''}: `}),
       link(file.name, file.url), el('small', {class: 'muted', text: ` · feedback ${file.feedback_day || data.date}`}))));
   const dates = (packet?.available_dates || []).filter(item => item.date !== data.date &&
     /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(item.pdf_url || ''));

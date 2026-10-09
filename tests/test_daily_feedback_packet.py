@@ -85,6 +85,27 @@ class DailyFeedbackPacketTests(unittest.TestCase):
         self.assertEqual(daily.status('read', self.config, DAY)['id'], current['id'])
         self.assertTrue(daily.pdf('read', self.config, previous['id'])[0].startswith(b'%PDF'))
 
+    def test_science_writing_and_current_contracts_share_one_daily_packet_without_assessment(self):
+        self.sources[0]['report_type'] = 'missing_work_contract'
+        self.sources[1]['report_type'] = 'science_writing'
+        self.sources[2]['report_type'] = 'critical_aspects'
+        result = self.build()
+        self.assertEqual(result['report_counts'], {'science_writing': 1, 'missing_work_contract': 1,
+                                                 'critical_aspects': 1, 'other_sources': 0})
+        self.assertEqual(result['pages'], 3)
+        self.assertEqual(result['individual_reports'], 3)
+        self.assertEqual(daily.status('read', self.config, DAY)['report_counts'], result['report_counts'])
+        self.assertFalse(result['delivery_changed'])
+        self.assertEqual(len(self.drive.created), 1)
+
+    def test_preexisting_packets_without_type_metadata_do_not_claim_new_report_counts(self):
+        saved = self.build(); doc = daily._read(self.port, saved['id'])
+        prior = deepcopy(doc.value); prior.pop('report_counts')
+        daily._put(self.port, saved['id'], prior, doc)
+        before = deepcopy(self.port.rows)
+        self.assertIsNone(daily.status('read', self.config, DAY)['report_counts'])
+        self.assertEqual(self.port.rows, before)
+
     def test_same_source_ids_with_a_new_revision_do_not_claim_the_old_pdf_is_current(self):
         saved = self.build()
         self.assertTrue(daily.matches_sources('read', saved, self.sources))

@@ -128,6 +128,7 @@ def _reply(record, cached=False):
             'source_identities': {item['file_id']: {field: item.get(field) for field in
                 ('course', 'mime', 'feedback_id', 'included_feedback_ids', 'feedback_date', 'saved_at', 'created_at')}
                 for item in record['manifest']},
+            'report_counts': record.get('report_counts'),
             'drive_file_id': record['drive_file_id'], 'url': 'https://drive.google.com/open?id=' + record['drive_file_id'],
             'pdf_url': '/v2/api/feedback/daily/pdf?id=' + record['id'], 'cached': cached,
             'delivery_changed': False}
@@ -309,6 +310,10 @@ def build(token, write_token, config, date_et):
             'destination_drive_id': folder.get('driveId'),
             'pdf_sha256': hashlib.sha256(pdf).hexdigest(), 'pdf_md5': hashlib.md5(pdf).hexdigest(),
             'size': len(pdf), 'pages': pages, 'observed_at': observed, 'compiled_at': now()}
+        # Display metadata leaves the source manifest and older snapshots intact.
+        record['report_counts'] = {name: sum(item.get('report_type') == name for item in sources)
+            for name in ('science_writing', 'missing_work_contract', 'critical_aspects')}
+        record['report_counts']['other_sources'] = len(sources) - sum(record['report_counts'].values())
         try:
             old = _put(port, ident, record)
         except Conflict:

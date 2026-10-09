@@ -686,6 +686,169 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(held["status"], "held")
         self.assertIn("work changed", held["problem"])
 
+    def presentation_fixture(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        student = next(d.value for d in self.port.rows.values() if d.value.get("student_key") and d.value.get("items"))
+        raw = b"%PDF Fictional original presentation"
+        report = {"schema": "science-writing/v1", "report_type": "science_writing", "class_key": "biology",
+            "id": "feedbacksource_" + "c" * 64, "prepared_at": "2026-10-09T12:00:00Z", "pdf_sha256": hashlib.sha256(raw).hexdigest(),
+            "student": {"student_key": student["student_key"], "student_folder_id": student["drive_file_id"],
+                        "name": student["name"], "section": student["section"]},
+            "evidence": [{"quote": "Fictional unchanged evidence", "dimension": "evidence"}],
+            "target": "Use one observation to support the claim.",
+            "provenance": {"source_observations": [{"student_key": student["student_key"], "section": student["section"],
+                "source_file_id": SOURCE, "source_revision": "1", "source_modified_at": "2026-10-08T12:00:00Z"}]}}
+        filed = archive.file_science_writing("read", "write", self.config, report, raw)
+        self.assertEqual(filed["status"], "verified")
+        new_raw = b"%PDF Fictional larger presentation; same assessment"
+        replacement = {**deepcopy(report), "id": "feedbacksource_" + "d" * 64, "presentation_version": 2,
+            "supersedes_report_id": report["id"], "supersession_previous_payload": deepcopy(report),
+            "prepared_at": "2026-10-09T15:00:00Z", "pdf_sha256": hashlib.sha256(new_raw).hexdigest(),
+            "presentation_context": {"original_submission_times": [{"source_file_id": SOURCE,
+                "source_revision": "1", "submitted_at": "2026-10-07T13:00:00Z"}]}}
+        return report, raw, replacement, new_raw, filed
+
+    def test_presentation_replacement_is_immutable_idempotent_and_keeps_history_row_key(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        before_source = deepcopy(self.drive.items[SOURCE]); before_pdf = deepcopy(self.drive.items[first["drive_file_id"]])
+        old_row = archive.work_index_rows("read", self.config)["rows"][0]
+        new = archive.file_science_writing("read", "write", self.config, replacement, new_raw)
+        self.assertEqual(new["status"], "verified")
+        self.assertNotEqual(new["drive_file_id"], first["drive_file_id"])
+        self.assertEqual(self.drive.items[SOURCE], before_source)
+        self.assertEqual(self.drive.items[first["drive_file_id"]], before_pdf)
+        self.assertEqual(self.drive.contents[first["drive_file_id"]], raw)
+        self.assertEqual([f["feedback_id"] for f in archive.list_feedback("read", self.config)], [replacement["id"]])
+        rows = archive.work_index_rows("read", self.config)
+        historical = next(r for r in rows["rows"] if "Superseded feedback" in r[11])
+        self.assertEqual(historical[13], old_row[13])
+        self.assertIn(first["drive_file_id"], historical[9])
+        self.assertEqual(rows["summary"]["biology"]["historical_feedback_files"], 1)
+        repeated = archive.file_science_writing("read", "write", self.config, replacement, new_raw)
+        self.assertEqual(repeated["drive_file_id"], new["drive_file_id"])
+        replay = archive.file_science_writing("read", "write", self.config, original, raw)
+        self.assertEqual(replay["drive_file_id"], first["drive_file_id"])
+        self.assertTrue(replay["supersession_verified"])
+        self.assertEqual(len([f for f in self.drive.created if f["mimeType"] == archive.PDF]), 2)
+
+    def test_presentation_rejects_changed_assessment_proof_identity_and_unverified_event_order(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        for mutate in (lambda r: r.update(target="A different assessment target."),
+                       lambda r: r["evidence"][0].update(quote="Invented evidence"),
+                       lambda r: r["student"].update(student_key="AnotherStudent00001"),
+                       lambda r: r["supersession_previous_payload"].update(target="Altered prior target"),
+                       lambda r: r["presentation_context"]["original_submission_times"][0].update(submitted_at="2026-10-07T12:00:00Z"),
+                       lambda r: r["presentation_context"].update(guessed_order=True)):
+            with self.subTest(mutate=mutate):
+                bad = deepcopy(replacement); mutate(bad)
+                result = archive.file_science_writing("read", "write", self.config, bad, new_raw)
+                self.assertEqual(result["status"], "held")
+                prior = self.port.rows[archive.key("archivefeedback", [ROOT, original["id"]])].value
+                self.assertFalse(prior.get("superseded_by"))
+        self.assertEqual(len([f for f in self.drive.created if f["mimeType"] == archive.PDF]), 1)
+
+    def test_uncertain_new_pdf_does_not_supersede_old_or_repeat_a_create(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        self.drive.fail_create = True
+        self.assertEqual(archive.file_science_writing("read", "write", self.config, replacement, new_raw)["status"], "held")
+        self.drive.fail_create = False
+        self.assertEqual(archive.file_science_writing("read", "write", self.config, replacement, new_raw)["status"], "held")
+        prior = self.port.rows[archive.key("archivefeedback", [ROOT, original["id"]])].value
+        self.assertFalse(prior.get("superseded_by"))
+        self.assertEqual([f["feedback_id"] for f in archive.list_feedback("read", self.config)], [original["id"]])
+
+    def test_unconfirmed_successor_pointer_keeps_prior_current_and_recovers_the_same_pdf(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        actual_put = archive._Run.put
+        def unavailable_pointer(run, ident, value, old=None):
+            if value.get("superseded_by"):
+                raise StoreUnavailable("Fictional prior-pointer write was not confirmed")
+            return actual_put(run, ident, value, old)
+        with patch.object(archive._Run, "put", new=unavailable_pointer):
+            held = archive.file_science_writing("read", "write", self.config, replacement, new_raw)
+        self.assertEqual(held["status"], "held")
+        self.assertEqual([f["feedback_id"] for f in archive.list_feedback("read", self.config)], [original["id"]])
+        self.assertEqual(len(archive.work_index_rows("read", self.config)["rows"]), 1)
+        created = [f["id"] for f in self.drive.created if f["mimeType"] == archive.PDF]
+        self.assertEqual(len(created), 2)
+        recovered = archive.file_science_writing("read", "write", self.config, replacement, new_raw)
+        self.assertEqual(recovered["status"], "verified")
+        self.assertEqual(recovered["drive_file_id"], created[-1])
+        self.assertEqual([f["id"] for f in self.drive.created if f["mimeType"] == archive.PDF], created)
+        self.assertEqual([f["feedback_id"] for f in archive.list_feedback("read", self.config)], [replacement["id"]])
+        self.assertEqual(self.drive.contents[first["drive_file_id"]], raw)
+
+    def test_broken_forked_or_cross_student_successor_chains_are_held(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        self.assertEqual(archive.file_science_writing("read", "write", self.config, replacement, new_raw)["status"], "verified")
+        prior_key = archive.key("archivefeedback", [ROOT, original["id"]])
+        successor_key = archive.key("archivefeedback", [ROOT, replacement["id"]])
+        good_prior = deepcopy(self.port.rows[prior_key].value)
+        good_successor = deepcopy(self.port.rows[successor_key].value)
+        for mutate in (lambda p, s: p.update(supersession="Malformed proof"),
+                       lambda p, s: p.update(superseded_by="feedbacksource_" + "e" * 64),
+                       lambda p, s: s.update(student_key="AnotherStudent00001"),
+                       lambda p, s: s.update(source_records=[]),
+                       lambda p, s: s.update(supersedes_report_id="feedbacksource_" + "e" * 64),
+                       lambda p, s: s.update(supersession_prior_payload_sha256="e" * 64)):
+            with self.subTest(mutate=mutate):
+                self.port.rows[prior_key].value.clear(); self.port.rows[prior_key].value.update(deepcopy(good_prior))
+                self.port.rows[successor_key].value.clear(); self.port.rows[successor_key].value.update(deepcopy(good_successor))
+                mutate(self.port.rows[prior_key].value, self.port.rows[successor_key].value)
+                self.assertEqual(archive.verify_feedback_successor("read", self.config, "biology", original["id"])["status"], "held")
+                with self.assertRaises(archive.Held): archive.list_feedback("read", self.config)
+        self.assertEqual(self.drive.contents[first["drive_file_id"]], raw)
+
+    def test_contract_metadata_is_an_optional_exact_passthrough(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        student = self.port.rows[first["student_key"]].value
+        artifact = deepcopy(self.port.rows[archive.key("archivefeedback", [ROOT, original["id"]])].value)
+        extra = {"contract_keys": ["FictionalContractKey"], "contract_status": "missing_verified",
+            "contract_checked_at": "2026-10-09T15:00:00Z", "original_due_date": "2026-10-01",
+            "source_proof": {"schema": "fictional-contract-source/v1", "checked_at": "2026-10-09T15:00:00Z"}}
+        artifact.update(extra)
+        value = archive._feedback_metadata(artifact, student, self.drive.items[COURSES["biology"]])
+        self.assertEqual({k: value[k] for k in extra}, extra)
+        self.assertEqual(value["report_type"], "science_writing")
+
+    def test_unattached_prior_is_not_an_authorized_presentation_replacement(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        prior_key = archive.key("archivefeedback", [ROOT, original["id"]])
+        owner = self.port.rows[first["student_key"]].value
+        del owner["items"][prior_key]
+        self.assertEqual(archive.file_science_writing("read", "write", self.config, replacement, new_raw)["status"], "held")
+        self.assertEqual(len([f for f in self.drive.created if f["mimeType"] == archive.PDF]), 1)
+        owner["items"][prior_key] = {"kind": "feedback", "date": first["date"]}
+        self.assertEqual(archive.file_science_writing("read", "write", self.config, replacement, new_raw)["status"], "verified")
+        self.port.rows[first["student_key"]].value["items"].pop(prior_key, None)
+        self.assertEqual(archive.verify_feedback_successor("read", self.config, "biology", original["id"])["status"], "held")
+
+    def test_verified_history_parent_is_required_and_broken_successor_never_silently_hides_prior(self):
+        original, raw, replacement, new_raw, first = self.presentation_fixture()
+        self.assertEqual(archive.file_science_writing("read", "write", self.config, replacement, new_raw)["status"], "verified")
+        run = archive._Run("read", "write", self.config, "biology")
+        history = run.feedback_history_folder()
+        prior_key = archive.key("archivefeedback", [ROOT, original["id"]]); prior = self.port.rows[prior_key]
+        self.drive.move("write", first["drive_file_id"], history["drive_file_id"], [prior.value["parent"]])
+        moved = {**prior.value, "parent": history["drive_file_id"], "history_original_parent": first["student_folder_id"],
+                 "history_folder_key": history["record_key"]}
+        run.put(prior_key, moved, prior); run.finish({"status": "verified"})
+        proof = archive.verify_feedback_successor("read", self.config, "biology", original["id"])
+        self.assertEqual(proof["status"], "verified")
+        self.assertEqual(proof["current_report_id"], replacement["id"])
+        self.assertEqual(len(archive.list_feedback("read", self.config)), 1)
+        self.assertEqual(len(archive.work_index_rows("read", self.config)["rows"]), 2)
+        self.drive.items[history["drive_file_id"]]["properties"][archive.TAG] = "WrongFolder"
+        self.assertEqual(archive.verify_feedback_successor("read", self.config, "biology", original["id"])["status"], "held")
+        self.drive.items[history["drive_file_id"]]["properties"][archive.TAG] = history["record_key"]
+        successor_key = archive.key("archivefeedback", [ROOT, replacement["id"]])
+        successor = self.port.rows[successor_key]
+        self.drive.items[successor.value["drive_file_id"]]["md5Checksum"] = "ChangedBytes"
+        self.assertEqual(archive.verify_feedback_successor("read", self.config, "biology", original["id"])["status"], "held")
+        with self.assertRaises(archive.Held):
+            archive.list_feedback("read", self.config)
+        self.assertEqual(self.drive.contents[first["drive_file_id"]], raw)
+
     def test_report_roster_reuses_only_exact_current_names_and_retains_departed_history(self):
         self.assertEqual(self.archive()["status"], "verified")
         with patch.object(archive, "_filing_roster", return_value=name_roster()):

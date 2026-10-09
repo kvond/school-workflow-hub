@@ -7,6 +7,26 @@ saved long document to the Today daily-report panel. **Open saved daily
 feedback** reopens that exact snapshot. Reprinting does not generate feedback,
 change grades, or mark Printed or Handed to student.
 
+Saved student science-writing reports belong in this same daily document.
+Their first page uses colored writing levels and four separate source-backed
+growth charts; their second page keeps the student's own next-step challenge
+and lined practice space. Presentation updates preserve the underlying ratings,
+work dates, source evidence, and earlier PDF versions. A single observation is
+shown as one point; unavailable or unrelated work is not turned into a trend.
+
+Current missing-work contracts also belong in the daily student document after
+a complete fresh source check against the current IC roster, assignment flags,
+recorded due dates, and private student folders. Each student gets one dated
+page covering their verified missing lessons and space for a supportive plan.
+Exempt, unassigned, newly joined, extended, future-due, ambiguous, or incompletely
+checked work is not silently classified as missing. A historical contract or
+a zero score does not establish that work is still missing. Existing extensions,
+grades and teacher-controlled Printed/Handed states stay unchanged.
+
+New daily snapshots report separate science-writing and current-contract
+counts. Earlier manifests remain immutable and can show their original generic
+source count. A saved packet proves print-ready bytes, not physical printing.
+
 The packet date is the original native Save date, or the audited original date
 of an imported report. A Shared Drive migration or a new copy's creation date
 does not make old feedback newly generated. The saved manifest retains both

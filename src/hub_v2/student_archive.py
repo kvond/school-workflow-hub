@@ -797,6 +797,10 @@ class _Run:
         ident = key("archivesourcelinks", [self.root, self.cls])
         return self.create(ident, "Original work links", self.course["id"], google.FOLDER)
 
+    def feedback_history_folder(self):
+        return self.create(key("archivefeedbackhistory", [self.root, self.cls]),
+                           "Previous feedback versions", self.course["id"], google.FOLDER)
+
     def retire_navigation(self, student_key, shortcut_key, copy_key):
         """Move only a verified source shortcut; preserve its ID and original source."""
         student_doc, shortcut_doc, copy_doc = (_read(self.port, i) for i in (student_key, shortcut_key, copy_key))
@@ -1595,9 +1599,181 @@ def _feedback_metadata(artifact, student, course):
             "source_file_id": artifact.get("source_file_id"), "source_span": artifact.get("source_span"),
             "feedback_origin": artifact.get("feedback_origin", "native_saved"),
             "report_type": artifact.get("report_type"),
+            "presentation_version": artifact.get("presentation_version", 1),
+            "supersedes_report_id": artifact.get("supersedes_report_id"),
+            "superseded_by": artifact.get("superseded_by"),
+            "supersession_verified": artifact.get("supersession_verified", False),
             "source_records": artifact.get("source_records"),
+            "contract_keys": artifact.get("contract_keys"),
+            "contract_status": artifact.get("contract_status"),
+            "contract_checked_at": artifact.get("contract_checked_at"),
+            "original_due_date": artifact.get("original_due_date"),
+            "source_proof": artifact.get("source_proof"),
             "identity_status": artifact.get("identity_status", "verified"),
             "date": artifact["date"], "mime": PDF, "url": artifact["url"]}
+
+
+def _science_payload(report):
+    return {k: v for k, v in report.items() if k not in {"pdf_path", "pdf_bytes", "supersession_previous_payload"}}
+
+
+def _science_assessment(report):
+    return {k: v for k, v in _science_payload(report).items() if k not in {
+        "id", "presentation_version", "supersedes_report_id", "prepared_at", "saved_at", "pdf_sha256",
+        "report_source_sha256", "presentation_context"}}
+
+
+def _science_presentation_context(report, sources):
+    context = report.get("presentation_context")
+    if context is None:
+        return
+    if not isinstance(context, dict) or set(context) != {"original_submission_times"}:
+        raise Held("This presentation context contains unsupported assessment changes.")
+    events = context["original_submission_times"]
+    if not isinstance(events, list) or len(events) > 500:
+        raise Held("This presentation needs bounded original submission times.")
+    known = {(r["source_file_id"], str(r["source_version"])): r for r in sources}
+    seen = set()
+    for event in events:
+        if not isinstance(event, dict) or set(event) != {"source_file_id", "source_revision", "submitted_at"}:
+            raise Held("This presentation contains an unverified submission-time field.")
+        ident = (event["source_file_id"], str(event["source_revision"]))
+        original = known.get(ident)
+        if (ident in seen or not original or event["submitted_at"] != original.get("submitted_at")
+                or (event["submitted_at"] and (_date(event["submitted_at"]) != original.get("date")
+                                              or original.get("date_basis") != "form_receipt"))):
+            raise Held("This chart's submission order does not match the original verified Form receipt.")
+        seen.add(ident)
+
+
+def _feedback_file(token, scope, course, student, artifact, metadata=None):
+    """Verify current or explicitly relocated historical feedback, never any folder."""
+    parent = artifact["parent"]
+    if parent != student["drive_file_id"]:
+        history_key = key("archivefeedbackhistory", [scope, artifact["class_key"]])
+        if (artifact.get("report_type") != "science_writing" or not artifact.get("superseded_by")
+                or artifact.get("history_original_parent") != student["drive_file_id"]
+                or artifact.get("history_folder_key") != history_key):
+            raise Held("This feedback left its student folder without a verified previous-version location.")
+        history = (metadata or {}).get(parent) or google.drive_file(token, parent, FIELDS)
+        _private(history, parent=course["id"], folder=True)
+        if (history.get("properties") or {}).get(TAG) != history_key:
+            raise Held("The previous-feedback folder is not the tagged private class history folder.")
+    meta = (metadata or {}).get(artifact["drive_file_id"]) or google.drive_file(token, artifact["drive_file_id"], FIELDS)
+    _private(meta, parent=parent)
+    if ((meta.get("properties") or {}).get(TAG) != artifact["record_key"] or meta.get("mimeType") != PDF
+            or meta.get("md5Checksum") != artifact.get("pdf_md5")
+            or str(meta.get("size")) != str(artifact.get("size"))):
+        raise Held("A saved feedback PDF changed or no longer matches its immutable private artifact.")
+    return meta
+
+
+def _feedback_successor(token, scope, course, student, artifact, documents, metadata=None):
+    current, seen = artifact, set()
+    for _ in range(8):
+        ident = current["record_key"]
+        if (current.get("status") != "verified" or current.get("schema") != SCHEMA
+                or current.get("kind") != "feedback" or current.get("report_type") != "science_writing"
+                or current.get("class_key") != artifact.get("class_key")
+                or current.get("student_key") != student["student_key"]
+                or ident != key("archivefeedback", [scope, current.get("feedback_id")])):
+            raise Held("This feedback version does not match its verified student archive.")
+        if ident in seen:
+            raise Held("This feedback's previous-version chain contains a cycle; history is preserved.")
+        seen.add(ident)
+        _feedback_file(token, scope, course, student, current, metadata)
+        successor_id = current.get("superseded_by")
+        if not successor_id:
+            if current["parent"] != student["drive_file_id"]:
+                raise Held("A current feedback version is outside its verified student folder.")
+            return current
+        successor_key = key("archivefeedback", [scope, successor_id])
+        doc = documents.get(successor_key)
+        successor = doc.value if doc else None
+        proof = current.get("supersession")
+        if (not re.fullmatch(r"feedbacksource_[a-f0-9]{64}", str(successor_id))
+                or current.get("superseded_by_record_key") != successor_key
+                or not successor or successor.get("status") != "verified" or successor.get("schema") != SCHEMA
+                or current.get("kind") != "feedback" or successor.get("kind") != "feedback"
+                or successor.get("record_key") != successor_key or successor.get("feedback_id") != successor_id
+                or current.get("report_type") != successor.get("report_type") or successor.get("report_type") != "science_writing"
+                or current.get("student_key") != student["student_key"] or successor.get("student_key") != student["student_key"]
+                or current.get("class_key") != successor.get("class_key")
+                or successor.get("supersedes_report_id") != current.get("feedback_id")
+                or current.get("source_records") != successor.get("source_records")
+                or successor.get("supersession_prior_payload_sha256") != current.get("report_source_sha256")
+                or not isinstance(proof, dict)
+                or proof.get("prior_payload_sha256") != current.get("report_source_sha256")
+                or proof.get("assessment_sha256") != successor.get("presentation_assessment_sha256")
+                or proof.get("successor_pdf_sha256") != successor.get("pdf_sha256")
+                or not re.fullmatch(r"[a-f0-9]{64}", str(proof.get("assessment_sha256")))
+                or type(successor.get("presentation_version", 1)) is not int
+                or type(current.get("presentation_version", 1)) is not int
+                or successor.get("presentation_version", 1) <= current.get("presentation_version", 1)):
+            raise Held("The saved successor is not verified for this same student's unchanged assessment. Previous feedback is preserved.")
+        current = successor
+    raise Held("This feedback's previous-version chain exceeds its verified limit.")
+
+
+def _feedback_replacement_ready(token, scope, course, student, artifact, documents, metadata=None):
+    """A saved replacement is current only after its incoming pointer is confirmed."""
+    prior_id = artifact.get("supersedes_report_id")
+    if prior_id is None:
+        return True
+    prior_key = key("archivefeedback", [scope, prior_id])
+    prior_doc = documents.get(prior_key)
+    prior = prior_doc.value if prior_doc else None
+    if (not re.fullmatch(r"feedbacksource_[a-f0-9]{64}", str(prior_id)) or not prior
+            or prior.get("record_key") != prior_key or prior.get("feedback_id") != prior_id
+            or prior.get("status") != "verified" or prior.get("schema") != SCHEMA
+            or prior.get("kind") != "feedback" or prior.get("report_type") != "science_writing"
+            or prior.get("class_key") != artifact.get("class_key")
+            or prior.get("student_key") != student["student_key"]
+            or prior.get("source_records") != artifact.get("source_records")
+            or artifact.get("supersession_prior_payload_sha256") != prior.get("report_source_sha256")
+            or type(prior.get("presentation_version", 1)) is not int
+            or type(artifact.get("presentation_version", 1)) is not int
+            or artifact.get("presentation_version", 1) <= prior.get("presentation_version", 1)):
+        raise Held("This replacement's saved prior version is not verified for the same unchanged student assessment.")
+    _feedback_file(token, scope, course, student, prior, metadata)
+    if not prior.get("superseded_by"):
+        # The PDF upload/attachment may have succeeded before a CAS response
+        # failed. Keep the prior version current; do not print both or repeat
+        # the upload while the same-ID save recovery remains unresolved.
+        return False
+    if prior["superseded_by"] != artifact.get("feedback_id"):
+        raise Held("Two replacements claim the same prior feedback; history is preserved for review.")
+    _feedback_successor(token, scope, course, student, prior, documents, metadata)
+    return True
+
+
+def verify_feedback_successor(token, config, class_key, prior_feedback_id):
+    """Read-only proof for the exact saved chain; no movement, filing or assessment."""
+    try:
+        _, course = _location(token, config, class_key)
+        root, _ = _configuration(config); scope = _scope_root(config, root)
+        port = configured_store(config); prior_key = key("archivefeedback", [scope, prior_feedback_id])
+        prior = _read(port, prior_key)
+        if (not prior or prior.value.get("record_key") != prior_key or prior.value.get("feedback_id") != prior_feedback_id
+                or prior.value.get("class_key") != class_key or not prior.value.get("superseded_by")):
+            raise Held("This report has no confirmed saved successor.")
+        student = _read(port, prior.value["student_key"])
+        index = _read(port, key("archiveclass", [scope, class_key]))
+        if (not student or student.value.get("status") != "verified" or not index
+                or index.value.get("students", {}).get(prior.value["student_key"]) != student.value.get("drive_file_id")
+                or prior_key not in student.value.get("items", {})):
+            raise Held("The successor's existing student archive is unavailable.")
+        documents = _batch_read(port, list(student.value.get("items", {})))
+        _private(google.drive_file(token, student.value["parent"], FIELDS), parent=course["id"], folder=True)
+        _private(google.drive_file(token, student.value["drive_file_id"], FIELDS), parent=student.value["parent"], folder=True)
+        current = _feedback_successor(token, scope, course, student.value, prior.value, documents)
+        return {"status": "verified", "class_key": class_key, "student_key": student.value["student_key"],
+                "prior_report_id": prior_feedback_id, "prior_record_key": prior_key, "prior_drive_file_id": prior.value["drive_file_id"],
+                "current_report_id": current["feedback_id"], "current_record_key": current["record_key"],
+                "current_drive_file_id": current["drive_file_id"], "current_url": current["url"],
+                "prior_pdf_sha256": prior.value["pdf_sha256"], "current_pdf_sha256": current["pdf_sha256"]}
+    except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
+        return {"status": "held", "problem": _problem(error)}
 
 
 def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
@@ -1647,7 +1823,35 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
             artifact = max(owned, key=lambda a: (a.get("submitted_at", ""), a.get("record_key", "")))
             sources[ident] = {k: artifact.get(k) for k in ("source_file_id", "source_version", "source_modified_at",
                 "submitted_at", "date", "date_basis", "form_id", "assignment_form_id", "assignment", "lesson_status", "source_context")}
-        payload = {k: v for k, v in saved_report.items() if k not in {"pdf_path", "pdf_bytes"}}
+        version = saved_report.get("presentation_version", 1)
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise Held("This report's presentation version is invalid.")
+        _science_presentation_context(saved_report, list(sources.values()))
+        prior_id = saved_report.get("supersedes_report_id")
+        prior_key, prior, assessment_hash = None, None, None
+        if prior_id is not None:
+            if (not re.fullmatch(r"feedbacksource_[a-f0-9]{64}", str(prior_id)) or prior_id == saved_report["id"]):
+                raise Held("A presentation replacement needs a distinct saved prior report ID.")
+            prior_key = key("archivefeedback", [scope, prior_id]); prior = _read(port, prior_key)
+            previous_payload = saved_report.get("supersession_previous_payload")
+            if (not prior or prior.value.get("status") != "verified" or prior.value.get("kind") != "feedback"
+                    or prior.value.get("report_type") != "science_writing"
+                    or prior_key not in student.get("items", {})
+                    or prior.value.get("feedback_id") != prior_id or prior.value.get("student_key") != student["student_key"]
+                    or prior.value.get("class_key") != cls or prior.value.get("source_records") != list(sources.values())
+                    or type(prior.value.get("presentation_version", 1)) is not int
+                    or version <= prior.value.get("presentation_version", 1)
+                    or prior.value.get("superseded_by") not in (None, saved_report["id"])
+                    or not isinstance(previous_payload, dict)
+                    or content_hash(_science_payload(previous_payload)) != prior.value.get("report_source_sha256")
+                    or _science_assessment(previous_payload) != _science_assessment(saved_report)):
+                raise Held("This replacement must preserve the same saved student's exact evidence, assessment and target.")
+            _, course = _location(token, config, cls)
+            _feedback_file(token, scope, course, student, prior.value)
+            assessment_hash = content_hash(_science_assessment(saved_report))
+        elif version != 1 or saved_report.get("supersession_previous_payload") is not None:
+            raise Held("A later presentation version needs its exact prior saved report proof.")
+        payload = _science_payload(saved_report)
         report_hash = content_hash(payload)
         run = _Run(token, write_token, config, cls)
         _private(google.drive_file(token, student["parent"], FIELDS), parent=run.course["id"], folder=True)
@@ -1657,14 +1861,39 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
                     or old.value.get("report_source_sha256") != report_hash
                     or old.value.get("pdf_sha256") != saved_report["pdf_sha256"]):
             raise Held("This report ID already has different student feedback content. Preserve the original PDF.")
+        if old and old.value.get("superseded_by"):
+            docs = _batch_read(port, list(student.get("items", {})))
+            _feedback_successor(token, scope, run.course, student, old.value, docs)
+            historical = {**old.value, "supersession_verified": True}
+            run.finish({"status": "verified", "historical_replay": saved_report["id"], "new_files": 0})
+            return _feedback_metadata(historical, student, run.course)
         artifact = run.create(ident, date + " — Science writing — " + student["name"] + " — Feedback.pdf",
             student["drive_file_id"], PDF, pdf=pdf_bytes, attributes={"kind": "feedback", "date": date,
                 "feedback_id": saved_report["id"], "report_type": "science_writing", "feedback_origin": "teacher_science_writing",
                 "student_key": student["student_key"], "class_key": cls, "saved_at": saved_at,
                 "assignment": "Science writing across %d verified submission%s" % (len(sources), "" if len(sources) == 1 else "s"),
                 "source_records": list(sources.values()), "report_source_sha256": report_hash,
+                "presentation_version": version, "supersedes_report_id": prior_id,
+                "supersession_prior_payload_sha256": prior.value.get("report_source_sha256") if prior else None,
+                "presentation_assessment_sha256": assessment_hash,
                 "source_sha256": report_hash, "identity_status": student.get("identity_status", "identity_unverified")})
         run.attach(student, artifact)
+        _feedback_file(token, scope, run.course, student, artifact)
+        if prior:
+            # A single fenced class claim serializes replacements. Never retire
+            # the current version before the new PDF and its owner are verified.
+            current_prior = _read(run.port, prior_key)
+            if not current_prior or current_prior.value != prior.value:
+                raise Held("The saved prior report changed while its successor was being verified.")
+            revised = {**prior.value, "superseded_by": saved_report["id"], "superseded_by_record_key": ident,
+                "supersession": {"prior_payload_sha256": prior.value["report_source_sha256"],
+                    "assessment_sha256": assessment_hash, "successor_pdf_sha256": artifact["pdf_sha256"],
+                    "confirmed_at": datetime.now(timezone.utc).isoformat()}}
+            if current_prior.value.get("superseded_by") != saved_report["id"]:
+                run.put(prior_key, revised, current_prior)
+            owner = _read(run.port, student["student_key"])
+            docs = _batch_read(run.port, list(owner.value.get("items", {})))
+            _feedback_successor(token, scope, run.course, owner.value, docs[prior_key].value, docs)
         run.finish({"status": "verified", "report_type": "science_writing", "feedback_id": saved_report["id"], "drive_file_id": artifact["drive_file_id"]})
         value = _feedback_metadata(artifact, student, run.course)
         value["index_sync"] = refresh_work_index(token, write_token, config)
@@ -1686,7 +1915,7 @@ def _batch_read(port, ids):
     return result
 
 
-def _indexed(token, config, cls, *, feedback_only=False):
+def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
     actual_root, course = _location(token, config, cls)
     root = _scope_root(config, actual_root)
     port = configured_store(config)
@@ -1725,9 +1954,14 @@ def _indexed(token, config, cls, *, feedback_only=False):
     for student, student_items in checked:
         for ident in student_items:
             item = documents.get(ident)
+            historical = bool(item and item.value.get("kind") == "feedback" and item.value.get("superseded_by")
+                and item.value.get("history_original_parent") == student["drive_file_id"]
+                and item.value.get("history_folder_key") == key("archivefeedbackhistory", [root, cls]))
             if (not item or item.value.get("student_key") != student["student_key"]
-                    or item.value.get("parent") != student["drive_file_id"]):
+                    or (item.value.get("parent") != student["drive_file_id"] and not historical)):
                 raise Held("An archived record no longer belongs to its indexed student folder.")
+            if historical:
+                metadata_ids.add(item.value["parent"])
     fetch_ids = sorted(metadata_ids)
     # These are independent GETs only. Google's sessions are thread-local;
     # no index writes or checks run in workers and errors propagate unchanged.
@@ -1745,13 +1979,21 @@ def _indexed(token, config, cls, *, feedback_only=False):
             artifact = dict(item.value)
             if feedback_only and artifact["kind"] != "feedback":
                 continue
-            meta = _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"])
+            meta = (_feedback_file(token, root, course, student, artifact, metadata) if artifact["kind"] == "feedback"
+                    else _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"]))
             if (meta.get("properties") or {}).get(TAG) != item_id:
                 raise Held("An archived record no longer matches its private index.")
             if artifact["kind"] == "feedback":
                 if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
                     raise Held("An archived feedback PDF changed and needs review.")
                 artifact["drive_version"] = meta.get("version")
+                if not _feedback_replacement_ready(token, root, course, student, artifact, documents, metadata):
+                    continue
+                if artifact.get("superseded_by"):
+                    _feedback_successor(token, root, course, student, artifact, documents, metadata)
+                    artifact["supersession_verified"] = True
+                    if not include_history:
+                        continue
             elif artifact.get("source_kind") == "teacher_attributed_joint_copy":
                 if (meta.get("mimeType") not in work.STUDENT_WORK
                         or meta.get("mimeType") != artifact.get("mime")
@@ -1962,15 +2204,18 @@ def work_index_rows(token, config):
     rows, summary, holds = [], {}, []
     for cls, class_name in CLASSES.items():
         try:
-            _, students = _indexed(token, config, cls)
+            _, students = _indexed(token, config, cls, include_history=True)
             copied, feedback_count = 0, 0
+            history_count = 0
             categories = {"both": 0, "work_only": 0, "feedback_only": 0, "empty": 0}
             for student, artifacts in students:
                 works = [a for a in artifacts if a["kind"] == "work"]
                 feedback = [a for a in artifacts if a["kind"] == "feedback"]
+                current_feedback = [a for a in feedback if not a.get("supersession_verified")]
                 actual = [a for a in works if a.get("mime") != SHORTCUT]
-                copied += len(actual); feedback_count += len(feedback)
-                categories["both" if actual and feedback else "work_only" if actual else "feedback_only" if feedback else "empty"] += 1
+                copied += len(actual); feedback_count += len(current_feedback)
+                history_count += len(feedback) - len(current_feedback)
+                categories["both" if actual and current_feedback else "work_only" if actual else "feedback_only" if current_feedback else "empty"] += 1
                 used = set()
                 for report in feedback:
                     if report.get("report_type") == "science_writing" and report.get("source_records"):
@@ -1981,6 +2226,8 @@ def work_index_rows(token, config):
                             if linked:
                                 used.add(linked["record_key"])
                             status = "Science writing feedback covers this submission" if linked else "Science writing feedback; work not located"
+                            if report.get("supersession_verified"):
+                                status = "Superseded feedback; previous version retained. " + status
                             rows.append(_index_row(class_name, student, linked, report, status,
                                 key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")])))
                         continue
@@ -2019,7 +2266,7 @@ def work_index_rows(token, config):
                     rows.append(_index_row(class_name, student, None, None, "No verified records filed",
                         key("workindexrow", [student["student_key"], "empty"])))
             summary[cls] = {"student_folders": len(students), "work_copies": copied,
-                            "feedback_files": feedback_count, **categories}
+                            "feedback_files": feedback_count, "historical_feedback_files": history_count, **categories}
         except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
             holds.append({"class_key": cls, "problem": _problem(error)})
             rows.append([class_name, "", "", "", "", "", "", "", "", "", "", "Listing held: " + _problem(error), "",

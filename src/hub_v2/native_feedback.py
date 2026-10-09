@@ -628,6 +628,7 @@ def _feedback_files(token, config):
     by_id = {item['id']: item for item in legacy['files']}
     from . import student_archive
     archive_on = student_archive.enabled(config)
+    contract_plans = {}
     if archive_on:
         try:
             archive_files = student_archive.list_feedback(token, config)
@@ -637,8 +638,25 @@ def _feedback_files(token, config):
             cls = item.get('class_key')
             name = str(item.get('name') or '')
             if (item.get('status') != 'verified' or item.get('mime') != 'application/pdf'
-                    or cls not in FEEDBACK_FOLDERS or not _student_print_name(name)):
+                    or cls not in FEEDBACK_FOLDERS
+                    or (not _student_print_name(name) and item.get('report_type') != 'missing_work_contract')):
                 continue
+            contract_expiry = None
+            if item.get('report_type') == 'missing_work_contract':
+                if cls not in contract_plans:
+                    root, _ = student_archive._configuration(config)
+                    scope = student_archive._scope_root(config, root)
+                    plan_id = key('currentcontractplan', [scope, cls])
+                    stored = _read(configured_store(config), plan_id)
+                    contract_plans[cls] = stored.value if stored else None
+                plan = contract_plans[cls]
+                if not plan or plan.get('schema') != 'hub-current-contract-plan/v1' or plan.get('status') != 'verified':
+                    raise Held(FEEDBACK_COURSE_NAMES[cls] + ': current work contracts need a complete verified source check before daily printing.')
+                # Closed or superseded contract snapshots stay in student history.
+                if item.get('feedback_id') not in plan.get('feedback_ids', []):
+                    continue
+                _verify_current_contract(item, plan)
+                contract_expiry = plan['expires_at']
             created = item.get('created_at') or ''
             try:
                 created_day = datetime.fromisoformat(created.replace('Z', '+00:00')).astimezone(
@@ -661,10 +679,34 @@ def _feedback_files(token, config):
                            'feedback_day': item.get('date') or (feedback_date(item.get('saved_at')) if item.get('saved_at') else created_day),
                            'url': item.get('url') or 'https://drive.google.com/open?id=' + ident,
                            'feedback_id': item.get('feedback_id'), 'archived': True,
+                           **({'contract_evidence_expires_at': contract_expiry} if contract_expiry else {}),
+                           **{field: item[field] for field in ('contract_keys', 'contract_checked_at',
+                               'contract_status') if item.get(field)},
                            **{field: item[field] for field in ('pdf_sha256', 'shared_source_key', 'shared_source_document_id',
                               'shared_pdf_sha256', 'covered_by_packet_manifest', 'covered_by_packet_id') if item.get(field)}}
     return {'configured': legacy['configured'] or archive_on, 'files': list(by_id.values()),
             'problem': None if legacy['configured'] or archive_on else legacy['problem']}
+
+
+def _verify_current_contract(item, plan):
+    """A dated filename or an open flag alone never grants missing-work authority."""
+    proof, keys = item.get('source_proof') or {}, item.get('contract_keys')
+    if (item.get('contract_status') != 'open' or item.get('date') != plan.get('date')
+            or not isinstance(keys, list) or not keys or len(keys) != len(set(keys))
+            or not set(keys) <= set(plan.get('contract_keys') or [])
+            or proof.get('plan_sha256') != plan.get('plan_sha256')
+            or proof.get('inputs_sha256') != plan.get('inputs_sha256')
+            or proof.get('plan_id') != plan.get('record_key')
+            or not re.fullmatch(r'[a-f0-9]{64}', str(plan.get('plan_sha256') or ''))
+            or not plan.get('evidence_checked_at') or not plan.get('expires_at')):
+        raise Held('A current work contract does not match its latest verified class source check. Preserve the saved report and refresh the check.')
+    try:
+        start = datetime.fromisoformat(plan['evidence_checked_at'].replace('Z', '+00:00'))
+        end = datetime.fromisoformat(plan['expires_at'].replace('Z', '+00:00'))
+        if start.tzinfo is None or end.tzinfo is None or (end - start).total_seconds() != 3600:
+            raise ValueError()
+    except (TypeError, ValueError):
+        raise Held('The current work contract has no verified evidence freshness window.') from None
 
 
 def feedback_date(stamp):
@@ -702,7 +744,17 @@ def daily_sources(token, config, date_et):
     from . import daily_feedback_packet
     day = daily_feedback_packet.date_value(date_et)
     available = _feedback_files(token, config)
-    return _select_daily_sources(available, day)
+    selected = _select_daily_sources(available, day)
+    moment = datetime.now(timezone.utc)
+    for item in selected:
+        if item.get('report_type') == 'missing_work_contract':
+            try:
+                expiry = datetime.fromisoformat(item['contract_evidence_expires_at'].replace('Z', '+00:00'))
+                if expiry.tzinfo is None or moment > expiry or day != moment.astimezone(ZoneInfo('America/New_York')).date().isoformat():
+                    raise ValueError()
+            except (KeyError, TypeError, ValueError):
+                raise Held(item['course_name'] + ': recheck the current roster, assignment flags and submissions before making a new missing-work print packet. The saved dated PDF remains available.') from None
+    return selected
 
 
 def _select_daily_sources(available, day):

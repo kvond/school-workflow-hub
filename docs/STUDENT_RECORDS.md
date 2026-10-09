@@ -45,6 +45,30 @@ existing runtime identity needs write access only to the configured private
 archive. Parent/file permissions and locations are checked before filing and
 again on readback. Source sharing is never changed by the Hub.
 
+Science-writing presentation replacements use a distinct immutable report ID,
+`presentation_version` and `supersedes_report_id`. The exact prior payload is
+provided as `supersession_previous_payload` and must hash to the saved prior
+artifact. Student, source observations, evidence, dimensions and target remain
+unchanged. Optional presentation-only submission times are checked against the
+same original Form receipts; file creation dates never establish event order.
+Only verified new PDF bytes, location and owner attachment permit the prior
+record's explicit successor pointer. An uncertain upload leaves the prior current
+and retains its original creation fence. If the new PDF is already saved but
+the prior-version pointer is unconfirmed, readers keep the prior current and
+omit the pending replacement until that exact save is recovered; no second
+upload is attempted.
+
+`verify_feedback_successor` performs the read-only chain and private-file proof
+needed before retiring a prior PDF from a student folder. An authorized operator
+may reuse `_Run.feedback_history_folder()` inside the existing hidden class
+container, move only the prior PDF with its same ID, and record its actual
+`parent`, `history_original_parent` and `history_folder_key`. The folder's tag,
+class parent and PDF bytes must read back; no source or assessment changes are
+permitted. Student ownership/history keys stay intact. Current feedback excludes
+prior versions only after their saved successor chain is verified; broken chains
+hold rather than silently hide data. The work index retains the old stable rows,
+original PDF URLs and teacher notes, clearly labeled as superseded history.
+
 The identity scope is an index identifier, not a location or permission grant.
 The actual root and course folders still require private parent/access checks.
 An authorized migration can recreate folder shells and move archive files
