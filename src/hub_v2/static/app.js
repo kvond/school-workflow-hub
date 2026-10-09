@@ -62,7 +62,7 @@ function showAgendaLink(agenda) {
 
 
 // ---------- Hub v3 teacher cockpit ----------
-const cockpit = {seq: 0, audits: null, auditsAt: 0};
+const cockpit = {seq: 0, audits: null, auditsAt: 0, feedbackData: null, learningData: null};
 
 function cockpitPanel(title, ...children) {
   return el('section', {class: 'cockpit-panel'}, el('h2', {text: title}), ...children);
@@ -289,7 +289,7 @@ async function printTodayFeedback(data, status, button) {
   button.disabled = true;
   const printWindow = window.open('about:blank', '_blank');
   if (!printWindow) {
-    status.textContent = 'The print packet was not opened. Allow pop-ups for the Hub, then press Print new feedback again.';
+    status.textContent = 'The print packet was not opened. Allow pop-ups for the Hub, then press Print all feedback again.';
     button.disabled = false;
     return;
   }
@@ -321,8 +321,8 @@ async function printTodayFeedback(data, status, button) {
     printWindow.location = url;
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
     status.textContent = packet?.status === 'ready'
-      ? `Print dialog opened for ${data.date}: ${packet.pages} pages across classes. The daily document is saved; verified individual copies remain in student folders. Printing and handing out remain your own records.`
-      : `Print dialog opened for ${data.date}. This preview is not a saved daily document. Printing and handing out remain your own records.`;
+      ? `Daily feedback document opened for ${data.date}: ${packet.pages} pages across classes. Use the PDF print button (or Cmd/Ctrl+P) to print the whole document. The daily document is saved; verified individual copies remain in student folders. Printing and handing out remain your own records.`
+      : `Feedback preview opened for ${data.date}. Use the PDF print button (or Cmd/Ctrl+P) to print the whole document. This preview is not a saved daily document. Printing and handing out remain your own records.`;
     if (packet?.status === 'ready') loadToday(true);
     button.disabled = false;
   } catch (error) {
@@ -368,18 +368,53 @@ function renderLearningReport(data) {
     el('p', {class: 'muted', text: 'Current-roster percentages, Beginning and Developing counts, and paired comparisons. The report states its evidence dates.'}));
 }
 
+function renderTodayFeedbackArea(seq) {
+  if (seq !== cockpit.seq) return;
+  $('today-feedback').replaceChildren(...[renderLearningReport(cockpit.learningData),
+    cockpit.feedbackData ? renderTodayFeedback(cockpit.feedbackData) : null].filter(Boolean));
+}
+
+async function loadTodayFeedback(seq) {
+  // Saved snapshots have their own verified read and do not need an Agenda or
+  // a fresh inventory of every student folder before they can be reprinted.
+  const packet = await getJSON('api/feedback/daily').catch(error => ({error: error.message}));
+  if (seq !== cockpit.seq) return;
+  if (packet.status === 'ready') {
+    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet};
+  } else if (!cockpit.feedbackData) {
+    cockpit.feedbackData = packet.error ? {error: packet.error} : {date: packet.date, files: [], daily_packet: packet};
+  }
+  renderTodayFeedbackArea(seq);
+  const data = await getJSON('api/feedback/today').catch(error => ({error: error.message}));
+  if (seq !== cockpit.seq) return;
+  const problem = data.error || data.problem;
+  const saved = cockpit.feedbackData?.daily_packet;
+  cockpit.feedbackData = problem && saved?.status === 'ready'
+    ? {date: saved.date, files: [], daily_packet: saved, source_problem: problem} : data;
+  renderTodayFeedbackArea(seq);
+}
+
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
+  if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
+    const packet = cockpit.feedbackData.daily_packet;
+    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet};
+    renderTodayFeedbackArea(seq);
+  }
+  loadTodayFeedback(seq);
+  getJSON('api/learning-report').catch(() => ({configured: false})).then(data => {
+    if (seq !== cockpit.seq) return;
+    cockpit.learningData = data;
+    renderTodayFeedbackArea(seq);
+  });
   try {
     if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
-    const [day, reportsData, routineData, audits, feedbackData, learningData] = await Promise.all([
+    const [day, reportsData, routineData, audits] = await Promise.all([
       getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
       getJSON('api/morning/reports'),
       getJSON('api/routine'),
       loadAudits(force),
-      getJSON('api/feedback/today').catch(error => ({error: error.message})),
-      getJSON('api/learning-report').catch(() => ({configured: false})),
     ]);
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
@@ -389,7 +424,6 @@ async function loadToday(force = false) {
         renderMorningCockpit(report, routineData),
         renderNeedsYou(report)),
       renderNextLessons(audits));
-    $('today-feedback').replaceChildren(...[renderLearningReport(learningData), renderTodayFeedback(feedbackData)].filter(Boolean));
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;

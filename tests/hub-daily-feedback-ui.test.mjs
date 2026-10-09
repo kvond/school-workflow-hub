@@ -4,10 +4,14 @@ import {test} from 'node:test';
 import vm from 'node:vm';
 
 class Element {
-  constructor(tag) { this.tagName = tag; this.children = []; this._text = ''; this.className = ''; this.disabled = false; }
+  constructor(tag) {
+    this.tagName = tag; this.children = []; this._text = ''; this.className = ''; this.disabled = false;
+    this.classList = {toggle: (name, enabled) => { this[name] = enabled; }};
+  }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child instanceof Element ? child.textContent : String(child)).join(''); }
   append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this._text = ''; this.children = children; }
   setAttribute(name, value) { this[name] = value; }
   addEventListener() {}
 }
@@ -55,8 +59,8 @@ test('the print action finalizes the exact day, fetches its saved PDF, and never
   assert.equal(requests[1].url, packet.pdf_url);
   assert.ok(requests.every(request => request.options.credentials === 'same-origin'));
   assert.deepEqual(printed, ['print']);
-  assert.match(status.textContent, /2026-10-07: 7 pages across classes.*daily document is saved/);
-  assert.doesNotMatch(status.textContent, /Printed =|Handed =|printed successfully/);
+  assert.match(status.textContent, /document opened for 2026-10-07: 7 pages across classes.*PDF print button \(or Cmd\/Ctrl\+P\).*whole document.*daily document is saved/);
+  assert.doesNotMatch(status.textContent, /Print dialog opened|Printed =|Handed =|printed successfully/);
   assert.equal(button.disabled, false);
 });
 
@@ -68,4 +72,103 @@ test('a saved dated snapshot remains reprintable when current sources are unavai
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, packet.pdf_url);
   assert.equal(requests[0].options.method, undefined);
+});
+
+const response = data => ({ok: true, json: async () => data});
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return {promise, resolve, reject};
+};
+const tick = () => new Promise(resolve => setImmediate(resolve));
+function bootToday(handler) {
+  const nodes = new Map(), requests = [], never = new Promise(() => {});
+  const document = {createElement: tag => new Element(tag), getElementById: name => {
+    if (!nodes.has(name)) nodes.set(name, new Element('div'));
+    return nodes.get(name);
+  }};
+  const context = vm.createContext({document, Node: Element,
+    fetch: (url, options) => { requests.push({url, options}); return handler(url, options) ?? never; }});
+  const today = source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('async function loadLessonReadiness('));
+  vm.runInContext(prefix + '\nfunction renderNextLessons() { return el("p", {text: "Deck readiness"}); }\n' + today +
+    '\nglobalThis.ui = {loadToday, cockpit};', context);
+  return {ui: context.ui, document, requests};
+}
+
+test('saved daily controls render while Agenda, audits and source catalog are still unresolved', async () => {
+  const catalog = deferred();
+  const {ui, document, requests} = bootToday(url => {
+    if (url === 'api/feedback/daily') return response(packet);
+    if (url === 'api/feedback/today') return catalog.promise;
+  });
+  let finished = false;
+  ui.loadToday().then(() => { finished = true; });
+  await tick();
+  const rendered = document.getElementById('today-feedback');
+  assert.equal(finished, false);
+  assert.match(document.getElementById('today-status').textContent, /Reading today’s Agenda/);
+  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
+  assert.ok(walk(rendered).some(node => node.tagName === 'button' && /Print all feedback — 2026-10-07/.test(node.textContent)));
+  assert.match(rendered.textContent, /7 pages/);
+  assert.doesNotMatch(rendered.textContent, /Printed =|Handed =|printed successfully/);
+  assert.ok(requests.some(request => request.url.startsWith('api/audit?')));
+  assert.ok(requests.findIndex(request => request.url === 'api/feedback/daily') < requests.findIndex(request => request.url === 'api/feedback/today'));
+  assert.ok(requests.every(request => !request.options.method || request.options.method === 'GET'));
+});
+
+test('a current-catalog failure retains the verified saved PDF without becoming a main run result', async () => {
+  const catalog = deferred();
+  const {ui, document} = bootToday(url => {
+    if (url === 'api/feedback/daily') return response(packet);
+    if (url === 'api/feedback/today') return catalog.promise;
+  });
+  ui.loadToday();
+  await tick();
+  catalog.reject(new Error('Fictional source access unavailable'));
+  await tick();
+  const rendered = document.getElementById('today-feedback');
+  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
+  assert.match(rendered.textContent, /saved dated document remains available.*Fictional source access unavailable/);
+  assert.match(document.getElementById('today-status').textContent, /Reading today’s Agenda/);
+  assert.equal(document.getElementById('today-body').children.length, 0);
+});
+
+test('a late catalog and learning refresh cannot replace a newer Today saved document', async () => {
+  const catalogs = [deferred(), deferred()], learning = [deferred(), deferred()];
+  const newer = {...packet, date: '2026-10-08', pages: 9, pdf_url: '/v2/api/feedback/daily/pdf?id=dailyfeedbackpacket_' + 'b'.repeat(64)};
+  let reads = 0, catalogsRead = 0, learningRead = 0;
+  const {ui, document} = bootToday(url => {
+    if (url === 'api/feedback/daily') return response(reads++ ? newer : packet);
+    if (url === 'api/feedback/today') return catalogs[catalogsRead++].promise;
+    if (url === 'api/learning-report') return learning[learningRead++].promise;
+  });
+  ui.loadToday(); await tick();
+  ui.loadToday(true); await tick();
+  assert.match(document.getElementById('today-feedback').textContent, /Open saved daily feedback — 2026-10-08 \(9 pages\)/);
+  learning[1].resolve(response({configured: true, as_of: '2026-10-08', url: 'https://example.test/current-growth', teaching_url: 'https://example.test/current-teaching'}));
+  await tick();
+  catalogs[0].resolve(response({date: DAY, files, daily_packet: packet}));
+  learning[0].resolve(response({configured: true, as_of: '1999-01-01', url: 'https://example.test/old-growth', teaching_url: 'https://example.test/old-teaching'}));
+  await tick();
+  const rendered = document.getElementById('today-feedback');
+  assert.match(rendered.textContent, /2026-10-08 \(9 pages\)/);
+  assert.doesNotMatch(rendered.textContent, /2026-10-07|1999-01-01|Saved feedback/);
+  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === newer.pdf_url));
+  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === 'https://example.test/current-growth'));
+});
+
+test('an earlier saved-packet response cannot overwrite a newer Today or start its stale catalog', async () => {
+  const older = deferred();
+  const newer = {...packet, date: '2026-10-08', pages: 9};
+  let reads = 0, catalogs = 0;
+  const {ui, document} = bootToday(url => {
+    if (url === 'api/feedback/daily') return reads++ ? response(newer) : older.promise;
+    if (url === 'api/feedback/today') { catalogs++; return new Promise(() => {}); }
+  });
+  ui.loadToday();
+  ui.loadToday(true); await tick();
+  older.resolve(response(packet)); await tick();
+  assert.match(document.getElementById('today-feedback').textContent, /2026-10-08 \(9 pages\)/);
+  assert.doesNotMatch(document.getElementById('today-feedback').textContent, /2026-10-07/);
+  assert.equal(catalogs, 1);
 });
