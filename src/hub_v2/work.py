@@ -874,6 +874,25 @@ def roster_check(token, config, by_class, class_key, lessons, other_rows, domain
             "stale_days": ROSTER_STALE_DAYS}
 
 
+def _calendar_only(lesson):
+    """Narrow filing metadata from the trusted Agenda, never a scoring gate."""
+    if lesson.get("forms") or lesson.get("materials") or any(str(lesson.get(k) or "").strip() for k in ("todo", "prep")):
+        return False
+    if any(str(p.get("note") or "").strip() for p in lesson.get("plans", [])):
+        return False
+    plans = [" ".join(str(p.get("plan") or "").split()) for p in lesson.get("plans", [])]
+    plans = [p for p in plans if p]
+    topic = str(lesson.get("topic") or "").strip()
+    if topic:
+        return (norm(topic) in {"30minclass", "30minclasses"} and not plans
+                and norm(lesson.get("dates")) in {"dayone9thonly", "day2allgrades"})
+    calendar = re.compile(
+        r"(?:\d{1,2}/\d{1,2}\s*)?(?:OFF\s*[—–-]\s*(?:Schools Closed|In-Service)|A&P does not meet\.)"
+        r"|\d{1,2}/\d{1,2}\s*[—–-]\s*A Friday, Bio \+ Forensics have it\. A&P does not meet\. "
+        r"\(Not a real closure\s*[—–-]\s*only Mon \d{1,2}/\d{1,2} was closed\.\)", re.I)
+    return all(calendar.fullmatch(p) for p in plans)
+
+
 def lesson_work(token, config, agenda, class_key, week_label):
     by_class, problems = roster.load(token, config)
     students = by_class.get(class_key, [])
@@ -1102,6 +1121,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
                               if open_for else None})
         index += len(lesson["forms"])
         result.append({"row": lesson["row"], "topic": lesson["topic"], "edit_url": lesson["edit_url"],
+                       "calendar_only": _calendar_only(lesson),
                        "forms": out_forms,
                        "problem": None if lesson["forms"] else
                        "This lesson has no Form link in its 'Turn it in' column."})

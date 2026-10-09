@@ -708,6 +708,7 @@ def archive_work(token, write_token, config, class_key, found):
 
         candidates, emails, conflicts = [], {}, set()
         lessons = list(found.get("lessons", []))
+        calendar_week = bool(lessons) and all(l.get("calendar_only") is True and not l.get("forms") for l in lessons)
         loose = list(found.get("other_files", []))
         for lesson in lessons:
             for form in lesson.get("forms", []):
@@ -722,7 +723,8 @@ def archive_work(token, write_token, config, class_key, found):
             lessons.append({"topic": "Lesson not confirmed", "forms": [{"label": "Lesson not confirmed",
                 "form_id": None, "lesson_unverified": True, "students": loose}]})
         for lesson in lessons:
-            if lesson.get("problem"):
+            if (lesson.get("problem") and not (lesson.get("calendar_only") is True and not lesson.get("forms")
+                    and lesson["problem"] == "This lesson has no Form link in its 'Turn it in' column.")):
                 result["held"].append({"assignment": _clean(lesson.get("topic")), "problem": lesson["problem"]})
             for form in lesson.get("forms", []):
                 assignment = form.get("label") or lesson.get("topic") or ""
@@ -831,7 +833,10 @@ def archive_work(token, write_token, config, class_key, found):
             except (Held, google.GoogleError) as error:
                 result["held"].append({**context, "problem": str(error)})
         result["problems"].extend(_clean(p, 400) for p in found.get("problems", []) if p)
-        if found.get("folder_note"):
+        calendar_not_found = (calendar_week and not found.get("other_files") and not found.get("folder_files")
+            and found.get("folder_note") == "No turn-in folder for %s %s was found in %s." % (
+                CLASSES[class_key], found["week"], CLASSES[class_key]))
+        if found.get("folder_note") and not calendar_not_found:
             result["problems"].append(_clean(found["folder_note"], 400))
         result["status"] = "held" if result["held"] or result["problems"] else "verified"
         run.filing_receipt(found, result)

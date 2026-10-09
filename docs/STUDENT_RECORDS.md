@@ -84,6 +84,15 @@ The 6:30 routine invokes this bounded operation; browsing Student work does
 not start writes. A successful existing tidy can additionally file records,
 and any later archive failure is reported separately from completed moves.
 
+Filing excludes missing-Form warnings from narrowly identified calendar-only
+Agenda rows: empty lesson rows with no assignment content, the introductory
+short-class timing rows, and blank-topic rows containing only recognized
+closure or no-meeting notes. Real lessons sharing the same week still scan
+their Forms. Only an exact missing-week-folder note can be excluded when every
+row is calendar-only and no source files are present. Access, roster, source
+availability and genuine missing-Form problems remain holds. Grading and IC
+gates are unchanged, and a filing receipt records only the scanned week.
+
 Native feedback Save files the existing reviewed one-student PDF once by its
 immutable draft ID, without another provider call. Teacher notes are excluded
 from that PDF. Today printing combines indexed nested PDFs with legacy class
