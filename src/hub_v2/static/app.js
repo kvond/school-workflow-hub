@@ -517,6 +517,11 @@ function renderDays(date) {
 async function loadPlans(date, fresh = false) {
   plans.started = true; plans.date = date; $('date').value = date; renderDays(date);
   const seq = ++plans.seq;
+  plans.data = null;
+  $('week-label').textContent = at(date).toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric', year: 'numeric'});
+  $('week-closures').textContent = '';
+  $('cards').replaceChildren();
+  $('next-week-notes').replaceChildren();
   setStatus('plans-status', 'Reading the Agenda…');
   try {
     const data = await getJSON(`api/day?date=${encodeURIComponent(date)}${fresh ? '&fresh=1' : ''}`);

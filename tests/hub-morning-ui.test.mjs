@@ -5,7 +5,7 @@ import {test} from 'node:test';
 import vm from 'node:vm';
 
 class Element {
-  constructor(tag) { this.tagName = tag; this.children = []; this.className = ''; this._text = ''; }
+  constructor(tag) { this.tagName = tag; this.children = []; this.className = ''; this._text = ''; this.classList = {toggle() {}}; }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child instanceof Element ? child.textContent : String(child)).join(''); }
   append(...children) { this.children.push(...children); }
@@ -44,6 +44,25 @@ test('readiness labels name embedded-code repairs while keeping access failures 
   assert.equal(context.readinessBadge({status: 'NOT_READY', label: 'Needs embedded codes', issues: ['teacher_distributed_uncoded_copies']}).textContent, 'Needs embedded codes');
   assert.equal(context.readinessBadge({status: 'UNKNOWN', issues: ['deck_release_unreadable']}).textContent, 'Cannot read lesson');
   assert.equal(context.readinessBadge({status: 'READY', issues: []}).textContent, 'Ready');
+});
+
+test('a pending or failed calendar read cannot show the previous date’s lessons or notes', async () => {
+  const {context, document} = boot([]);
+  let answer;
+  context.fetch = () => new Promise(resolve => { answer = resolve; });
+  const calendar = source.slice(source.indexOf('const plans ='), source.indexOf('function renderNextWeekNotes('));
+  vm.runInContext(calendar + '\nglobalThis.calendarClient = {loadPlans, plans};', context);
+  for (const id of ['week-label', 'week-closures', 'cards', 'next-week-notes']) document.getElementById(id).textContent = 'Previous week';
+  context.calendarClient.plans.data = {old: true};
+  const pending = context.calendarClient.loadPlans('2032-01-14');
+  assert.match(document.getElementById('week-label').textContent, /Jan 14, 2032/);
+  for (const id of ['week-closures', 'cards', 'next-week-notes']) assert.equal(document.getElementById(id).textContent, '');
+  assert.equal(context.calendarClient.plans.data, null);
+  answer({ok: false, status: 503, json: async () => ({error: 'Agenda access temporarily unavailable'})});
+  await pending;
+  assert.match(document.getElementById('plans-status').textContent, /temporarily unavailable/);
+  assert.match(document.getElementById('week-label').textContent, /Jan 14, 2032/);
+  assert.equal(document.getElementById('cards').textContent, '');
 });
 
 test('Routine explains dated student filing and separate teacher reports without adding controls', () => {
