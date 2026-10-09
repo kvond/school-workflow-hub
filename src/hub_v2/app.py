@@ -104,9 +104,17 @@ def learning_report(config):
         date.fromisoformat(as_of)
     except ValueError:
         as_of = ''
-    return {'configured': True, 'url': url,
+    separate = {
+        'analysis_url': 'HUB_BIOLOGY_ANALYSIS_URL',
+        'work_index_url': 'HUB_STUDENT_WORK_INDEX_URL',
+        'checklist_url': 'HUB_FEEDBACK_CHECKLIST_URL',
+    }
+    links = {key: value if re.fullmatch(pattern, value) else ''
+             for key, setting in separate.items()
+             for value in (str(config.get(setting) or ''),)}
+    return {'configured': True, 'class_key': 'biology', 'url': url,
             'teaching_url': teaching if re.fullmatch(pattern, teaching) and teaching.split('/edit')[0] == url.split('/edit')[0] else url,
-            'as_of': as_of, 'automatic_refresh': False}
+            'as_of': as_of, 'automatic_refresh': False, **links}
 
 
 def api(sub, query, config):
@@ -117,6 +125,10 @@ def api(sub, query, config):
         if set(query) not in (set(), {'date'}):
             raise ValueError('date')
         return daily_feedback_packet.status(token, config, _one(query, 'date', False) or None)
+    if sub == 'api/feedback/today':
+        if set(query) not in (set(), {'date'}):
+            raise ValueError('date')
+        return native_feedback.today_files(token, config, date_et=_one(query, 'date', False) or None)
     if sub == 'api/student-records':
         if set(query) != {'class'}:
             raise ValueError('class')
@@ -165,10 +177,6 @@ def api(sub, query, config):
         prompt, where = feedback.load_embed_prompt(token, agenda)
         return {**routine.status(token, config),
                 "embed_prompt": {"text": prompt, "url": where} if prompt else {"problem": where}}
-    if sub == 'api/feedback/today':
-        if set(query) not in (set(), {'date'}):
-            raise ValueError('date')
-        return native_feedback.today_files(token, config, date_et=_one(query, 'date', False) or None)
     if sub == "api/audit":
         return audit.check(token, agenda, _class_key(_one(query, "class")), config)
     if sub == "api/feedback/native":

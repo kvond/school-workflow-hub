@@ -2,12 +2,23 @@
 
 ## October 8 student records
 
-The teacher-facing Drive layout now uses private class/section/student folders
-with dated work links and saved student feedback. Teacher-only reports have
+The teacher-facing Drive layout uses private class/section/student folders
+with dated submitted-work copies and saved student feedback. The original
+Form uploads retain their IDs and intake locations. A teacher work index joins
+class, lesson, student, submitted work and feedback without requiring folder
+searches. Teacher-only reports have
 separate private class folders. Source uploads and Form trees remain intact;
 only verified empty unused folders receive `~delete `. See
 [Student records](STUDENT_RECORDS.md) for runtime configuration, identity
 requirements, automatic filing, private readback and quota/coverage holds.
+
+The Biology DTGSS workbook presents whole-class counts with explicit evidence
+dates, lesson titles and assessed denominators. A separate private Biology
+analysis workbook contains student-level vocabulary, conceptual-answer and
+evidence observations. The opening guide explains each tab. Saved dated daily
+feedback PDFs are separate from these teacher reports; the Hub source list
+and print packet must use the same duplicate suppression and current source
+revisions. Made, Printed and Handed to student remain separate states.
 
 ## October 5 verification continuation
 

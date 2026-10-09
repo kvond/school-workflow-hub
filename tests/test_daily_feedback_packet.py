@@ -78,6 +78,29 @@ class DailyFeedbackPacketTests(unittest.TestCase):
         self.assertEqual(daily.status('read', self.config, DAY)['id'], current['id'])
         self.assertTrue(daily.pdf('read', self.config, previous['id'])[0].startswith(b'%PDF'))
 
+    def test_same_source_ids_with_a_new_revision_do_not_claim_the_old_pdf_is_current(self):
+        saved = self.build()
+        self.assertTrue(daily.matches_sources('read', saved, self.sources))
+        self.drive.items[self.sources[0]['id']]['version'] = '2'
+        self.assertFalse(daily.matches_sources('read', saved, self.sources))
+        self.assertEqual(len(self.drive.created), 1)
+        self.assertFalse(daily.matches_sources('read', saved, self.sources[:-1]))
+        self.drive.items[self.sources[0]['id']]['permissions'] = [{'type': 'anyone', 'role': 'reader'}]
+        with self.assertRaisesRegex(daily.Held, 'private access'):
+            daily.matches_sources('read', saved, self.sources)
+
+    def test_dated_history_links_keep_earlier_days_and_immutable_versions_accessible(self):
+        first = self.build()
+        next_day = '2026-10-08'
+        for source in self.sources:
+            source.update(feedback_day=next_day, saved_at=next_day + 'T15:00:00Z')
+        second = daily.build('read', 'write', self.config, next_day)
+        result = daily.status('read', self.config)
+        self.assertEqual(result['id'], second['id'])
+        self.assertEqual([item['date'] for item in result['available_dates']], [next_day, DAY])
+        self.assertEqual(result['available_dates'][1]['pdf_url'], first['pdf_url'])
+        self.assertEqual(daily.pdf('read', self.config, first['id'])[0][:4], b'%PDF')
+
     def test_uncertain_success_is_recovered_by_exact_readback_and_an_unconfirmed_upload_is_not_repeated(self):
         self.drive.fail_after_create = True
         self.assertEqual(self.build()['status'], 'ready')
@@ -158,6 +181,23 @@ class DailySourceSelectionTests(unittest.TestCase):
                    'pdf_sha256': digest, 'covered_by_packet_manifest': reference, 'covered_by_packet_id': packet['id']}
                   for number in (1, 2)]
         return packet, copies
+
+    def test_today_catalog_and_print_preview_use_the_same_exact_shared_source_suppression(self):
+        packet, copies = self.joint_sources()
+        for item in [packet] + copies:
+            item.update(created_at=DAY + 'T15:00:00Z', mime=daily.PDF)
+        available = {'configured': True, 'files': [packet] + copies}
+        writer, output = PdfWriter(), io.BytesIO()
+        writer.add_blank_page(width=612, height=792); writer.add_blank_page(width=612, height=792); writer.write(output)
+        with patch.object(native_feedback, '_feedback_files', return_value=available), \
+                patch.object(daily, 'status', return_value={'status': 'not_saved', 'configured': True, 'date': DAY}), \
+                patch.object(google, 'printable_pdf_bytes', return_value=output.getvalue()) as download:
+            config = {daily.FOLDER_CONFIG: FOLDER}
+            today = native_feedback.today_files('read', config, date_et=DAY)
+            self.assertEqual([item['id'] for item in today['files']], [packet['id']])
+            raw, _ = native_feedback.print_today('read', config, [packet['id']], date_et=DAY)
+            self.assertEqual(len(PdfReader(io.BytesIO(raw)).pages), 2)
+            self.assertEqual(download.call_count, 1)
 
     def test_two_joint_student_copies_leave_existing_dated_packet_selection_unchanged_with_exact_readback_proof(self):
         from hub_v2 import student_archive

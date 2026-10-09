@@ -44,10 +44,32 @@ test('Today links the actual saved feedback date across classes, with source lin
   assert.doesNotMatch(rendered.textContent, /created 2026-10-08|printed successfully|null|undefined/);
   assert.equal(walk(rendered).filter(node => node.tagName === 'button').length, 1);
   assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
-  const details = walk(rendered).find(node => node.tagName === 'details');
+  const details = walk(rendered).find(node => node.tagName === 'details' && /Current feedback by student/.test(node.textContent));
   assert.ok(details);
   assert.equal(details.open, undefined);
-  assert.match(details.textContent, /Feedback sources and student copies.*Saved feedback/);
+  assert.match(details.textContent, /Current feedback by student.*Saved feedback/);
+});
+
+test('older feedback is a collapsed reprint, while verified new feedback keeps the current print action', () => {
+  const {ui} = boot();
+  const old = ui.renderTodayFeedback({date: DAY, requested_date: '2026-10-09', current_sources_verified: true, files, daily_packet: packet});
+  assert.match(old.textContent, /No new feedback for 2026-10-09/);
+  assert.ok(walk(old).some(node => node.tagName === 'details' && /^Earlier feedback/.test(node.children[0].textContent) && node.open === undefined));
+  assert.doesNotMatch(old.textContent, /Print all feedback — 2026-10-07/);
+  const current = ui.renderTodayFeedback({date: '2026-10-09', requested_date: '2026-10-09', files, daily_packet: {...packet, date: '2026-10-09'}});
+  assert.match(current.textContent, /Print all feedback — 2026-10-09/);
+  assert.doesNotMatch(current.textContent, /No new feedback|Earlier feedback · latest/);
+});
+
+test('teacher writing dimensions remain collapsed, labelled and absent for legacy drafts', () => {
+  const {ui} = boot();
+  const context = vm.createContext({document: {createElement: tag => new Element(tag)}, Node: Element});
+  const helper = source.slice(source.indexOf('function teacherWritingPreview('), source.indexOf('function feedbackPanel('));
+  vm.runInContext(prefix + helper + '\nglobalThis.preview = teacherWritingPreview;', context);
+  assert.equal(context.preview(undefined), null);
+  const rendered = context.preview([{dimension: 'Specific scientific evidence', level: 'Developing', question_id: 'Q2', stage: 'Revision', quote: 'the sample was blue', explanation: 'Include the observed measurement.'}]);
+  assert.equal(rendered.open, undefined);
+  assert.match(rendered.textContent, /teacher only, excluded from the student PDF.*Specific scientific evidence: Developing.*Q2 · Revision.*the sample was blue.*Include the observed measurement/);
 });
 
 test('the print action finalizes the exact day, fetches its saved PDF, and never changes delivery state', async () => {
@@ -72,6 +94,30 @@ test('a saved dated snapshot remains reprintable when current sources are unavai
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, packet.pdf_url);
   assert.equal(requests[0].options.method, undefined);
+});
+
+test('two students with the same PDF title remain distinct and earlier daily PDFs stay linked', () => {
+  const {ui} = boot();
+  const sources = ['Rivera, Ana', 'Avery, Sam'].map((student_name, index) => ({...files[0], id: 'student-' + index,
+    name: '2026-10-07 — Carbon cycle — Feedback.pdf', student_name, feedback_day: DAY}));
+  const earlier = {date: '2026-10-05', pages: 1, pdf_url: '/v2/api/feedback/daily/pdf?id=dailyfeedbackpacket_' + 'b'.repeat(64)};
+  const rendered = ui.renderTodayFeedback({date: DAY, files: sources, packet_matches_sources: true,
+    daily_packet: {...packet, available_dates: [earlier]}});
+  assert.match(rendered.textContent, /Biology · Rivera, Ana/);
+  assert.match(rendered.textContent, /Biology · Avery, Sam/);
+  assert.doesNotMatch(rendered.textContent, /Open course folder|Oct 8/);
+  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === earlier.pdf_url));
+});
+
+test('fresh matching membership and revisions print the saved PDF directly, while changed sources finalize', async () => {
+  const {ui, requests} = boot();
+  await ui.printTodayFeedback({date: DAY, files, daily_packet: packet, packet_matches_sources: true}, new Element('p'), new Element('button'));
+  assert.deepEqual(requests.map(item => item.url), [packet.pdf_url]);
+  requests.length = 0;
+  const data = {date: DAY, files, daily_packet: packet, packet_matches_sources: false};
+  assert.match(ui.renderTodayFeedback(data).textContent, /saved document differs.*updated version.*earlier PDF is preserved/);
+  await ui.printTodayFeedback(data, new Element('p'), new Element('button'));
+  assert.deepEqual(requests.map(item => item.url), ['api/feedback/daily', packet.pdf_url]);
 });
 
 const response = data => ({ok: true, json: async () => data});
@@ -108,7 +154,7 @@ test('saved daily controls render while Agenda, audits and source catalog are st
   assert.equal(finished, false);
   assert.match(document.getElementById('today-status').textContent, /Reading today’s Agenda/);
   assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
-  assert.ok(walk(rendered).some(node => node.tagName === 'button' && /Print all feedback — 2026-10-07/.test(node.textContent)));
+  assert.ok(walk(rendered).some(node => node.tagName === 'button' && /Reprint saved feedback — 2026-10-07/.test(node.textContent)));
   assert.match(rendered.textContent, /7 pages/);
   assert.doesNotMatch(rendered.textContent, /Printed =|Handed =|printed successfully/);
   assert.ok(requests.some(request => request.url.startsWith('api/audit?')));

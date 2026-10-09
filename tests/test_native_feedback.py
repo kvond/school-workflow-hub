@@ -25,7 +25,11 @@ def report():
     return {'student_summary': 'You explain where carbon comes from.', 'question': 'How does the carbon become part of a plant?',
             'aspects': [{'question_id': 'CA1-MASTERY', 'name': 'Carbon moves', 'current_level': 'Developing',
                          'quote': 'Carbon comes from the air.', 'explanation': 'A mechanism is still needed.'}],
-            'teacher_notes': ['Private concern never printed.']}
+            'teacher_notes': ['Private concern never printed.'],
+            'teacher_dimensions': [{'dimension': dimension, 'level': 'Developing',
+                'question_id': 'CA1-MASTERY', 'stage': 'DRAFT', 'quote': 'Carbon comes from the air.',
+                'explanation': 'Private science-writing evidence for the teacher.'}
+                for dimension in fb.TEACHER_DIMENSIONS]}
 
 
 class NativeFeedbackTests(unittest.TestCase):
@@ -341,11 +345,14 @@ class NativeFeedbackTests(unittest.TestCase):
     def test_verified_long_quote_is_shortened_without_another_model_call(self):
         data = inputs(); data['aspects'][0]['answer'] = 'Carbon\n  ' * 30
         response = report(); response['aspects'][0]['quote'] = data['aspects'][0]['answer']
+        for dimension in response['teacher_dimensions']:
+            dimension['quote'] = data['aspects'][0]['answer']
         self.call.return_value = json.dumps(response), {}
         first = fb.generate(OPENAI_CONFIG, data)
         quote = first['report']['aspects'][0]['quote']
         self.assertEqual(len(quote.split()), 25)
         self.assertIn(quote, data['aspects'][0]['answer'])
+        self.assertTrue(all(len(row['quote'].split()) == 25 for row in first['report']['teacher_dimensions']))
         self.assertTrue(fb.generate(OPENAI_CONFIG, data)['cached'])
         self.assertEqual(self.call.call_count, 1)
         response['aspects'][0]['quote'] += 'invented ending'
@@ -356,6 +363,8 @@ class NativeFeedbackTests(unittest.TestCase):
         with self.assertRaises(fb.Held):
             fb.validate_report(report(), blank)
         expected = report(); expected['aspects'][0].update(quote='', current_level='Evidence unavailable')
+        for dimension in expected['teacher_dimensions']:
+            dimension.update(quote='', level='Evidence unavailable', explanation='No attributable answer is available.')
         self.assertEqual(fb.validate_report(expected, blank), expected)
 
     def test_teacher_identity_must_come_from_unique_school_email_form(self):

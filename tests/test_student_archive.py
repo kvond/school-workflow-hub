@@ -4,6 +4,9 @@ from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 import json
+from io import BytesIO
+from zipfile import ZipFile
+from PIL import Image
 from threading import Barrier, Lock
 import unittest
 from unittest.mock import Mock, patch
@@ -26,6 +29,7 @@ REAL_ARCHIVE_FILE_ID = google.archive_file_id
 class FakeDrive:
     def __init__(self):
         self.items, self.created, self.renamed, self.moved = {}, [], [], []
+        self.copied, self.fail_copy, self.fail_after_copy, self.contents = [], False, False, {}
         self.sequence, self.fail_create, self.fail_after_create = 0, False, False
         self.add(ROOT, "Student records — Private 2026–27", google.FOLDER)
         for cls, ident in COURSES.items():
@@ -38,6 +42,7 @@ class FakeDrive:
             "trashed": False, "permissions": deepcopy(PERMISSIONS), "capabilities": {"canAddChildren": True},
             "properties": {}, "createdTime": "2026-10-08T12:00:00Z", "modifiedTime": "2026-10-08T12:00:00Z",
             "version": "1"}
+        self.contents[ident] = ident.encode()
         return self.items[ident]
 
     def metadata(self, token, ident, fields=None):
@@ -76,6 +81,28 @@ class FakeDrive:
         self.moved.append(ident)
         self.items[ident]["parents"] = [new_parent]
         return deepcopy(self.items[ident])
+
+    def copy(self, url, token, params=None, timeout=20, method="GET", body=None):
+        if method != "POST" or not url.endswith("/copy"):
+            raise AssertionError("Unexpected Google write")
+        source_id = url.split("/")[-2]
+        self.copied.append(source_id)
+        if self.fail_copy:
+            raise google.GoogleError("Drive did not confirm this copy")
+        ident = self.reserve(token)
+        item = self.add(ident, body["name"], self.items[source_id]["mimeType"], body["parents"])
+        item["properties"] = deepcopy(body["properties"])
+        self.contents[ident] = self.contents[source_id]
+        item.update(md5Checksum=hashlib.md5(self.contents[ident]).hexdigest(), size=str(len(self.contents[ident])))
+        if self.fail_after_copy:
+            self.fail_after_copy = False
+            raise google.GoogleError("Copy response lost")
+        return {"id": ident}
+
+    def content(self, token, meta, heartbeat=None):
+        raw = self.contents[meta["id"]]
+        return {"sha256": hashlib.sha256(raw).hexdigest(), "basis": "file_bytes", "size": len(raw),
+                "md5": hashlib.md5(raw).hexdigest()}
 
 
 def config():
@@ -118,6 +145,8 @@ class StudentArchiveTests(unittest.TestCase):
                         patch.object(google, "archive_create", side_effect=self.drive.create),
                         patch.object(google, "rename_item", side_effect=self.drive.rename),
                         patch.object(google, "move_item", side_effect=self.drive.move)]
+        self.patches += [patch.object(google, "get_json", side_effect=self.drive.copy),
+                         patch.object(archive, "_work_content", side_effect=self.drive.content)]
         for item in self.patches:
             item.start()
             self.addCleanup(item.stop)
@@ -130,6 +159,212 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertFalse(result["configured"])
         self.assertEqual(self.drive.created, [])
         self.assertEqual(self.port.rows, {})
+
+    def test_actual_work_copy_contains_source_and_repeat_does_not_copy_again(self):
+        original = deepcopy(self.drive.items[SOURCE])
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.items[SOURCE], original)
+        copied = next(doc.value for doc in self.port.rows.values() if doc.value.get("source_kind") == "submitted_work_copy")
+        self.assertEqual(self.drive.contents[copied["drive_file_id"]], self.drive.contents[SOURCE])
+        self.assertEqual(copied["source_file_id"], SOURCE)
+        self.assertEqual(copied["source_revision"]["parents"], ["OriginalFormUploadFolder"])
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.copied, [SOURCE])
+        records = archive.archive_listing("read", self.config, "biology")["students"][0]["records"]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["drive_file_id"], copied["drive_file_id"])
+
+    def test_new_source_revision_retains_both_exact_dated_copies(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        self.drive.items[SOURCE]["version"] = "2"
+        self.drive.items[SOURCE]["modifiedTime"] = "2026-10-09T12:00:00Z"
+        self.drive.contents[SOURCE] = b"Revised fictional work"
+        self.assertEqual(self.archive()["status"], "verified")
+        copies = [d.value for d in self.port.rows.values() if d.value.get("source_kind") == "submitted_work_copy"]
+        self.assertEqual(len(copies), 2)
+        self.assertEqual({c["source_revision"]["version"] for c in copies}, {"1", "2"})
+        self.assertEqual(len({c["content_proof"]["sha256"] for c in copies}), 2)
+
+    def test_lost_copy_response_recovers_exact_created_file_without_second_post(self):
+        self.drive.fail_after_copy = True
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.copied, [SOURCE])
+
+    def test_unconfirmed_absent_copy_is_held_and_never_reposted(self):
+        self.drive.fail_copy = True
+        self.assertEqual(self.archive()["status"], "held")
+        self.drive.fail_copy = False
+        self.assertEqual(self.archive()["status"], "held")
+        self.assertEqual(self.drive.copied, [SOURCE])
+        self.assertFalse(any(d.value.get("source_kind") == "submitted_work_copy" and d.value["status"] == "verified"
+                             for d in self.port.rows.values()))
+
+    def test_native_version_only_finalization_is_allowed_but_content_edit_is_held(self):
+        self.drive.items[SOURCE]["mimeType"] = "application/vnd.google-apps.presentation"
+        proof = {"sha256": "a" * 64, "basis": "native_document_parts", "parts": 3}
+        with patch.object(archive, "_work_content", return_value=proof):
+            self.assertEqual(self.archive()["status"], "verified")
+        copied = next(d.value for d in self.port.rows.values() if d.value.get("source_kind") == "submitted_work_copy")
+        meta = self.drive.items[copied["drive_file_id"]]
+        meta["version"] = "2"
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "verified")
+        meta["modifiedTime"] = "2026-10-09T12:00:01Z"
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "held")
+
+    def test_source_change_after_copy_prevents_attachment_without_changing_original_parents(self):
+        original_copy = self.drive.copy
+        def copy_then_edit(*args, **kwargs):
+            result = original_copy(*args, **kwargs)
+            self.drive.items[SOURCE]["version"] = "2"
+            return result
+        with patch.object(google, "get_json", side_effect=copy_then_edit):
+            self.assertEqual(self.archive()["status"], "held")
+        student = next(d.value for d in self.port.rows.values() if d.value.get("items"))
+        self.assertTrue(all(not k.startswith("archiveworkcopy_") for k in student["items"]))
+        self.assertEqual(self.drive.items[SOURCE]["parents"], ["OriginalFormUploadFolder"])
+
+    def test_native_proof_resolves_images_per_relationship_and_retains_text_style_order(self):
+        def package(image_name, color, text="Fictional student answer", font="Arial", href="https://school.example/source"):
+            output = BytesIO(); pixel = BytesIO()
+            Image.new("RGB", (2, 2), color).save(pixel, format="PNG")
+            with ZipFile(output, "w") as z:
+                z.writestr("ppt/slides/slide1.xml", '<s xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><t font="%s">%s</t><image r:embed="rId1"/></s>' % (font, text))
+                z.writestr("ppt/slides/_rels/slide1.xml.rels", '<Relationships><Relationship Id="rId1" Target="../media/%s" Type="image"/><Relationship Id="rId2" Target="%s" TargetMode="External" Type="hyperlink"/></Relationships>' % (image_name, href))
+                z.writestr("ppt/media/" + image_name, pixel.getvalue())
+            return output.getvalue()
+        first = archive._native_parts_proof(package("image1.png", "blue"), "ppt/")
+        self.assertEqual(first, archive._native_parts_proof(package("image7.png", "blue"), "ppt/"))
+        for options in ({"color": "red"}, {"text": "A changed answer"}, {"font": "Calibri"}, {"href": "https://different.example/source"}):
+            args = {"image_name": "image7.png", "color": "blue", **options}
+            self.assertNotEqual(first["sha256"], archive._native_parts_proof(package(**args), "ppt/")["sha256"])
+
+    def test_native_api_proof_binds_each_image_position_styles_notes_and_page_order(self):
+        source = {"pageSize": {"width": 100}, "slides": [{"objectId": "SlideA", "pageElements": [
+            {"objectId": "PictureA", "image": {"contentUrl": "https://lh.googleusercontent.com/source-a"}},
+            {"objectId": "PictureB", "image": {"contentUrl": "https://lh.googleusercontent.com/source-b"}},
+            {"objectId": "Answer", "shape": {"text": "Fictional answer", "font": "Arial"}}], "notes": "Fictional notes"},
+            {"objectId": "SlideB", "pageElements": []}]}
+        proofs = {"https://lh.googleusercontent.com/source-a": {"sha256": "a" * 64, "size": [10, 10]},
+                  "https://lh.googleusercontent.com/source-b": {"sha256": "b" * 64, "size": [10, 10]},
+                  "https://lh.googleusercontent.com/copy-a": {"sha256": "a" * 64, "size": [10, 10]}}
+        original = archive._presentation_content_proof(source, proofs)
+        copied = deepcopy(source); copied["slides"][0]["pageElements"][0]["image"]["contentUrl"] = "https://lh.googleusercontent.com/copy-a"
+        self.assertEqual(original, archive._presentation_content_proof(copied, proofs))
+        swapped = deepcopy(source)
+        first, second = swapped["slides"][0]["pageElements"][:2]
+        first["image"]["contentUrl"], second["image"]["contentUrl"] = second["image"]["contentUrl"], first["image"]["contentUrl"]
+        self.assertNotEqual(original["sha256"], archive._presentation_content_proof(swapped, proofs)["sha256"])
+        for mutate in (lambda d: d["slides"].reverse(), lambda d: d["slides"][0].update(notes="Different notes"),
+                       lambda d: d["slides"][0]["pageElements"][2]["shape"].update(font="Calibri")):
+            changed = deepcopy(source); mutate(changed)
+            self.assertNotEqual(original["sha256"], archive._presentation_content_proof(changed, proofs)["sha256"])
+        with self.assertRaises(archive.Held):
+            archive._native_image_proof("https://untrusted.example/student-data")
+
+    def test_index_pairs_exact_source_and_form_but_keeps_unmatched_historical_feedback(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        archive.file_feedback("read", "write", self.config, saved(), b"%PDF fictional")
+        first = archive.work_index_rows("read", self.config)
+        self.assertEqual(len(first["rows"]), 1)
+        self.assertIn("same original submission", first["rows"][0][11])
+        self.assertIn(SOURCE, first["rows"][0][8])
+        report_key = next(k for k, doc in self.port.rows.items() if doc.value.get("kind") == "feedback")
+        old = self.port.rows[report_key]
+        self.port.commit({report_key: ({**old.value, "assignment_form_id": "UnrelatedForm00000001"}, old.version)})
+        second = archive.work_index_rows("read", self.config)
+        self.assertEqual(len(second["rows"]), 2)
+        feedback_row = next(r for r in second["rows"] if r[9])
+        self.assertEqual(feedback_row[7:9], ["", ""])
+        self.assertIn("work not located", feedback_row[11])
+        self.assertEqual(second["summary"]["biology"]["feedback_files"], 1)
+
+    def test_index_refresh_preserves_keyed_teacher_notes_and_unchanged_refresh_is_read_only(self):
+        ident = "FictionalWorkIndexSheet001"
+        self.config[archive.WORK_INDEX_CONFIG] = "https://docs.google.com/spreadsheets/d/%s/edit" % ident
+        sheet_file = self.drive.add(ident, "Student work and feedback", "application/vnd.google-apps.spreadsheet", [ROOT])
+        sheet_file["properties"]["hubStudentWorkIndex"] = ROOT
+        headers = {"values": [archive._index_cell(v) for v in archive.INDEX_HEADERS]}
+        row_a = ["Biology", "A4 Biology", "Rivera, Ana", "Energy Flow", "Wk 04", 46302, "", "", "", "", "", "Work saved", "", "FictionalStableRowA"]
+        row_b = ["Biology", "A4 Biology", "Jones, Lee", "Energy Flow", "Wk 04", 46303, "", "", "", "", "", "Work saved", "", "FictionalStableRowB"]
+        initial_a = {"values": [archive._index_cell(v) for v in row_a]}
+        initial_a["values"][12] = archive._index_cell("Teacher's note stays with Ana")
+        state = {"rows": [headers, initial_a], "writes": 0}
+        def sheet_api(url, token, params=None, timeout=20, method="GET", body=None):
+            if method == "POST":
+                state["writes"] += 1
+                update = next(r["updateCells"] for r in body["requests"] if "updateCells" in r)
+                state["rows"] = deepcopy(update["rows"])
+                return {}
+            return {"spreadsheetId": ident, "sheets": [{"properties": {"title": "Records", "sheetId": 17,
+                "gridProperties": {"rowCount": 200, "columnCount": 14}}, "data": [{"rowData": deepcopy(state["rows"])}]}]}
+        data = {"rows": [row_b, row_a], "summary": {}, "holds": [], "checked_at": "2026-10-09T12:00:00Z", "coverage": "recorded_scans_only"}
+        with patch.object(google, "get_json", side_effect=sheet_api), patch.object(archive, "work_index_rows", return_value=data):
+            first = archive.refresh_work_index("read", "write", self.config)
+            self.assertEqual(first["status"], "verified")
+            self.assertEqual(state["rows"][2]["values"][12]["userEnteredValue"]["stringValue"], "Teacher's note stays with Ana")
+            second = archive.refresh_work_index("read", "write", self.config)
+            self.assertFalse(second["changed"])
+            self.assertEqual(state["writes"], 1)
+            data["rows"] = [row_b]
+            held = archive.refresh_work_index("read", "write", self.config)
+            self.assertEqual(held["status"], "held")
+            self.assertIn("teacher note", held["problem"])
+            self.assertEqual(state["writes"], 1)
+
+    def test_index_does_not_write_unconfigured_or_nonprivate_sheet(self):
+        self.assertEqual(archive.refresh_work_index("read", "write", self.config)["status"], "unconfigured")
+        ident = "FictionalWorkIndexSheet001"
+        self.config[archive.WORK_INDEX_CONFIG] = "https://docs.google.com/spreadsheets/d/%s/edit" % ident
+        meta = self.drive.add(ident, "Student work", "application/vnd.google-apps.spreadsheet", [ROOT])
+        meta["properties"]["hubStudentWorkIndex"] = ROOT
+        meta["permissions"].append({"type": "anyone", "role": "reader"})
+        with patch.object(google, "get_json") as api:
+            self.assertEqual(archive.refresh_work_index("read", "write", self.config)["status"], "held")
+        api.assert_not_called()
+
+    def test_science_writing_files_in_existing_folder_with_original_source_dates_and_one_id(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        student = next(d.value for d in self.port.rows.values() if d.value.get("student_key") and d.value.get("items"))
+        raw = b"%PDF Fictional source-grounded science writing feedback"
+        report = {"schema": "science-writing/v1", "report_type": "science_writing", "class_key": "biology",
+            "id": "feedbacksource_" + "c" * 64, "prepared_at": "2026-10-09T12:00:00Z", "pdf_sha256": hashlib.sha256(raw).hexdigest(),
+            "student": {"student_key": student["student_key"], "student_folder_id": student["drive_file_id"],
+                        "name": student["name"], "section": student["section"]},
+            "provenance": {"source_observations": [{"student_key": student["student_key"], "section": student["section"],
+                "source_file_id": SOURCE, "source_revision": "1", "source_modified_at": "2026-10-08T12:00:00Z"}]}}
+        first = archive.file_science_writing("read", "write", self.config, report, raw)
+        self.assertEqual(first["status"], "verified")
+        self.assertEqual(first["student_folder_id"], student["drive_file_id"])
+        self.assertEqual(first["report_type"], "science_writing")
+        self.assertEqual(first["date"], "2026-10-09")
+        self.assertEqual(first["source_records"][0]["date"], "2026-10-07")
+        self.assertEqual(first["source_records"][0]["assignment_form_id"], "FictionalForm000000001")
+        second = archive.file_science_writing("read", "write", self.config, report, raw)
+        self.assertEqual(first["drive_file_id"], second["drive_file_id"])
+        rows = archive.work_index_rows("read", self.config)["rows"]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("Science writing feedback covers", rows[0][11])
+        self.assertIn(SOURCE, rows[0][8])
+        self.drive.items[SOURCE]["version"] = "2"
+        held = archive.file_science_writing("read", "write", self.config, report, raw)
+        self.assertEqual(held["status"], "held")
+        self.assertIn("work changed", held["problem"])
+
+    def test_report_roster_reuses_only_exact_current_names_and_retains_departed_history(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        with patch.object(archive, "_filing_roster", return_value=name_roster()):
+            selected = archive.report_roster("read", self.config, "biology")
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["name"], "Rivera, Ana")
+        with patch.object(archive, "_filing_roster", return_value=name_roster({"first": "Lee", "last": "Jones", "section": "A4 Biology"})):
+            with self.assertRaises(archive.Held):
+                archive.report_roster("read", self.config, "biology")
+        before = deepcopy(self.drive.items)
+        with patch.object(archive, "_filing_roster", return_value=[]):
+            self.assertEqual(archive.report_roster("read", self.config, "biology"), [])
+        self.assertEqual(self.drive.items, before)
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["students"], 1)
 
     def test_all_existing_long_scan_renews_server_lease_and_records_one_completed_receipt(self):
         sources = []
@@ -327,7 +562,7 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(self.archive()["status"], "held")
         self.assertEqual(self.drive.created, [])
 
-    def test_current_and_earlier_form_work_are_shortcuts_not_moves_or_copies(self):
+    def test_current_and_earlier_form_work_have_copies_and_original_links_without_moves(self):
         original = deepcopy(self.drive.items[SOURCE])
         before = deepcopy(self.drive.items[EARLIER])
         prior = {"source": "form", "submitted_at": "2026-10-06T13:00:00Z",
@@ -758,12 +993,12 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertTrue(all(count == 1 for count in calls.values()))
         artifact_batches = [c.args[0] for c in reads.call_args_list if any(i.startswith("archivework_") for i in c.args[0])]
         self.assertEqual(len(artifact_batches), 1)
-        self.assertEqual(len(artifact_batches[0]), 3)
+        self.assertEqual(len(artifact_batches[0]), 6)  # Three copies plus retained original links.
 
     def test_concurrent_metadata_still_holds_private_parent_and_shortcut_target_failures(self):
         self.assertEqual(self.archive()["status"], "verified")
         listing = archive.archive_listing("read", self.config, "biology")
-        artifact_id = listing["students"][0]["records"][0]["drive_file_id"]
+        artifact_id = next(item["id"] for item in self.drive.items.values() if item["mimeType"] == archive.SHORTCUT)
         student_id = self.drive.items[artifact_id]["parents"][0]
         section_id = self.drive.items[student_id]["parents"][0]
         for ident, field, value in ((section_id, "permissions", [{"type": "anyone", "role": "reader"}]),
@@ -1072,6 +1307,9 @@ class StudentArchiveTests(unittest.TestCase):
 
     def test_teacher_attributed_joint_native_copy_is_read_only_and_revision_bound(self):
         self.assertEqual(self.archive()["status"], "verified")
+        student_key, student = next((k, doc) for k, doc in self.port.rows.items() if doc.value.get("student_key") and doc.value.get("items"))
+        ordinary = next(k for k in student.value["items"] if k.startswith("archiveworkcopy_"))
+        self.port.commit({student_key: ({**student.value, "items": {k: v for k, v in student.value["items"].items() if k != ordinary}}, student.version)})
         ident = archive.key("archivework", [ROOT, "biology", SOURCE]); old = self.port.rows[ident]
         value = {**old.value, "source_kind": "teacher_attributed_joint_copy", "mime": "application/vnd.google-apps.presentation",
             "drive_version": "1", "teacher_joint_attribution": True,

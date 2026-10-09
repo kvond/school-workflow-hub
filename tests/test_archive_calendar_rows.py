@@ -36,7 +36,8 @@ class CalendarFilingTests(unittest.TestCase):
                 (archive, "configured_store", lambda c: self.port),
                 (google, "drive_file", self.drive.metadata), (google, "folder_children", self.drive.children),
                 (google, "archive_file_id", self.drive.reserve), (google, "archive_create", self.drive.create),
-                (google, "rename_item", self.drive.rename), (google, "move_item", self.drive.move)):
+                (google, "rename_item", self.drive.rename), (google, "move_item", self.drive.move),
+                (google, "get_json", self.drive.copy), (archive, "_work_content", self.drive.content)):
             stack.enter_context(patch.object(target, name, side_effect=replacement))
 
     def scan(self, week):
@@ -67,6 +68,7 @@ class CalendarFilingTests(unittest.TestCase):
         result = archive.archive_work("read", "write", self.config, "anatomy", data)
         self.assertEqual((result["status"], result["filed"], result["held"]), ("verified", 1, []))
         self.assertEqual(self.drive.items[SOURCE], original)
+        self.assertEqual(self.drive.copied, [SOURCE])
 
     def test_blank_calendar_week_ignores_only_exact_no_folder_message(self):
         _, data, calls = self.scan("Wk 04")
@@ -100,6 +102,7 @@ class CalendarFilingTests(unittest.TestCase):
         self.assertEqual((result["status"], result["filed"]), ("held", 1))
         self.assertIn(data["folder_note"], result["problems"])
         self.assertEqual(self.drive.items[SOURCE], original)
+        self.assertEqual(self.drive.copied, [SOURCE])
 
     def test_genuine_missing_form_and_any_other_lesson_error_remain_held(self):
         data = found()

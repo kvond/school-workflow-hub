@@ -122,6 +122,8 @@ def _reply(record, cached=False):
             'legacy_packets': sum(not item.get('feedback_id') for item in record['manifest']),
             'classes': list(dict.fromkeys(item['course'] for item in record['manifest'])),
             'manifest_hash': record['manifest_hash'], 'compiled_at': record['compiled_at'],
+            'source_file_ids': [item['file_id'] for item in record['manifest']],
+            'source_revisions': {item['file_id']: item['revision'] for item in record['manifest']},
             'drive_file_id': record['drive_file_id'], 'url': 'https://drive.google.com/open?id=' + record['drive_file_id'],
             'pdf_url': '/v2/api/feedback/daily/pdf?id=' + record['id'], 'cached': cached,
             'delivery_changed': False}
@@ -144,6 +146,23 @@ def _point(port, folder_id, record, observed_at):
         except Conflict:
             continue
     raise Held('A newer daily feedback update is finishing. Reload its saved document before retrying.')
+
+
+def matches_sources(token, packet, sources):
+    """Catalog membership and fresh revisions must both match the saved snapshot."""
+    revisions = packet.get('source_revisions')
+    if not isinstance(revisions, dict):
+        return None
+    if set(revisions) != {item['id'] for item in sources}:
+        return False
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        actual = list(pool.map(lambda item: google.drive_file(token, item['id'], FIELDS), sources))
+    for meta in actual:
+        try:
+            student_archive._private(meta)
+        except student_archive.Held as error:
+            raise Held('A current feedback source needs verified private access: ' + str(error)) from None
+    return all(_revision(meta) == revisions[item['id']] for item, meta in zip(sources, actual))
 
 
 def _assemble(token, sources, manifest, day):
@@ -290,7 +309,17 @@ def status(token, config, date_et=None):
     if not stored or stored.value.get('status') != 'verified' or stored.value.get('folder_id') != folder['id']:
         raise Held('The daily feedback report record is incomplete. Preserve its earlier versions for review.')
     _check_file(token, folder, stored.value)
-    return _reply(stored.value, cached=True)
+    history = []
+    for start in range(0, len(dates), 40):
+        days = sorted(dates, reverse=True)[start:start + 40]
+        documents = port.read([dates[day]['id'] for day in days]).documents
+        for day in days:
+            item = documents.get(dates[day]['id'])
+            if (item and item.value.get('schema') == SCHEMA and item.value.get('status') == 'verified'
+                    and item.value.get('date') == day and item.value.get('folder_id') == folder['id']):
+                reply = _reply(item.value, cached=True)
+                history.append({field: reply[field] for field in ('id', 'date', 'pages', 'pdf_url', 'classes')})
+    return {**_reply(stored.value, cached=True), 'available_dates': history}
 
 
 def pdf(token, config, ident):

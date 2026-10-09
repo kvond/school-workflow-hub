@@ -1,4 +1,4 @@
-"""Private student records: source shortcuts and immutable saved feedback PDFs.
+"""Private student records: verified work copies, original links and feedback.
 
 Original Form uploads, assessments, delivery ticks and sharing never change.
 IC identity is preferred. Exact school-email/course evidence or the teacher's
@@ -8,8 +8,14 @@ The index uses the existing private CAS store.
 """
 import hashlib
 import json
+import posixpath
 import re
 import uuid
+from io import BytesIO
+from urllib.parse import quote, urlsplit
+from zipfile import ZipFile, BadZipFile
+import xml.etree.ElementTree as ET
+from PIL import Image, ImageOps
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import monotonic
@@ -23,6 +29,7 @@ ROOT_CONFIG = "HUB_STUDENT_RECORDS_ROOT_FOLDER"
 SCOPE_ROOT_CONFIG = "HUB_STUDENT_RECORDS_IDENTITY_SCOPE_ROOT"
 COURSES_CONFIG = "HUB_STUDENT_RECORDS_COURSE_FOLDERS"
 ROSTER_CONFIG = "HUB_STUDENT_ARCHIVE_IC_ROSTER"
+WORK_INDEX_CONFIG = "HUB_STUDENT_WORK_INDEX_URL"
 CLASSES = {"biology": "Biology", "forensics": "Forensics", "anatomy": "A&P"}
 SCHEMA = "hub-student-archive/v1"
 SHORTCUT = "application/vnd.google-apps.shortcut"
@@ -35,6 +42,200 @@ SOURCE_FIELDS = ",".join(f for f in FIELDS.split(",") if f not in {"permissions"
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
 LEASE_HEARTBEAT_SECONDS = 40
+
+
+def _source_revision(meta):
+    return {k: meta.get(k) for k in ("id", "mimeType", "version", "modifiedTime", "createdTime", "parents", "md5Checksum", "size", "trashed")}
+
+
+def _native_parts_proof(raw, prefix):
+    """Bind native text, styles, page order, notes and relationship-resolved images.
+
+    Google's exporter renumbers media/themes, rewrites image container metadata
+    and re-encodes embedded fonts. Native font declarations remain in XML.
+    Neither ZIP names nor export-only font encodings are a content identity.
+    """
+    try:
+        with ZipFile(BytesIO(raw)) as archive:
+            names = sorted(n for n in archive.namelist() if n.startswith(prefix) and not n.endswith("/"))
+            if not names or sum(archive.getinfo(n).file_size for n in names) > 120_000_000:
+                raise Held("This native submission has no complete content within the verified size limit.")
+            parts = {n: archive.read(n) for n in names}
+        resources = {}
+        for name, content in parts.items():
+            if "/media/" in name:
+                try:
+                    with Image.open(BytesIO(content)) as image:
+                        if image.width * image.height > 30_000_000 or getattr(image, "n_frames", 1) != 1:
+                            raise ValueError("Use exact bytes for large or animated media")
+                        image.load()
+                        resources[name] = "image:" + content_hash([image.size, hashlib.sha256(image.convert("RGBA").tobytes()).hexdigest()])
+                except Exception:
+                    resources[name] = "media:" + hashlib.sha256(content).hexdigest()
+            elif "/theme/" in name and name.endswith(".xml"):
+                resources[name] = "theme:" + hashlib.sha256(ET.canonicalize(content.decode()).encode()).hexdigest()
+            elif "/fonts/" in name:
+                resources[name] = "native-font:" + posixpath.basename(name)
+        normalized = []
+        for name, content in parts.items():
+            if name in resources:
+                if not name.startswith(prefix + "fonts/"):
+                    normalized.append([resources[name], resources[name]])
+                continue
+            if name.endswith(".rels"):
+                tree = ET.fromstring(content)
+                owner = name.replace("/_rels/", "/")[:-5]
+                base = posixpath.dirname(owner)
+                for relationship in tree:
+                    if relationship.get("TargetMode") != "External":
+                        target = posixpath.normpath(posixpath.join(base, relationship.get("Target", "")))
+                        if target in resources:
+                            relationship.set("Target", resources[target])
+                tree[:] = sorted(tree, key=lambda child: child.get("Id", ""))
+                content = ET.canonicalize(ET.tostring(tree, encoding="unicode")).encode()
+            elif name.endswith(".xml"):
+                content = ET.canonicalize(content.decode()).encode()
+            normalized.append([name, hashlib.sha256(content).hexdigest()])
+        normalized.sort()
+        return {"sha256": content_hash(normalized), "basis": "native_document_content/v1", "parts": len(normalized)}
+    except (BadZipFile, KeyError, ET.ParseError, UnicodeError):
+        raise Held("This native submission did not export as a complete readable document.") from None
+
+
+def _native_image_proof(url):
+    location = urlsplit(url)
+    if (location.scheme != "https" or not location.hostname or not location.hostname.endswith(".googleusercontent.com")
+            or location.username or location.password or location.port not in (None, 443)):
+        raise Held("The native presentation supplied an unverified image location; its copy remains held.")
+    try:
+        response = google._session().get(url, timeout=(5, 30), stream=True, allow_redirects=False)
+        with response:
+            if response.status_code != 200:
+                raise Held("One native presentation image could not be verified.")
+            chunks, size = [], 0
+            for chunk in response.iter_content(1 << 20):
+                size += len(chunk)
+                if size > 15_000_000:
+                    raise Held("A native presentation image exceeds the verified size limit.")
+                chunks.append(chunk)
+        raw = b"".join(chunks)
+        with Image.open(BytesIO(raw)) as image:
+            if image.width * image.height > 30_000_000 or getattr(image, "n_frames", 1) != 1:
+                return {"basis": "exact_image_bytes", "sha256": hashlib.sha256(raw).hexdigest()}
+            image.load(); pixels = ImageOps.exif_transpose(image).convert("RGBA")
+            return {"basis": "image_pixels", "size": list(pixels.size), "sha256": hashlib.sha256(pixels.tobytes()).hexdigest(),
+                    "color_profile_sha256": hashlib.sha256(image.info.get("icc_profile", b"")).hexdigest()}
+    except Held:
+        raise
+    except Exception:
+        raise Held("One native presentation image could not be read completely.") from None
+
+
+def _presentation_content_proof(presentation, images):
+    count = 0
+    def normalize(value):
+        nonlocal count
+        if isinstance(value, dict):
+            result = {}
+            for name, item in value.items():
+                if name == "contentUrl" and item:
+                    count += 1
+                    if item not in images:
+                        raise Held("A native presentation image is missing from its exact content proof.")
+                    result[name] = images[item]
+                else:
+                    result[name] = normalize(item)
+            return result
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        return value
+    normalized = normalize(presentation)
+    if not isinstance(normalized.get("slides"), list) or not normalized["slides"]:
+        raise Held("The native presentation has no complete slide content.")
+    return {"sha256": content_hash(normalized), "basis": "native_presentation/v1", "slides": len(normalized["slides"]),
+            "image_instances": count}
+
+
+def _native_presentation_proof(token, ident, heartbeat=None):
+    presentation = google.get_json("https://slides.googleapis.com/v1/presentations/" + quote(ident), token,
+        {"fields": "pageSize,slides,masters,layouts,notesMaster"}, timeout=30)
+    urls = set()
+    def collect(value):
+        if isinstance(value, dict):
+            if value.get("contentUrl"):
+                urls.add(value["contentUrl"])
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+    collect(presentation)
+    if len(urls) > 500:
+        raise Held("This native presentation exceeds the verified image limit.")
+    ordered = sorted(urls)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        images = {}
+        for url, proof in zip(ordered, pool.map(_native_image_proof, ordered)):
+            if heartbeat:
+                heartbeat()
+            images[url] = proof
+    return _presentation_content_proof(presentation, images)
+
+
+def _work_content(token, meta, heartbeat=None):
+    """Read a bounded source/copy; native export ZIP timestamps are not content."""
+    mime, ident = meta["mimeType"], meta["id"]
+    if mime == "application/vnd.google-apps.presentation":
+        return _native_presentation_proof(token, ident, heartbeat)
+    native = {"application/vnd.google-apps.presentation": google.PPTX,
+              "application/vnd.google-apps.document": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
+    if mime in native:
+        url, params = "https://www.googleapis.com/drive/v3/files/%s/export" % quote(ident), {"mimeType": native[mime]}
+    else:
+        url, params = "https://www.googleapis.com/drive/v3/files/" + quote(ident), {"alt": "media", "supportsAllDrives": "true"}
+    try:
+        response = google._session().get(url, params=params, timeout=(5, 60), stream=True, allow_redirects=False,
+                                         headers={"Authorization": "Bearer " + token})
+        with response:
+            if response.status_code != 200:
+                raise Held("This submitted work could not be downloaded for copy verification.")
+            chunks, size = [], 0
+            for chunk in response.iter_content(1 << 20):
+                if heartbeat:
+                    heartbeat()
+                size += len(chunk)
+                if size > google.MAX_DECK_BYTES:
+                    raise Held("This submitted work exceeds the verified copy size limit.")
+                chunks.append(chunk)
+    except Held:
+        raise
+    except Exception:
+        raise Held("This submitted work could not be read completely; no new copy is confirmed.") from None
+    raw = b"".join(chunks)
+    if not raw:
+        raise Held("This submitted work has no readable content to copy.")
+    if mime in native:
+        prefix = "ppt/" if mime.endswith("presentation") else "word/"
+        return _native_parts_proof(raw, prefix)
+    return {"sha256": hashlib.sha256(raw).hexdigest(), "basis": "file_bytes", "size": len(raw),
+            "md5": hashlib.md5(raw).hexdigest()}
+
+
+def _verify_work_copy(meta, record):
+    _private(meta, parent=record["parent"])
+    props = meta.get("properties") or {}
+    if (meta.get("mimeType") != record["mime"] or props.get(TAG) != record["record_key"]
+            or props.get("hubCopiedSource") != record["source_file_id"]
+            or props.get("hubSourceRevision") != record["source_revision_key"]
+            or not re.fullmatch(r"[a-f0-9]{64}", (record.get("content_proof") or {}).get("sha256", ""))):
+        raise Held("A copied submission no longer matches its verified source or student folder.")
+    if record.get("copied_modified_at") and meta.get("modifiedTime") != record["copied_modified_at"]:
+        raise Held("A student's filed work copy changed after verification. The original remains available.")
+    proof = record.get("content_proof") or {}
+    if proof.get("basis") == "file_bytes" and (meta.get("md5Checksum") != proof.get("md5")
+            or str(meta.get("size")) != str(proof.get("size"))):
+        raise Held("A student's filed work copy changed after verification. The original remains available.")
+    return meta
 
 
 class Held(ValueError):
@@ -550,6 +751,78 @@ class _Run:
             ident = doc.value["alias_of"]
         raise Held("The student archive's identity links need review. Existing folders are preserved.")
 
+    def copy_work(self, student, source, attributes):
+        """One copy POST per source revision; lost responses recover by its tag."""
+        revision = _source_revision(source)
+        if (source.get("trashed") is not False or source.get("mimeType") not in work.STUDENT_WORK
+                or not source.get("version") or not source.get("modifiedTime")):
+            raise Held("This original submission needs a complete revision before it can be copied.")
+        revision_key = content_hash(revision)
+        ident = key("archiveworkcopy", [self.root, self.cls, source["id"], revision_key, student["student_key"]])
+        old = _read(self.port, ident)
+        expected = {"parent": student["drive_file_id"], "student_key": student["student_key"],
+                    "source_file_id": source["id"], "source_revision_key": revision_key, "mime": source["mimeType"]}
+        if old and any(old.value.get(k) != value for k, value in expected.items()):
+            raise Held("This work-copy reservation belongs to another source or student. Keep it for review.")
+        if old and old.value.get("status") == "verified":
+            record = old.value
+            _verify_work_copy(google.drive_file(self.token, record["drive_file_id"], FIELDS), record)
+            if record.get("identity_status") != "verified" and attributes.get("identity_status") == "verified":
+                record = self.put(ident, {**record, "identity_status": "verified",
+                    "identity_basis": attributes.get("identity_basis")}, old).value
+            return record
+        # Native copy metadata can finalize its version without a content edit.
+        # The immutable content proof and copied modifiedTime bind the snapshot.
+        self.heartbeat(force=True)
+        proof = _work_content(self.token, source, self.heartbeat)
+        self.heartbeat(force=True)
+        if _source_revision(google.drive_file(self.token, source["id"], SOURCE_FIELDS)) != revision:
+            raise Held("This original submission changed during verification. Its next stable revision can be filed later.")
+        if old:
+            record = dict(old.value)
+            if record.get("content_proof") != proof:
+                raise Held("This reserved source revision now has different content. Preserve it for review.")
+        else:
+            provenance = {k: v for k, v in attributes.items() if k not in
+                          {"drive_file_id", "drive_version", "created_at", "url", "record_key", "status", "target"}}
+            record = {**provenance, **expected, "schema": SCHEMA, "record_key": ident,
+                      "status": "creating", "source_kind": "submitted_work_copy", "source_revision": revision,
+                      "source_version": source.get("version"), "source_modified_at": source.get("modifiedTime"),
+                      "content_proof": proof, "name": attributes["name"].replace(" — Work", " — Work copy"),
+                      "copy_requested_at": datetime.now(timezone.utc).isoformat()}
+            self.renew()
+            old = self.put(ident, record)
+            try:
+                copied = google.get_json("https://www.googleapis.com/drive/v3/files/%s/copy" % quote(source["id"]),
+                    self.write_token, {"supportsAllDrives": "true", "fields": "id"}, method="POST", body={
+                        "name": record["name"], "parents": [record["parent"]],
+                        "properties": {TAG: ident, "hubCopiedSource": source["id"], "hubSourceRevision": revision_key}})
+                if copied.get("id"):
+                    record["drive_file_id"] = copied["id"]
+                    old = self.put(ident, record, old)
+            except google.GoogleError:
+                pass  # Read the exact tagged result; never repeat this POST.
+        candidates = [item for item in google.folder_children(self.token, record["parent"])
+                      if (item.get("properties") or {}).get(TAG) == ident]
+        if len(candidates) != 1 or (record.get("drive_file_id") and candidates[0]["id"] != record["drive_file_id"]):
+            raise Held("A work-copy request has no single confirmed result. Its original is safe; the request will not be repeated.")
+        file_id = candidates[0]["id"]
+        meta = google.drive_file(self.token, file_id, FIELDS)
+        _verify_work_copy(meta, record)
+        self.heartbeat(force=True)
+        if _work_content(self.token, meta, self.heartbeat) != proof:
+            raise Held("The filed copy does not contain the exact original submission. Keep it for review.")
+        final_source = google.drive_file(self.token, source["id"], SOURCE_FIELDS)
+        final_copy = google.drive_file(self.token, file_id, FIELDS)
+        _verify_work_copy(final_copy, record)
+        if (_source_revision(final_source) != revision
+                or final_copy.get("modifiedTime") != meta.get("modifiedTime")):
+            raise Held("The source or copied submission changed during readback. No copy is confirmed yet.")
+        record.update(status="verified", drive_file_id=file_id, drive_version=final_copy.get("version"),
+                      copied_modified_at=final_copy.get("modifiedTime"), created_at=final_copy.get("createdTime"),
+                      copied_at=datetime.now(timezone.utc).isoformat(), url=_url(file_id))
+        return self.put(ident, record, old).value
+
     def student(self, person):
         self.heartbeat()
         section_key = key("archivesection", [self.root, self.cls, person["section"]])
@@ -898,7 +1171,19 @@ def archive_work(token, write_token, config, class_key, found):
                         if not _read(run.port, observation_key):
                             run.put(observation_key, observation)
                         run.attach(student, artifact)
-                        filed_ids.add(artifact["drive_file_id"])
+                        # Originals remain in their Form upload/intake tree. A
+                        # dated, content-verified snapshot lives with feedback.
+                        existing_joint = None
+                        student_doc = _read(run.port, student["student_key"])
+                        for candidate in _batch_read(run.port, list(student_doc.value.get("items", {}))).values():
+                            if (candidate and candidate.value.get("source_kind") == "teacher_attributed_joint_copy"
+                                    and candidate.value.get("source_file_id") == source["id"]
+                                    and candidate.value.get("source_version") == source.get("version")
+                                    and candidate.value.get("source_modified_at") == source.get("modifiedTime")):
+                                existing_joint = candidate.value
+                        copied = existing_joint or run.copy_work(student, source, artifact)
+                        run.attach(student, copied)
+                        filed_ids.add(copied["drive_file_id"])
                         result["filed"] = len(filed_ids)
             except (Held, google.GoogleError) as error:
                 result["held"].append({**context, "problem": str(error)})
@@ -922,6 +1207,7 @@ def archive_work(token, write_token, config, class_key, found):
                 run.finish(result)
             except (Conflict, StoreUnavailable):
                 pass
+    result["index_sync"] = refresh_work_index(token, write_token, config)
     return result
 
 
@@ -947,10 +1233,16 @@ def file_feedback(token, write_token, config, saved_value, pdf_bytes):
             pdf=pdf_bytes, attributes={"kind": "feedback", "date": date, "feedback_id": saved_value["id"],
                 "student_key": student["student_key"], "class_key": cls, "saved_at": saved_value["saved_at"],
                 "source_file_id": (saved_value.get("scope") or {}).get("file"),
-                "source_sha256": (saved_value.get("source") or {}).get("sha256"), "assignment": title})
+                "source_sha256": (saved_value.get("source") or {}).get("sha256"), "assignment": title,
+                "source_version": ((saved_value.get("source") or {}).get("file") or {}).get("version"),
+                "source_modified_at": ((saved_value.get("source") or {}).get("file") or {}).get("modified_at"),
+                "assignment_form_id": (saved_value.get("scope") or {}).get("form"),
+                "source_context": {"week": (saved_value.get("scope") or {}).get("week"),
+                                   "assignment_form_id": (saved_value.get("scope") or {}).get("form")}})
         run.attach(student, artifact)
         value = _feedback_metadata(artifact, student, run.course)
         run.finish({"status": "verified", "feedback_id": saved_value["id"], "drive_file_id": artifact["drive_file_id"]})
+        value["index_sync"] = refresh_work_index(token, write_token, config)
         return value
     except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
         result = {"status": "held", "class_key": cls, "feedback_id": saved_value.get("id"), "problem": _problem(error)}
@@ -966,6 +1258,7 @@ def _feedback_metadata(artifact, student, course):
     return {"status": "verified", "drive_file_id": artifact["drive_file_id"], "name": artifact["name"],
             "feedback_id": artifact["feedback_id"], "class_key": artifact["class_key"],
             "student_folder_id": student["drive_file_id"], "student_folder_name": student["name"],
+            "student_key": student["student_key"],
             "class_folder_id": course["id"], "class_folder_name": course.get("name", ""),
             "created_at": artifact["created_at"], "saved_at": artifact["saved_at"],
             "source_sha256": artifact.get("source_sha256"), "drive_md5": artifact.get("pdf_md5"),
@@ -978,8 +1271,89 @@ def _feedback_metadata(artifact, student, course):
             "drive_version": artifact.get("drive_version"),
             "source_file_id": artifact.get("source_file_id"), "source_span": artifact.get("source_span"),
             "feedback_origin": artifact.get("feedback_origin", "native_saved"),
+            "report_type": artifact.get("report_type"),
+            "source_records": artifact.get("source_records"),
             "identity_status": artifact.get("identity_status", "verified"),
             "date": artifact["date"], "mime": PDF, "url": artifact["url"]}
+
+
+def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
+    """File teacher-authorized science-writing feedback in one existing folder."""
+    cls, run = saved_report.get("class_key"), None
+    try:
+        if (saved_report.get("schema") != "science-writing/v1" or saved_report.get("report_type") != "science_writing"
+                or not re.fullmatch(r"feedbacksource_[a-f0-9]{64}", str(saved_report.get("id", "")))
+                or not isinstance(pdf_bytes, bytes) or not pdf_bytes.startswith(b"%PDF") or len(pdf_bytes) > 25_000_000
+                or saved_report.get("pdf_sha256") != hashlib.sha256(pdf_bytes).hexdigest()):
+            raise Held("Only a complete source-bound science-writing report can be filed.")
+        saved_at = saved_report.get("saved_at") or saved_report.get("prepared_at")
+        date = _date(saved_at)
+        named = saved_report.get("student") or {}
+        root, _ = _configuration(config); scope = _scope_root(config, root)
+        port = configured_store(config)
+        index = _read(port, key("archiveclass", [scope, cls]))
+        student_doc = _read(port, named.get("student_key", ""))
+        if (not index or not student_doc or named.get("student_key") not in index.value.get("students", {})
+                or student_doc.value.get("drive_file_id") != named.get("student_folder_id")
+                or student_doc.value.get("name") != named.get("name") or student_doc.value.get("section") != named.get("section")):
+            raise Held("This science-writing report does not match its existing verified class/student folder.")
+        student = student_doc.value
+        artifacts = [d.value for d in _batch_read(port, list(student.get("items", {}))).values() if d and d.value.get("kind") == "work"]
+        observations = (saved_report.get("provenance") or {}).get("source_observations", [])
+        if not isinstance(observations, list) or not observations or len(observations) > 500:
+            raise Held("The science-writing report has no bounded source observations.")
+        sources = {}
+        for observation in observations:
+            ident = observation.get("source_file_id")
+            revision = str(observation.get("source_revision") or "")
+            if (observation.get("student_key") != student["student_key"] or observation.get("section") != student["section"]
+                    or not ident or not revision):
+                raise Held("A science-writing observation belongs to a different student or has no source revision.")
+            if ident in sources:
+                if sources[ident]["source_version"] != revision:
+                    raise Held("This science-writing report combines unconfirmed revisions of one submission.")
+                continue
+            owned = [a for a in artifacts if a.get("status") == "verified" and a.get("source_file_id") == ident
+                     and a.get("source_version") == revision]
+            if not owned:
+                raise Held("This science-writing source is not yet filed for the report's verified student.")
+            meta = google.drive_file(token, ident, SOURCE_FIELDS)
+            if (meta.get("trashed") is not False or str(meta.get("version")) != revision
+                    or meta.get("modifiedTime") != observation.get("source_modified_at")):
+                raise Held("This student's work changed after the science-writing report was prepared. Preserve the report for review.")
+            artifact = max(owned, key=lambda a: (a.get("submitted_at", ""), a.get("record_key", "")))
+            sources[ident] = {k: artifact.get(k) for k in ("source_file_id", "source_version", "source_modified_at",
+                "submitted_at", "date", "date_basis", "form_id", "assignment_form_id", "assignment", "lesson_status", "source_context")}
+        payload = {k: v for k, v in saved_report.items() if k not in {"pdf_path", "pdf_bytes"}}
+        report_hash = content_hash(payload)
+        run = _Run(token, write_token, config, cls)
+        _private(google.drive_file(token, student["parent"], FIELDS), parent=run.course["id"], folder=True)
+        _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True, write=True)
+        ident = key("archivefeedback", [scope, saved_report["id"]]); old = _read(run.port, ident)
+        if old and (old.value.get("student_key") != student["student_key"]
+                    or old.value.get("report_source_sha256") != report_hash
+                    or old.value.get("pdf_sha256") != saved_report["pdf_sha256"]):
+            raise Held("This report ID already has different student feedback content. Preserve the original PDF.")
+        artifact = run.create(ident, date + " — Science writing — " + student["name"] + " — Feedback.pdf",
+            student["drive_file_id"], PDF, pdf=pdf_bytes, attributes={"kind": "feedback", "date": date,
+                "feedback_id": saved_report["id"], "report_type": "science_writing", "feedback_origin": "teacher_science_writing",
+                "student_key": student["student_key"], "class_key": cls, "saved_at": saved_at,
+                "assignment": "Science writing across %d verified submission%s" % (len(sources), "" if len(sources) == 1 else "s"),
+                "source_records": list(sources.values()), "report_source_sha256": report_hash,
+                "source_sha256": report_hash, "identity_status": student.get("identity_status", "identity_unverified")})
+        run.attach(student, artifact)
+        run.finish({"status": "verified", "report_type": "science_writing", "feedback_id": saved_report["id"], "drive_file_id": artifact["drive_file_id"]})
+        value = _feedback_metadata(artifact, student, run.course)
+        value["index_sync"] = refresh_work_index(token, write_token, config)
+        return value
+    except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
+        result = {"status": "held", "class_key": cls, "feedback_id": saved_report.get("id"), "problem": _problem(error)}
+        if run:
+            try:
+                run.finish(result)
+            except (Conflict, StoreUnavailable):
+                pass
+        return result
 
 
 def _batch_read(port, ids):
@@ -1065,10 +1439,18 @@ def _indexed(token, config, cls, *, feedback_only=False):
                         or not re.fullmatch(r"[a-f0-9]{64}", artifact.get("copied_slide_content_sha256") or "")
                         or artifact.get("teacher_joint_attribution") is not True):
                     raise Held("An archived joint work copy changed or no longer matches its verified source.")
+            elif artifact.get("source_kind") == "submitted_work_copy":
+                _verify_work_copy(meta, artifact)
             elif (meta.get("mimeType") != SHORTCUT
                   or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
                 raise Held("An archived work shortcut no longer points to its verified source.")
             artifacts.append(artifact)
+        # The original link is carried on the copy's source_file_id. Keeping
+        # both in the private CAS history must not double the displayed work.
+        copied_sources = {a.get("source_file_id") for a in artifacts
+                          if a.get("source_kind") in {"submitted_work_copy", "teacher_attributed_joint_copy"}}
+        artifacts = [a for a in artifacts if not (a["kind"] == "work" and a.get("mime") == SHORTCUT
+                                                  and a.get("source_file_id") in copied_sources)]
         output.append((student, artifacts))
     return course, output
 
@@ -1193,3 +1575,265 @@ def list_feedback(token, config):
 
 def lookup_report(token, config, feedback_id):
     return next((item for item in list_feedback(token, config) if item["feedback_id"] == feedback_id), None)
+
+
+def report_roster(token, config, class_key):
+    """Fresh filing-roster names bound to existing archive keys, without exports.
+
+    This selects a teacher report population; it does not certify IC identity.
+    Retained student histories are never removed by a roster departure.
+    """
+    root, _ = _location(token, config, class_key)
+    scope = _scope_root(config, root); port = configured_store(config)
+    current = _filing_roster(token, config, class_key)
+    index = _read(port, key("archiveclass", [scope, class_key]))
+    if not index or len(index.value.get("students", {})) > MAX_STUDENTS:
+        raise Held("The current class report roster needs its existing student archive index.")
+    records = _batch_read(port, list(index.value.get("students", {})))
+    result, seen = [], set()
+    for person in current:
+        matches = [doc.value for ident, doc in records.items() if doc and doc.value.get("status") == "verified"
+                   and doc.value.get("schema") == SCHEMA and doc.value.get("student_key") == ident
+                   and doc.value.get("drive_file_id") == index.value["students"][ident] and _same_name(doc.value, person)]
+        if len(matches) != 1 or matches[0]["student_key"] in seen:
+            raise Held("A current class roster name has no single verified archive folder. Preserve its history for review.")
+        student = matches[0]; seen.add(student["student_key"])
+        result.append({k: student.get(k) for k in ("student_key", "first", "last", "name", "section")})
+    return result
+
+
+INDEX_HEADERS = ("Class", "Section", "Student", "Lesson", "Week", "Work submitted", "Feedback saved",
+                 "Work copy", "Original submission", "Feedback", "Student folder", "Status", "Teacher note", "Record key")
+INDEX_ROW_LIMIT = 20_000
+
+
+def _link(url, label):
+    if not url:
+        return ""
+    return '=HYPERLINK("%s","%s")' % (url.replace('"', '""'), label.replace('"', '""'))
+
+
+def _sheet_date(value):
+    try:
+        day = datetime.strptime(str(value)[:10], "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+    return (day - datetime(1899, 12, 30)).days
+
+
+def _index_row(class_name, student, submitted, report, status, ident):
+    submitted, report = submitted or {}, report or {}
+    context = submitted.get("source_context") or report.get("source_context") or {}
+    return [class_name, student.get("section", ""), student["name"], submitted.get("assignment") or report.get("assignment", ""),
+            context.get("week", ""), _sheet_date(submitted.get("date")), _sheet_date(report.get("date")),
+            _link(submitted.get("url") if submitted.get("mime") != SHORTCUT else None, "Open work copy"),
+            _link(_url(submitted["source_file_id"]) if submitted.get("source_file_id") else None, "Open original"),
+            _link(report.get("url"), "Open feedback"), _link(_url(student["drive_file_id"], True), "Open student folder"),
+            status, "", ident]
+
+
+def work_index_rows(token, config):
+    """All verified histories; pair by source/student/assignment IDs only."""
+    rows, summary, holds = [], {}, []
+    for cls, class_name in CLASSES.items():
+        try:
+            _, students = _indexed(token, config, cls)
+            copied, feedback_count = 0, 0
+            categories = {"both": 0, "work_only": 0, "feedback_only": 0, "empty": 0}
+            for student, artifacts in students:
+                works = [a for a in artifacts if a["kind"] == "work"]
+                feedback = [a for a in artifacts if a["kind"] == "feedback"]
+                actual = [a for a in works if a.get("mime") != SHORTCUT]
+                copied += len(actual); feedback_count += len(feedback)
+                categories["both" if actual and feedback else "work_only" if actual else "feedback_only" if feedback else "empty"] += 1
+                used = set()
+                for report in feedback:
+                    if report.get("report_type") == "science_writing" and report.get("source_records"):
+                        for source_record in report["source_records"]:
+                            candidates = [a for a in works if a.get("source_file_id") == source_record.get("source_file_id")
+                                and a.get("source_version") == source_record.get("source_version")]
+                            linked = next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
+                            if linked:
+                                used.add(linked["record_key"])
+                            status = "Science writing feedback covers this submission" if linked else "Science writing feedback; work not located"
+                            rows.append(_index_row(class_name, student, linked, report, status,
+                                key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")])))
+                        continue
+                    candidates = [a for a in works if a.get("source_file_id") == report.get("source_file_id")
+                        and a.get("assignment_form_id") and a.get("assignment_form_id") == report.get("assignment_form_id")
+                        and a.get("lesson_status") == "verified"
+                        and (not report.get("source_version") or a.get("source_version") == report["source_version"])]
+                    if report.get("shared_source_key"):
+                        candidates = [a for a in works if a.get("shared_source_key") == report["shared_source_key"]
+                                      and a.get("teacher_joint_attribution") is True]
+                    if len({a.get("source_file_id") for a in candidates}) > 1:
+                        candidates = []
+                    linked = max(candidates, key=lambda a: (a.get("source_modified_at", ""), a.get("source_version", "")), default=None)
+                    if linked:
+                        used.add(linked["record_key"])
+                    status = "Shared work + feedback" if linked and report.get("shared_source_key") else (
+                        "Work + feedback (same original submission)" if linked else "Feedback saved; work not located")
+                    source_span = report.get("source_span") or {}
+                    pages = source_span.get("source_pdf_pages_1_based") or source_span.get("pages")
+                    if pages and not linked:
+                        status += "; original report pages " + ", ".join(map(str, pages))
+                    selected_status = _confirmed_roster_status(student, cls)
+                    if selected_status and selected_status["status"] == "withdrawn":
+                        status += "; withdrawn history retained"
+                    rows.append(_index_row(class_name, student, linked, report, status,
+                        key("workindexrow", [student["student_key"], report["record_key"]])))
+                for submitted in works:
+                    if submitted["record_key"] in used:
+                        continue
+                    status = "Work saved; feedback not located" if submitted.get("mime") != SHORTCUT else "Original link only; work copy pending"
+                    if submitted.get("lesson_status") != "verified":
+                        status += "; lesson not confirmed"
+                    rows.append(_index_row(class_name, student, submitted, None, status,
+                        key("workindexrow", [student["student_key"], submitted["record_key"]])))
+                if not artifacts:
+                    rows.append(_index_row(class_name, student, None, None, "No verified records filed",
+                        key("workindexrow", [student["student_key"], "empty"])))
+            summary[cls] = {"student_folders": len(students), "work_copies": copied,
+                            "feedback_files": feedback_count, **categories}
+        except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
+            holds.append({"class_key": cls, "problem": _problem(error)})
+            rows.append([class_name, "", "", "", "", "", "", "", "", "", "", "Listing held: " + _problem(error), "",
+                         key("workindexrow", [cls, "listing-held"])] )
+        filing = _filing(config, cls)
+        for scan in filing.get("scans", []):
+            for number, held in enumerate(scan.get("held", [])):
+                problem = _clean(held.get("problem"), 600)
+                holds.append({"class_key": cls, "week": scan.get("week"), **held})
+                rows.append([class_name, held.get("section", ""), held.get("name", ""), held.get("assignment", ""),
+                    scan.get("week", ""), "", "", "", "", "", "", "Filing held: " + problem, "",
+                    key("workindexrow", [cls, scan.get("week"), number, held])])
+            for number, problem in enumerate(scan.get("problems", [])):
+                holds.append({"class_key": cls, "week": scan.get("week"), "problem": problem})
+                rows.append([class_name, "", "", "", scan.get("week", ""), "", "", "", "", "", "",
+                    "Filing held: " + _clean(problem, 600), "", key("workindexrow", [cls, scan.get("week"), "problem", number, problem])])
+    if len(rows) > INDEX_ROW_LIMIT:
+        raise Held("The work-and-feedback index exceeds its verified row limit.")
+    rows.sort(key=lambda r: (r[0], r[1], r[2], r[4], r[3], str(r[5]), str(r[6]), r[13]))
+    if len({r[13] for r in rows}) != len(rows):
+        raise Held("Two student-record index rows claim the same immutable record.")
+    return {"headers": list(INDEX_HEADERS), "rows": rows, "summary": summary, "holds": holds,
+            "checked_at": datetime.now(timezone.utc).isoformat(), "coverage": "verified_archive_and_recorded_scans_only"}
+
+
+def _index_sheet(config):
+    value = config.get(WORK_INDEX_CONFIG, "")
+    if not value:
+        return None
+    matched = re.fullmatch(r"https://docs\.google\.com/spreadsheets/d/([A-Za-z0-9_-]{10,200})/(?:edit)?(?:\?[^#]*)?(?:#.*)?", value)
+    if not matched:
+        raise Held("The configured work-and-feedback index needs its verified Google Sheet link.")
+    return matched.group(1)
+
+
+def _index_cell(value, *, link=False):
+    if isinstance(value, dict):
+        return {"userEnteredValue": value} if value else {}
+    if value == "" or value is None:
+        return {}
+    if isinstance(value, (int, float)):
+        return {"userEnteredValue": {"numberValue": value}}
+    return {"userEnteredValue": {"formulaValue" if link else "stringValue": str(value)}}
+
+
+def refresh_work_index(token, write_token, config):
+    """Refresh only the configured private native Sheet, retaining keyed notes."""
+    claim = cloud = None
+    try:
+        ident = _index_sheet(config)
+        if not ident:
+            return {"configured": False, "status": "unconfigured"}
+        root, _ = _configuration(config); scope = _scope_root(config, root)
+        _private(google.drive_file(token, root, FIELDS), folder=True)
+        meta = _private(google.drive_file(token, ident, FIELDS), parent=root)
+        if (meta.get("mimeType") != "application/vnd.google-apps.spreadsheet"
+                or (meta.get("properties") or {}).get("hubStudentWorkIndex") != scope):
+            raise Held("The work-and-feedback index is not the verified private student-records Sheet.")
+        # Archive reads may be long. Acquire the write lease and read editable
+        # notes only after that work, keeping the actual Sheet mutation bounded.
+        data = work_index_rows(token, config)
+        _private(google.drive_file(token, ident, FIELDS), parent=root)
+        port = configured_store(config); cloud = CloudState(port)
+        task = cloud.create_task({"workflow": "student-work-index", "class_key": "all-classes",
+                                  "assignment_key": key("workindexscope", [scope, ident])})
+        request = "work-index-" + uuid.uuid4().hex
+        claim = cloud.claim(task, owner="student-work-index", request_id=request, input_hash=content_hash([ident, request]))
+        endpoint = "https://sheets.googleapis.com/v4/spreadsheets/" + quote(ident)
+        sheet = google.get_json(endpoint, token, {"ranges": "Records!A1:N20001", "includeGridData": "true",
+            "fields": "spreadsheetId,sheets(properties,data(startRow,startColumn,rowData(values(userEnteredValue,dataValidation))))"})
+        sheets = [s for s in sheet.get("sheets", []) if s.get("properties", {}).get("title") == "Records"]
+        if len(sheets) != 1 or sheet.get("spreadsheetId") != ident:
+            raise Held("The index's Records tab needs checking before refresh.")
+        current = sheets[0]; cells = (current.get("data") or [{}])[0].get("rowData", [])
+        def entered(row):
+            values = [c.get("userEnteredValue", {}) for c in row.get("values", [])]
+            return values + [{}] * max(0, 14 - len(values))
+        if not cells or [c.get("stringValue", "") for c in entered(cells[0])] != list(INDEX_HEADERS):
+            raise Held("The index's column headers changed. Existing teacher entries are preserved.")
+        notes, old_keys = {}, set()
+        for row in cells[1:]:
+            values = entered(row)
+            if not any(values):
+                continue
+            record_key = values[13].get("stringValue")
+            if not record_key or record_key in old_keys:
+                raise Held("An index row has no unique record key. Preserve teacher notes before refreshing.")
+            old_keys.add(record_key)
+            if len(row.get("values", [])) > 12 and row["values"][12].get("dataValidation"):
+                raise Held("The index's teacher-note field has a new constraint; preserve it for review.")
+            notes[record_key] = values[12]
+        matrix = [list(INDEX_HEADERS)] + data["rows"]
+        prepared = []
+        for number, row in enumerate(matrix):
+            cells_out = [_index_cell(value, link=number > 0 and col in {7, 8, 9, 10} and bool(value)) for col, value in enumerate(row)]
+            if number:
+                cells_out[12] = _index_cell(notes.get(row[13], {}))
+            prepared.append({"values": cells_out})
+        fresh_keys = {r[13] for r in data["rows"]}
+        if any(value and record_key not in fresh_keys for record_key, value in notes.items()):
+            raise Held("A noted student-record row is not in the fresh verified listing. Its teacher note is preserved.")
+        normalized = [entered(row) for row in prepared]
+        existing = [entered(row) for row in cells[:len(prepared)]]
+        changed = existing != normalized or any(any(entered(row)) for row in cells[len(prepared):])
+        if changed:
+            claim = cloud.renew(claim)
+            props = current["properties"]; sheet_id = props["sheetId"]
+            needed = max(len(prepared), len(cells)); requests = []
+            if props.get("gridProperties", {}).get("rowCount", 0) < needed:
+                requests.append({"appendDimension": {"sheetId": sheet_id, "dimension": "ROWS",
+                    "length": needed - props["gridProperties"]["rowCount"]}})
+            rows = prepared + [{"values": [{}] * 14} for _ in range(needed - len(prepared))]
+            requests.append({"updateCells": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": needed,
+                "startColumnIndex": 0, "endColumnIndex": 14}, "rows": rows, "fields": "userEnteredValue"}})
+            requests.append({"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0,
+                "endRowIndex": len(prepared), "startColumnIndex": 0, "endColumnIndex": 13}}}})
+            try:
+                google.get_json(endpoint + ":batchUpdate", write_token, method="POST", body={"requests": requests})
+            except google.GoogleError:
+                pass  # Exact readback decides; never blind retry a Sheet write.
+            fresh = google.get_json(endpoint, token, {"ranges": "Records!A1:N%d" % needed, "includeGridData": "true",
+                "fields": "spreadsheetId,sheets(data(rowData(values(userEnteredValue))))"})
+            actual = (fresh.get("sheets") or [{}])[0].get("data", [{}])[0].get("rowData", [])
+            observed = [entered(row) for row in actual]
+            observed += [[{}] * 14 for _ in range(needed - len(observed))]
+            expected = normalized + [[{}] * 14 for _ in range(needed - len(prepared))]
+            if fresh.get("spreadsheetId") != ident or observed != expected:
+                raise Held("The work-and-feedback index update was not confirmed. Teacher notes remain protected; no automatic write retry.")
+        result = {"configured": True, "status": "held" if data["holds"] else "verified", "url": config[WORK_INDEX_CONFIG],
+                  "rows": len(data["rows"]), "summary": data["summary"], "holds": data["holds"],
+                  "changed": changed, "checked_at": data["checked_at"], "coverage": data["coverage"]}
+        doc_key = key("workindexreceipt", [scope, ident]); _put(port, doc_key, result, _read(port, doc_key))
+        cloud.finish(claim, records={"work_index": result})
+        return result
+    except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
+        result = {"configured": True, "status": "held", "url": config.get(WORK_INDEX_CONFIG), "problem": _problem(error)}
+        if cloud and claim:
+            try:
+                cloud.finish(claim, records={"work_index": result})
+            except (Conflict, StoreUnavailable):
+                pass
+        return result

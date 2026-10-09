@@ -1,13 +1,15 @@
 # Private student records
 
 The teacher-facing Drive layout is one private class/section/student folder,
-with dated work links and saved student feedback. Teacher-only growth records,
+with dated actual work copies, original submission links and saved student feedback. Teacher-only growth records,
 class summaries and teaching notes belong in separate private class report
 folders. Section-specific Forensics reports have separate A2 and A3 folders;
 reports covering both remain in the Forensics parent.
 
-Original submissions and Form upload trees remain intact. One shortcut is
-indexed per original Drive file ID. Original Form receipt dates label work;
+Original submissions and Form upload trees remain intact. One original link is
+indexed per Drive file ID, with a separately indexed actual copy for each
+verified source revision and student. Native Google Slides and Docs remain
+native copies; uploaded files retain their original type. Original Form receipt dates label work;
 immutable saved-feedback dates label feedback. File creation and modification
 dates do not substitute for submission dates. A reachable folder-only file
 without a real submission timestamp can still be linked with its actual file
@@ -27,6 +29,10 @@ containing several students' feedback remain at class level.
 - `HUB_TEACHER_REPORTS_COURSE_FOLDERS`: separate private class report folders.
 - `HUB_STUDENT_ARCHIVE_IC_ROSTER`: optional verified IC crosswalk, with
   class, section, school email, native student ID, names and active state.
+- `HUB_STUDENT_WORK_INDEX_URL`: the private native Google Sheet in the
+  student-records root. Its `hubStudentWorkIndex` property must bind the stable
+  archive namespace. A shortcut can make this same Sheet visible in the
+  teacher's existing school folder without granting wider target access.
 - `HUB_FEEDBACK_DRIVE_ROOT_ID` and `HUB_FEEDBACK_DRIVE_FOLDERS`: the same
   archive root and class map when legacy class feedback packets live there.
 
@@ -65,7 +71,7 @@ students' history is retained, with membership derived only from a verified
 crosswalk.
 
 A reachable, uniquely identified file can also be archived when its lesson
-match remains unresolved. Its shortcut preserves the original filename and
+match remains unresolved. Its copy and original link preserve the original filename and
 source Form/week context, with **lesson not confirmed**. This records the
 student's source work without asserting an assignment or resolving any
 grading/IC lesson hold. Original submissions and Form response folders stay
@@ -98,6 +104,37 @@ immutable draft ID, without another provider call. Teacher notes are excluded
 from that PDF. Today printing combines indexed nested PDFs with legacy class
 packets, deduplicates Drive IDs and excludes teacher reports and checklists.
 Printed and Handed out remain separate teacher-controlled states.
+
+Work copying verifies the original revision before and after the one copy
+request, the private destination, identity tags and copied content. Native
+Slides verification reads complete presentation content through the existing
+Drive-scoped Slides API and binds page order, text, styles, notes, object IDs,
+external links and each actual image's pixels at its own position. Expiring
+Google image URLs are replaced only by their verified image-content proof.
+Native document exports bind their document XML and resolved resources;
+binary uploads require exact bytes. A lost copy
+response is recovered only by its one tagged result; absent or ambiguous
+results never repeat the copy request automatically. Originals are never moved
+or edited. Harmless native metadata version finalization is distinguished from
+a copied-file modification by the verified copy's modification timestamp.
+
+`refresh_work_index` runs after normal work filing and feedback filing when
+configured. The Records tab has one stable record key per source/report row,
+typed source dates, actual-copy/original/feedback/student-folder hyperlinks,
+and an editable Teacher note preserved by key through sorting and refreshes.
+Existing notes, constrained fields or unknown row keys are held rather than
+overwritten. Matching requires exact student/source/assignment IDs; similar
+lesson titles never pair a report with work. Historical feedback with no
+proven matching submission remains visible as **work not located**. Recorded
+filing holds and source-only rows remain explicit. Index coverage describes
+verified archived histories and recorded scans, not every possible submission.
+
+Teacher-authorized science-writing reports use a distinct source-bound artifact
+identity and reuse an existing verified student folder. Each included source
+revision is checked and its actual archive submission date/Form/lesson context
+retained. This creates feedback PDFs without grade, identity, source, delivery
+state or model writes. A report spanning multiple verified submissions may link
+from each corresponding index row while remaining one printable report.
 
 Feedback printing verifies the private archive index, student/section folders
 and each selected PDF's current parent, private access, identity tag and

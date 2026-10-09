@@ -297,7 +297,7 @@ async function printTodayFeedback(data, status, button) {
   try {
     let packet = data.daily_packet;
     let response;
-    if (packet?.status === 'ready' && !files.length) {
+    if (packet?.status === 'ready' && (!files.length || data.packet_matches_sources === true)) {
       response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
     } else if (packet?.configured) {
       const finalized = await fetch('api/feedback/daily', {method: 'POST', credentials: 'same-origin',
@@ -338,33 +338,48 @@ function renderTodayFeedback(data) {
   const files = data.files || [];
   const packet = data.daily_packet;
   const panel = cockpitPanel('Daily feedback document');
+  const historical = data.date && data.date < (data.requested_date || todayISO());
   if (!files.length && packet?.status !== 'ready') {
     panel.append(note('No print-ready feedback documents were found in the connected course folders.', 'info'));
     return panel;
   }
   const status = el('p', {class: 'muted', role: 'status', text: `Feedback dated ${data.date} · all classes · ${packet?.status === 'ready' ? packet.source_count : files.length} source documents. Printing and handing out remain separate.`});
   const list = el('ul', {class: 'feedback-today-list'}, ...files.map(file =>
-    el('li', {}, el('strong', {text: `${file.course_name}: `}),
-      link(file.name, file.url), el('small', {class: 'muted', text: ` · ${when(file.created_at)} · `}),
-      link('Open course folder ↗', file.course_folder_url))));
-  const button = el('button', {type: 'button', class: 'primary'}, `Print all feedback — ${data.date}`);
+    el('li', {}, el('strong', {text: `${file.course_name}${file.student_name ? ` · ${file.student_name}` : ' · class packet'}${file.report_type === 'science_writing' ? ' · science writing' : ''}: `}),
+      link(file.name, file.url), el('small', {class: 'muted', text: ` · feedback ${file.feedback_day || data.date}`}))));
+  const dates = (packet?.available_dates || []).filter(item => item.date !== data.date &&
+    /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(item.pdf_url || ''));
+  const checklist = cockpit.learningData?.checklist_url;
+  const button = el('button', {type: 'button', class: historical ? '' : 'primary'},
+    `${historical ? 'Reprint saved feedback' : 'Print all feedback'} — ${data.date}`);
   button.onclick = () => printTodayFeedback(data, status, button);
   const savedURL = packet?.status === 'ready' && /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(packet.pdf_url || '') ? packet.pdf_url : null;
-  panel.append(...[status,
+  const contents = [status,
     savedURL ? el('p', {}, link(`Open saved daily feedback — ${packet.date} (${packet.pages} pages)`, savedURL))
       : note(packet?.configured ? 'Printing saves this day’s all-class document. Verified student copies stay in their folders; existing class packets stay at class level.'
         : 'The daily document folder is not connected yet. The existing feedback can be printed as a preview.', 'info'),
     data.source_problem ? note('Current feedback sources could not be fully checked. This saved dated document remains available: ' + data.source_problem, 'info') : null,
+    data.packet_matches_sources === false ? note('The saved document differs from the current verified feedback list. Print all feedback saves an updated version; the earlier PDF is preserved.', 'info') : null,
+    checklist && !historical ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
     el('div', {class: 'action-row'}, button),
-    files.length ? el('details', {}, el('summary', {text: 'Feedback sources and student copies'}), list) : null].filter(Boolean));
+    files.length ? el('details', {}, el('summary', {text: 'Current feedback by student'}), list) : null,
+    dates.length ? el('details', {}, el('summary', {text: 'Other saved feedback dates'}),
+      el('ul', {}, ...dates.map(item => el('li', {}, link(`${item.date} · ${item.pages} pages`, item.pdf_url))))) : null].filter(Boolean);
+  if (historical) {
+    panel.append(...[el('p', {text: `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${data.requested_date || todayISO()}. Earlier dated feedback remains available to reprint.`}),
+      checklist ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
+      el('details', {}, el('summary', {text: `Earlier feedback · latest saved ${data.date}`}), ...contents)].filter(Boolean));
+  } else panel.append(...contents);
   return panel;
 }
 
 function renderLearningReport(data) {
   if (!data?.configured) return null;
-  return cockpitPanel('Class growth and DTGSS',
-    el('p', {text: data.as_of ? `Report updated ${data.as_of}.` : 'Saved class learning report.'}),
-    el('div', {class: 'action-row'}, link('Open growth report', data.url), link('Discussion prompts and check-ins', data.teaching_url)),
+  return cockpitPanel('Biology growth and DTGSS',
+    el('p', {text: data.as_of ? `Biology report · initial review ${data.as_of}.` : 'Saved Biology learning report.'}),
+    el('div', {class: 'action-row'}, link('Biology report · start here', data.url), link('Biology teaching actions', data.teaching_url),
+      data.analysis_url ? link('Biology analysis', data.analysis_url) : null,
+      data.work_index_url ? link('All student work · index', data.work_index_url) : null),
     el('p', {class: 'muted', text: 'Current-roster percentages, Beginning and Developing counts, and paired comparisons. The report states its evidence dates.'}));
 }
 
@@ -1505,6 +1520,14 @@ async function feedbackAction(form, student, action) {
   }
 }
 
+function teacherWritingPreview(rows) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  return el('details', {}, el('summary', {text: 'Science writing observations · teacher only, excluded from the student PDF'}),
+    ...rows.map(row => el('section', {}, el('p', {}, el('strong', {text: `${row.dimension}: ${row.level}`})),
+      el('p', {class: 'muted', text: `${row.question_id} · ${row.stage}`}),
+      row.quote ? el('blockquote', {text: row.quote}) : null, el('p', {text: row.explanation}))));
+}
+
 function feedbackPanel(form) {
   const ui = work.ui[form.form_id] || {}, data = ui.feedback;
   const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Student feedback'}));
@@ -1524,6 +1547,8 @@ function feedbackPanel(form) {
         el('p', {class: 'muted', text: `Draft based on work modified ${when(d.source_modified)}. ${d.saved_at ? 'Saved privately in the Hub.' : 'Ready to review and save.'}`}));
       if (d.report.teacher_notes.length) card.append(el('details', {}, el('summary', {text: 'Teacher notes — excluded from the student PDF'}),
         el('ul', {}, d.report.teacher_notes.map(n => el('li', {text: n})))));
+      const writing = teacherWritingPreview(d.report.teacher_dimensions);
+      if (writing) card.append(writing);
     }
     const actions = el('div', {class: 'action-row'});
     if (!student.hold) actions.append(el('button', {type: 'button', onclick: () => feedbackAction(form, student, 'draft')},
