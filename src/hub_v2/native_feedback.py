@@ -555,7 +555,7 @@ def _legacy_feedback_files(token, config):
         folder = checked_folders.get(cls) or google.drive_file(token, folder_id, 'id,name,mimeType,parents')
         if (folder.get('mimeType') != google.FOLDER
                 or (not records_root and folder.get('name') != FEEDBACK_FOLDERS[cls])
-                or root_id not in (folder.get('parents') or [])):
+                or (not records_root and root_id not in (folder.get('parents') or []))):
             raise Held('A configured private feedback folder no longer matches its course. No packet was assembled.')
         for item in google.folder_children(token, folder_id):
             name = str(item.get('name') or '')

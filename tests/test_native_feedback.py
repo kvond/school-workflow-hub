@@ -279,6 +279,25 @@ class NativeFeedbackTests(unittest.TestCase):
             with self.assertRaisesRegex(fb.Held, 'Private access unverified'):
                 fb.today_files('token', config, date_et='2026-10-08')
 
+    def test_nested_records_class_packets_use_verified_location_not_unverified_root_parent(self):
+        from hub_v2 import student_archive
+        root, records = 'FictionalRecordsRoot123', 'FictionalPrivateContainer123'
+        folders = {cls: 'Fictional' + cls + 'Folder123' for cls in fb.FEEDBACK_FOLDERS}
+        config = {fb.FEEDBACK_ROOT_CONFIG: root, fb.FEEDBACK_FOLDER_CONFIG: json.dumps(folders),
+                  student_archive.ROOT_CONFIG: root, student_archive.COURSES_CONFIG: json.dumps(folders),
+                  student_archive.RECORDS_CONFIG: records}
+        def location(token, config, cls):
+            return root, {'id': folders[cls], 'name': fb.FEEDBACK_COURSE_NAMES[cls],
+                          'mimeType': google.FOLDER, 'parents': [records]}
+        packet = {'id': 'FictionalClassPacket123', 'name': 'Biology Wk 04 — Student feedback.pdf',
+                  'mimeType': 'application/pdf', 'createdTime': '2026-10-08T14:00:00Z'}
+        with patch.object(student_archive, 'feedback_location', side_effect=location) as privacy_check, \
+                patch.object(student_archive, 'list_feedback', return_value=[]), \
+                patch.object(google, 'folder_children', side_effect=lambda token, ident: [packet] if ident == folders['biology'] else []):
+            listed = fb.today_files('token', config, date_et='2026-10-08')
+        self.assertEqual(privacy_check.call_count, 3)
+        self.assertEqual([item['id'] for item in listed['files']], [packet['id']])
+
     def test_provider_timeout_keeps_a_verified_saved_daily_snapshot_available(self):
         from hub_v2 import daily_feedback_packet
         saved = {'status': 'ready', 'configured': True, 'date': '2026-10-07',

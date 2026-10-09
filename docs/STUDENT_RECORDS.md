@@ -25,7 +25,11 @@ containing several students' feedback remain at class level.
   folders in a private Shared Drive, so student, artifact, receipt and task
   keys retain their identity even though physical folder IDs change.
 - `HUB_STUDENT_RECORDS_COURSE_FOLDERS`: JSON object with `biology`, `forensics`
-  and `anatomy` folder IDs, each a direct child of that root.
+  and `anatomy` folder IDs, each a direct child of that root by default.
+- `HUB_STUDENT_RECORDS_RECORDS_FOLDER`: optional private direct child of the
+  actual root. When set, every configured course folder must be directly inside
+  this records container. Class shortcuts at the root can target the existing
+  section folders without changing section/student IDs or index identities.
 - `HUB_TEACHER_REPORTS_COURSE_FOLDERS`: separate private class report folders.
 - `HUB_STUDENT_ARCHIVE_IC_ROSTER`: optional verified IC crosswalk, with
   class, section, school email, native student ID, names and active state.
@@ -117,6 +121,22 @@ response is recovered only by its one tagged result; absent or ambiguous
 results never repeat the copy request automatically. Originals are never moved
 or edited. Harmless native metadata version finalization is distinguished from
 a copied-file modification by the verified copy's modification timestamp.
+
+When Drive returned a copy ID, verification reads that exact ID directly with
+the same private parent, source tags and content proof; a delayed folder listing
+does not invalidate a confirmed result. An unknown ID still requires exactly one
+tagged result. Only the bounded HTTP error status is retained for diagnosis.
+
+With the explicit records container, new original-work shortcuts are kept in
+each course's `Original work links` folder. The operator
+`retire_source_links(token, write_token, config, class_key)` moves existing
+shortcuts there only after proving a real copy for the same student, source and
+current revision has identical content in its private student folder. It moves
+the shortcut itself, preserving its ID, original Form dates and private history;
+the separately stored retirement revision describes the current proof. It does
+not move or edit the submitted source. The index retains the source link but
+removes it from student navigation, and later filing reuses that same central
+link. Missing, changed or ambiguous copies remain held with their links intact.
 
 `refresh_work_index` runs after normal work filing and feedback filing when
 configured. The Records tab has one stable record key per source/report row,

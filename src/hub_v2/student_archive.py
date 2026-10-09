@@ -26,6 +26,7 @@ from school_workflow_hub.core.cloud_state import CloudState, Conflict, StoreUnav
 from school_workflow_hub.core.runs import content_hash
 
 ROOT_CONFIG = "HUB_STUDENT_RECORDS_ROOT_FOLDER"
+RECORDS_CONFIG = "HUB_STUDENT_RECORDS_RECORDS_FOLDER"
 SCOPE_ROOT_CONFIG = "HUB_STUDENT_RECORDS_IDENTITY_SCOPE_ROOT"
 COURSES_CONFIG = "HUB_STUDENT_RECORDS_COURSE_FOLDERS"
 ROSTER_CONFIG = "HUB_STUDENT_ARCHIVE_IC_ROSTER"
@@ -259,6 +260,10 @@ def _configuration(config):
                 or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", v)
                        for v in courses.values()) or len(set(courses.values())) != 3 or root in courses.values()):
             raise ValueError()
+        records = config.get(RECORDS_CONFIG)
+        if records and (not isinstance(records, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", records)
+                        or records == root or records in courses.values()):
+            raise ValueError()
         return root, courses
     except (ValueError, TypeError):
         raise Held("Student records are not connected to their private class folders yet.") from None
@@ -349,7 +354,11 @@ def _location(token, config, cls, write=False):
             raise Held("The private archive has an unavailable parent folder.")
     else:
         raise Held("The private archive's parent location could not be fully checked.")
-    course = _private(google.drive_file(token, courses[cls], FIELDS), parent=root, folder=True, write=write)
+    parent = root
+    if config.get(RECORDS_CONFIG):
+        records = _private(google.drive_file(token, config[RECORDS_CONFIG], FIELDS), parent=root, folder=True, write=write)
+        parent = records["id"]
+    course = _private(google.drive_file(token, courses[cls], FIELDS), parent=parent, folder=True, write=write)
     return root, course
 
 
@@ -751,6 +760,88 @@ class _Run:
             ident = doc.value["alias_of"]
         raise Held("The student archive's identity links need review. Existing folders are preserved.")
 
+    def navigation_folder(self):
+        ident = key("archivesourcelinks", [self.root, self.cls])
+        return self.create(ident, "Original work links", self.course["id"], google.FOLDER)
+
+    def retire_navigation(self, student_key, shortcut_key, copy_key):
+        """Move only a verified source shortcut; preserve its ID and original source."""
+        student_doc, shortcut_doc, copy_doc = (_read(self.port, i) for i in (student_key, shortcut_key, copy_key))
+        if not student_doc or not shortcut_doc or not copy_doc:
+            raise Held("This original-work link needs its saved student and verified work copy before cleanup.")
+        student, shortcut, copied = student_doc.value, shortcut_doc.value, copy_doc.value
+        if (student.get("student_key") != student_key or student.get("status") != "verified"
+                or shortcut.get("mime") != SHORTCUT or shortcut.get("status") != "verified"
+                or shortcut.get("kind") != "work" or shortcut.get("student_key") != student_key
+                or copied.get("status") != "verified" or copied.get("student_key") != student_key
+                or copied.get("source_kind") not in {"submitted_work_copy", "teacher_attributed_joint_copy"}
+                or copied.get("source_file_id") != shortcut.get("source_file_id")):
+            raise Held("The original-work link and real copy do not bind the same student, source and revision.")
+        _private(google.drive_file(self.token, student["parent"], FIELDS), parent=self.course["id"], folder=True)
+        _private(google.drive_file(self.token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True)
+        copy_meta = _private(google.drive_file(self.token, copied["drive_file_id"], FIELDS), parent=student["drive_file_id"])
+        if copied["source_kind"] == "submitted_work_copy":
+            _verify_work_copy(copy_meta, copied)
+        elif ((copy_meta.get("properties") or {}).get(TAG) != copy_key
+              or (copy_meta.get("properties") or {}).get("hubCopiedSource") != copied["source_file_id"]
+              or (copy_meta.get("properties") or {}).get("hubSharedSource") != copied.get("shared_source_key")
+              or not re.fullmatch(r"sharedfeedbacksource_[a-f0-9]{64}", copied.get("shared_source_key") or "")
+              or copy_meta.get("mimeType") != copied.get("mime")
+              or copy_meta.get("version") != copied.get("drive_version")
+              or copied.get("teacher_joint_attribution") is not True
+              or not re.fullmatch(r"[a-f0-9]{64}", copied.get("copied_slide_content_sha256") or "")):
+            raise Held("The attributed joint copy needs its verified private content before cleanup.")
+        source = google.drive_file(self.token, shortcut["source_file_id"], SOURCE_FIELDS)
+        if (source.get("trashed") is not False or source.get("mimeType") not in work.STUDENT_WORK
+                or str(source.get("version")) != str(copied.get("source_version"))
+                or (copied["source_kind"] == "submitted_work_copy"
+                    and _source_revision(source) != copied.get("source_revision"))):
+            raise Held("The original submission has a newer revision. File its real copy before removing this link.")
+        self.heartbeat(force=True)
+        source_proof = _work_content(self.token, source, self.heartbeat)
+        copy_proof = _work_content(self.token, copy_meta, self.heartbeat)
+        if (source_proof != copy_proof or (copied["source_kind"] == "submitted_work_copy"
+                                          and source_proof != copied.get("content_proof"))):
+            raise Held("The real copied work does not match the original content. Preserve the navigation link.")
+        if (_source_revision(google.drive_file(self.token, source["id"], SOURCE_FIELDS)) != _source_revision(source)
+                or google.drive_file(self.token, copied["drive_file_id"], FIELDS) != copy_meta):
+            raise Held("The original or copied work changed during cleanup verification. Preserve both.")
+        navigation = self.navigation_folder()
+        meta = google.drive_file(self.token, shortcut["drive_file_id"], FIELDS)
+        _private(meta)
+        if (meta.get("mimeType") != SHORTCUT or (meta.get("properties") or {}).get(TAG) != shortcut_key
+                or (meta.get("shortcutDetails") or {}).get("targetId") != source["id"]
+                or meta.get("parents") not in ([student["drive_file_id"]], [navigation["drive_file_id"]])):
+            raise Held("This source link changed or left its verified private folders. No cleanup was applied.")
+        if meta["parents"] != [navigation["drive_file_id"]]:
+            self.renew()
+            try:
+                google.move_item(self.write_token, meta["id"], navigation["drive_file_id"], meta["parents"])
+            except google.GoogleError:
+                pass
+            _private(google.drive_file(self.token, meta["id"], FIELDS), parent=navigation["drive_file_id"])
+        index = _read(self.port, self.index_key)
+        value = dict(index.value if index else {"schema": SCHEMA, "students": {}})
+        links = dict(value.get("source_links", {})); links[shortcut_key] = shortcut["drive_file_id"]
+        items = dict(student.get("items", {})); items.pop(shortcut_key, None)
+        retired = {**shortcut, "retired_navigation": True, "archiveparent": navigation["drive_file_id"],
+                   "parent": navigation["drive_file_id"], "work_copy_record_key": copy_key,
+                   "retired_content_proof": source_proof, "retired_source_revision": _source_revision(source)}
+        changes = {shortcut_key: (retired, shortcut_doc.version),
+                   student_key: ({**student, "items": items}, student_doc.version),
+                   self.index_key: ({**value, "source_links": links}, index.version if index else None)}
+        self.heartbeat(force=True)
+        try:
+            self.port.commit(changes)
+        except (Conflict, StoreUnavailable):
+            actual = self.port.read(list(changes)).documents
+            if any(actual[i] is None or actual[i].value != v for i, (v, _) in changes.items()):
+                raise
+        actual = self.port.read(list(changes)).documents
+        if any(actual[i] is None or actual[i].value != v for i, (v, _) in changes.items()):
+            raise Held("The source-link cleanup index did not confirm. Original and copied work are preserved.")
+        return retired
+
     def copy_work(self, student, source, attributes):
         """One copy POST per source revision; lost responses recover by its tag."""
         revision = _source_revision(source)
@@ -800,13 +891,16 @@ class _Run:
                 if copied.get("id"):
                     record["drive_file_id"] = copied["id"]
                     old = self.put(ident, record, old)
-            except google.GoogleError:
-                pass  # Read the exact tagged result; never repeat this POST.
-        candidates = [item for item in google.folder_children(self.token, record["parent"])
-                      if (item.get("properties") or {}).get(TAG) == ident]
-        if len(candidates) != 1 or (record.get("drive_file_id") and candidates[0]["id"] != record["drive_file_id"]):
-            raise Held("A work-copy request has no single confirmed result. Its original is safe; the request will not be repeated.")
-        file_id = candidates[0]["id"]
+            except google.GoogleError as error:
+                record["copy_error_status"] = error.status
+                old = self.put(ident, record, old)  # No response body or source data; never repeat this POST.
+        file_id = record.get("drive_file_id")
+        if not file_id:
+            candidates = [item for item in google.folder_children(self.token, record["parent"])
+                          if (item.get("properties") or {}).get(TAG) == ident]
+            if len(candidates) != 1:
+                raise Held("A work-copy request has no single confirmed result. Its original is safe; the request will not be repeated.")
+            file_id = candidates[0]["id"]
         meta = google.drive_file(self.token, file_id, FIELDS)
         _verify_work_copy(meta, record)
         self.heartbeat(force=True)
@@ -1144,8 +1238,11 @@ def archive_work(token, write_token, config, class_key, found):
                             ["file created"] if date_basis == "file_created" else [])
                         label = date + " — " + student["name"] + " — " + _clean(title) + " — Work" + (
                             " (" + "; ".join(markers) + ")" if markers else "")
+                        central_navigation = ((bool(config.get(RECORDS_CONFIG)) and not old)
+                                              or bool(old and old.value.get("retired_navigation")))
+                        navigation_parent = run.navigation_folder()["drive_file_id"] if central_navigation else student["drive_file_id"]
                         artifact = run.create(artifact_key, label,
-                            student["drive_file_id"], SHORTCUT, target=file["id"], attributes={
+                            navigation_parent, SHORTCUT, target=file["id"], attributes={
                                 "kind": "work", "date": date, "student_key": student["student_key"],
                                 "class_key": class_key, "source_file_id": file["id"], "form_id": source_form_id,
                                 "assignment_form_id": assignment_form_id, "source_response_id": file.get("source_response_id"),
@@ -1170,7 +1267,8 @@ def archive_work(token, write_token, config, class_key, found):
                         observation_key = key("archiveobservation", [artifact_key, observation])
                         if not _read(run.port, observation_key):
                             run.put(observation_key, observation)
-                        run.attach(student, artifact)
+                        if not central_navigation:
+                            run.attach(student, artifact)
                         # Originals remain in their Form upload/intake tree. A
                         # dated, content-verified snapshot lives with feedback.
                         existing_joint = None
@@ -1183,6 +1281,8 @@ def archive_work(token, write_token, config, class_key, found):
                                 existing_joint = candidate.value
                         copied = existing_joint or run.copy_work(student, source, artifact)
                         run.attach(student, copied)
+                        if central_navigation:
+                            run.retire_navigation(student["student_key"], artifact_key, copied["record_key"])
                         filed_ids.add(copied["drive_file_id"])
                         result["filed"] = len(filed_ids)
             except (Held, google.GoogleError) as error:
@@ -1208,6 +1308,41 @@ def archive_work(token, write_token, config, class_key, found):
             except (Conflict, StoreUnavailable):
                 pass
     result["index_sync"] = refresh_work_index(token, write_token, config)
+    return result
+
+
+def retire_source_links(token, write_token, config, class_key):
+    """Authorized private layout cleanup, with one class claim and exact copy proof."""
+    if not config.get(RECORDS_CONFIG):
+        raise Held("Source-link cleanup needs the explicitly configured private Hub records container.")
+    run = _Run(token, write_token, config, class_key)
+    result = {"class_key": class_key, "status": "verified", "retired": 0, "held": []}
+    index = _read(run.port, run.index_key)
+    for student_key in (index.value if index else {}).get("students", {}):
+        run.heartbeat()
+        student = _read(run.port, student_key)
+        records = _batch_read(run.port, list(student.value.get("items", {})))
+        for shortcut_key, doc in records.items():
+            if not doc or doc.value.get("mime") != SHORTCUT or doc.value.get("kind") != "work":
+                continue
+            item = doc.value
+            try:
+                source = google.drive_file(token, item["source_file_id"], SOURCE_FIELDS)
+                candidates = [copy_key for copy_key, copy_doc in records.items() if copy_doc
+                    and copy_doc.value.get("source_kind") in {"submitted_work_copy", "teacher_attributed_joint_copy"}
+                    and copy_doc.value.get("status") == "verified"
+                    and copy_doc.value.get("source_file_id") == item.get("source_file_id")
+                    and str(copy_doc.value.get("source_version")) == str(source.get("version"))]
+                ordinary = [i for i in candidates if records[i].value["source_kind"] == "submitted_work_copy"]
+                candidates = ordinary or candidates
+                if len(candidates) != 1:
+                    raise Held("This original-work link needs one verified real copy for its exact revision before cleanup.")
+                run.retire_navigation(student_key, shortcut_key, candidates[0])
+                result["retired"] += 1
+            except (Held, google.GoogleError) as error:
+                result["held"].append({"student_key": student_key, "source_file_id": item.get("source_file_id"), "problem": str(error)})
+    if result["held"]: result["status"] = "held"
+    run.finish(result)
     return result
 
 

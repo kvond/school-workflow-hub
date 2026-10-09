@@ -174,6 +174,113 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["drive_file_id"], copied["drive_file_id"])
 
+    def records_layout(self):
+        records = "FictionalHiddenHubRecords01"
+        self.drive.add(records, "Hub Records", google.FOLDER, [ROOT])
+        self.config[archive.RECORDS_CONFIG] = records
+        for ident in COURSES.values(): self.drive.items[ident]["parents"] = [records]
+        return records
+
+    def test_explicit_private_records_container_and_old_default_are_both_supported(self):
+        self.assertEqual(archive.feedback_location("read", self.config, "biology")[1]["parents"], [ROOT])
+        records = self.records_layout()
+        self.assertEqual(archive.feedback_location("read", self.config, "biology")[1]["parents"], [records])
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "verified")
+        self.drive.items[records]["parents"] = ["WrongPrivateParent00001"]
+        with self.assertRaises(archive.Held): archive.feedback_location("read", self.config, "biology")
+
+    def test_public_records_container_is_held_before_any_source_or_destination_write(self):
+        records = self.records_layout()
+        self.drive.items[records]["permissions"] = [{"type": "anyone", "role": "reader"}]
+        original = deepcopy(self.drive.items[SOURCE])
+        self.assertEqual(self.archive()["status"], "held")
+        self.assertEqual(self.drive.created, [])
+        self.assertEqual(self.drive.items[SOURCE], original)
+
+    def test_retirement_preserves_source_history_and_never_recreates_student_navigation(self):
+        original = deepcopy(self.drive.items[SOURCE])
+        self.assertEqual(self.archive()["status"], "verified")
+        navigation = next(d.value for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        source_id = navigation["drive_file_id"]
+        created_shortcuts = sum(item["mimeType"] == archive.SHORTCUT for item in self.drive.created)
+        self.records_layout()
+        result = archive.retire_source_links("read", "write", self.config, "biology")
+        self.assertEqual((result["status"], result["retired"]), ("verified", 1))
+        retired = self.port.rows[navigation["record_key"]].value
+        self.assertTrue(retired["retired_navigation"])
+        self.assertEqual(retired["drive_file_id"], source_id)
+        self.assertEqual(retired["submitted_at"], navigation["submitted_at"])
+        self.assertEqual(self.drive.items[source_id]["parents"], [retired["archiveparent"]])
+        student = self.port.rows[retired["student_key"]].value
+        self.assertNotIn(retired["record_key"], student["items"])
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["work"], 1)
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(archive.retire_source_links("read", "write", self.config, "biology")["retired"], 0)
+        self.assertEqual(sum(item["mimeType"] == archive.SHORTCUT for item in self.drive.created), created_shortcuts)
+        self.assertEqual(self.drive.items[SOURCE], original)
+
+    def test_new_navigation_is_central_only_after_a_matching_content_copy(self):
+        self.records_layout()
+        self.assertEqual(self.archive()["status"], "verified")
+        navigation = next(d.value for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        self.assertTrue(navigation["retired_navigation"])
+        student = self.port.rows[navigation["student_key"]].value
+        self.assertNotIn(navigation["record_key"], student["items"])
+        copied = self.port.rows[navigation["work_copy_record_key"]].value
+        self.assertEqual(self.drive.contents[copied["drive_file_id"]], self.drive.contents[SOURCE])
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["work"], 1)
+
+    def test_mismatched_real_copy_cannot_retire_or_detach_original_link(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        self.records_layout()
+        copied = next(d.value for d in self.port.rows.values() if d.value.get("source_kind") == "submitted_work_copy")
+        self.drive.contents[copied["drive_file_id"]] = b"Different actual copied content"
+        navigation = next(d.value for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        parent = self.drive.items[navigation["drive_file_id"]]["parents"]
+        result = archive.retire_source_links("read", "write", self.config, "biology")
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["retired"], 0)
+        self.assertEqual(self.drive.items[navigation["drive_file_id"]]["parents"], parent)
+        self.assertIn(navigation["record_key"], self.port.rows[navigation["student_key"]].value["items"])
+
+    def test_retirement_requires_verified_copy_and_recovers_a_confirmed_move(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        self.records_layout()
+        navigation = next(d.value for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        copy_key, copied = next((k, d) for k, d in self.port.rows.items()
+                               if d.value.get("source_kind") == "submitted_work_copy")
+        self.port.commit({copy_key: ({**copied.value, "status": "creating"}, copied.version)})
+        result = archive.retire_source_links("read", "write", self.config, "biology")
+        self.assertEqual((result["status"], result["retired"]), ("held", 0))
+        self.assertEqual(self.drive.moved, [])
+        copied = self.port.rows[copy_key]
+        self.port.commit({copy_key: ({**copied.value, "status": "verified"}, copied.version)})
+        def lost_move(*args):
+            self.drive.move(*args)
+            raise google.GoogleError("Move response lost")
+        with patch.object(google, "move_item", side_effect=lost_move):
+            result = archive.retire_source_links("read", "write", self.config, "biology")
+        self.assertEqual((result["status"], result["retired"]), ("verified", 1))
+        self.assertEqual(self.drive.moved, [navigation["drive_file_id"]])
+
+    def test_retired_link_retains_form_history_when_new_source_revision_is_filed(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        self.records_layout()
+        self.assertEqual(archive.retire_source_links("read", "write", self.config, "biology")["retired"], 1)
+        navigation = next(d.value for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        self.drive.items[SOURCE].update(version="2", modifiedTime="2026-10-09T12:00:00Z")
+        self.drive.contents[SOURCE] = b"A later source revision"
+        data = found(row(source="folder", email="", matched_by="filename", submitted_at=None))
+        with patch.object(archive, "_filing_roster", return_value=name_roster()):
+            self.assertEqual(self.archive(data)["status"], "verified")
+        retired = self.port.rows[navigation["record_key"]].value
+        self.assertEqual(retired["submitted_at"], navigation["submitted_at"])
+        self.assertEqual(retired["form_id"], navigation["form_id"])
+        self.assertEqual(retired["retired_source_revision"]["version"], "2")
+        self.assertEqual(sum(item["mimeType"] == archive.SHORTCUT for item in self.drive.created), 1)
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["work"], 2)
+
     def test_new_source_revision_retains_both_exact_dated_copies(self):
         self.assertEqual(self.archive()["status"], "verified")
         self.drive.items[SOURCE]["version"] = "2"
@@ -190,6 +297,31 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(self.archive()["status"], "verified")
         self.assertEqual(self.archive()["status"], "verified")
         self.assertEqual(self.drive.copied, [SOURCE])
+
+    def test_known_copy_id_verifies_directly_when_folder_listing_lags(self):
+        def lagging_children(token, parent):
+            return [item for item in self.drive.children(token, parent)
+                    if not (item.get("properties") or {}).get("hubCopiedSource")]
+        with patch.object(google, "folder_children", side_effect=lagging_children):
+            self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(self.drive.copied, [SOURCE])
+        copied = next(d.value for d in self.port.rows.values() if d.value.get("source_kind") == "submitted_work_copy")
+        self.assertEqual(copied["status"], "verified")
+        self.assertEqual(self.drive.contents[copied["drive_file_id"]], self.drive.contents[SOURCE])
+
+    def test_unknown_copy_id_with_no_tagged_result_stays_fenced(self):
+        self.drive.fail_after_copy = True
+        def lagging_children(token, parent):
+            return [item for item in self.drive.children(token, parent)
+                    if not (item.get("properties") or {}).get("hubCopiedSource")]
+        with patch.object(google, "folder_children", side_effect=lagging_children):
+            self.assertEqual(self.archive()["status"], "held")
+            self.assertEqual(self.archive()["status"], "held")
+        self.assertEqual(self.drive.copied, [SOURCE])
+        copied = next(d.value for d in self.port.rows.values() if d.value.get("source_kind") == "submitted_work_copy")
+        self.assertEqual(copied["status"], "creating")
+        self.assertIsNone(copied.get("drive_file_id"))
+        self.assertIn("copy_error_status", copied)
 
     def test_unconfirmed_absent_copy_is_held_and_never_reposted(self):
         self.drive.fail_copy = True
