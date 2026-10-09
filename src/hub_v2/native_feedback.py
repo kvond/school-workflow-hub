@@ -316,7 +316,16 @@ def save(config, ident, inputs, *, token=None, write_token=None):
     from . import student_archive
     if student_archive.enabled(config):
         value = _file_saved(config, value, stored.version, token, write_token)
-    return {**reply(value), 'readback_verified': True}
+    response = {**reply(value), 'readback_verified': True}
+    from . import daily_feedback_packet
+    if daily_feedback_packet.enabled(config) and (value.get('archive') or {}).get('status') == 'verified':
+        try:
+            response['daily_packet'] = daily_feedback_packet.build(token, write_token, config,
+                daily_feedback_packet.feedback_date(value['saved_at']))
+        except (daily_feedback_packet.Held, google.GoogleError, StoreUnavailable, Conflict) as error:
+            response['daily_packet'] = {'status': 'held', 'problem': str(error),
+                'date': daily_feedback_packet.feedback_date(value['saved_at'])}
+    return response
 
 
 def _file_saved(config, value, version, token, write_token):
@@ -428,24 +437,62 @@ def _legacy_feedback_files(token, config):
                     ZoneInfo('America/New_York')).date().isoformat()
             except (ValueError, TypeError):
                 continue
+            proof = _legacy_packet_proof(token, config, item, created_day)
             files.append({'id': item['id'], 'name': name, 'course': cls,
                           'course_name': FEEDBACK_COURSE_NAMES[cls],
                           'course_folder': folder['name'], 'mime': item['mimeType'],
                           'course_folder_url': 'https://drive.google.com/drive/folders/' + folder_id,
                           'created_at': created, 'created_day': created_day,
+                          **proof,
                           'url': 'https://drive.google.com/open?id=' + item['id']})
     return {'configured': True, 'files': files, 'problem': None}
 
 
-def today_files(token, config, *, date_et=None):
-    """Print-ready archived student PDFs and existing class packets, deduplicated by Drive ID."""
-    day = date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+def _packet_feedback_ids(properties):
+    raw = properties.get('hubFeedbackIds')
+    if not raw:
+        return []
     try:
-        if not isinstance(day, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', day):
+        values = json.loads(raw)
+        if (not isinstance(values, list) or len(values) > 300 or len(set(values)) != len(values)
+                or any(not isinstance(value, str) or not re.fullmatch(r'(?:feedbackdraft|feedbacksource)_[a-f0-9]{64}', value) for value in values)):
             raise ValueError()
-        datetime.strptime(day, '%Y-%m-%d')
-    except (TypeError, ValueError):
-        raise Held('The selected feedback date is invalid.') from None
+        return values
+    except (ValueError, TypeError):
+        raise Held('A class feedback packet has an unverified report manifest. No packet was assembled.') from None
+
+
+def _legacy_packet_proof(token, config, item, created_day):
+    """Large proven member lists live in private CAS, with only a short Drive reference."""
+    from . import daily_feedback_packet
+    properties = item.get('properties') or {}
+    proof = {'feedback_day': daily_feedback_packet.date_value(properties.get('hubFeedbackDate') or created_day),
+             'feedback_ids': _packet_feedback_ids(properties),
+             'student_only': properties.get('hubStudentFeedbackOnly') == 'true'}
+    reference = properties.get('hubFeedbackManifest')
+    if not reference:
+        return proof
+    if not isinstance(reference, str) or not re.fullmatch(r'feedbackpacketmanifest_[a-f0-9]{64}', reference):
+        raise Held('A class feedback packet has an invalid private manifest reference.')
+    stored = _read(configured_store(config), reference)
+    value = stored.value if stored else {}
+    meta = google.drive_file(token, item['id'], daily_feedback_packet.FIELDS)
+    if (value.get('schema') != 'hub-feedback-source-manifest/v1' or value.get('drive_file_id') != item['id']
+            or value.get('source_revision') != daily_feedback_packet._revision(meta)
+            or value.get('student_only') is not True):
+        raise Held('A class feedback packet’s audited student-only manifest no longer matches its source revision.')
+    canonical = value.get('canonical_source_id')
+    if canonical and (not isinstance(canonical, str) or not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', canonical)
+                      or value.get('duplicate_basis') != 'identical_student_feedback_pages'):
+        raise Held('A duplicate class packet needs its proven canonical source checked.')
+    return {'feedback_day': daily_feedback_packet.date_value(value.get('feedback_date')),
+            'feedback_ids': _packet_feedback_ids({'hubFeedbackIds': json.dumps(value.get('feedback_ids'))}),
+            'student_only': True, 'proven_revision': value['source_revision'], 'source_manifest': reference,
+            'canonical_source_id': canonical}
+
+
+def _feedback_files(token, config):
+    """Read all dated eligible sources without changing source identities or delivery states."""
     legacy = _legacy_feedback_files(token, config)
     by_id = {item['id']: item for item in legacy['files']}
     from . import student_archive
@@ -477,17 +524,87 @@ def today_files(token, config, *, date_et=None):
                            'student_folder': item.get('student_folder_name') or '',
                            'student_folder_url': 'https://drive.google.com/drive/folders/' + str(item.get('student_folder_id') or ''),
                            'created_at': created, 'created_day': created_day,
+                           'saved_at': item.get('saved_at'),
+                           'feedback_day': item.get('date') or (feedback_date(item.get('saved_at')) if item.get('saved_at') else created_day),
                            'url': item.get('url') or 'https://drive.google.com/open?id=' + ident,
                            'feedback_id': item.get('feedback_id'), 'archived': True}
-    if not legacy['configured'] and not archive_on:
-        return {**legacy, 'date': day}
-    files = [item for item in by_id.values() if item['created_day'] <= day]
-    batch_day = max((item['created_day'] for item in files), default=day)
-    files = [item for item in files if item['created_day'] == batch_day]
+    return {'configured': legacy['configured'] or archive_on, 'files': list(by_id.values()),
+            'problem': None if legacy['configured'] or archive_on else legacy['problem']}
+
+
+def feedback_date(stamp):
+    try:
+        moment = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+        if moment.tzinfo is None:
+            raise ValueError()
+        return moment.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+    except (ValueError, TypeError, AttributeError):
+        raise Held('A saved feedback report has no verified date.') from None
+
+
+def daily_sources(token, config, date_et):
+    """Exactly one day's reports; native reports must already be verified in student folders."""
+    from . import daily_feedback_packet
+    day = daily_feedback_packet.date_value(date_et)
+    available = _feedback_files(token, config)
+    if not available['configured']:
+        raise Held(available['problem'])
+    ids = {item['id'] for item in available['files']}
+    sources = []
+    for item in available['files']:
+        canonical = item.get('canonical_source_id')
+        if canonical and canonical != item['id']:
+            if canonical not in ids:
+                raise Held('The proven canonical class packet is unavailable. Its duplicate originals remain preserved.')
+            continue
+        if item.get('feedback_day', item['created_day']) == day:
+            sources.append(item)
+    native_ids = {item['feedback_id'] for item in sources if item.get('archived') and item.get('feedback_id')}
+    selected, covered, seen_feedback = [], set(), set()
+    packets = sorted((item for item in sources if not item.get('archived')), key=lambda item: -len(item.get('feedback_ids') or []))
+    for item in packets:
+        members = set(item.get('feedback_ids') or [])
+        if members and (members <= native_ids or members <= covered):
+            continue
+        if members & covered:
+            raise Held('Two non-identical class packets contain overlapping proven reports. Their packet boundaries need review before daily printing.')
+        if not item.get('student_only'):
+            raise Held('The class packet “' + item['name'] + '” needs verified student-only contents before it can enter the saved daily feedback document.')
+        covered.update(members)
+        selected.append(item)
+    for item in (item for item in sources if item.get('archived')):
+        if not item.get('saved_at') or not item.get('feedback_id'):
+            raise Held('An individual feedback PDF needs its verified saved date and report identity before daily printing.')
+        if item['feedback_id'] in covered or item['feedback_id'] in seen_feedback:
+            continue
+        seen_feedback.add(item['feedback_id'])
+        selected.append(item)
+    return selected
+
+
+def today_files(token, config, *, date_et=None):
+    """The latest feedback date and its durable daily report, without relabelling old sources."""
+    from . import daily_feedback_packet
+    day = daily_feedback_packet.date_value(date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat())
+    try:
+        available = _feedback_files(token, config)
+    except Held as error:
+        previous = daily_feedback_packet.status(token, config)
+        if previous.get('status') != 'ready':
+            raise
+        return {'configured': True, 'date': previous['date'], 'requested_date': day,
+                'files': [], 'problem': None, 'source_problem': str(error), 'daily_packet': previous}
+    if not available['configured']:
+        return {**available, 'date': day}
+    files = [item for item in available['files'] if item.get('feedback_day', item['created_day']) <= day]
+    batch_day = max((item.get('feedback_day', item['created_day']) for item in files), default=day)
+    files = [item for item in files if item.get('feedback_day', item['created_day']) == batch_day]
     order = {name: index for index, name in enumerate(FEEDBACK_FOLDERS)}
     files.sort(key=lambda item: (order[item['course']], item['created_at'], item['name'].casefold()))
-    return {'configured': True, 'date': batch_day, 'requested_date': day,
-            'files': files, 'problem': None}
+    packet = daily_feedback_packet.status(token, config, batch_day if files else None)
+    return {'configured': True, 'date': packet['date'] if not files and packet.get('status') == 'ready' else batch_day, 'requested_date': day,
+            'files': files, 'problem': None,
+            'daily_packet': packet}
 
 
 def print_today(token, config, file_ids, *, date_et=None):

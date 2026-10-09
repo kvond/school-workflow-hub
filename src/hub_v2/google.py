@@ -222,9 +222,52 @@ def as_read(item):
     return item
 
 
+def _file_permissions(token, file_id):
+    """Complete, bounded access evidence when files.get omits Shared Drive ACLs.
+
+    Keep every permission, including public and group access, so the caller's
+    privacy check sees the actual ACL. An incomplete listing is never evidence
+    of private access.
+    """
+    permissions, cursor, seen = [], None, set()
+    for _ in range(10):
+        params = {"fields": "nextPageToken,permissions(id,type,emailAddress,role,domain,deleted,permissionDetails)",
+                  "pageSize": 100, "supportsAllDrives": "true"}
+        if cursor:
+            params["pageToken"] = cursor
+        page = get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id, safe="") + "/permissions",
+                        token, params, timeout=10)
+        values = page.get("permissions") if isinstance(page, dict) else None
+        if (not isinstance(values, list) or len(values) > 100
+                or any(not isinstance(value, dict) for value in values)):
+            raise GoogleError("Google's Drive access list could not be fully verified.")
+        permissions.extend(values)
+        cursor = page.get("nextPageToken")
+        if cursor is not None and not isinstance(cursor, str):
+            raise GoogleError("Google's Drive access list could not be fully verified.")
+        if not cursor:
+            if not permissions:
+                raise GoogleError("Google returned no Drive access evidence. Private access needs checking.")
+            return permissions
+        if cursor in seen:
+            raise GoogleError("Google's Drive access list could not be fully verified.")
+        seen.add(cursor)
+    raise GoogleError("Google's Drive access list exceeded the verification limit.")
+
+
 def drive_file(token, file_id, fields=FILE_FIELDS):
-    return as_read(get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
-                            {"fields": fields, "supportsAllDrives": "true"}, timeout=10))
+    item = get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
+                    {"fields": fields, "supportsAllDrives": "true"}, timeout=10)
+    requested_permissions = fields.strip() == "*" or re.search(r"(?:^|,)\s*permissions(?:\s*[,(/]|\s*$)", fields)
+    if requested_permissions and not isinstance(item, dict):
+        raise GoogleError("Google sent incomplete Drive file metadata.")
+    if requested_permissions and "permissions" not in item:
+        # Shared Drive files deliberately omit permissions from files.get.
+        # Do not invent missing file metadata while enriching their ACL.
+        if (fields.strip() == "*" or re.search(r"(?:^|,)\s*id\s*(?:,|$)", fields)) and not item.get("id"):
+            raise GoogleError("Google sent incomplete Drive file metadata.")
+        item["permissions"] = _file_permissions(token, file_id)
+    return as_read(item)
 
 
 def prefix_name(token, file_id, prefix, original):

@@ -284,7 +284,8 @@ function renderNextLessons(audits) {
   return cockpitPanel('Next from Agenda', el('div', {class: 'table-wrap'}, table));
 }
 
-async function printTodayFeedback(files, status, button) {
+async function printTodayFeedback(data, status, button) {
+  const files = data.files || [];
   button.disabled = true;
   const printWindow = window.open('about:blank', '_blank');
   if (!printWindow) {
@@ -292,10 +293,22 @@ async function printTodayFeedback(files, status, button) {
     button.disabled = false;
     return;
   }
-  status.textContent = `Preparing ${files.length} feedback documents…`;
+  status.textContent = `Preparing all-class feedback for ${data.date}…`;
   try {
-    const response = await fetch('api/feedback/print-today', {method: 'POST', credentials: 'same-origin',
-      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: files.map(file => file.id)})});
+    let packet = data.daily_packet;
+    let response;
+    if (packet?.status === 'ready' && !files.length) {
+      response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
+    } else if (packet?.configured) {
+      const finalized = await fetch('api/feedback/daily', {method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({date: data.date})});
+      packet = await finalized.json();
+      if (!finalized.ok || packet.status !== 'ready') throw new Error(packet.error || packet.problem || 'The daily feedback document was not saved.');
+      response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
+    } else {
+      response = await fetch('api/feedback/print-today', {method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: files.map(file => file.id)})});
+    }
     if (!response.ok) {
       let detail = 'The packet could not be prepared.';
       try { detail = (await response.json()).error || detail; } catch { /* keep the safe message */ }
@@ -307,7 +320,11 @@ async function printTodayFeedback(files, status, button) {
     printWindow.addEventListener('load', () => setTimeout(() => printWindow.print(), 900), {once: true});
     printWindow.location = url;
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    status.textContent = `Print dialog opened for one packet with ${files.length} feedback documents. They are already filed in their course folders.`;
+    status.textContent = packet?.status === 'ready'
+      ? `Print dialog opened for ${data.date}: ${packet.pages} pages across classes. The daily document is saved; verified individual copies remain in student folders. Printing and handing out remain your own records.`
+      : `Print dialog opened for ${data.date}. This preview is not a saved daily document. Printing and handing out remain your own records.`;
+    if (packet?.status === 'ready') loadToday(true);
+    button.disabled = false;
   } catch (error) {
     printWindow.close();
     status.textContent = error.message;
@@ -319,19 +336,27 @@ function renderTodayFeedback(data) {
   if (data.error) return cockpitPanel('Feedback ready to print', note(data.error, 'info'));
   if (data.problem) return cockpitPanel('Feedback ready to print', note(data.problem, 'info'));
   const files = data.files || [];
-  const panel = cockpitPanel('Feedback ready to print');
-  if (!files.length) {
+  const packet = data.daily_packet;
+  const panel = cockpitPanel('Daily feedback document');
+  if (!files.length && packet?.status !== 'ready') {
     panel.append(note('No print-ready feedback documents were found in the connected course folders.', 'info'));
     return panel;
   }
-  const status = el('p', {class: 'muted', role: 'status', text: `${files.length} documents · created ${data.date} · already filed by course. Printing and handing out remain separate.`});
+  const status = el('p', {class: 'muted', role: 'status', text: `Feedback dated ${data.date} · all classes · ${packet?.status === 'ready' ? packet.source_count : files.length} source documents. Printing and handing out remain separate.`});
   const list = el('ul', {class: 'feedback-today-list'}, ...files.map(file =>
     el('li', {}, el('strong', {text: `${file.course_name}: `}),
       link(file.name, file.url), el('small', {class: 'muted', text: ` · ${when(file.created_at)} · `}),
       link('Open course folder ↗', file.course_folder_url))));
-  const button = el('button', {type: 'button', class: 'primary'}, `Print this feedback packet (${files.length} documents)`);
-  button.onclick = () => printTodayFeedback(files, status, button);
-  panel.append(status, list, el('div', {class: 'action-row'}, button));
+  const button = el('button', {type: 'button', class: 'primary'}, `Print all feedback — ${data.date}`);
+  button.onclick = () => printTodayFeedback(data, status, button);
+  const savedURL = packet?.status === 'ready' && /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(packet.pdf_url || '') ? packet.pdf_url : null;
+  panel.append(status,
+    savedURL ? el('p', {}, link(`Open saved daily feedback — ${packet.date} (${packet.pages} pages)`, savedURL))
+      : note(packet?.configured ? 'Printing saves this day’s all-class document. Verified student copies stay in their folders; existing class packets stay at class level.'
+        : 'The daily document folder is not connected yet. The existing feedback can be printed as a preview.', 'info'),
+    data.source_problem ? note('Current feedback sources could not be fully checked. This saved dated document remains available: ' + data.source_problem, 'info') : null,
+    el('div', {class: 'action-row'}, button),
+    files.length ? el('details', {}, el('summary', {text: 'Feedback sources and student copies'}), list) : null);
   return panel;
 }
 
@@ -727,7 +752,7 @@ function renderStudentRecords(data) {
     el('tbody', {}, data.students.map(student => {
       const folderURL = recordFolderURL(student.folder_url);
       return el('tr', {}, el('td', {text: student.name}), el('td', {text: student.section || '—'}),
-        el('td', {text: student.status === 'current' ? 'Current' : student.status === 'retained' ? 'Retained history' : student.status === 'unverified' ? 'Roster unverified' : 'Status unavailable'}),
+        el('td', {text: student.status === 'current' ? 'Current' : student.status === 'retained' ? 'Retained history' : student.status === 'identity_unverified' ? 'Filed by name · identity unverified' : student.status === 'unverified' ? 'Roster unverified' : 'Status unavailable'}),
         el('td', {text: recordDate(student.latest_record_date)}),
         el('td', {}, folderURL ? link('Open folder', folderURL) : el('span', {class: 'muted', text: 'Folder unavailable'})));
     })))));

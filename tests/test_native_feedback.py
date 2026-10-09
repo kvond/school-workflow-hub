@@ -134,6 +134,28 @@ class NativeFeedbackTests(unittest.TestCase):
         self.assertTrue(result['pdf_url'])
         file_feedback.assert_not_called()
 
+    def test_successful_student_filing_updates_the_original_feedback_day_packet_without_rebilling(self):
+        from hub_v2 import daily_feedback_packet, student_archive
+        with patch.object(fb, 'now', return_value='2026-10-07T18:00:00Z'):
+            draft = fb.generate(OPENAI_CONFIG, inputs())
+        artifact = {'status': 'verified', 'feedback_id': draft['id'], 'drive_file_id': 'FictionalPdf1234567890',
+                    'student_folder_id': 'FictionalStudentFolder123', 'class_key': 'biology'}
+        with patch.object(fb, 'now', return_value='2026-10-07T18:00:00Z'), \
+                patch.object(student_archive, 'enabled', return_value=True), \
+                patch.object(student_archive, 'file_feedback', return_value=artifact), \
+                patch.object(daily_feedback_packet, 'enabled', return_value=True), \
+                patch.object(daily_feedback_packet, 'build', return_value={'status': 'ready', 'date': '2026-10-07'}) as build:
+            saved = fb.save(OPENAI_CONFIG, draft['id'], inputs(), token='read', write_token='write')
+            self.assertEqual(saved['daily_packet']['date'], '2026-10-07')
+            build.assert_called_once_with('read', 'write', OPENAI_CONFIG, '2026-10-07')
+            build.side_effect = daily_feedback_packet.Held('Daily folder readback needs review.')
+            held = fb.save(OPENAI_CONFIG, draft['id'], inputs(), token='read', write_token='write')
+        self.assertEqual(held['daily_packet']['status'], 'held')
+        self.assertEqual(held['archive'], artifact)
+        self.assertEqual(held['saved_at'], saved['saved_at'])
+        self.assertTrue(held['pdf_url'])
+        self.assertEqual(self.call.call_count, 1)
+
     def test_today_feedback_lists_only_print_ready_files_created_today_in_their_course_folder(self):
         folders = {'biology': 'BIOLOGY_FOLDER_ID', 'forensics': 'FORENSICS_FOLDER_ID',
                    'anatomy': 'ANATOMY_FOLDER_ID'}

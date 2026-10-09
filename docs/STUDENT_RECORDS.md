@@ -9,13 +9,19 @@ reports covering both remain in the Forensics parent.
 Original submissions and Form upload trees remain intact. One shortcut is
 indexed per original Drive file ID. Original Form receipt dates label work;
 immutable saved-feedback dates label feedback. File creation and modification
-dates do not substitute for submission dates. Multiple dated observations of
+dates do not substitute for submission dates. A reachable folder-only file
+without a real submission timestamp can still be linked with its actual file
+creation date, explicitly labeled **file created**. Multiple dated observations of
 one evolving source are retained in the private index. Class-level packets
 containing several students' feedback remain at class level.
 
 ## Runtime configuration
 
 - `HUB_STUDENT_RECORDS_ROOT_FOLDER`: private archive root, outside Turn-In.
+- `HUB_STUDENT_RECORDS_IDENTITY_SCOPE_ROOT`: optional stable index namespace;
+  defaults to the actual root. Keep the former root ID here when rebuilding
+  folders in a private Shared Drive, so student, artifact, receipt and task
+  keys retain their identity even though physical folder IDs change.
 - `HUB_STUDENT_RECORDS_COURSE_FOLDERS`: JSON object with `biology`, `forensics`
   and `anatomy` folder IDs, each a direct child of that root.
 - `HUB_TEACHER_REPORTS_COURSE_FOLDERS`: separate private class report folders.
@@ -29,13 +35,41 @@ existing runtime identity needs write access only to the configured private
 archive. Parent/file permissions and locations are checked before filing and
 again on readback. Source sharing is never changed by the Hub.
 
+The identity scope is an index identifier, not a location or permission grant.
+The actual root and course folders still require private parent/access checks.
+An authorized migration can recreate folder shells and move archive files
+individually, retaining file IDs and immutable PDFs. Folder IDs, parents,
+folder URLs, class-index folder values and current receipt locators must be
+reconciled privately; CAS keys, identity aliases and source IDs stay stable.
+
 IC identity is preferred. When no verified IC crosswalk is available, filing
 can use an exact unique school-email/course match from a Form and the source
-roster. Names and filenames alone do not authorize automatic filing. Every
-earlier Form version needs its own matching email evidence. The UI displays
+roster. The teacher additionally authorized filing by a clear full name or
+known school username in the original filename. This filing-only fallback
+reads the selected course roster afresh, retains duplicate names for collision
+checks, and requires one exact course and section student. Surname-only,
+unnamed, conflicting, duplicate or unavailable cases remain in their original
+location, with a specific request for a named resubmission. Each earlier
+version needs its own email or independently checked filename evidence;
+identity from the current version is never inherited as proof. Name-only
+filing is labeled **identity unverified** and never changes grading, native
+feedback identity, IC mappings, grades or missing-work decisions.
+
+Stable course/section/name aliases reuse an existing uniquely matching email
+or native-ID folder. Later verified identity can upgrade a name-created folder
+without duplicating source links or history. Two competing archive folders
+remain an identity-review hold; the Hub never merges or discards either.
+The UI displays
 **Roster unverified** until current IC membership can be confirmed. Departed
 students' history is retained, with membership derived only from a verified
 crosswalk.
+
+A reachable, uniquely identified file can also be archived when its lesson
+match remains unresolved. Its shortcut preserves the original filename and
+source Form/week context, with **lesson not confirmed**. This records the
+student's source work without asserting an assignment or resolving any
+grading/IC lesson hold. Original submissions and Form response folders stay
+intact.
 
 ## Operations
 
@@ -56,11 +90,34 @@ from that PDF. Today printing combines indexed nested PDFs with legacy class
 packets, deduplicates Drive IDs and excludes teacher reports and checklists.
 Printed and Handed out remain separate teacher-controlled states.
 
+Feedback printing verifies the private archive index, student/section folders
+and each selected PDF's current parent, private access, identity tag and
+checksum. It does not fetch unrelated work shortcuts. A missing work shortcut
+therefore cannot prevent reprinting a verified PDF; the full student-records
+view still reads and checks every work shortcut. This print-specific read does
+not change filing receipts or assert complete source coverage.
+
+An independently audited legacy packet can use
+`filing_person_for_legacy_label(..., section=<verified source section>)` for
+filing only. The label must contain an explicit roster first name or recorded
+nickname plus a full surname or surname initial, unique within the selected
+course and source section. It never infers a missing first name. The importer
+must retain the original packet, bind every extracted PDF to its source ID,
+verified version or content hash, original date and exact audited student span,
+and use a distinct legacy artifact identity. It must never fabricate a native
+saved-feedback draft ID. Such filing is marked **identity unverified** even
+when its stable name alias reuses an existing verified student's folder.
+
 Reserved Drive IDs and Firestore compare-and-swap records prevent duplicate
 creates. Unconfirmed creation/readback holds for inspection rather than
 creating a replacement. A backend storage-quota failure preserves the saved
 Hub PDF and reports the filing blocker; it is not verified Drive delivery or
 permission to mark Made.
+
+Only a precise PDF storage-quota rejection followed by an exact reserved-ID
+404 records a known quota failure and the verified parent Drive ID. This is
+evidence for explicit reconciliation after migration, never an automatic
+retry. Unknown create outcomes retain the same inspection hold.
 
 ## Retired folders
 

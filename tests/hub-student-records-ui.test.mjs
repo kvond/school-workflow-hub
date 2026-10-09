@@ -73,6 +73,16 @@ test('an unverified roster never labels a student Current', async () => {
   assert.match(h.body.textContent, /Ben BrookA4 FictionalRetained history/);
 });
 
+test('a name-filed folder stays visibly identity unverified without adding controls', async () => {
+  const data = response(); data.students[0].status = 'identity_unverified';
+  data.students[0].identity_basis = 'student_named_filename';
+  const h = boot(() => data); h.panel.open = true; await h.ui.loadStudentRecords();
+  assert.match(h.body.textContent, /Ann AveryA4 FictionalFiled by name · identity unverified/);
+  assert.doesNotMatch(h.body.textContent, /Ann AveryA4 FictionalCurrent/);
+  assert.ok(walk(h.body).some(node => node.tagName === 'a' && node.href.endsWith('/STUDENT_CURRENT')));
+  assert.equal(walk(h.body).filter(node => ['button', 'input'].includes(node.tagName)).length, 0);
+});
+
 test('switching class suppresses an older reply and immediately clears the old class links', async () => {
   const pending = new Map(), h = boot(url => new Promise(resolve => pending.set(url, resolve)));
   h.panel.open = true;

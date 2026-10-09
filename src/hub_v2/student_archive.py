@@ -1,9 +1,10 @@
 """Private student records: source shortcuts and immutable saved feedback PDFs.
 
 Original Form uploads, assessments, delivery ticks and sharing never change.
-IC identity is preferred. An exact, unique school-email/course match is a
-filing-only fallback when the native number is unavailable; names alone never
-authorize filing or an IC write. The index uses the existing private CAS store.
+IC identity is preferred. Exact school-email/course evidence or the teacher's
+authorized unique-name fallback can file work. Name filing stays explicitly
+identity-unverified and never authorizes feedback, grading or an IC write.
+The index uses the existing private CAS store.
 """
 import hashlib
 import json
@@ -18,6 +19,7 @@ from school_workflow_hub.core.cloud_state import CloudState, Conflict, StoreUnav
 from school_workflow_hub.core.runs import content_hash
 
 ROOT_CONFIG = "HUB_STUDENT_RECORDS_ROOT_FOLDER"
+SCOPE_ROOT_CONFIG = "HUB_STUDENT_RECORDS_IDENTITY_SCOPE_ROOT"
 COURSES_CONFIG = "HUB_STUDENT_RECORDS_COURSE_FOLDERS"
 ROSTER_CONFIG = "HUB_STUDENT_ARCHIVE_IC_ROSTER"
 CLASSES = {"biology": "Biology", "forensics": "Forensics", "anatomy": "A&P"}
@@ -25,7 +27,7 @@ SCHEMA = "hub-student-archive/v1"
 SHORTCUT = "application/vnd.google-apps.shortcut"
 PDF = "application/pdf"
 TAG = "hubArchiveKey"
-FIELDS = "id,name,mimeType,parents,trashed,permissions,capabilities,properties,shortcutDetails,createdTime,modifiedTime,version,md5Checksum,size"
+FIELDS = "id,name,mimeType,parents,driveId,trashed,permissions,capabilities,properties,shortcutDetails,createdTime,modifiedTime,version,md5Checksum,size"
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
 
@@ -58,10 +60,18 @@ def _configuration(config):
 
 def enabled(config):
     try:
-        _configuration(config)
+        actual, _ = _configuration(config)
+        _scope_root(config, actual)
         return True
     except Held:
         return False
+
+
+def _scope_root(config, actual_root):
+    root = config.get(SCOPE_ROOT_CONFIG) or actual_root
+    if not isinstance(root, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", root):
+        raise Held("The archive's stable identity scope needs checking before filing.")
+    return root
 
 
 def _clean(value, limit=180):
@@ -186,14 +196,206 @@ def _identity(config, cls, row):
         raise Held("This student's current class, section and roster display name need checking.")
     return {"identity": "ic:" + native if verified_native else "email:" + email,
             "basis": "verified_ic_student_id" if verified_native else "school_email_and_course",
+            "identity_status": "verified",
             "student_id": native if verified_native else "", "school_email": email if trusted_email else "",
             "first": first, "last": last, "section": section, "name": last + ", " + first}
+
+
+def _name_key(person):
+    return "name:" + content_hash([person["section"], work.roster.plain(person["last"]),
+                                  work.roster.plain(person["first"])])
+
+
+def _same_name(a, b):
+    return all(work.roster.plain(a.get(k)) == work.roster.plain(b.get(k))
+               for k in ("section", "first", "last"))
+
+
+def _filing_roster(token, config, cls):
+    """Fresh course roster with duplicate display names retained for safety.
+
+    The general work loader deduplicates display names; that is unsuitable
+    evidence for a filing-only unique-name decision.
+    """
+    roster_id = config.get("HUB_ROSTER_SPREADSHEET_ID")
+    if not roster_id:
+        raise Held("The current course roster is unavailable. Keep this upload and ask for a named resubmission.")
+    try:
+        choices = json.loads(config.get("HUB_ROSTER_TABS") or "{}")
+        layouts = json.loads(config.get("HUB_ROSTER_COLUMN_LAYOUTS") or "{}")
+        if not isinstance(choices, dict) or not isinstance(layouts, dict):
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise Held("The course roster's tab or name-column configuration needs checking before filing by name.") from None
+    _, tabs = google.sheet_tabs(token, roster_id)
+    by_id = {ident: title for title, ident in tabs.items()}
+    wanted = {}
+    for section in work.roster.SECTIONS[cls]:
+        choice = choices.get(section, section)
+        title = by_id.get(choice) if isinstance(choice, int) else (choice if choice in tabs else
+            next((t for t in tabs if work.roster.plain(t) == work.roster.plain(choice)), None))
+        if not title:
+            raise Held("The current %s roster tab could not be confirmed. Keep its uploads for review." % section)
+        if title in wanted and wanted[title] != section:
+            raise Held("Two course sections point to one roster tab. Confirm their separate rosters before filing by name.")
+        wanted[title] = section
+    grids = google.sheet_grid(token, roster_id, ["'%s'!A1:B200" % t.replace("'", "''") for t in sorted(wanted)])
+    rows = []
+    for title, section in wanted.items():
+        if title not in grids:
+            raise Held("The current course roster could not be read completely. Keep its uploads for review.")
+        if any(r >= 200 and (cell.get("formattedValue") or cell.get("userEnteredValue"))
+               for (r, _), cell in grids[title].items()):
+            raise Held("The course roster reaches the reading limit. Confirm its complete roster before filing by name.")
+        parsed, skipped = work.roster.parse_tab(grids[title], cls, section, layouts)
+        if skipped or any(p["section"] not in work.roster.SECTIONS[cls] for p in parsed):
+            raise Held("The current course roster has unreadable names or sections. Keep its uploads for review.")
+        rows.extend(parsed)
+    work.roster.orient(rows, set())  # Reuse the source reader's confirmed orientation, if any.
+    if not rows:
+        raise Held("The current course roster has no confirmed student names. Keep its uploads for review.")
+    if any(p.get("order") == "assumed" for p in rows):
+        raise Held("The course roster's first/last name columns are unconfirmed. Add name-column headers or confirm its configured column order before filing by name.")
+    return rows
+
+
+def _filename_owner(config, meta, students):
+    """A full name/known username in a filename, never a surname guess."""
+    prefix = config.get("HUB_EMAIL_USERNAME_PREFIX", "s.")
+    name = str(meta.get("name") or "")
+    stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", name)
+    candidates = [(work.roster.uploader_name(name), "uploader_name"), (stem, "full_name")]
+    lead = re.match(r"^(.+?)\s+[—–-]\s+", stem)
+    if lead:
+        candidates.append((lead.group(1), "full_name"))
+    if meta.get("shown_name"):
+        candidates.append((str(meta["shown_name"]).split(".", 1)[0], "teacher_named_prefix"))
+    username = work.roster.file_username(name, prefix)
+    found, surname = {}, False
+    for text, basis in candidates + ([(username, "school_username")] if username else []):
+        target = work.roster.username_key(text, prefix) if basis == "school_username" else work.roster.compact(text)
+        if not target:
+            continue
+        for index, student in enumerate(students):
+            if target in work.roster.aliases(student) or target == work.roster.compact(student["last"] + " " + student["first"]):
+                found[index] = basis
+            elif target == work.roster.compact(student["last"]):
+                surname = True
+    if len(found) > 1:
+        raise Held("This filename matches more than one roster student. Ask for a resubmission with an unambiguous full name and section.")
+    if not found:
+        if surname:
+            raise Held("This upload gives only a surname. Ask the student to resubmit with first and last name and section.")
+        raise Held("This upload has no clear full student name. Ask for a resubmission with first and last name and section.")
+    index, basis = next(iter(found.items()))
+    return students[index], basis
+
+
+def _filing_identity(config, cls, row, roster_reader, source_reader):
+    # Strict identity remains the only path used by saved native feedback.
+    email = str(row.get("school_email") or row.get("email") or "").lower().strip()
+    domains = {d.strip().lower().lstrip("@") for d in config.get("HUB_SCHOOL_EMAIL_DOMAINS", "").split(",") if d.strip()}
+    native = str(row.get("ic_student_id") or row.get("student_id") or "")
+    strong = (row.get("ic_identity_verified") is True and bool(re.fullmatch(r"\d{2,20}", native))) or (
+        row.get("matched") is True and row.get("matched_by") == "email" and row.get("source") == "form"
+        and bool(re.fullmatch(r"[^@\s]+@[^@\s]+", email)) and email.rsplit("@", 1)[1] in domains)
+    if strong:
+        return {**_identity(config, cls, row), "identity_status": "verified"}
+    students = roster_reader()
+    owners = []
+    for file in row.get("files", []):
+        if file.get("trashed") or file.get("problem"):
+            continue
+        owners.append(_filename_owner(config, source_reader(file["id"]), students))
+    if not owners:
+        raise Held("This upload needs a readable file with a clear full student name. Ask for a named resubmission.")
+    student, basis = owners[0]
+    if student.get("class_key") != cls or student.get("section") not in work.roster.SECTIONS[cls]:
+        raise Held("This filename's roster match belongs to another course or section. Ask for a corrected named resubmission.")
+    if any(not _same_name(student, other) for other, _ in owners[1:]):
+        raise Held("This submission contains files named for different students. Ask for separate named resubmissions.")
+    if row.get("matched") and not _same_name(student, row):
+        raise Held("The filename disagrees with its recorded student or section. Ask for a corrected named resubmission.")
+    if row.get("section") and work.roster.plain(row["section"]) != work.roster.plain(student["section"]):
+        raise Held("The filename disagrees with its recorded section. Ask for a corrected named resubmission.")
+    canonical = _roster(config)
+    if canonical is not None:
+        matches = [p for p in canonical if p["class_key"] == cls and p.get("active", True) and _same_name(p, student)]
+        if len(matches) != 1:
+            raise Held("This filename does not match exactly one current IC course and section student. Keep it for review.")
+    first, last, section = (_clean(student[k]) for k in ("first", "last", "section"))
+    person = {"basis": "unique_name_for_filing", "identity_status": "identity_unverified", "student_id": "",
+              "school_email": "", "first": first, "last": last, "section": section, "name": last + ", " + first,
+              "name_evidence": basis}
+    person["identity"] = _name_key(person)
+    return person
+
+
+def _work_date(version, source):
+    if version.get("source") == "form":
+        return _date(version.get("submitted_at")), "form_receipt", version.get("submitted_at")
+    if version.get("source") != "folder":
+        raise Held("This work's original source and date could not be confirmed. Keep it for review.")
+    stamped = work.name_time(source.get("name"), source.get("createdTime"))
+    if stamped:
+        return _date(stamped), "filename_submission", stamped
+    return _date(source.get("createdTime")), "file_created", None
+
+
+def filing_person_for_legacy_label(token, config, class_key, label, *, section=None):
+    """Filing-only identity for an independently audited source-packet label.
+
+    The caller must bind the resulting PDF to the original source/version,
+    verified date and exact student span. This never creates a native draft
+    identity, authorizes a grade, or infers a missing first name.
+    """
+    if class_key not in CLASSES or (section and section not in work.roster.SECTIONS[class_key]):
+        raise Held("The legacy feedback's course and section need checking before filing.")
+    rows = _filing_roster(token, config, class_key)
+    target = work.roster.compact(re.sub(r"^student\s*:\s*", "", _clean(label), flags=re.I))
+    matches = []
+    for row in rows:
+        if section and row["section"] != section:
+            continue
+        first = work.roster.first_names(row["first"])
+        legal = work.roster.plain(re.sub(r"\([^)]*\)", " ", row["first"])).split()
+        if len(legal) > 1:
+            first.add(legal[0] + " " + " ".join(part[0] for part in legal[1:]))
+        last = work.roster.plain(row["last"])
+        surnames = {last, last[:1]}
+        variants = {work.roster.compact(f + " " + s) for f in first for s in surnames if f and s}
+        variants.add(work.roster.compact(last + " " + row["first"]))
+        if target and target in variants:
+            matches.append(row)
+    if len(matches) != 1:
+        raise Held("This legacy feedback label does not identify one unique course student. Retain its original packet for teacher identity review.")
+    row = matches[0]
+    canonical = _roster(config)
+    if canonical is not None and len([p for p in canonical if p["class_key"] == class_key
+                                     and p.get("active", True) and _same_name(p, row)]) != 1:
+        raise Held("The legacy label does not match one current IC course and section student. Retain the original packet.")
+    person = {"first": _clean(row["first"]), "last": _clean(row["last"]), "section": row["section"],
+              "name": _clean(row["last"]) + ", " + _clean(row["first"]), "student_id": "", "school_email": "",
+              "basis": "unique_name_for_filing", "identity_status": "identity_unverified",
+              "name_evidence": "audited_legacy_full_first_name_and_surname_or_initial"}
+    person["identity"] = _name_key(person)
+    return person
+
+
+def _source_id(url):
+    for pattern in (r"https://drive\.google\.com/open\?id=([A-Za-z0-9_-]{10,200})",
+                    r"https://docs\.google\.com/presentation/d/([A-Za-z0-9_-]{10,200})/edit"):
+        found = re.fullmatch(pattern, str(url or ""))
+        if found:
+            return found.group(1)
+    return None
 
 
 class _Run:
     def __init__(self, token, write_token, config, cls):
         self.token, self.write_token, self.config, self.cls = token, write_token, config, cls
-        self.root, self.course = _location(token, config, cls, write=True)
+        self.actual_root, self.course = _location(token, config, cls, write=True)
+        self.root = _scope_root(config, self.actual_root)
         self.port = configured_store(config)
         self.cloud = CloudState(self.port)
         task = self.cloud.create_task({"workflow": "student-archive", "class_key": cls,
@@ -202,6 +404,7 @@ class _Run:
         self.claim = self.cloud.claim(task, owner="student-archive", request_id=request,
                                       input_hash=content_hash([self.root, cls, request]))
         self.index_key = key("archiveclass", [self.root, cls])
+        self.student_records = None
 
     def renew(self):
         self.claim = self.cloud.renew(self.claim)
@@ -220,16 +423,24 @@ class _Run:
             # Preserve every observation below, while its one shortcut keeps
             # the latest confirmed submission label instead of an older date.
             if (mime == SHORTCUT and attributes
-                    and work.when(record.get("submitted_at"))
-                    and work.when(attributes.get("submitted_at"))
-                    and work.when(record["submitted_at"]) > work.when(attributes["submitted_at"])):
+                    and ((work.when(record.get("submitted_at"))
+                          and (attributes.get("date_basis") == "file_created"
+                               or (work.when(attributes.get("submitted_at"))
+                                   and work.when(record["submitted_at"]) > work.when(attributes["submitted_at"]))))
+                         or (record.get("lesson_status") == "verified" and attributes.get("lesson_status") == "unverified"))):
                 name = record["name"]
-                attributes = {k: record.get(k) for k in attributes}
+                attributes = {k: record[k] if k in record else v for k, v in attributes.items()}
+                if work.when(record.get("submitted_at")) and "date_basis" not in record:
+                    attributes["date_basis"] = "form_receipt"
+            if (mime == SHORTCUT and attributes and record.get("identity_status", "verified") == "verified"
+                    and attributes.get("identity_status") == "identity_unverified"):
+                attributes = {**attributes, "identity_status": "verified",
+                              "identity_basis": record.get("identity_basis", "retained_verified_source")}
         else:
             existing = [item for item in google.folder_children(self.token, parent)
                         if (item.get("properties") or {}).get(TAG) == ident
                         or (mime == google.FOLDER and item.get("mimeType") == google.FOLDER
-                            and item.get("name") == name and not (item.get("properties") or {}).get(TAG))]
+                            and item.get("name") == name)]
             if existing:
                 raise Held("An existing archive folder or record has no confirmed index. Preserve it for identity review.")
             self.renew()
@@ -254,13 +465,21 @@ class _Run:
             if target:
                 metadata["shortcutDetails"] = {"targetId": target}
             creation_error = None
+            known_quota = False
             try:
                 google.archive_create(self.write_token, metadata, pdf)
             except google.GoogleError as error:
                 creation_error = str(error)  # Helpers only emit bounded, redacted explanations.
+                known_quota = (mime == PDF and error.status == 403
+                               and creation_error.startswith("Drive storage quota prevents this PDF upload."))
             try:
                 meta = google.drive_file(self.token, file_id, FIELDS)
-            except google.GoogleError:
+            except google.GoogleError as read_error:
+                if known_quota and read_error.status == 404:
+                    record = {**record, "creation_failure": "storage_quota", "failure_absence_verified": True,
+                              "failure_checked_at": datetime.now(timezone.utc).isoformat(),
+                              "attempt_parent_drive_id": self.course.get("driveId")}
+                    old = _put(self.port, ident, record, old)
                 raise Held(creation_error or "Drive did not confirm the reserved archive file. Its creation is held for review.") from None
         _private(meta, parent=parent, folder=mime == google.FOLDER)
         if (meta.get("mimeType") != mime or (meta.get("properties") or {}).get(TAG) != ident
@@ -279,33 +498,60 @@ class _Run:
             if meta.get("name") != name:
                 raise Held("Drive did not confirm this archive label update.")
         record.update(status="verified", name=meta.get("name", name), created_at=meta.get("createdTime", ""),
-                      url=_url(file_id, mime == google.FOLDER))
+                      drive_version=meta.get("version"), url=_url(file_id, mime == google.FOLDER))
         if mime == SHORTCUT:
             record.update(attributes or {})
         return _put(self.port, ident, record, old).value
 
+    def _student_record(self, ident):
+        seen = set()
+        for _ in range(6):
+            if ident in seen:
+                break
+            seen.add(ident)
+            doc = _read(self.port, ident)
+            if not doc or not doc.value.get("alias_of"):
+                return ident, doc
+            ident = doc.value["alias_of"]
+        raise Held("The student archive's identity links need review. Existing folders are preserved.")
+
     def student(self, person):
         section_key = key("archivesection", [self.root, self.cls, person["section"]])
         section = self.create(section_key, person["section"], self.course["id"], google.FOLDER)
-        student_key = key("archivestudent", [self.root, self.cls, person["identity"]])
-        prior = _read(self.port, student_key)
-        if prior and prior.value.get("alias_of"):
-            student_key = prior.value["alias_of"]
-            prior = _read(self.port, student_key)
-        # Link a newly verified native ID to its existing email-owned folder.
-        if person["student_id"] and person["school_email"]:
-            email_key = key("archivestudent", [self.root, self.cls, "email:" + person["school_email"]])
-            email_doc = _read(self.port, email_key)
-            if email_doc and not prior:
-                _put(self.port, student_key, {"alias_of": email_key})
-                student_key, prior = email_key, email_doc
-            elif email_doc and prior and email_doc.value.get("drive_file_id") != prior.value.get("drive_file_id"):
-                raise Held("Two archive folders claim this student identity. Preserve both for review.")
+        primary_key = key("archivestudent", [self.root, self.cls, person["identity"]])
+        name_key = key("archivestudent", [self.root, self.cls, _name_key(person)])
+        identities = [primary_key, name_key]
+        if person["school_email"]:
+            identities.append(key("archivestudent", [self.root, self.cls, "email:" + person["school_email"]]))
+        records = {}
+        for ident in dict.fromkeys(identities):
+            canonical, doc = self._student_record(ident)
+            if doc:
+                records[canonical] = doc
+        # Existing email archives predate name aliases. Bind only one exact
+        # course/section/display-name folder; never merge two histories.
+        if self.student_records is None:
+            index = _read(self.port, self.index_key)
+            ids = list((index.value if index else {}).get("students", {}))
+            self.student_records = _batch_read(self.port, ids)
+        for ident, doc in self.student_records.items():
+            if doc and _same_name(doc.value, person):
+                records[ident] = doc
+        folders = {doc.value.get("drive_file_id") for doc in records.values()}
+        if len(folders) > 1:
+            raise Held("Two archive folders claim this course, section and student name. Preserve both for identity review.")
+        student_key, prior = next(iter(records.items())) if records else (primary_key, None)
+        if prior and person.get("identity_status") == "identity_unverified" and not _same_name(prior.value, person):
+            raise Held("The filename points to an archive with a different current roster name or section. Keep it for identity review.")
         if prior and prior.value.get("student_id") and person["student_id"] \
                 and prior.value["student_id"] != person["student_id"]:
             raise Held("This archive has a different verified IC identity. It needs review.")
         if prior:
             person = dict(person)
+            if person.get("identity_status") == "identity_unverified" and prior.value.get("basis") != "unique_name_for_filing":
+                person.update({k: prior.value.get(k, person.get(k)) for k in
+                               ("identity", "basis", "student_id", "school_email")})
+                person["identity_status"] = prior.value.get("identity_status", "verified")
             if prior.value.get("student_id") and not person["student_id"]:
                 person.update(student_id=prior.value["student_id"], identity="ic:" + prior.value["student_id"],
                               basis="verified_ic_student_id")
@@ -327,6 +573,11 @@ class _Run:
                               attributes={**person, "items": {}})
         doc = _read(self.port, student_key)
         student = _put(self.port, student_key, {**student, **person, "student_key": student_key}, doc).value
+        self.student_records[student_key] = _read(self.port, student_key)
+        for ident in dict.fromkeys(identities):
+            if ident != student_key:
+                old = _read(self.port, ident)
+                _put(self.port, ident, {"schema": SCHEMA, "alias_of": student_key}, old)
         index = _read(self.port, self.index_key)
         values = dict((index.value if index else {}).get("students", {}))
         values[student_key] = student["drive_file_id"]
@@ -442,8 +693,35 @@ def archive_work(token, write_token, config, class_key, found):
     try:
         _scan_scope(class_key, found)
         run = _Run(token, write_token, config, class_key)
+        roster_rows, source_metadata = None, {}
+
+        def roster_reader():
+            nonlocal roster_rows
+            if roster_rows is None:
+                roster_rows = _filing_roster(token, config, class_key)
+            return roster_rows
+
+        def source_reader(ident):
+            if ident not in source_metadata:
+                source_metadata[ident] = google.drive_file(token, ident, FIELDS)
+            return source_metadata[ident]
+
         candidates, emails, conflicts = [], {}, set()
-        for lesson in found.get("lessons", []):
+        lessons = list(found.get("lessons", []))
+        loose = list(found.get("other_files", []))
+        for lesson in lessons:
+            for form in lesson.get("forms", []):
+                for item in form.get("elsewhere", []):
+                    ident = _source_id(item.get("url"))
+                    if "match not confirmed" in str(item.get("to", "")).casefold() and ident:
+                        loose.append({"matched": False, "source": item.get("source"), "email": "", "matched_by": None,
+                            "first": "", "last": "", "section": item.get("section", ""), "earlier": [],
+                            "submitted_at": item.get("submitted_at"), "files": [{"id": ident, "name": item.get("file", ""),
+                                                                                  "via": item.get("to", "")} ]})
+        if loose:
+            lessons.append({"topic": "Lesson not confirmed", "forms": [{"label": "Lesson not confirmed",
+                "form_id": None, "lesson_unverified": True, "students": loose}]})
+        for lesson in lessons:
             if lesson.get("problem"):
                 result["held"].append({"assignment": _clean(lesson.get("topic")), "problem": lesson["problem"]})
             for form in lesson.get("forms", []):
@@ -452,22 +730,19 @@ def archive_work(token, write_token, config, class_key, found):
                     result["held"].append({"assignment": form.get("label", ""), "problem": form["problem"]})
                     continue
                 for row in form.get("students", []) + form.get("late", []):
-                    if not row.get("matched"):
-                        if row.get("files") or any(v.get("files") for v in row.get("earlier", [])):
-                            result["held"].append({**_hold_context(row, assignment),
-                                "problem": "This submission is not matched to a verified roster student. Its source files are preserved."})
+                    if not row.get("files") and not any(v.get("files") for v in row.get("earlier", [])):
                         continue
                     try:
-                        person = _identity(config, class_key, row)
+                        person = _filing_identity(config, class_key, row, roster_reader, source_reader)
                         previous = emails.setdefault(person["school_email"] or person["identity"], person)
                         if any(previous[k] != person[k] for k in ("first", "last", "section")):
                             conflicts.add(person["school_email"] or person["identity"])
                             raise Held("The school email matches more than one roster identity. Keep its files for review.")
                         candidates.append((lesson, form, row, person))
-                    except Held as error:
+                    except (Held, google.GoogleError) as error:
                         result["held"].append({**_hold_context(row, assignment), "problem": str(error)})
                 for row in form.get("elsewhere", []):
-                    if "match not confirmed" in str(row.get("to", "")).casefold():
+                    if "match not confirmed" in str(row.get("to", "")).casefold() and not _source_id(row.get("url")):
                         result["held"].append({**_hold_context(row, assignment),
                             "problem": "This upload came through another lesson's Form, and its lesson match is not confirmed. The original remains there."})
         # Duplicate roster identities must hold all their submissions, including
@@ -480,44 +755,73 @@ def archive_work(token, write_token, config, class_key, found):
             try:
                 student = run.student(person)
                 for version in [row] + row.get("earlier", []):
-                    if version.get("source") != "form":
-                        result["held"].append({**context, "problem": "Earlier folder-only work needs its school-email identity verified."})
+                    try:
+                        evidence = row if version is row else {**row, **version, "email": version.get("email", ""),
+                            "school_email": version.get("school_email") or version.get("email", ""),
+                            "matched_by": version.get("matched_by", ""),
+                            "ic_identity_verified": False, "ic_student_id": "", "student_id": ""}
+                        version_person = person if version is row else _filing_identity(
+                            config, class_key, evidence, roster_reader, source_reader)
+                        if not _same_name(version_person, person):
+                            raise Held("An earlier upload belongs to a different student or section. Ask for separate named resubmissions.")
+                        if (version_person.get("student_id") and person.get("student_id")
+                                and version_person["student_id"] != person["student_id"]):
+                            raise Held("An earlier upload has a different verified IC student identity. Keep it for review.")
+                        if (version is not row and version_person.get("school_email") and person.get("school_email")
+                                and version_person["school_email"] != person["school_email"]):
+                            actual = work.roster.match_email(version_person["school_email"], roster_reader(),
+                                {d.strip().lower().lstrip("@") for d in config.get("HUB_SCHOOL_EMAIL_DOMAINS", "").split(",") if d.strip()},
+                                config.get("HUB_EMAIL_USERNAME_PREFIX", "s."))
+                            if not actual or not _same_name(actual, person):
+                                raise Held("An earlier Form email names a different student. Ask for separate named resubmissions.")
+                        # A verified earlier Form receipt can upgrade a name-only
+                        # folder through its stable alias, without duplicating it.
+                        if version is not row:
+                            student = run.student(version_person)
+                    except (Held, google.GoogleError) as error:
+                        result["held"].append({**context, "problem": str(error)})
                         continue
-                    if version is not row:
-                        # Each earlier Form version must carry its own trusted
-                        # email. Current-row IC identity is never evidence for
-                        # an earlier upload that only matched a filename.
-                        evidence = {**row, **version, "email": version.get("email", ""),
-                                    "school_email": version.get("school_email") or version.get("email", ""),
-                                    "matched_by": version.get("matched_by", ""),
-                                    "ic_identity_verified": False, "ic_student_id": "", "student_id": ""}
-                        prior_person = _identity(config, class_key, evidence)
-                        if (not prior_person["school_email"]
-                                or prior_person["school_email"] != person["school_email"]):
-                            raise Held("An earlier Form upload does not match this student's verified identity. Preserve it for review.")
-                    date = _date(version.get("submitted_at", ""))
                     for file in version.get("files", []):
-                        if file.get("other_week") or file.get("trashed") or file.get("problem"):
+                        if file.get("trashed") or file.get("problem"):
                             result["held"].append({**context, "problem": "This source file's lesson or availability needs checking."})
                             continue
                         source = google.drive_file(token, file["id"], FIELDS)
-                        if source.get("trashed") is not False or source.get("mimeType") == SHORTCUT:
+                        if source.get("trashed") is not False or source.get("mimeType") not in work.STUDENT_WORK:
                             raise Held("A source upload is unavailable or is itself a shortcut. Leave it for review.")
+                        if version_person["identity_status"] == "identity_unverified":
+                            actual_owner, _ = _filename_owner(config, source, roster_reader())
+                            if not _same_name(actual_owner, version_person):
+                                raise Held("This file's student name changed while filing. Keep it for a corrected named resubmission.")
+                        date, date_basis, submitted_at = _work_date(version, source)
+                        lesson_status = "unverified" if file.get("other_week") or form.get("lesson_unverified") else "verified"
                         artifact_key = key("archivework", [run.root, class_key, file["id"]])
                         old = _read(run.port, artifact_key)
                         if old and old.value.get("student_key") != student["student_key"]:
                             raise Held("This source file is already indexed for a different student. Keep it for review.")
-                        title = work.assignment_title(form.get("label", ""))
-                        artifact = run.create(artifact_key, date + " — " + _clean(title) + " — Work",
+                        title = source.get("name", "Original work") if lesson_status == "unverified" else work.assignment_title(form.get("label", ""))
+                        markers = ([] if version_person["identity_status"] == "verified" else ["filed by name"]) + (
+                            ["lesson not confirmed"] if lesson_status == "unverified" else []) + (
+                            ["file created"] if date_basis == "file_created" else [])
+                        label = date + " — " + student["name"] + " — " + _clean(title) + " — Work" + (
+                            " (" + "; ".join(markers) + ")" if markers else "")
+                        artifact = run.create(artifact_key, label,
                             student["drive_file_id"], SHORTCUT, target=file["id"], attributes={
                                 "kind": "work", "date": date, "student_key": student["student_key"],
                                 "class_key": class_key, "source_file_id": file["id"], "form_id": form.get("form_id"),
                                 "source_modified_at": source.get("modifiedTime", ""), "source_version": source.get("version", ""),
-                                "submitted_at": version.get("submitted_at"), "assignment": title})
+                                "submitted_at": submitted_at, "assignment": title, "date_basis": date_basis,
+                                "identity_status": version_person["identity_status"], "identity_basis": version_person["basis"],
+                                "lesson_status": lesson_status, "original_filename": source.get("name", ""),
+                                "source_context": {"week": found["week"], "form_label": form.get("label", ""),
+                                                   "source": version.get("source"), "source_created_at": source.get("createdTime"),
+                                                   "parents": source.get("parents", []), "via": file.get("via"),
+                                                   "named_week": file.get("other_week")}})
                         # Keep observations as immutable index records; the shortcut
                         # remains one per original Drive ID as that file changes.
                         observation = {"source_file_id": file["id"], "modified_at": source.get("modifiedTime", ""),
-                                       "version": source.get("version", ""), "submitted_at": version.get("submitted_at")}
+                                       "version": source.get("version", ""), "submitted_at": submitted_at,
+                                       "identity_status": version_person["identity_status"], "lesson_status": lesson_status,
+                                       "date_basis": date_basis, "source_context": {"week": found["week"], "form_id": form.get("form_id")}}
                         observation_key = key("archiveobservation", [artifact_key, observation])
                         if not _read(run.port, observation_key):
                             _put(run.port, observation_key, observation)
@@ -526,9 +830,6 @@ def archive_work(token, write_token, config, class_key, found):
                         result["filed"] = len(filed_ids)
             except (Held, google.GoogleError) as error:
                 result["held"].append({**context, "problem": str(error)})
-        for row in found.get("other_files", []):
-            result["held"].append({**_hold_context(row),
-                "problem": "This submission's lesson match is not confirmed. Its files remain in their source folders."})
         result["problems"].extend(_clean(p, 400) for p in found.get("problems", []) if p)
         if found.get("folder_note"):
             result["problems"].append(_clean(found["folder_note"], 400))
@@ -592,6 +893,11 @@ def _feedback_metadata(artifact, student, course):
             "student_folder_id": student["drive_file_id"], "student_folder_name": student["name"],
             "class_folder_id": course["id"], "class_folder_name": course.get("name", ""),
             "created_at": artifact["created_at"], "saved_at": artifact["saved_at"],
+            "source_sha256": artifact.get("source_sha256"), "drive_md5": artifact.get("pdf_md5"),
+            "drive_version": artifact.get("drive_version"),
+            "source_file_id": artifact.get("source_file_id"), "source_span": artifact.get("source_span"),
+            "feedback_origin": artifact.get("feedback_origin", "native_saved"),
+            "identity_status": artifact.get("identity_status", "verified"),
             "date": artifact["date"], "mime": PDF, "url": artifact["url"]}
 
 
@@ -602,18 +908,24 @@ def _batch_read(port, ids):
     return result
 
 
-def _indexed(token, config, cls):
-    root, course = _location(token, config, cls)
+def _indexed(token, config, cls, *, feedback_only=False):
+    actual_root, course = _location(token, config, cls)
+    root = _scope_root(config, actual_root)
     port = configured_store(config)
     index = _read(port, key("archiveclass", [root, cls]))
-    ids = list((index.value if index else {}).get("students", {}))
+    indexed_students = (index.value if index else {}).get("students", {})
+    if (not isinstance(indexed_students, dict) or (index and index.value.get("schema") != SCHEMA)):
+        raise Held("The private class archive index needs checking.")
+    ids = list(indexed_students)
     if len(ids) > MAX_STUDENTS:
         raise Held("The student archive index needs its size checked.")
     students = _batch_read(port, ids)
     checked, item_ids, metadata_ids = [], [], set()
     for ident in ids:
         doc = students.get(ident)
-        if not doc or doc.value.get("status") != "verified":
+        if (not doc or doc.value.get("status") != "verified" or doc.value.get("schema") != SCHEMA
+                or doc.value.get("record_key") != ident or doc.value.get("student_key") != ident
+                or doc.value.get("drive_file_id") != indexed_students[ident]):
             raise Held("One student folder is not confirmed in the private archive index.")
         student = doc.value
         student_items = list(student.get("items", {}))
@@ -625,10 +937,19 @@ def _indexed(token, config, cls):
     # Read all indexed artifacts in the same bounded sequential CAS batches.
     # Repeated section parents need just one fresh metadata read per request.
     documents = _batch_read(port, list(dict.fromkeys(item_ids)))
-    for item in documents.values():
-        if not item or item.value.get("status") != "verified":
+    for ident, item in documents.items():
+        if (not item or item.value.get("status") != "verified" or item.value.get("schema") != SCHEMA
+                or item.value.get("record_key") != ident or item.value.get("class_key") != cls
+                or item.value.get("kind") not in {"feedback", "work"}):
             raise Held("An archived record has not been verified yet.")
-        metadata_ids.add(item.value["drive_file_id"])
+        if not feedback_only or item.value["kind"] == "feedback":
+            metadata_ids.add(item.value["drive_file_id"])
+    for student, student_items in checked:
+        for ident in student_items:
+            item = documents.get(ident)
+            if (not item or item.value.get("student_key") != student["student_key"]
+                    or item.value.get("parent") != student["drive_file_id"]):
+                raise Held("An archived record no longer belongs to its indexed student folder.")
     fetch_ids = sorted(metadata_ids)
     # These are independent GETs only. Google's sessions are thread-local;
     # no index writes or checks run in workers and errors propagate unchanged.
@@ -643,13 +964,16 @@ def _indexed(token, config, cls):
             item = documents.get(item_id)
             if not item or item.value.get("status") != "verified":
                 raise Held("An archived record has not been verified yet.")
-            artifact = item.value
+            artifact = dict(item.value)
+            if feedback_only and artifact["kind"] != "feedback":
+                continue
             meta = _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"])
             if (meta.get("properties") or {}).get(TAG) != item_id:
                 raise Held("An archived record no longer matches its private index.")
             if artifact["kind"] == "feedback":
                 if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
                     raise Held("An archived feedback PDF changed and needs review.")
+                artifact["drive_version"] = meta.get("version")
             elif (meta.get("mimeType") != SHORTCUT
                   or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
                 raise Held("An archived work shortcut no longer points to its verified source.")
@@ -659,7 +983,8 @@ def _indexed(token, config, cls):
 
 
 def _filing(config, cls):
-    root, _ = _configuration(config)
+    actual_root, _ = _configuration(config)
+    root = _scope_root(config, actual_root)
     port = configured_store(config)
     index = _read(port, key("archiveclass", [root, cls]))
     scans = (index.value if index else {}).get("filing_scans", {})
@@ -700,10 +1025,13 @@ def archive_listing(token, config, class_key, section=None):
                      or str(p.get("school_email", "")).lower() == student.get("school_email")) for p in canonical)
             records = [{"kind": a["kind"], "name": a["name"], "date": a["date"], "url": a["url"],
                         "drive_file_id": a["drive_file_id"], "source_file_id": a.get("source_file_id"),
-                        "feedback_id": a.get("feedback_id")} for a in artifacts]
+                        "feedback_id": a.get("feedback_id"), "identity_status": a.get("identity_status", "verified"),
+                        "date_basis": a.get("date_basis"), "lesson_status": a.get("lesson_status", "verified"),
+                        "original_filename": a.get("original_filename"), "source_context": a.get("source_context")} for a in artifacts]
             records.sort(key=lambda a: (a["date"], a["name"]), reverse=True)
             base["students"].append({"student_key": student["student_key"], "name": student["name"],
-                "section": student["section"], "status": "unverified" if active is None else "current" if active else "retained",
+                "section": student["section"], "status": "identity_unverified" if student.get("identity_status") == "identity_unverified"
+                    else "unverified" if active is None else "current" if active else "retained",
                 "identity_basis": student.get("basis"),
                 "folder_url": student["url"], "latest_record_date": records[0]["date"] if records else None,
                 "records": records})
@@ -747,7 +1075,7 @@ def list_feedback(token, config):
         return []
     result = []
     for cls in CLASSES:
-        course, indexed = _indexed(token, config, cls)
+        course, indexed = _indexed(token, config, cls, feedback_only=True)
         for student, artifacts in indexed:
             result.extend(_feedback_metadata(a, student, course) for a in artifacts if a["kind"] == "feedback")
     return sorted(result, key=lambda a: (a["created_at"], a["name"]), reverse=True)

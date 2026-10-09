@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, audit, completion, feedback, google, ledger, morning, native_feedback, recovery, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, native_feedback, recovery, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -113,6 +113,10 @@ def api(sub, query, config):
     if sub == 'api/learning-report':
         return learning_report(config)
     token = google.service_token(config)
+    if sub == 'api/feedback/daily':
+        if set(query) not in (set(), {'date'}):
+            raise ValueError('date')
+        return daily_feedback_packet.status(token, config, _one(query, 'date', False) or None)
     if sub == 'api/student-records':
         if set(query) != {'class'}:
             raise ValueError('class')
@@ -162,7 +166,9 @@ def api(sub, query, config):
         return {**routine.status(token, config),
                 "embed_prompt": {"text": prompt, "url": where} if prompt else {"problem": where}}
     if sub == 'api/feedback/today':
-        return native_feedback.today_files(token, config)
+        if set(query) not in (set(), {'date'}):
+            raise ValueError('date')
+        return native_feedback.today_files(token, config, date_et=_one(query, 'date', False) or None)
     if sub == "api/audit":
         return audit.check(token, agenda, _class_key(_one(query, "class")))
     if sub == "api/feedback/native":
@@ -265,6 +271,11 @@ def native_feedback_post(environ, respond, config):
     from school_workflow_hub.adapters.hosted_agenda import ConnectionError
     try:
         payload = _json_body(environ, 2000)
+        if environ['PATH_INFO'].endswith('/daily'):
+            if set(payload) != {'date'}:
+                raise ValueError()
+            return respond('200 OK', daily_feedback_packet.build(google.service_token(config),
+                google.service_token(config, write=True), config, payload['date']))
         if environ['PATH_INFO'].endswith('/print-today'):
             if set(payload) != {'ids'}:
                 raise ValueError()
@@ -298,7 +309,7 @@ def native_feedback_post(environ, respond, config):
         found = lesson_work(token, config, agenda, cls, week, fresh=True)
         inputs = native_feedback.evidence(assertion, token, config, agenda, payload, found)
         return respond('200 OK', native_feedback.generate(config, inputs))
-    except native_feedback.Held as error:
+    except (native_feedback.Held, daily_feedback_packet.Held) as error:
         return respond('409 Conflict', {'error': str(error)})
     except Conflict:
         return respond('409 Conflict', {'error': 'This feedback is already being prepared. Reopen the saved draft before retrying.'})
@@ -501,7 +512,7 @@ def application(environ, start_response, config=None):
     if method == "POST" and path == "/v2/api/record":
         return record_post(environ, respond, config)
     if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save',
-                                     '/v2/api/feedback/print-today'):
+                                     '/v2/api/feedback/print-today', '/v2/api/feedback/daily'):
         return native_feedback_post(environ, respond, config)
     if method == "POST" and path in ("/v2/api/answers", "/v2/api/answers/sweep"):
         return retired_answers_post(environ, respond, config)
@@ -529,6 +540,12 @@ def application(environ, start_response, config=None):
         return respond("401 Unauthorized", {"error": "Please sign in again: reload this page."})
     try:
         query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=10)
+        if sub == 'api/feedback/daily/pdf':
+            if set(query) != {'id'}:
+                raise ValueError()
+            packet, name = daily_feedback_packet.pdf(google.service_token(config), config, _one(query, 'id'))
+            return respond('200 OK', packet, 'application/pdf',
+                [('Content-Disposition', 'inline; filename="%s"' % name.encode('ascii', 'replace').decode())])
         if sub == 'api/feedback/pdf':
             if set(query) != {'id'}:
                 raise ValueError()
@@ -539,7 +556,7 @@ def application(environ, start_response, config=None):
             return respond('200 OK', render(saved), 'application/pdf',
                            [('Content-Disposition', 'inline; filename="student-feedback-draft.pdf"')])
         body = api(sub, query, config)
-    except native_feedback.Held as error:
+    except (native_feedback.Held, daily_feedback_packet.Held) as error:
         return respond('409 Conflict', {'error': str(error)})
     except ValueError:
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
