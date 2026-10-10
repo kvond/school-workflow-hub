@@ -29,7 +29,14 @@ P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CATEGORIES = ("NOTES", "BANK", "DRAFT", "OPTIONAL")
-MARKER = re.compile(r"\[\[(NOTES|BANK|DRAFT|OPTIONAL):([A-Za-z0-9_-]{1,40}):([A-Za-z0-9 _-]{1,80})\]\]")
+# BANK ids are printed term labels, including "sensor / control center / effector".
+# Only BANK may use these spaced separators. Keep the three capture groups,
+# response/cycle id grammar and length bound used by matching and assessment.
+MARKER = re.compile(
+    r"\[\[(?=BANK:|(?:NOTES|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:[A-Za-z0-9 _-]{1,80}\]\])"
+    r"(NOTES|BANK|DRAFT|OPTIONAL):([A-Za-z0-9_-]{1,40}):"
+    r"(?=[A-Za-z0-9 _/-]{1,80}\]\])"
+    r"([A-Za-z0-9 _-]{1,80}|[A-Za-z0-9][A-Za-z0-9 _-]*(?: / [A-Za-z0-9][A-Za-z0-9 _-]*)+)\]\]")
 INVENTORY = re.compile(r"\[\[MARKER-INVENTORY:([A-Za-z0-9_-]{1,40})\]\]")
 ID_LIST = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK)_IDS=(.*?)(?=\s+[A-Z][A-Z_]*=|\s*$)", re.S)
 COUNT = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=(\d+)\b")

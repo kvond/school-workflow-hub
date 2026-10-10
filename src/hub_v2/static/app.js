@@ -140,6 +140,7 @@ const MORNING_REASONS = {
 };
 
 const MORNING_COVERAGE = 'Source coverage was incomplete, so scoring and IC entry stopped for this assignment. Open Student work to see whether Form or roster access, or a submission’s lesson match, needs repair.';
+const MORNING_EXCLUDED = 'This lesson was intentionally excluded by the school-year policy. No IC score comparison or entry was attempted for this assignment.';
 // These checks do not establish an uncertain save. Earlier columns may still
 // have confirmed results, so describe the held step rather than the whole run.
 const MORNING_ENTRY_HOLDS = {
@@ -228,7 +229,7 @@ function morningProblem(report) {
     || 'The run did not finish and this receipt contains no assignment results. Its original failure cause was not retained. No IC score comparison or save is confirmed; a delivered receipt does not prove grades ran.';
   if (report.code !== 'finished') return 'Morning run: ' + String(report.code || 'status unavailable').replaceAll('_', ' ') + '. Completion is not verified.';
   if (!report.items?.length) return 'The completed receipt contains no assignment results. No IC save or score comparison is verified.';
-  const held = (report.items || []).filter(item => !['read_back', 'nothing_to_enter', 'no_scores'].includes(item.code));
+  const held = (report.items || []).filter(item => !['read_back', 'nothing_to_enter', 'no_scores', 'excluded_week'].includes(item.code));
   return held.length ? `${held.length} assignment${held.length === 1 ? '' : 's'} did not finish: ` +
     [...new Set(held.map(item => String(item.code || 'status unavailable').replaceAll('_', ' ')))].join(', ') + '.' : '';
 }
@@ -242,6 +243,7 @@ function renderMorningCockpit(report, routineData) {
   const handled = totals.filled + totals.raised + totals.kept;
   const problem = morningProblem(report);
   const saved = report.code === 'finished' && !problem;
+  const onlyExcluded = report.items?.length && report.items.every(item => item.code === 'excluded_week');
   const detail = (report.items || []).map(item =>
     el('li', {}, el('strong', {text: morningContext(item) + ': '}),
       item.code === 'read_back'
@@ -250,21 +252,23 @@ function renderMorningCockpit(report, routineData) {
           ? `No changes needed. ${item.kept} scores already matched in IC.`
           : item.code === 'no_scores'
             ? 'No eligible Hub scores were available. This assignment was not entered or compared in IC.'
-            : item.code === 'coverage_incomplete'
-              ? MORNING_COVERAGE
-              : item.code === 'source_scores_held'
-                ? morningSourceHold(item)
-                : Object.hasOwn(MORNING_ENTRY_HOLDS, item.code)
-                  ? MORNING_ENTRY_HOLDS[item.code]
-                  : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`,
-      item.code !== 'source_scores_held' && morningRowReview(item).unavailable ? el('p', {class: 'muted', text: morningRowReview(item).unavailable}) : null));
+            : item.code === 'excluded_week'
+              ? MORNING_EXCLUDED
+              : item.code === 'coverage_incomplete'
+                ? MORNING_COVERAGE
+                : item.code === 'source_scores_held'
+                  ? morningSourceHold(item)
+                  : Object.hasOwn(MORNING_ENTRY_HOLDS, item.code)
+                    ? MORNING_ENTRY_HOLDS[item.code]
+                    : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`,
+      !['source_scores_held', 'excluded_week'].includes(item.code) && morningRowReview(item).unavailable ? el('p', {class: 'muted', text: morningRowReview(item).unavailable}) : null));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
     el('p', {class: 'cockpit-label', text: saved
-      ? `${totals.filled} new scores entered · ${totals.raised} raised · ${totals.kept} existing scores matched in IC`
+      ? (onlyExcluded ? 'Intentionally excluded lessons; no IC comparison or entry' : `${totals.filled} new scores entered · ${totals.raised} raised · ${totals.kept} existing scores matched in IC`)
       : 'grade rows with confirmed IC results; unfinished results appear below'}),
     el('p', {class: problem ? 'needs' : 'ok', text: problem || (saved
-      ? (confirmed.length ? '✓ These IC results are confirmed. Review the gradebook afterward and adjust a score only if needed.' : 'No eligible Hub scores were available. No IC entry or score comparison is confirmed.')
+      ? (onlyExcluded ? 'Completed without entry: these lessons were excluded by the school-year policy.' : confirmed.length ? '✓ These IC results are confirmed. Review the gradebook afterward and adjust a score only if needed.' : 'No eligible Hub scores were available. No IC entry or score comparison is confirmed.')
       : 'The run has not confirmed a completed save.')}),
     el('details', {}, el('summary', {text: 'Morning assignment details'}), el('ul', {}, ...detail)));
 }
@@ -275,6 +279,10 @@ function renderNeedsYou(report) {
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
+    if (row.code === 'excluded_week') {
+      unavailable.push(el('p', {class: 'muted'}, el('strong', {text: morningContext(row) + ': '}), MORNING_EXCLUDED));
+      continue;
+    }
     if (row.code === 'source_scores_held') {
       items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row)));
       continue;
@@ -2070,7 +2078,7 @@ function renderRoutine() {
     el('h2', {text: 'Morning score check'}),
     el('ol', {},
       el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
-      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, including Study Hall. Verified work is filed as dated links in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
+      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, including Study Hall. Verified submitted work is filed as dated copies in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
       el('li', {}, el('strong', {text: 'At or after 7:00.'}), ' With weekday entry enabled, the Chrome helper processes mapped assignments across classes, fills blanks and raises lower scores only, then saves, reloads and verifies. Review the gradebook afterward; adjust any score that needs correction.'),
       el('li', {}, el('strong', {text: 'At 7:30.'}), ' Student feedback goes in those same student folders. Teacher summaries, growth reports and notes go in separate private teacher report folders for each class.'),
     ),
@@ -2219,6 +2227,7 @@ async function loadMorningSummary() {
     reports.forEach((report, i) => {
       const lines = el('ul', {}, report.items.map(row => {
         if (row.code === 'source_scores_held') return el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row));
+        if (row.code === 'excluded_week') return el('li', {}, el('strong', {text: morningContext(row) + ': '}), MORNING_EXCLUDED);
         const review = morningRowReview(row);
         const reasons = review.reasons.map(([reason, count]) => `${count} — ${MORNING_REASONS[reason]}.`);
         if (row.code === 'coverage_incomplete' && review.detailKnown) reasons.unshift(MORNING_COVERAGE);

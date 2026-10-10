@@ -56,16 +56,20 @@ def _text(value, limit, *, required=False, multiline=False):
     return value
 
 
-def _question_id(value):
+def _question_id(value, *, category=None):
     # The teacher's Concept Bank terms are marker ids too ("Trophic level"),
-    # so interior spaces are part of the id vocabulary.
+    # so interior spaces are part of the id vocabulary. Spaced slash term
+    # labels are BANK-only; response ids and file/source paths stay strict.
     return (isinstance(value, str) and value == value.strip()
-            and bool(re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", value)))
+            and len(value) <= 80
+            and (bool(re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", value))
+                 or (category == "BANK" and bool(re.fullmatch(
+                     r"[A-Za-z0-9][A-Za-z0-9 _-]*(?: / [A-Za-z0-9][A-Za-z0-9 _-]*)+", value)))))
 
 
-def _ids(value):
+def _ids(value, *, category=None):
     if (not isinstance(value, list) or len(value) > 200
-            or any(not _question_id(q) for q in value)
+            or any(not _question_id(q, category=category) for q in value)
             or len(set(value)) != len(value)):
         raise ValueError("invalid_assessment_manifest")
     return tuple(value)
@@ -143,7 +147,7 @@ def validate_packet(packet, source_text):
     # version actually present in this capture, not a remembered one.
     elif inventory not in source_text or version_label not in source_text:
         raise ValueError("assessment_manifest_not_in_source")
-    required = {"NOTES": _ids(manifest["notes_ids"]), "BANK": _ids(manifest["bank_ids"]),
+    required = {"NOTES": _ids(manifest["notes_ids"]), "BANK": _ids(manifest["bank_ids"], category="BANK"),
                 "DRAFT": _ids(manifest["draft_ids"])}
     optional_ids = set(_ids(manifest["optional_ids"]))
     all_required = {q for ids in required.values() for q in ids}
@@ -165,7 +169,7 @@ def validate_packet(packet, source_text):
                 or response["explanation_level"] not in EXPLANATION_LEVELS):
             raise ValueError("invalid_assessment_response")
         qid = response["question_id"]
-        if not _question_id(qid):
+        if not _question_id(qid, category=response["category"]):
             raise ValueError("invalid_assessment_response")
         if (response["category"], qid) in seen:
             raise ValueError("duplicate_assessment_response")
@@ -217,7 +221,10 @@ def completion(packet):
     assessed = tuple(
         AssessedResponse(category=r["category"], question_id=r["question_id"],
                          judgment=r["judgment"],
-                         evidence_reference=evidence + ":" + r["question_id"].replace(" ", "_"),
+                         evidence_reference=evidence + ":" + (
+                             "bank_" + content_hash(r["question_id"])[:24]
+                             if r["category"] == "BANK" and "/" in r["question_id"]
+                             else r["question_id"].replace(" ", "_")),
                          optional=r["optional"])
         for r in packet["responses"])
     result = assess_completion(readiness, assessed, stage=packet["stage"])
@@ -246,8 +253,13 @@ def record_id(packet):
 
 MANIFEST_SECTIONS = {"NOTES_IDS": "notes_ids", "DRAFT_IDS": "draft_ids",
                      "OPTIONAL_IDS": "optional_ids", "BANK_IDS": "bank_ids"}
-_MARKER = re.compile(r"\[\[(NOTES|BANK|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:"
-                     r"([A-Za-z0-9 _-]{1,80})\]\]")
+# Preserve the two capture groups consumed by the census. This is the same
+# BANK-only label grammar as completion.MARKER, not a broader question id.
+_MARKER = re.compile(
+    r"\[\[(?=BANK:|(?:NOTES|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:[A-Za-z0-9 _-]{1,80}\]\])"
+    r"(NOTES|BANK|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:"
+    r"(?=[A-Za-z0-9 _/-]{1,80}\]\])"
+    r"([A-Za-z0-9 _-]{1,80}|[A-Za-z0-9][A-Za-z0-9 _-]*(?: / [A-Za-z0-9][A-Za-z0-9 _-]*)+)\]\]")
 
 
 def census_manifest(source_text):
@@ -264,7 +276,7 @@ def census_manifest(source_text):
     duplicates = 0
     for match in _MARKER.finditer(source_text):
         category, qid = match.group(1), match.group(2).strip()
-        if not _question_id(qid):
+        if not _question_id(qid, category=category):
             continue
         if qid in seen[category]:
             duplicates += 1
@@ -311,7 +323,8 @@ def _legacy_compact_manifest(source_text, inventory, lines):
                 "optional_ids": int(counts["OPTIONAL"]), "bank_ids": int(counts["BANK_TERMS"])}
     for key, want in expected.items():
         ids = sections[key]
-        if len(ids) != want or len(set(ids)) != len(ids) or any(not _question_id(qid) for qid in ids):
+        if (len(ids) != want or len(set(ids)) != len(ids)
+                or any(not _question_id(qid, category="BANK" if key == "bank_ids" else None) for qid in ids)):
             raise ValueError("assessment_manifest_unparsed")
 
     observed = census_manifest(source_text)
@@ -360,7 +373,7 @@ def derive_manifest(source_text):
         if "=" in line or ":" in line:
             current = None
             continue
-        if current and _question_id(line):
+        if current and _question_id(line, category="BANK" if current == "bank_ids" else None):
             sections[current].append(line)
     expected = {"notes_ids": counts.get("NOTES"), "draft_ids": counts.get("DRAFT"),
                 "optional_ids": counts.get("OPTIONAL"),

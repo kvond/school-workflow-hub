@@ -70,7 +70,7 @@ test('Routine explains dated student filing and separate teacher reports without
   const routine = source.slice(source.indexOf('function renderRoutine()'), source.indexOf('// ---------- Link check ----------'));
   vm.runInContext('function helperLine() { return el("p", {text: "Existing helper controls"}); }\n' + routine + '\nrenderRoutine();', context);
   const panel = document.getElementById('routine-body');
-  assert.match(panel.textContent, /At 6:30\..*dated links in private folders by class, section and student/);
+  assert.match(panel.textContent, /At 6:30\..*dated copies in private folders by class, section and student/);
   assert.match(panel.textContent, /Original files and Form upload folders are preserved/);
   assert.match(panel.textContent, /At 7:30\..*Student feedback goes in those same student folders/);
   assert.match(panel.textContent, /Teacher summaries, growth reports and notes go in separate private teacher report folders for each class/);
@@ -242,6 +242,44 @@ test('a source hold cannot invent a count and prevents all-clear even on a legac
     assert.match(text, /Submitted work needs source checks/);
     assert.match(text, /1 assignment did not finish/);
     assert.doesNotMatch(text, /\d+ submitted-work rows?|✓ These IC results are confirmed|clearing the helper verification block/);
+  }
+});
+
+test('an excluded-week receipt completes without IC entry or a save-recovery task in Today and Routine', async () => {
+  const excluded = row({code: 'excluded_week', assignment: 'Fictional day-one exercise', week: 'Wk 01',
+    filled: 0, raised: 0, kept: 0, left: 0, reasons: {...baseReasons}});
+  const {ui, document} = boot([excluded]);
+  for (const panel of [ui.renderNeedsYou(report([excluded])), ui.renderMorningCockpit(report([excluded]), {})]) {
+    assert.match(panel.textContent, /Biology · Wk 01 · Fictional day-one exercise/);
+    assert.match(panel.textContent, /intentionally excluded by the school-year policy/);
+    assert.match(panel.textContent, /No IC score comparison or entry was attempted for this assignment/);
+    assert.doesNotMatch(panel.textContent, /did not finish|Save\/readback not confirmed|correct\/save|clearing the helper verification block|These IC results are confirmed/);
+    assert.equal(attention(panel).length, 0);
+  }
+  assert.match(ui.renderMorningCockpit(report([excluded]), {}).textContent, /Completed without entry/);
+  await ui.loadMorningSummary();
+  const text = document.getElementById('morning-summary').textContent;
+  assert.match(text, /Biology · Wk 01 · Fictional day-one exercise/);
+  assert.match(text, /No IC score comparison or entry was attempted for this assignment/);
+  assert.doesNotMatch(text, /0 entered|0 kept|clearing the helper verification block/);
+});
+
+test('an excluded lesson cannot inflate confirmed results or suppress another assignment’s save recovery', () => {
+  const excluded = row({code: 'excluded_week', assignment: 'Fictional day-one exercise', week: 'Wk 01',
+    filled: 0, raised: 0, kept: 0, left: 0, reasons: {...baseReasons}});
+  const confirmed = row({assignment: 'Fictional confirmed lesson'});
+  const {ui} = boot([excluded, confirmed]);
+  const completed = ui.renderMorningCockpit(report([excluded, confirmed]), {});
+  assert.match(completed.textContent, /1 new scores entered · 2 raised · 3 existing scores matched in IC/);
+  assert.doesNotMatch(completed.textContent, /did not finish|Save\/readback not confirmed/);
+  for (const code of ['save_unconfirmed', 'readback_incomplete', 'readback_mismatch', 'panel_unusable']) {
+    const held = row({code});
+    const panel = ui.renderMorningCockpit(report([excluded, held]), {});
+    assert.match(panel.textContent, /1 assignment did not finish/);
+    const recovery = allNodes(panel).find(node => node.tagName === 'li' && node.textContent.includes(held.assignment));
+    assert.match(recovery.textContent, /Save\/readback not confirmed.*reload to verify before clearing the helper verification block/);
+    const skipped = allNodes(panel).find(node => node.tagName === 'li' && node.textContent.includes(excluded.assignment));
+    assert.doesNotMatch(skipped.textContent, /Save\/readback|correct\/save|clearing the helper verification block/);
   }
 });
 
