@@ -441,3 +441,294 @@ test('link audit explains excluded weeks without a missing Form warning', () => 
   assert.equal(context.auditUI.omittedFormProblem(lesson, {week_policy: policy}), true);
   assert.equal(context.auditUI.omittedFormProblem({...lesson, problem: 'The private folder is unavailable.'}, {week_policy: policy}), false);
 });
+
+function recheckClient() {
+  const {context, document} = boot([]);
+  const now = Date.parse('2032-01-20T15:00:00Z');
+  context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  context.window = {postMessage() {}};
+  context.history = {replaceState() {}};
+  context.crypto = {randomUUID: () => 'fictional-request'};
+  const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
+  vm.runInContext(studentWork + '\nfunction renderWork() {}\nfunction closeSheets() {}\nfunction helperProgress() { return null; }\n' +
+    'globalThis.client = {work, helper, closedRecheck, assessmentRows, scoreForm, helperRows, helperNeed, sendList, weekToEnter, icPanel, icStatus, loadWork};', context);
+  const person = (first, last, id, matched = true) => ({first, last, section: 'A4 Biology', matched,
+    submitted_at: '2032-01-05T12:00:00Z', late: false, earlier: [], typed: [], files: id ? [{id, name: id, mime: 'application/vnd.google-apps.presentation'}] : []});
+  const form = {form_id: 'FICTIONALFORM123', label: 'Fictional ecosystems — Turn in', grade_readiness: {status: 'READY'},
+    window: {from: '2032-01-01T00:00:00Z', at: '2032-01-10T23:59:00Z', opened: 'Jan 1', label: 'Jan 10'},
+    students: [person('Ann', 'Avery', 'SAMEFILE123')],
+    late: [{...person('Ben', 'Brook', 'LATEFILE123'), late: true}, {...person('Unknown', 'Owner', 'UNMATCHED123', false), late: true}],
+    missing: [person('Cara', 'Cedar', null), {...person('Dan', 'Dale', null), unsorted: true}, person('Erin', 'Elm', null)],
+    excused: [{...person('Finn', 'Fir', null), added: 'Jan 15'}],
+    elsewhere: [{who: 'Elm, Erin', section: 'A4 Biology', accepted_intake: false}]};
+  const mark = {configured: true, entered_at: {at: '2032-01-12T13:00:00Z'}};
+  const {client} = context;
+  Object.assign(client.work, {cls: 'biology', week: 'Wk 03', section: 'all', seq: 1,
+    data: {other_files: [], problems: [], lessons: [{topic: 'Fictional ecosystems', forms: [form]}],
+      entry_rechecks: {[form.form_id]: {rows: structuredClone([form.students[0], form.late[0]])}}},
+    marks: {[form.form_id]: mark}, scores: {}, ui: {}});
+  return {context, document, client, form, mark, now};
+}
+
+test('a closed recorded assignment queues current on-time and matched late files regardless of old event dates', async () => {
+  const {context, client, form} = recheckClient(), requests = [];
+  const before = JSON.stringify(form);
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})}; };
+  assert.equal(client.closedRecheck(form), true);
+  await client.scoreForm(form);
+  assert.deepEqual(requests.map(url => new URL(url, 'https://example.test/').searchParams.get('file')).sort(), ['LATEFILE123', 'SAMEFILE123']);
+  assert.ok(requests.every(url => !url.includes('include_late')));
+  assert.equal(JSON.stringify(form), before, 'rechecking must not change Form event dates, late grouping or originals');
+  assert.equal(client.work.scores[form.form_id].SAMEFILE123.notes_score, 9);
+  assert.equal(client.work.scores[form.form_id].LATEFILE123.revision_score, 10);
+});
+
+test('a validated server view selects a replacement formerly in earlier history without inventing or changing its provenance', async () => {
+  const {context, client, form} = recheckClient(), requests = [];
+  const original = form.students[0];
+  const replacement = {submitted_at: '2032-01-18T12:00:00Z', source: 'form', email: 's.ann.avery@example.test', matched_by: 'email', late: true,
+    files: [{id: 'REPLACEMENT123', name: 'Replacement deck', mime: 'application/vnd.google-apps.presentation',
+      source_form_id: form.form_id, source_response_id: 'ORIGINALRESPONSE123', source_submitted_at: '2032-01-18T12:00:00Z'}]};
+  original.earlier = [replacement];
+  // This separate derived view is returned by api/work; the client does not rank history itself.
+  const selected = {...structuredClone(original), ...structuredClone(replacement),
+    earlier: [{submitted_at: original.submitted_at, source: original.source, files: structuredClone(original.files), late: original.late}]};
+  client.work.data.entry_rechecks[form.form_id].rows = [selected, structuredClone(form.late[0])];
+  const before = JSON.stringify(form);
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 6, revision_score: 7}};
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 10, revision_score: 10})}; };
+  await client.scoreForm(form);
+  assert.deepEqual(requests.map(url => new URL(url, 'https://example.test/').searchParams.get('file')).sort(), ['LATEFILE123', 'REPLACEMENT123']);
+  const rows = client.helperRows(form).filter(row => row.first === 'Ann');
+  assert.equal(rows.length, 1); assert.equal(rows[0].notes, 10);
+  assert.equal(client.assessmentRows(form)[0].files[0].source_response_id, 'ORIGINALRESPONSE123');
+  assert.equal(client.assessmentRows(form)[0].submitted_at, replacement.submitted_at);
+  const render = source.slice(source.indexOf('function studentRow('), source.indexOf('function renderWork('));
+  vm.runInContext(render + '\nglobalThis.renderReplacementForTest = renderForm;', context);
+  const result = client.work.scores[form.form_id].REPLACEMENT123;
+  Object.assign(result, {items: [], counts: {NOTES: {done: 1, required: 1}, BANK: {done: 0, required: 0}, DRAFT: {done: 1, required: 1}}});
+  Object.assign(client.work.scores[form.form_id].LATEFILE123, result);
+  const rendered = context.renderReplacementForTest(form, {});
+  const selectedRow = allNodes(rendered).find(node => node.tagName === 'tr' && node.textContent.includes('Avery, Ann'));
+  assert.ok(selectedRow);
+  assert.equal(allNodes(selectedRow).filter(node => node.tagName === 'a' && node.textContent === 'Replacement deck').length, 1);
+  const history = allNodes(selectedRow).find(node => node.tagName === 'details');
+  assert.match(history.textContent, /SAMEFILE123/);
+  assert.doesNotMatch(history.textContent, /Replacement deck/);
+  assert.match(rendered.textContent, /original response history is retained/);
+  assert.equal(JSON.stringify(form), before);
+  const unknownHistory = {submitted_at: '2032-01-19T12:00:00Z', source: 'folder', late: true,
+    files: [{id: 'UNVERIFIED123', name: 'Unconfirmed history file', mime: 'application/vnd.google-apps.presentation'}]};
+  original.earlier.push(unknownHistory);
+  client.work.data.entry_rechecks[form.form_id].rows[0].earlier.push(structuredClone(unknownHistory));
+  client.work.data.entry_rechecks[form.form_id].rows[0].selection_problem = 'The replacement source needs confirmation.';
+  const heldOriginal = JSON.stringify(form);
+  const held = context.renderReplacementForTest(form, {});
+  assert.match(held.textContent, /The replacement source needs confirmation.*No scores are prepared/);
+  assert.match(held.textContent, /Unconfirmed history file/);
+  assert.equal(client.helperRows(form).length, 0);
+  assert.equal(JSON.stringify(form), heldOriginal);
+});
+
+test('missing or malformed server recheck selection cannot fall back to an older file or create an IC list', async () => {
+  const {context, client, form} = recheckClient(), requests = [], messages = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 10, revision_score: 10})}; };
+  context.window.postMessage = message => messages.push(message);
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 9, revision_score: 10}, LATEFILE123: {notes_score: 9, revision_score: 10}};
+  for (const view of [undefined, {}, {rows: {}}, {rows: [{matched: false, files: []}]}, {rows: [{matched: true, files: null}]}]) {
+    client.work.data.entry_rechecks[form.form_id] = view;
+    await client.scoreForm(form);
+    assert.equal(client.helperRows(form).length, 0);
+    assert.equal(client.weekToEnter().ready.length, 0);
+    assert.equal(await client.sendList(form, {}), 'receipt_unconfirmed');
+    assert.match(client.icPanel(form, {}, {}).textContent, /Current submitted files.*could not be verified/);
+  }
+  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+});
+
+test('one server-held replacement holds every score request and numeric handoff in the assignment', async () => {
+  const {context, client, form} = recheckClient(), requests = [];
+  const rows = client.work.data.entry_rechecks[form.form_id].rows;
+  rows[0].selection_problem = 'Two different submitted files have the same latest Form time; check the source.';
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 10, revision_score: 10}};
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})}; };
+  await client.scoreForm(form);
+  assert.equal(requests.length, 0);
+  assert.equal(client.helperRows(form).length, 0);
+  assert.equal(client.weekToEnter().ready.length, 0);
+  assert.equal(await client.sendList(form, {}), 'coverage_incomplete');
+  assert.match(client.icPanel(form, client.work.scores[form.form_id], {}).textContent, /same latest Form time/);
+  assert.match(client.icStatus(form).text, /Biology · Wk 03 · Fictional ecosystems/);
+  assert.match(client.icStatus(form).text, /Avery, Ann \(A4 Biology\)/);
+});
+
+test('a closed recheck prepares actual scores, preserves review and Exempt rows, and never creates an absence zero', () => {
+  const {client, form} = recheckClient();
+  client.helper.state = 'ready';
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 8, revision_score: 10}, LATEFILE123: {notes_score: 0, revision_score: 7}};
+  const rows = client.helperRows(form), find = first => rows.find(row => row.first === first);
+  assert.equal(find('Ann').kind, 'score');
+  assert.equal(find('Ben').kind, 'score');
+  assert.equal(find('Ben').notes, 0, 'a measured submitted-file zero is still a valid score');
+  assert.equal(find('Cara').kind, 'none'); assert.equal(find('Cara').notes, null);
+  assert.equal(find('Dan').kind, 'check'); assert.equal(find('Erin').kind, 'check');
+  assert.equal(find('Finn').kind, 'excused'); assert.equal(find('Finn').notes, null);
+  assert.ok(!rows.some(row => row.kind === 'zero' || row.first === 'Unknown'));
+  assert.equal(client.icStatus(form).kind, 'recheck');
+  assert.equal(client.weekToEnter().ready.length, 1);
+  const panel = client.icPanel(form, client.work.scores[form.form_id], {});
+  assert.match(panel.textContent, /Send to the Chrome helper/);
+  assert.match(panel.textContent, /Submission dates do not show later edits to the same file/);
+  assert.match(panel.textContent, /no new missing-work zero|receive no new zero/);
+  assert.doesNotMatch(panel.textContent, /nothing more|final scores entered|nobody has turned in anything new|including late work.*listed as 0/);
+  const cara = allNodes(panel).find(node => node.tagName === 'tr' && node.textContent.includes('Cedar, Cara'));
+  assert.equal(cara, undefined, 'no inferred missing score appears in the entry table');
+});
+
+test('manual handoff keeps the closed recheck list limited to measured current scores and non-entry rows', async () => {
+  const {context, client, form} = recheckClient(), messages = [];
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 8, revision_score: 10}, LATEFILE123: {notes_score: 9, revision_score: 7}};
+  context.location = {origin: 'https://example.test'};
+  context.setTimeout = () => 0;
+  context.window.postMessage = message => { messages.push(message); client.helper.waiting.get(message.request_id)('list_ready'); };
+  assert.equal(await client.sendList(form, {topic: 'Fictional ecosystems'}), 'list_ready');
+  assert.equal(messages.length, 1);
+  const list = messages[0].list;
+  assert.equal(list.status, 'closed');
+  assert.match(list.status_text, /Recheck current submitted files/);
+  assert.equal(list.rows.filter(row => row.kind === 'score').length, 2);
+  assert.ok(!list.rows.some(row => row.kind === 'zero'));
+  assert.equal(list.rows.find(row => row.first === 'Cara').notes, null);
+  assert.equal(client.helper.sent[form.form_id].need.length, 2);
+});
+
+test('the late-submission table shows recheck scores and honest holds without changing lateness or inferring missing zeros', () => {
+  const {context, client, form} = recheckClient();
+  const render = source.slice(source.indexOf('function studentRow('), source.indexOf('function renderWork('));
+  vm.runInContext(render + '\nglobalThis.renderFormForTest = renderForm;', context);
+  const scored = value => ({notes_score: value, revision_score: 7, items: [], counts: {NOTES: {done: 1, required: 1}, BANK: {done: 0, required: 0}, DRAFT: {done: 1, required: 1}}});
+  client.work.scores[form.form_id] = {SAMEFILE123: scored(8), LATEFILE123: scored(9)};
+  form.missing = form.missing.filter(row => !row.unsorted);
+  const before = JSON.stringify(form);
+  const panel = context.renderFormForTest(form, {});
+  const late = allNodes(panel).find(node => node.className === 'late');
+  assert.match(late.textContent, /Late submissions — retained for recheck/);
+  assert.match(late.textContent, /Notes \/10Revision \/10/);
+  assert.match(late.textContent, /Brook, Ben/);
+  assert.match(late.textContent, /Not matched to the roster/);
+  assert.match(panel.textContent, /No verified submitted file.*no new zero prepared/);
+  assert.doesNotMatch(panel.textContent, /these are 0 now|nothing more|Anything later is Late and isn’t graded/);
+  assert.equal(JSON.stringify(form), before);
+  client.work.scores[form.form_id].LATEFILE123 = {code: 'deck_not_ready', problem: 'Required markers are missing.'};
+  const held = context.renderFormForTest(form, {});
+  assert.match(held.textContent, /Required markers are missing/);
+  assert.match(held.textContent, /Scoring and IC entry are held/);
+  assert.doesNotMatch(held.textContent, /current files rechecked/);
+});
+
+test('missing-work print wording permits later reviewed increases without changing its selected history', () => {
+  const {context} = recheckClient();
+  const print = source.slice(source.indexOf('const shortDate ='), source.indexOf('async function missingSheets('));
+  // Only the pure production print functions are needed; no navigation or printing runs.
+  const pure = print.slice(0, print.indexOf('async function'));
+  vm.runInContext(pure + '\nglobalThis.sheetForTest = sheetFor;', context);
+  const history = {first: 'Ann', last: 'Avery', section: 'A4 Biology', total: 1, onTime: [],
+    missing: [{week: 'Wk 03', title: 'Fictional ecosystems', close: new Date('2032-01-10T23:59:00Z'), open: false, late: true}]};
+  const before = JSON.stringify(history);
+  const panel = context.sheetForTest(history, 'Biology');
+  assert.match(panel.textContent, /later verified submission or revision can earn a higher score after review/);
+  assert.match(panel.textContent, /Past the original window — check current work/);
+  assert.doesNotMatch(panel.textContent, /stays 0|these stay 0/);
+  assert.equal(JSON.stringify(history), before);
+});
+
+test('late opt-in requires a configured valid recorded entry after the closed window and not in the future', async () => {
+  const {context, client, form, mark, now} = recheckClient(), requests = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})}; };
+  for (const altered of [{configured: false}, {configured: 'true'}, {problem: 'unavailable'},
+    {entered_at: {at: 'bad timestamp'}}, {entered_at: {at: 'Jan 12, 2032'}}, {entered_at: {at: '2032-01-12T24:00:00Z'}},
+    {entered_at: {at: '2032-01-09T12:00:00Z'}},
+    {entered_at: {at: new Date(now + 1000).toISOString()}}]) {
+    client.work.marks[form.form_id] = {...mark, ...altered};
+    assert.equal(client.closedRecheck(form), false);
+    client.work.scores = {}; requests.length = 0;
+    await client.scoreForm(form);
+    assert.ok(!requests.some(url => url.includes('LATEFILE123')));
+    if (altered.configured !== undefined || altered.problem || ['bad timestamp', 'Jan 12, 2032', '2032-01-12T24:00:00Z', new Date(now + 1000).toISOString()].includes(altered.entered_at?.at)) {
+      assert.equal(client.helperRows(form).length, 0);
+      assert.equal(await client.sendList(form, {}), 'receipt_unconfirmed');
+    }
+  }
+  client.work.marks[form.form_id] = mark;
+  const closedAt = form.window.at;
+  for (const at of ['bad timestamp', new Date(now + 1000).toISOString()]) {
+    form.window.at = at; assert.equal(client.closedRecheck(form), false);
+  }
+  form.window.at = closedAt;
+  client.work.marks[form.form_id] = {...mark, entered_at: {at: '2032-01-09T12:00:00Z'}};
+  assert.equal(client.helperRows(form).find(row => row.first === 'Ben').kind, 'zero', 'the existing pre-final-entry path is unchanged');
+});
+
+test('rechecking a closed assignment preserves source, assessment and student-copy readiness holds', async () => {
+  const {context, client, form} = recheckClient(), requests = [], messages = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.window.postMessage = message => messages.push(message);
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 9, revision_score: 10}, LATEFILE123: {notes_score: 10, revision_score: 10}};
+  for (const hold of ['source', 'assessment', 'teacher', 'copy']) {
+    client.work.data.other_files = hold === 'source' ? [{files: [{id: 'UNRESOLVED123'}]}] : [];
+    client.work.data.week_policy = hold === 'assessment' ? {excluded: true, reason: 'Not assigned this year.'} : null;
+    form.grade_readiness = {status: hold === 'teacher' ? 'NOT_READY' : 'READY'};
+    client.work.scores[form.form_id].LATEFILE123 = hold === 'copy' ? {code: 'deck_not_ready', problem: 'Required code missing.'} : {notes_score: 10, revision_score: 10};
+    if (hold !== 'copy') await client.scoreForm(form);
+    assert.equal(client.helperRows(form).length, 0);
+    assert.equal(client.weekToEnter().ready.length, 0);
+    assert.equal(client.icStatus(form).kind, 'held');
+    assert.notEqual(await client.sendList(form, {}), 'list_ready');
+  }
+  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+});
+
+test('loading Student work waits for current entry history before scoring or offering an IC list', async () => {
+  const {context, client, form, mark} = recheckClient(), requests = [];
+  let ledgerAnswer;
+  context.fetch = async url => {
+    requests.push(url);
+    if (url.startsWith('api/work?')) return {ok: true, json: async () => client.work.data};
+    if (url.startsWith('api/ledger?')) return new Promise(resolve => { ledgerAnswer = resolve; });
+    return {ok: true, json: async () => ({notes_score: 8, revision_score: 9})};
+  };
+  const loading = client.loadWork(true);
+  while (!ledgerAnswer) await Promise.resolve();
+  assert.equal(client.helperRows(form).length, 0);
+  assert.equal(client.weekToEnter().ready.length, 0);
+  assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
+  ledgerAnswer({ok: true, json: async () => mark});
+  await loading;
+  assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 2);
+  assert.equal(client.helperRows(form).find(row => row.first === 'Ben').kind, 'score');
+});
+
+test('a failed or superseded entry-history read cannot opt into late files or send absence zeros', async () => {
+  for (const stale of [false, true]) {
+    const {context, client, form, mark} = recheckClient(), requests = [];
+    let ledgerAnswer;
+    context.fetch = async url => {
+      requests.push(url);
+      if (url.startsWith('api/work?')) return {ok: true, json: async () => client.work.data};
+      if (url.startsWith('api/ledger?')) return new Promise(resolve => { ledgerAnswer = resolve; });
+      return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})};
+    };
+    const loading = client.loadWork();
+    while (!ledgerAnswer) await Promise.resolve();
+    if (stale) client.work.seq += 1;
+    ledgerAnswer(stale ? {ok: true, json: async () => mark} : {ok: false, status: 503, json: async () => ({error: 'Unavailable'})});
+    await loading;
+    assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
+    assert.equal(client.closedRecheck(form), false);
+    assert.equal(client.helperRows(form).length, 0);
+    assert.equal(client.work.scores[form.form_id], undefined);
+  }
+});

@@ -30,7 +30,10 @@ without an assignment-by-assignment approval popup. It fills blank scores and
 raises lower scores only, then saves, reloads, and verifies each assignment.
 The Hub proposes 0 for verified missing work after the two-week window that
 starts with the first roster student's submission (never before that lesson's
-Agenda week). A later in-window submission can replace the 0 by raising it.
+Agenda week). Current verified submitted work, including later submissions and
+revisions after a final entry, is rechecked under the same keep-higher rule.
+That closed-assignment recheck does not recreate missing-work zeros; the prior
+entry date is history, not proof that the current source has not changed.
 An IC `Missing` marker does not block writing this Hub-verified numeric zero;
 the helper leaves the marker unchanged. Other IC flags still require review.
 The IC assignment roster defines the helper's students. Hub-only names are

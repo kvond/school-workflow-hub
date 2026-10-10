@@ -63,7 +63,17 @@ def person(row):
     return (work.norm(row.get("last", "")), work.norm(row.get("first", "")), row["section"])
 
 
-def rows(form, scored, now):
+def closed_recheck(form, mark, now=None):
+    """A prior final entry permits current submitted-work rechecks, not new zeros."""
+    if mark.get("configured") is not True or mark.get("problem"):
+        return False
+    cutoff = work.when((form.get("window") or {}).get("at"))
+    entered = work.when((mark.get("entered_at") or {}).get("at"))
+    now = now or datetime.now(timezone.utc)
+    return bool(cutoff and entered and cutoff < now and cutoff <= entered <= now)
+
+
+def rows(form, scored, now, *, recheck=False):
     scores = {person(row): score for row, score in scored}
     window = form.get("window")
     started = bool(window and (not window.get("from") or work.when(window["from"]) <= now))
@@ -85,21 +95,28 @@ def rows(form, scored, now):
         result[key] = {"last": row["last"], "first": row.get("first", ""), "section": row["section"],
                        "kind": kind, "notes": notes, "revision": revision, "reason": reason}
 
-    for row in form["students"]:
+    candidates = completion.recheck_candidates(form, now=now) if recheck else form["students"]
+    for row in candidates:
         if not row.get("matched"):
             continue
         score = scores.get(person(row))
+        if row.get("selection_problem"):
+            add(row, "check", reason=row["selection_problem"])
+            continue
         if not score or score.get("problem") or score.get("note") or all(score.get(k) is None for k in ("notes_score", "revision_score")):
             add(row, "check", reason="deck needs scoring by hand")
         else:
             add(row, "score", score.get("notes_score"), score.get("revision_score"))
-    for row in form.get("missing", []) + [r for r in form.get("late", []) if r.get("matched")]:
+    absent = form.get("missing", []) + ([] if recheck else [r for r in form.get("late", []) if r.get("matched")])
+    for row in absent:
         if not started:
             add(row, "none", reason="its two weeks haven't started")
         elif row.get("unsorted") or person(row) in elsewhere:
             add(row, "check", reason="submission needs review")
         elif person(row) in accepted:
             add(row, "none", reason="accepted through this Form for another assignment; no score inferred here")
+        elif recheck:
+            add(row, "none", reason="previously entered assignment; no missing-work zero in this recheck")
         else:
             add(row, "zero", 0, 0)
     for row in form.get("excused", []):
@@ -133,15 +150,28 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     if not mark.get("configured") or mark.get("problem"):
         return {"code": "receipt_unconfirmed"}
     window = form.get("window")
-    closed = bool(window and work.when(window["at"]) < now)
-    if closed and mark.get("entered_at") and work.when(mark["entered_at"]["at"]) >= work.when(window["at"]):
-        return {"code": "no_scores"}
-    scored = score_rows(token, agenda, cls, week, fid, form, found)
+    cutoff = work.when(window.get("at")) if window else None
+    if window and not cutoff:
+        return {"code": "coverage_incomplete"}
+    entered = work.when((mark.get("entered_at") or {}).get("at"))
+    if mark.get("entered_at") and (not entered or entered > now):
+        return {"code": "receipt_unconfirmed"}
+    closed = bool(cutoff and cutoff < now)
+    recheck = closed_recheck(form, mark, now)
+    if recheck:
+        affected = next((r for r in completion.recheck_candidates(form, now=now)
+                         if r.get("selection_problem")), None)
+        if affected:
+            return {"code": "coverage_incomplete", "problem": "%s · %s · %s · %s, %s (%s): %s" %
+                    (agenda.classes[cls]["name"], week, form.get("label") or lesson["topic"],
+                     affected["last"], affected.get("first", ""), affected["section"], affected["selection_problem"])}
+    scored = (score_rows(token, agenda, cls, week, fid, form, found, include_late=True) if recheck
+              else score_rows(token, agenda, cls, week, fid, form, found))
     blocked = next((score for _, score in scored if score.get("code") == "deck_not_ready"), None)
     if blocked:
         return {"code": "coverage_incomplete", "readiness": blocked.get("readiness"),
                 "problem": blocked["problem"], "action": blocked.get("action")}
-    values = rows(form, scored, now)
+    values = rows(form, scored, now, recheck=recheck)
     if not any(r["kind"] in ("score", "zero") for r in values):
         checks = sum(r["kind"] == "check" for r in values)
         if checks:

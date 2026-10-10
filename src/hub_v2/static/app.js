@@ -1012,14 +1012,16 @@ async function loadWork(fresh = false) {
     work.data = data;
     work.scores = {};
     work.ui = {};
-    work.marks = {};
+    work.marks = Object.fromEntries(data.lessons.flatMap(l => l.forms).filter(f => f.form_id)
+      .map(form => [form.form_id, {pending: true}]));
     renderWork();
-    loadMarks(data.lessons.flatMap(l => l.forms).filter(f => f.form_id), seq);
+    await loadMarks(data.lessons.flatMap(l => l.forms).filter(f => f.form_id), seq);
+    if (seq !== work.seq) return;
     setStatus('work-status', `Read ${when(new Date().toISOString())}.`);
     // Score every assignment right away; results are kept on the server, so this is quick after the first time.
     for (const form of data.lessons.flatMap(l => l.forms)) {
       if (seq !== work.seq) return;
-      if (form.form_id && form.students.length) await scoreForm(form);
+      if (form.form_id && assessmentRows(form).some(row => row.files.length)) await scoreForm(form);
     }
   } catch (error) {
     if (seq === work.seq) setStatus('work-status', error.message, true);
@@ -1034,7 +1036,7 @@ function fileList(files) {
     f.from_shared ? el('span', {class: 'badge', title: 'Turned in through the earlier shared Form', text: 'Earlier shared Form'}) : null,
     f.via ? el('span', {class: f.accepted_intake === true ? 'badge' : 'badge warn', title: 'This lesson’s deck, turned in through another lesson’s Form; it counts here', text: `Via ${f.via}`}) : null,
     f.other_week ? el('span', {class: 'badge warn', title: 'The file name mentions a different week', text: `Named Week ${f.other_week}`}) : null,
-    f.late ? el('span', {class: 'badge warn', title: 'Turned in more than two weeks after this week — not graded', text: 'Late'}) : null,
+    f.late ? el('span', {class: 'badge warn', title: 'Turned in after this assignment’s original two-week window', text: 'Late'}) : null,
     f.trashed ? el('span', {class: 'badge warn', text: 'In Drive trash'}) : null,
     f.problem ? el('span', {class: 'badge', title: f.problem, text: 'Open it yourself'}) : null)));
 }
@@ -1045,8 +1047,51 @@ const scoreFile = row => row.files.find(f => DECKS.includes(f.mime)) || row.file
 const fmt = value => value == null ? 'N/A' : String(value);
 // Once an assignment's first turn-in appears (its two weeks have begun), every
 // empty score is 0, and a 0 is replaced when the student turns work in before
-// the two weeks close. Before anyone has turned it in, nothing is scored.
+// the two weeks close. A confirmed entry after the close is rechecked using
+// current submitted files only; it never creates a new missing-work zero.
 const closedFor = form => Boolean(form.window && new Date(form.window.at) < new Date());
+function entryTime(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+  if (!match) return NaN;
+  const [year, month, day, hour, minute, second] = match.slice(1).map(Number);
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+      || hour > 23 || minute > 59 || second > 59) return NaN;
+  return Date.parse(text);
+}
+function closedRecheck(form) {
+  const mark = work.marks[form.form_id];
+  if (mark?.configured !== true || mark.problem) return false;
+  const cutoff = entryTime(form.window?.at), entered = entryTime(mark.entered_at?.at), now = Date.now();
+  return Number.isFinite(cutoff) && Number.isFinite(entered) && cutoff < now && cutoff <= entered && entered <= now;
+}
+function assessmentRows(form) {
+  if (!closedRecheck(form)) return form.students;
+  const rows = work.data?.entry_rechecks?.[form.form_id]?.rows;
+  return Array.isArray(rows) && rows.every(row => row?.matched === true && Array.isArray(row.files)) ? rows : [];
+}
+function entryHistoryHold(form) {
+  const mark = work.marks[form.form_id];
+  if (mark?.pending) return 'Checking this assignment’s recorded IC entry before preparing scores…';
+  if (!closedFor(form) || !mark) return '';
+  const entered = entryTime(mark.entered_at?.at);
+  if (mark.configured !== true || mark.problem || (mark.entered_at && (!Number.isFinite(entered) || entered > Date.now()))) {
+    return 'This closed assignment’s entry history could not be verified. Reload Student work before preparing an IC list; no new missing-work zero is prepared.';
+  }
+  const view = work.data?.entry_rechecks?.[form.form_id];
+  if (closedRecheck(form) && (!Array.isArray(view?.rows) || view.rows.some(row => row?.matched !== true || !Array.isArray(row.files)))) {
+    return 'Current submitted files for this closed assignment could not be verified. Reload Student work before preparing an IC list; no new missing-work zero is prepared.';
+  }
+  return '';
+}
+function recheckSelectionHold(form) {
+  if (!closedRecheck(form)) return '';
+  const issue = assessmentRows(form).find(row => row.selection_problem);
+  if (!issue) return '';
+  const context = `${CLASSES.find(([key]) => key === work.cls)?.[1] || work.cls} · ${work.week} · ${form.label || 'this assignment'}`;
+  const student = `${issue.last}, ${issue.first}${issue.section ? ` (${issue.section})` : ''}`;
+  return `${context} · ${student}: ${issue.selection_problem} Scoring and IC entry are held for this assignment; no new missing-work zero is prepared.`;
+}
 // Its two weeks have begun (they never begin before the lesson's own week): only then do 0s count.
 const startedFor = form => Boolean(form.window && (!form.window.from || new Date(form.window.from) <= new Date()));
 const shown = (score, started = true) => !score ? (started ? ['0', '0'] : ['', ''])
@@ -1076,8 +1121,8 @@ function scoreCells(row, scores) {
 }
 
 async function scoreForm(form) {
-  if (sourceMatchesHeld() || weekAssessmentHold() || form.grade_readiness?.status !== 'READY') return;
-  const rows = form.students.filter(r => r.files.length);
+  if (sourceMatchesHeld() || weekAssessmentHold() || entryHistoryHold(form) || recheckSelectionHold(form) || form.grade_readiness?.status !== 'READY') return;
+  const rows = assessmentRows(form).filter(r => r.files.length && !r.selection_problem);
   const scores = work.scores[form.form_id] = work.scores[form.form_id] || {};
   const queue = rows.filter(r => !scores[scoreFile(r).id] || scores[scoreFile(r).id].code === 'deck_not_ready');
   const seq = work.seq;
@@ -1116,7 +1161,7 @@ function answerCell(item) {
 function answersPanel(form, scores) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
-  const students = form.students.filter(r => r.matched && inSection(r))
+  const students = assessmentRows(form).filter(r => r.matched && !r.selection_problem && inSection(r))
     .map(r => ({r, s: scores[scoreFile(r)?.id]})).filter(x => x.s && !x.s.problem && x.s.items);
   const panel = el('div', {class: 'ic-panel'}, el('h4', {text: 'Answers by question'}));
   if (!students.length) { panel.append(note('No scored decks to show yet.', 'info')); return panel; }
@@ -1136,7 +1181,7 @@ function answersPanel(form, scores) {
     if (!slides.has(where)) slides.set(where, {at: where, question: box.question, boxes: []});
     slides.get(where).boxes.push(box);
   }
-  panel.append(el('p', {class: 'muted', text: `What ${students.length} student${students.length === 1 ? '' : 's'} wrote in each coded box of their on-time deck${section === 'all' ? '' : ` (${section})`}. Late work and decks that couldn’t be scored aren’t included.`}));
+  panel.append(el('p', {class: 'muted', text: `What ${students.length} student${students.length === 1 ? '' : 's'} wrote in each coded box of their ${closedRecheck(form) ? 'current submitted' : 'on-time'} deck${section === 'all' ? '' : ` (${section})`}. ${closedRecheck(form) ? 'Verified late submissions are included in this recheck. ' : 'Late work isn’t included. '}Decks that couldn’t be scored aren’t included.`}));
   for (const slide of [...slides.values()].sort((a, b) => (a.at === b.at ? 0 : a.at < b.at ? -1 : 1))) {
     slide.boxes.sort((a, b) => KIND_ORDER.indexOf(a.category) - KIND_ORDER.indexOf(b.category) || a.id.localeCompare(b.id));
     panel.append(el('h5', {class: 'answers-slide', text: slide.at === Infinity
@@ -1154,7 +1199,7 @@ function answersPanel(form, scores) {
 }
 
 function uncodedReport(scores, form) {
-  const rows = form.students.filter(row => row.files.length).map(row => ({
+  const rows = assessmentRows(form).filter(row => row.files.length && !row.selection_problem).map(row => ({
     row, result: scores[scoreFile(row)?.id],
   })).filter(item => item.result?.uncoded?.length);
   if (!rows.length) return null;
@@ -1206,7 +1251,9 @@ async function loadMarks(forms, seq) {
     try {
       const sheet = await getJSON(`api/ledger?class=${work.cls}&week=${encodeURIComponent(work.week)}&form=${encodeURIComponent(form.form_id)}`);
       if (seq === work.seq) work.marks[form.form_id] = sheet;
-    } catch { /* the card simply shows no marks */ }
+    } catch {
+      if (seq === work.seq) work.marks[form.form_id] = {configured: false, problem: 'Entry history could not be read.'};
+    }
   }));
   if (seq === work.seq) renderWork();
 }
@@ -1235,24 +1282,24 @@ const markDate = mark => mark ? when(mark.at) : '';
 
 // Where an assignment stands for Infinite Campus. While its two weeks are
 // open, every score goes in, 0s included; a 0 is replaced when the student
-// turns work in. Once they close, the final scores go in. After final scores
-// are entered (the "I entered these in IC" note is dated after the close),
-// late work isn't graded, so there's nothing more to enter.
+// turns work in. A confirmed entry after the close permits rechecking current
+// submitted files, including late ones, without inferring new absence zeros.
 function icStatus(form) {
   if (weekAssessmentHold()) return {kind: 'held', text: weekAssessmentHold()};
   if (sourceMatchesHeld()) return {kind: 'held', text: SOURCE_MATCH_HOLD};
   if (gradeReadinessHold(form)) return {kind: 'held', text: gradeReadinessHold(form)};
+  if (entryHistoryHold(form)) return {kind: 'held', text: entryHistoryHold(form)};
+  if (recheckSelectionHold(form)) return {kind: 'held', text: recheckSelectionHold(form)};
   if (!form.window) return null;
   const sheet = work.marks[form.form_id];
-  const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
   if (!startedFor(form)) {
     return {kind: 'open', text: `IC: its two weeks start ${form.window.opened}. Enter only the scores listed; 0s for work not turned in start then.`};
   }
   if (!closedFor(form)) {
     return {kind: 'open', text: `IC: open until ${form.window.label}. Enter every score listed, including the 0s; a 0 is replaced when the student turns work in before it closes.`};
   }
-  if (entered && entered >= new Date(form.window.at)) {
-    return {kind: 'final', text: `IC: final scores entered ${markDate(sheet.entered_at)}. Late work isn’t graded, so there’s nothing more to enter.`};
+  if (closedRecheck(form)) {
+    return {kind: 'recheck', text: `IC: entry recorded ${markDate(sheet.entered_at)}. Recheck current submitted files, including verified late submissions and revisions. The helper fills blanks and raises lower scores only; no new missing-work zero is prepared.`};
   }
   return {kind: 'due', text: `IC: closed ${form.window.label}. Final scores are due: enter every score, including the 0s, then click “I entered these in IC”.`};
 }
@@ -1269,25 +1316,28 @@ function icPanel(form, scores, lesson) {
   if (weekAssessmentHold()) return el('div', {class: 'ic-panel'}, note(weekAssessmentHold(), 'info'));
   if (sourceMatchesHeld()) return el('div', {class: 'ic-panel'}, note(SOURCE_MATCH_HOLD, 'info'));
   if (gradeReadinessHold(form)) return el('div', {class: 'ic-panel'}, note(gradeReadinessHold(form), 'info'));
+  if (entryHistoryHold(form)) return el('div', {class: 'ic-panel'}, note(entryHistoryHold(form), 'info'));
+  if (recheckSelectionHold(form)) return el('div', {class: 'ic-panel'}, note(recheckSelectionHold(form), 'info'));
   const section = work.section;
   const ui = work.ui[form.form_id] || {};
   const sheet = work.marks[form.form_id];
   const entered = sheet?.entered_at ? new Date(sheet.entered_at.at) : null;
   const closed = closedFor(form);
+  const recheck = closedRecheck(form);
   const inSection = r => section === 'all' || r.section === section;
   const elsewhere = elsewhereKeys(form), accepted = acceptedIntakeKeys(form);
   const all = [
     // A score the Hub isn't sure of (the copy lacks many of the deck's codes) is
     // never entered automatically: the teacher checks it by hand.
-    ...form.students.filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
-      .filter(x => x.s && !x.s.problem).map(x => ({...x, unsure: Boolean(x.s.note),
-        show: x.s.note ? ['check by hand', 'check by hand'] : shown(x.s)})),
+    ...assessmentRows(form).filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
+      .filter(x => x.r.selection_problem || (x.s && !x.s.problem)).map(x => ({...x, unsure: Boolean(x.r.selection_problem || x.s?.note),
+        show: x.r.selection_problem || x.s?.note ? ['check by hand', 'check by hand'] : shown(x.s)})),
     // A student whose submitted file still needs a lesson match is left
     // off the list (and named below) so a 0 isn't entered for them unchecked.
     // A student whose only turn-in was another lesson's deck (through this Form) is
     // checked by hand, not given a 0 unseen.
-    ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...form.late.filter(r => r.matched)]
-      .filter(r => inSection(r) && (!accepted.has(personKey(r)) || elsewhere.has(personKey(r))))
+    ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...(recheck ? [] : form.late.filter(r => r.matched))]
+      .filter(r => inSection(r) && (!accepted.has(personKey(r)) || elsewhere.has(personKey(r))) && (!recheck || elsewhere.has(personKey(r))))
       .map(r => elsewhere.has(personKey(r)) ? {r, s: null, other: true, show: ['check by hand', 'check by hand']}
         : {r, s: null, zero: true, show: shown(null)}) : []),
     // Added to the roster after this assignment began: excused, never a 0.
@@ -1308,11 +1358,11 @@ function icPanel(form, scores, lesson) {
   const standing = icStatus(form);
   if (standing) panel.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
-  const canSend = helper.state === 'ready' && icStatus(form)?.kind !== 'final' && helperRows(form).length;
+  const canSend = helper.state === 'ready' && helperNeed(helperRows(form)).length;
   panel.append(el('p', {}, helper.state === 'ready'
     ? 'The Chrome helper enters these in IC. Click “Send to the Chrome helper”, then in Infinite Campus open this assignment’s score panel ((F) for Notes, (S) for Revision, in each section) and click “Hub helper”. It shows what it will do and enters nothing until you tick its box. On Monday the Claude extension does these clicks after your OK.'
     : 'The Chrome helper isn’t installed in this browser, so it can’t enter these (see Routine). To enter them yourself, open this assignment in Infinite Campus and type them in.',
-    entered ? ` You entered it on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “new since” turned in after that.` : 'nobody has turned in anything new since.'}` : ''));
+    entered ? ` Entry was recorded on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “submitted since” turned in after that. ` : ''}Submission dates do not show later edits to the same file. Compare current scores in IC before confirming any entry.` : ''));
   if (ui.helper) panel.append(note(ui.helper, 'info'));
   const progress = helperProgress(form);
   if (progress) panel.append(progress);
@@ -1323,7 +1373,7 @@ function icPanel(form, scores, lesson) {
     status));
   if (sheet?.configured) {
     panel.append(el('p', {class: 'muted'}, 'The Hub adds “Entered in IC” to ',
-      link(`“${sheet.name || 'Scores entered'}”`, sheet.url), ' by itself once the Chrome helper has entered every section and column. Click “I entered these in IC” only if you typed the scores into IC yourself. From then on, only work turned in later is marked new; once the two weeks have closed, it marks this assignment’s final scores done, and nothing more is entered for it.'));
+      link(`“${sheet.name || 'Scores entered'}”`, sheet.url), ' by itself once the Chrome helper has entered every section and column. Click “I entered these in IC” only if you typed the scores into IC yourself. The recorded date is entry history; current submitted files can still be rechecked after the window closes.'));
   }
   panel.append(el('div', {class: 'table-wrap'}, el('table', {},
     el('thead', {}, el('tr', {}, ['Student', 'Section', 'Notes /10', 'Revision /10', ''].map(h => el('th', {text: h})))),
@@ -1333,15 +1383,17 @@ function icPanel(form, scores, lesson) {
         other ? el('span', {class: 'badge warn', text: 'turned in another lesson’s deck through this Form'}) : null,
         excused ? el('span', {class: 'badge', title: `Added to the roster ${r.added}, after this assignment began`,
                               text: 'new student: mark Exempt in IC'}) : null,
-        unsure ? el('span', {class: 'badge warn', title: result.note,
-                             text: `Hub counted ${fmt(result.notes_score)} / ${fmt(result.revision_score)}; not sure`}) : null,
-        entered && isNew ? el('span', {class: 'badge warn', text: `new since ${markDate(sheet.entered_at)}`}) : null)))))));
+        unsure ? el('span', {class: 'badge warn', title: r.selection_problem || result.note,
+                             text: r.selection_problem || `Hub counted ${fmt(result.notes_score)} / ${fmt(result.revision_score)}; not sure`}) : null,
+        entered && isNew ? el('span', {class: 'badge warn', text: `submitted since ${markDate(sheet.entered_at)}`}) : null)))))));
   const unsorted = startedFor(form) ? form.missing.filter(m => m.unsorted && inSection(m)) : [];
   if (unsorted.length) {
     panel.append(note(`Not listed: ${unsorted.map(m => `${m.last}, ${m.first}`).join('; ')}. `
       + 'Each has a submitted file awaiting a confirmed lesson match. Resolve “Confirm these submission matches” below; no new zero is sent while scoring is held.', 'info'));
   }
-  panel.append(el('p', {class: 'muted', text: closed
+  panel.append(el('p', {class: 'muted', text: recheck
+    ? 'This recheck uses current verified submissions, including late files and revisions. Students without a verified submission receive no new zero. Unmatched work and decks that couldn’t be scored are left for review. IC keeps the higher score.'
+    : closed
     ? 'The two weeks are over, so students with nothing on time (including late work) are listed as 0. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.'
     : `Students with nothing turned in yet, and empty boxes, are listed as 0; each 0 is replaced when the student turns work in before ${form.window?.label || 'the two weeks close'}. Not listed: work not matched to the roster and decks that couldn’t be scored. Low scores are worth a look in the deck before you enter them.`}));
   return panel;
@@ -1389,6 +1441,8 @@ function gradeReadinessHold(form) {
 
 function helperRows(form) {
   if (sourceMatchesHeld() || weekAssessmentHold()) return [];
+  if (entryHistoryHold(form)) return [];
+  if (recheckSelectionHold(form)) return [];
   if (form.grade_readiness?.status !== 'READY') return [];
   const scores = work.scores[form.form_id] || {};
   if (Object.values(scores).some(score => score?.code === 'deck_not_ready')) return [];
@@ -1400,19 +1454,22 @@ function helperRows(form) {
     if (!oneLine(r.last) || !oneLine(r.section)) return;
     rows.set(key, {last: oneLine(r.last, 100), first: oneLine(r.first, 100), section: oneLine(r.section, 100), kind, notes, revision, reason});
   };
-  for (const r of form.students.filter(r => r.matched)) {
+  const recheck = closedRecheck(form);
+  for (const r of assessmentRows(form).filter(r => r.matched)) {
     const s = scores[scoreFile(r)?.id];
-    if (!s) add(r, 'check', null, null, 'not scored yet');
+    if (r.selection_problem) add(r, 'check', null, null, 'current submission needs review');
+    else if (!s) add(r, 'check', null, null, 'not scored yet');
     else if (s.problem) add(r, 'check', null, null, 'deck couldn’t be scored');
     else if (s.note) add(r, 'check', null, null, 'the Hub isn’t sure of this score');
     else if (s.notes_score == null && s.revision_score == null) add(r, 'check', null, null, 'no codes to count');
     else add(r, 'score', s.notes_score ?? null, s.revision_score ?? null);
   }
-  for (const r of [...form.missing, ...(form.late || []).filter(r => r.matched)]) {
+  for (const r of [...form.missing, ...(recheck ? [] : (form.late || []).filter(r => r.matched))]) {
     if (!started) add(r, 'none', null, null, 'its two weeks haven’t started');
     else if (r.unsorted) add(r, 'check', null, null, 'submission awaiting a confirmed lesson match; scoring held');
     else if (elsewhere.has(personKey(r))) add(r, 'check', null, null, 'turned in another lesson’s deck through this Form');
     else if (accepted.has(personKey(r))) add(r, 'none', null, null, 'accepted intake for another assignment; not assessed here');
+    else if (recheck) add(r, 'none', null, null, 'previously entered assignment; no missing-work zero in this recheck');
     else add(r, 'zero', 0, 0);
   }
   for (const r of form.excused || []) add(r, 'excused', null, null, 'new student');
@@ -1438,6 +1495,7 @@ function formName(form, lesson) {
 }
 
 const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
+  receipt_unconfirmed: 'This assignment’s entry history could not be verified. Reload Student work before preparing an IC list.',
   coverage_incomplete: SOURCE_MATCH_HOLD,
   deck_not_ready: 'Needs embedded codes. Embed or repair the required codes in this lesson and the affected student copies, recheck, then rerun grading. No missing-work zero was sent.',
   assessment_scope_held: 'This week is not eligible for scoring or IC entry. Check its assessment scope note.',
@@ -1459,6 +1517,8 @@ async function sendList(form, lesson) {
   if (weekAssessmentHold()) return 'assessment_scope_held';
   if (sourceMatchesHeld()) return 'coverage_incomplete';
   if (gradeReadinessHold(form)) return 'deck_not_ready';
+  if (entryHistoryHold(form)) return 'receipt_unconfirmed';
+  if (recheckSelectionHold(form)) return 'coverage_incomplete';
   const rows = helperRows(form);
   const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
     class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
@@ -1487,10 +1547,10 @@ function weekToEnter() {
   const data = work.data;
   if (!data || sourceMatchesHeld() || weekAssessmentHold()) return {ready: [], waiting: false};
   const all = data.lessons.flatMap(lesson => lesson.forms.map(form => ({form, lesson})))
-    .filter(({form}) => form.form_id && form.window && icStatus(form)?.kind !== 'final');
-  const waiting = all.some(({form}) => form.students.length && (!work.scores[form.form_id] || work.ui[form.form_id]?.progress));
+    .filter(({form}) => form.form_id && form.window);
+  const waiting = all.some(({form}) => assessmentRows(form).some(row => row.files.length && !row.selection_problem) && (!work.scores[form.form_id] || work.ui[form.form_id]?.progress));
   const ready = all.map(x => ({...x, need: helperNeed(helperRows(x.form))})).filter(x => x.need.length);
-  return {ready, waiting, held: all.map(({form}) => gradeReadinessHold(form)).filter(Boolean)};
+  return {ready, waiting, held: all.map(({form}) => gradeReadinessHold(form) || entryHistoryHold(form) || recheckSelectionHold(form)).filter(Boolean)};
 }
 
 function entryPrompt(items) {
@@ -1711,21 +1771,26 @@ function renderForm(form, lesson) {
     el('div', {class: 'form-head'}, el('h3', {text: form.label}), link('Open Form ↗', form.url, 'chip')));
   if (form.problem) box.append(note(form.problem));
   if (!form.form_id || (form.problem && !form.students.length)) return box;
-  const matched = form.students.filter(r => r.matched && inSection(r));
+  const recheck = closedRecheck(form);
+  const selected = recheck && !entryHistoryHold(form) ? assessmentRows(form) : form.students;
+  const matched = selected.filter(r => r.matched && !r.late && inSection(r));
   const unmatched = form.students.filter(r => !r.matched);
   const accepted = acceptedIntakeKeys(form), elsewhere = elsewhereKeys(form);
   const missing = form.missing.filter(r => inSection(r) && (!accepted.has(personKey(r)) || r.unsorted || elsewhere.has(personKey(r))));
-  const late = (form.late || []).filter(r => !r.matched || inSection(r));
+  const late = (recheck && !entryHistoryHold(form)
+    ? [...selected.filter(r => r.late), ...(form.late || []).filter(r => !r.matched)] : form.late || [])
+    .filter(r => !r.matched || inSection(r));
   const lateMatched = late.filter(r => r.matched).length;
   box.append(el('p', {class: 'summary'},
-    el('strong', {text: `${matched.length} of ${matched.length + lateMatched + missing.length}`}),
-    form.window ? ' turned in on time' : ' turned in',
-    late.length ? el('span', {class: 'badge warn', text: `${late.length} late — not graded`}) : null,
+    el('strong', {text: recheck ? `${matched.length + lateMatched} matched submission${matched.length + lateMatched === 1 ? '' : 's'}`
+      : `${matched.length} of ${matched.length + lateMatched + missing.length}`}),
+    recheck ? ' retained for the current recheck; original response history is preserved' : form.window ? ' turned in on time' : ' turned in',
+    late.length ? el('span', {class: 'badge warn', text: `${late.length} late${recheck ? ' — retained for recheck' : ' — not graded'}`}) : null,
     unmatched.length ? el('span', {class: 'badge warn', text: `${unmatched.length} not matched to the roster`}) : null,
     form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
     form.shared_files ? el('span', {class: 'badge', text: `includes ${form.shared_files} from the earlier shared Form`}) : null));
   if (form.window) {
-    box.append(el('p', {class: 'muted', text: `Open ${form.window.opened} until ${form.window.label}: two weeks from the first turn-in, never starting before the lesson’s week. Anything later is Late and isn’t graded.`}));
+    box.append(el('p', {class: 'muted', text: `Open ${form.window.opened} until ${form.window.label}: two weeks from the first turn-in, never starting before the lesson’s week. ${recheck ? 'Later submissions retain their Late label; their current files can be reconsidered once source checks are clear.' : 'Anything later is Late and isn’t graded.'}`}));
   }
   if (form.elsewhere?.length) {
     for (const accepted of [true, false]) {
@@ -1745,7 +1810,7 @@ function renderForm(form, lesson) {
   const standing = icStatus(form);
   if (standing) box.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
-  const scores = weekAssessmentHold() ? null : work.scores[form.form_id];
+  const scores = weekAssessmentHold() || recheckSelectionHold(form) ? null : work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress && !sourceMatchesHeld();
   box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
@@ -1764,8 +1829,10 @@ function renderForm(form, lesson) {
   if (scores) {
     box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
   }
+  const selectionHolds = assessmentRows(form).filter(row => row.selection_problem && inSection(row));
+  if (selectionHolds.length) box.append(note(`Current submissions need review: ${selectionHolds.map(row => `${row.last}, ${row.first}: ${row.selection_problem}`).join('; ')}. No scores are prepared for this assignment.`, 'info'));
   if (scores && !ui.progress) {
-    const failedRows = form.students.filter(row => row.files.length && scores[scoreFile(row)?.id]?.problem)
+    const failedRows = assessmentRows(form).filter(row => row.files.length && scores[scoreFile(row)?.id]?.problem)
       .map(row => `${row.last}, ${row.first}${work.section === 'all' ? ` (${row.section})` : ''}: ${scores[scoreFile(row)?.id].problem}`);
     if (failedRows.length) box.append(note(`Couldn’t score ${failedRows.length} deck${failedRows.length === 1 ? '' : 's'}: ${failedRows.join('; ')}`, 'info'));
     const report = uncodedReport(scores, form);
@@ -1787,14 +1854,19 @@ function renderForm(form, lesson) {
       el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work', ...(scores ? ['Notes /10', 'Revision /10'] : [])].map(h => el('th', {text: h})))),
       el('tbody', {}, listed.map(r => studentRow(r, scores))))));
   } else {
-    box.append(note(late.length ? 'No on-time responses.' : 'No responses yet.', 'info'));
+    box.append(note(recheck && late.length ? 'Current selected submissions are listed below; their original response history is retained.'
+      : late.length ? 'No on-time responses.' : 'No responses yet.', 'info'));
   }
   if (late.length) {
-    box.append(el('div', {class: 'late'}, el('h4', {text: `Late — not graded (${late.length})`}),
-      el('p', {class: 'muted', text: `Turned in after ${form.window?.label}. Tidy moves these into the week’s “⏰ Late — not graded” folder.`}),
+    box.append(el('div', {class: 'late'}, el('h4', {text: `${recheck ? 'Late submissions — retained for recheck' : 'Late — not graded'} (${late.length})`}),
+      el('p', {class: 'muted', text: `Turned in after ${form.window?.label}. ${recheck ? 'Matched submitted files can be reconsidered once source checks are clear; the original submission date and Late label are preserved.' : 'Tidy moves these into the week’s “⏰ Late — not graded” folder.'}`}),
       el('div', {class: 'table-wrap'}, el('table', {},
-        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
-        el('tbody', {}, late.map(r => studentRow(r)))))));
+        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work', ...(recheck && scores ? ['Notes /10', 'Revision /10'] : [])].map(h => el('th', {text: h})))),
+        el('tbody', {}, late.map(r => {
+          const row = studentRow(r, recheck && r.matched ? scores : null);
+          if (recheck && scores && !r.matched) row.append(el('td', {colspan: 2, text: 'Not matched to the roster'}));
+          return row;
+        }))))));
   }
   const excused = (form.excused || []).filter(inSection);
   if (excused.length) {
@@ -1805,6 +1877,7 @@ function renderForm(form, lesson) {
   if (missing.length && !weekAssessmentHold()) {
     const held = sourceMatchesHeld() || missing.some(m => m.unsorted);
     box.append(el('div', {class: 'missing'}, el('h4', {text: held ? `No confirmed submission for this assignment (${missing.length}) — scoring held`
+      : recheck || entryHistoryHold(form) ? `No verified submitted file (${missing.length}) — no new zero prepared`
       : closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
       : startedFor(form) ? `Not turned in yet (${missing.length}) — 0 until they turn it in` : `Not turned in yet (${missing.length})`}),
       el('ul', {}, missing.map(m => el('li', {}, `${m.last}, ${m.first}${section === 'all' ? ' · ' + m.section : ''}`,
@@ -2015,13 +2088,13 @@ function sheetFor(p, cls) {
   return el('article', {class: 'sheet-page'},
     el('p', {class: 'sheet-top'}, `${cls} · ${p.section}`, el('span', {text: shortDate(new Date())})),
     el('h2', {text: `Missing work — ${p.first.replace(/\s*\(.*\)\s*/, ' ').trim()} ${p.last}`}),
-    el('p', {}, `Each missing assignment counts as 0. If you turn it in before its two weeks close, your score replaces the 0. After that it stays 0.`),
+    el('p', {}, `Missing work may have a 0 in IC. A later verified submission or revision can earn a higher score after review, including after the original two-week window closes.`),
     open.length ? el('h3', {text: `Still open — turn these in (${open.length})`}) : null,
     open.length ? el('table', {class: 'sheet-table'},
       el('thead', {}, el('tr', {}, ['Assignment', 'Closes', 'I will turn it in by'].map(h => el('th', {text: h})))),
       el('tbody', {}, open.map(m => el('tr', {}, el('td', {text: `${m.week} · ${m.title}`}),
         el('td', {text: `${shortDate(m.close)}, 11:59 PM`}), el('td', {class: 'blank-line'}))))) : null,
-    closed.length ? el('h3', {text: `Closed — these stay 0 (${closed.length})`}) : null,
+    closed.length ? el('h3', {text: `Past the original window — check current work (${closed.length})`}) : null,
     closed.length ? el('ul', {}, closed.map(m => el('li', {text: `${m.week} · ${m.title} (closed ${shortDate(m.close)})${m.late ? ' — turned in after it closed' : ''}`}))) : null,
     el('h3', {text: 'How you turn work in'}),
     el('p', {text: habitLine(p)}),

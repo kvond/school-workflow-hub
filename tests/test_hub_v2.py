@@ -1434,7 +1434,7 @@ class ScoreFileTests(unittest.TestCase):
         return {"lessons": [{"forms": [{"form_id": self.FORM, "students": [] if late else [row],
                                         "late": [row] if late else []}]}]}
 
-    def run_score(self, file_id="STUDENTDECK123", late=False):
+    def run_score(self, file_id="STUDENTDECK123", late=False, include_late=False, found=None):
         completion._templates.clear()
         completion._results.clear()
         decks = {"FICTIONALDECK1234567890": handout(), "STUDENTDECK123": handout(RULE="Through producers")}
@@ -1442,7 +1442,7 @@ class ScoreFileTests(unittest.TestCase):
                     "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "2026-09-22T00:00:00Z"}), \
                 patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]) as read:
             result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM, file_id,
-                                           self.work_result(late))
+                                           found if found is not None else self.work_result(late), include_late=include_late)
         return result, read
 
     def test_a_students_current_file_is_scored_against_the_lessons_deck(self):
@@ -1452,11 +1452,318 @@ class ScoreFileTests(unittest.TestCase):
         self.assertEqual(result["notes_score"], 2.0)  # 10 x 1 / (3 NOTES + 2 BANK)
         self.assertEqual(sorted(c.args[1] for c in read.call_args_list), ["FICTIONALDECK1234567890", "STUDENTDECK123"])
 
-    def test_only_files_on_the_page_can_be_scored_and_late_work_never_is(self):
+    def test_only_files_on_the_page_can_be_scored_and_late_work_is_excluded_by_default(self):
         with self.assertRaises(ValueError):
             self.run_score(file_id="SOMEOTHERFILE99")
         with self.assertRaises(ValueError):
             self.run_score(late=True)
+
+    def test_explicit_recheck_scores_matched_late_file_without_changing_source_history(self):
+        from copy import deepcopy
+        found = self.work_result(late=True)
+        row = found["lessons"][0]["forms"][0]["late"][0]
+        row.update(submitted_at="2026-10-07T19:43:00Z", earlier=[{"submitted_at": "2026-09-25T12:00:00Z"}])
+        row["files"][0].update(source_form_id=self.FORM, source_response_id="ORIGINAL_RESPONSE123",
+                              source_submitted_at=row["submitted_at"])
+        before = deepcopy(found)
+        result, read = self.run_score(include_late=True, found=found)
+        self.assertIsNone(result["problem"])
+        self.assertEqual(result["notes_score"], 2.0)
+        self.assertEqual(found, before)
+        self.assertEqual(sorted(c.args[1] for c in read.call_args_list), ["FICTIONALDECK1234567890", "STUDENTDECK123"])
+        row["matched"] = False
+        with self.assertRaises(ValueError):
+            self.run_score(include_late=True, found=found)
+
+    def test_recheck_reads_new_file_revision_when_the_form_event_is_unchanged(self):
+        completion._templates.clear()
+        completion._results.clear()
+        found = self.work_result(late=True)
+        row = found["lessons"][0]["forms"][0]["late"][0]
+        row["submitted_at"] = "2026-09-22T14:00:00Z"
+        state = {"version": "1", "answer": "Through producers"}
+
+        def metadata(token, fid, fields=None):
+            return {"id": fid, "name": "Deck", "mimeType": completion.SLIDES,
+                    "modifiedTime": "2026-10-07T12:00:00Z", "version": state["version"] if fid == "STUDENTDECK123" else "1"}
+
+        def content(token, fid, mime):
+            return handout(RULE=state["answer"]) if fid == "STUDENTDECK123" else handout()
+
+        with patch.object(google, "drive_file", side_effect=metadata), \
+                patch.object(google, "deck_bytes", side_effect=content), \
+                patch.object(completion, "assess", wraps=completion.assess) as assess:
+            first = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                          "STUDENTDECK123", found, include_late=True)
+            state.update(version="2", answer="Energy reaches consumers through producers.")
+            second = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                           "STUDENTDECK123", found, include_late=True)
+        self.assertEqual(assess.call_count, 2)
+        self.assertNotEqual(first["items"][0]["answer"], second["items"][0]["answer"])
+        self.assertEqual(row["submitted_at"], "2026-09-22T14:00:00Z")
+
+    def test_manual_late_score_requires_server_entry_history_and_current_teacher_readiness(self):
+        from copy import deepcopy
+        from datetime import datetime, timezone
+        from hub_v2 import morning
+        found = self.work_result(late=True)
+        form = found["lessons"][0]["forms"][0]
+        form["window"] = {"at": "2026-10-01T03:59:59Z"}
+        query = {"class": ["forensics"], "week": ["Wk 04"], "form": [self.FORM],
+                 "file": ["STUDENTDECK123"], "include_late": ["true"]}
+        mark = {"configured": True, "entered_at": {"at": "2026-10-02T12:46:00Z"}}
+        before = deepcopy(found)
+        with patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "lesson_work", return_value=found) as scans, \
+                patch.object(app.ledger, "read", return_value=mark) as history, \
+                patch.object(completion, "assignment_readiness", return_value={"status": "READY"}) as readiness, \
+                patch.object(completion, "score_file", return_value={"notes_score": 8}) as score, \
+                patch.object(morning, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+            self.assertEqual(app.api("api/score", query, {}), {"notes_score": 8})
+            self.assertEqual([c.kwargs["fresh"] for c in scans.call_args_list], [False, True])
+            history.assert_called_once_with("token", {}, self.FORM)
+            readiness.assert_called_once()
+            self.assertEqual(score.call_args.kwargs, {"include_late": True})
+            self.assertIs(score.call_args.args[-1], found)
+            self.assertEqual(found, before)
+            score.reset_mock()
+            readiness.return_value = {"status": "NOT_READY", "label": "Needs embedded codes", "problem": "Teacher hold"}
+            self.assertEqual(app.api("api/score", query, {})["code"], "deck_not_ready")
+            score.assert_not_called()
+
+            readiness.reset_mock()
+            history.return_value = {"configured": False}
+            self.assertEqual(app.api("api/score", query, {})["code"], "receipt_unconfirmed")
+            readiness.assert_not_called()
+            score.assert_not_called()
+            history.return_value = {"configured": True}
+            with self.assertRaises(ValueError):
+                app.api("api/score", query, {})
+            score.assert_not_called()
+            history.return_value = mark
+            form["window"]["at"] = "2026-10-14T03:59:59Z"
+            with self.assertRaises(ValueError):
+                app.api("api/score", query, {})
+            score.assert_not_called()
+
+    def test_cached_late_source_is_revalidated_and_cannot_bypass_current_coverage(self):
+        from copy import deepcopy
+        cached = self.work_result(late=True)
+        query = {"class": ["forensics"], "week": ["Wk 04"], "form": [self.FORM],
+                 "file": ["STUDENTDECK123"], "include_late": ["true"]}
+        with patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app.ledger, "read") as history, \
+                patch.object(completion, "assignment_readiness") as readiness, \
+                patch.object(completion, "_template") as template:
+            for field, value in (("problems", ["folder unreadable"]),
+                                 ("assessment_problem", "Ambiguous assignment"),
+                                 ("other_files", [{"files": [{"id": "UNRESOLVED123"}]}])):
+                current = deepcopy(cached); current[field] = value
+                with patch.object(app, "lesson_work", side_effect=[cached, current]):
+                    self.assertEqual(app.api("api/score", query, {})["code"], "coverage_incomplete")
+            withdrawn = deepcopy(cached)
+            withdrawn["lessons"][0]["forms"][0]["late"] = []
+            with patch.object(app, "lesson_work", side_effect=[cached, withdrawn]):
+                with self.assertRaises(ValueError):
+                    app.api("api/score", query, {})
+            history.assert_not_called()
+            readiness.assert_not_called()
+            template.assert_not_called()
+
+    def test_explicit_late_opt_in_still_holds_unresolved_source_matches_before_deck_reads(self):
+        found = self.work_result(late=True)
+        found["other_files"] = [{"files": [{"id": "UNRESOLVEDFILE123"}]}]
+        with patch.object(completion, "_template") as template, \
+                patch.object(google, "deck_bytes") as read, patch.object(completion, "assess") as assess:
+            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                           "STUDENTDECK123", found, include_late=True)
+        self.assertEqual(result["code"], "coverage_incomplete")
+        template.assert_not_called()
+        read.assert_not_called()
+        assess.assert_not_called()
+
+    def replacement_work(self):
+        found = self.work_result()
+        row = found["lessons"][0]["forms"][0]["students"][0]
+        row.update(source="form", matched_by="email", email="s.ana.rivera@school.example",
+                   submitted_at="2026-09-22T14:00:00Z")
+        row["files"][0].update(source_form_id=self.FORM, source_response_id="ON_TIME_RESPONSE_123",
+                              source_submitted_at=row["submitted_at"])
+        row["earlier"] = [{"source": "form", "matched_by": "email", "email": row["email"],
+                           "submitted_at": "2026-10-07T19:43:00Z", "late": True, "files": [{
+                               "id": "REPLACEMENTDECK123", "mime": completion.SLIDES,
+                               "source_form_id": self.FORM, "source_response_id": "REPLACEMENT_RESPONSE_123",
+                               "source_submitted_at": "2026-10-07T19:43:00Z"}]}]
+        return found
+
+    def test_recheck_selects_replacement_form_event_and_reads_its_actual_bytes(self):
+        from copy import deepcopy
+        completion._templates.clear(); completion._results.clear()
+        found = self.replacement_work()
+        form = found["lessons"][0]["forms"][0]
+        before = deepcopy(found)
+        candidates = completion.recheck_candidates(form)
+        self.assertEqual(len(candidates), 1)
+        chosen = candidates[0]
+        self.assertEqual(chosen["files"][0]["id"], "REPLACEMENTDECK123")
+        self.assertTrue(chosen["late"])
+        self.assertEqual(chosen["matched_by"], "email")
+        self.assertEqual(chosen["files"][0]["source_response_id"], "REPLACEMENT_RESPONSE_123")
+        self.assertEqual(chosen["earlier"][0]["files"][0]["id"], "STUDENTDECK123")
+        with patch.object(google, "drive_file", side_effect=lambda token, fid, fields=None: {
+                    "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "version": "4",
+                    "modifiedTime": "2026-10-07T19:45:00Z"}), \
+                patch.object(google, "deck_bytes", side_effect=lambda token, fid, mime:
+                             handout(RULE="Through producers") if fid == "REPLACEMENTDECK123" else handout()) as read:
+            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                           "REPLACEMENTDECK123", found, include_late=True)
+            with self.assertRaises(ValueError):
+                completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                      "STUDENTDECK123", found, include_late=True)
+        self.assertEqual(result["notes_score"], 2.0)
+        self.assertEqual(sorted(c.args[1] for c in read.call_args_list), ["FICTIONALDECK1234567890", "REPLACEMENTDECK123"])
+        self.assertEqual(found, before)
+
+    def test_recheck_recovers_a_replacement_that_real_grouping_keeps_in_earlier(self):
+        from copy import deepcopy
+        from datetime import datetime, timezone
+        students, _ = roster.parse_tab(ROSTER, "forensics", "A2 Forensics")
+        submissions = work.submissions([
+            response("s.ana.rivera@school.example", "2026-09-22T14:00:00Z", ("FILE_A_123", "Deck - Ana Rivera")),
+            response("s.ana.rivera@school.example", "2026-10-07T19:43:00Z", ("FILE_B_123", "Deck - Ana Rivera"))], self.FORM)
+        grouped, _ = work.group(submissions, students, {"school.example"},
+                                cutoff=datetime(2026, 10, 1, tzinfo=timezone.utc))
+        row = grouped[0]
+        self.assertEqual(row["files"][0]["id"], "FILE_A_123")
+        self.assertFalse(row["late"])
+        self.assertTrue(row["earlier"][0]["late"])
+        before = deepcopy(grouped)
+        candidate = completion.recheck_candidates({"students": grouped, "late": []},
+                                                   now=datetime(2026, 10, 10, tzinfo=timezone.utc))[0]
+        self.assertEqual(candidate["files"][0]["id"], "FILE_B_123")
+        self.assertTrue(candidate["late"])
+        self.assertEqual(candidate["files"][0]["source_response_id"], "s.ana.rivera@school.example2026-10-07T19:43:00Z")
+        self.assertEqual(grouped, before)
+
+    def test_recheck_holds_unknown_folder_chronology_conflicting_identity_and_shared_file(self):
+        from copy import deepcopy
+        for change in ({"source": "folder"}, {"email": "s.other.student@school.example"}, {"matched_by": None}):
+            found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+            form["students"][0]["earlier"][0].update(change)
+            self.assertIn("selection_problem", completion.recheck_candidates(form)[0])
+            with patch.object(google, "drive_file") as metadata, patch.object(google, "deck_bytes") as read:
+                result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                                               "REPLACEMENTDECK123", found, include_late=True)
+            self.assertEqual(result["code"], "coverage_incomplete")
+            metadata.assert_not_called(); read.assert_not_called()
+        found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+        other = deepcopy(form["students"][0]); other.update(last="Other", first="Ben")
+        form["students"].append(other)
+        self.assertTrue(all(r.get("selection_problem") for r in completion.recheck_candidates(form)))
+
+    def test_work_exposes_derived_recheck_view_without_modifying_original_cached_history(self):
+        from copy import deepcopy
+        found = self.replacement_work(); before = deepcopy(found)
+        with patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "lesson_work", return_value=found), patch.object(app.ledger, "read") as ledger_read:
+            response = app.api("api/work", {"class": ["forensics"], "week": ["Wk 04"]}, {})
+        derived = response["entry_rechecks"][self.FORM]["rows"][0]
+        self.assertEqual(derived["files"][0]["id"], "REPLACEMENTDECK123")
+        self.assertEqual(response["lessons"][0]["forms"][0]["students"][0]["files"][0]["id"], "STUDENTDECK123")
+        self.assertNotIn("entry_rechecks", found)
+        self.assertEqual(found, before)
+        ledger_read.assert_not_called()
+
+    def test_candidate_future_events_and_newer_empty_uploads_are_held_not_old_file_fallbacks(self):
+        from copy import deepcopy
+        from datetime import datetime, timezone
+        now = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+        found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+        row = form["students"][0]
+        future = deepcopy(row["earlier"][0]); future["submitted_at"] = "2026-10-12T00:00:00Z"
+        future["files"][0]["source_submitted_at"] = future["submitted_at"]
+        row["earlier"] = [future]
+        self.assertIn("future", completion.recheck_candidates(form, now=now)[0]["selection_problem"])
+        empty = {**future, "submitted_at": "2026-10-07T19:43:00Z", "files": []}
+        row["earlier"] = [empty]
+        self.assertIn("no uploaded file", completion.recheck_candidates(form, now=now)[0]["selection_problem"])
+        old = {key: row[key] for key in row if key != "earlier"}
+        row.update(empty, earlier=[old])
+        candidate = completion.recheck_candidates(form, now=now)[0]
+        self.assertIn("no uploaded file", candidate["selection_problem"])
+        self.assertEqual(candidate["files"], [])
+
+    def test_held_candidate_display_retains_all_original_history_without_relabelling_it(self):
+        from copy import deepcopy
+        found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+        row = form["students"][0]
+        unknown = {"source": "folder", "matched_by": "file name", "email": "", "late": False,
+                   "submitted_at": "2026-09-20T12:00:00Z", "files": [{"id": "UNKNOWNFOLDER123"}]}
+        row["earlier"].append(unknown); before = deepcopy(found)
+        candidate = completion.recheck_candidates(form)[0]
+        self.assertEqual(candidate["files"][0]["id"], "REPLACEMENTDECK123")
+        self.assertIn("selection_problem", candidate)
+        self.assertEqual({s["files"][0]["id"] for s in candidate["earlier"]}, {"STUDENTDECK123", "UNKNOWNFOLDER123"})
+        self.assertEqual(next(s for s in candidate["earlier"] if s["files"][0]["id"] == "UNKNOWNFOLDER123"), unknown)
+        self.assertEqual(found, before)
+
+    def test_approved_alternate_intake_keeps_original_form_event_in_recheck_candidate(self):
+        found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+        snapshot = form["students"][0]["earlier"][0]
+        upload = snapshot["files"][0]
+        upload.update(source_form_id="ORIGINAL_ALTERNATE_FORM_123", assignment_form_id=self.FORM,
+                      accepted_intake=True)
+        candidate = completion.recheck_candidates(form)[0]
+        self.assertNotIn("selection_problem", candidate)
+        self.assertEqual(candidate["files"][0]["source_form_id"], "ORIGINAL_ALTERNATE_FORM_123")
+        self.assertEqual(candidate["files"][0]["assignment_form_id"], self.FORM)
+
+    def test_direct_replacement_request_requires_fresh_candidate_entry_and_readiness(self):
+        from copy import deepcopy
+        from datetime import datetime, timezone
+        from hub_v2 import morning
+        found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+        form["window"] = {"at": "2026-10-01T03:59:59Z"}
+        query = {"class": ["forensics"], "week": ["Wk 04"], "form": [self.FORM], "file": ["REPLACEMENTDECK123"]}
+        mark = {"configured": True, "entered_at": {"at": "2026-10-02T12:46:00Z"}}
+        before = deepcopy(found)
+        with patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "lesson_work", return_value=found) as scans, \
+                patch.object(app.ledger, "read", return_value=mark) as ledger_read, \
+                patch.object(completion, "assignment_readiness", return_value={"status": "READY"}), \
+                patch.object(completion, "score_file", return_value={"revision_score": 10}) as score, \
+                patch.object(morning, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+            self.assertEqual(app.api("api/score", query, {}), {"revision_score": 10})
+            self.assertEqual([c.kwargs["fresh"] for c in scans.call_args_list], [False, True])
+            self.assertEqual(score.call_args.kwargs, {"include_late": True})
+            ledger_read.assert_called_once_with("token", {}, self.FORM)
+            self.assertEqual(found, before)
+            score.reset_mock(); ledger_read.return_value = {"configured": True}
+            with self.assertRaises(ValueError):
+                app.api("api/score", {**query, "include_late": ["true"]}, {})
+            score.assert_not_called()
+
+    def test_open_current_file_with_history_keeps_default_scoring_without_a_ledger_dependency(self):
+        found = self.replacement_work(); form = found["lessons"][0]["forms"][0]
+        form["window"] = {"at": "2999-12-01T00:00:00Z"}
+        query = {"class": ["forensics"], "week": ["Wk 04"], "form": [self.FORM], "file": ["STUDENTDECK123"]}
+        with patch.object(google, "service_token", return_value="token"), \
+                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "lesson_work", return_value=found) as scans, \
+                patch.object(app.ledger, "read", return_value={"configured": False}) as history, \
+                patch.object(completion, "assignment_readiness") as readiness, \
+                patch.object(completion, "score_file", return_value={"notes_score": 8}) as score:
+            self.assertEqual(app.api("api/score", query, {}), {"notes_score": 8})
+            self.assertEqual([c.kwargs["fresh"] for c in scans.call_args_list], [False, True])
+            self.assertEqual(score.call_args.kwargs, {})
+            history.assert_not_called()
+            readiness.assert_not_called()
 
     def test_unresolved_submission_matches_hold_manual_and_feedback_scoring_before_deck_reads(self):
         found = self.work_result()

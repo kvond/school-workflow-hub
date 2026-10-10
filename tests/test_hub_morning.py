@@ -4,7 +4,7 @@ import json
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
-from hub_v2 import morning
+from hub_v2 import app, morning
 
 NOW = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 ROW = {"last": "Avery", "first": "Ann", "section": "A4 Fictional", "matched": True, "files": []}
@@ -138,6 +138,160 @@ class MorningTests(unittest.TestCase):
         with patch.object(morning, "reports", return_value=[]), patch.object(morning.ledger, "find", return_value={"id": "FICTIONAL"}), patch.object(morning.ledger, "_first_tab", return_value="'Sheet1'"), patch.object(morning.google, "append_rows") as append:
             with self.assertRaises(morning.google.GoogleError): morning.record("t", "w", {}, report())
             append.assert_called_once()
+
+class ClosedAssignmentRecheckTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 10, 10, 12, tzinfo=timezone.utc)
+        self.ready = {"status": "READY"}
+        self.mark = {"configured": True, "entered_at": {"at": "2026-10-02T12:46:00Z"}}
+        self.form = copy.deepcopy(FORM)
+        self.form.update(grade_readiness=self.ready,
+            window={"from": "2026-09-16T04:00:00Z", "at": "2026-10-01T03:59:59Z"})
+        self.form["students"][0].update(submitted_at="2026-09-22T14:00:00Z", files=[{
+            "id": "FICTIONAL_CURRENT_FILE_123", "mime": morning.completion.SLIDES,
+            "source_form_id": self.form["form_id"], "source_response_id": "ORIGINAL_RESPONSE_123",
+            "source_submitted_at": "2026-09-22T14:00:00Z"}])
+        self.late = {**copy.deepcopy(ROW), "last": "Brook", "late": True,
+                     "submitted_at": "2026-10-07T19:43:00Z", "files": [{
+                         "id": "FICTIONAL_LATE_FILE_123", "mime": morning.completion.SLIDES,
+                         "source_form_id": self.form["form_id"], "source_response_id": "LATER_RESPONSE_123",
+                         "source_submitted_at": "2026-10-07T19:43:00Z"}]}
+        self.form["late"] = [self.late]
+        self.form["missing"] = [{**ROW, "last": "Cole"}]
+        self.found = {"lessons": [{"topic": "Matter", "forms": [self.form]}], "problems": []}
+        self.agenda = Mock(classes={"biology": {"name": "Biology"}})
+        self.config = {"HUB_IC_ASSIGNMENT_MAP": json.dumps([{
+            "class_key": "biology", "form_id": self.form["form_id"], "targets": []}])}
+
+    def make(self, scorer, mark=None, ready=None):
+        with patch.object(morning, "datetime", wraps=datetime) as clock, \
+                patch.object(morning.ledger, "read", return_value=self.mark if mark is None else mark), \
+                patch.object(morning.completion, "assignment_readiness", return_value=ready or self.ready):
+            clock.now.return_value = self.now
+            return morning.make_list("token", self.config, self.agenda, "biology", "Wk 02",
+                                     self.form["form_id"], Mock(return_value=self.found), scorer)
+
+    def test_current_file_revision_is_rechecked_without_a_new_form_event(self):
+        before = copy.deepcopy(self.found)
+        versions = {"FICTIONAL_CURRENT_FILE_123": "2", "FICTIONAL_LATE_FILE_123": "1"}
+
+        def current_score(token, agenda, cls, week, fid, file_id, found, *, include_late=False):
+            self.assertTrue(include_late)
+            self.assertIs(found, self.found)
+            return {"notes_score": 8, "revision_score": 9, "file_updated": "2026-10-07T12:00:00Z",
+                    "observed_version": versions[file_id]}
+
+        with patch.object(morning.completion, "score_file", side_effect=current_score) as score:
+            first = self.make(app._score_rows)
+            versions["FICTIONAL_CURRENT_FILE_123"] = "3"
+            second = self.make(app._score_rows)
+        self.assertEqual(first["code"], "ready")
+        self.assertEqual(second["code"], "ready")
+        self.assertNotEqual(first["revision"], second["revision"])
+        self.assertEqual(score.call_count, 4)
+        self.assertEqual({r["last"]: r["kind"] for r in first["list"]["rows"]},
+                         {"Avery": "score", "Brook": "score", "Cole": "none"})
+        self.assertEqual(self.found, before)
+
+    def test_recheck_preserves_lateness_and_source_provenance_and_creates_no_absence_zero(self):
+        before = copy.deepcopy(self.found)
+        scorer = Mock(return_value=[(self.form["students"][0], {"notes_score": 8}),
+                                    (self.late, {"revision_score": 9})])
+        result = self.make(scorer)
+        self.assertEqual(scorer.call_args.kwargs, {"include_late": True})
+        self.assertIs(scorer.call_args.args[-1], self.found)
+        self.assertEqual(self.found, before)
+        self.assertEqual(result["list"]["status"], "closed")
+        self.assertFalse(any(r["kind"] == "zero" for r in result["list"]["rows"]))
+        self.assertEqual(next(r for r in result["list"]["rows"] if r["last"] == "Brook")["revision"], 9)
+
+    def replacement(self, ident="FICTIONAL_REPLACEMENT_FILE_123"):
+        row = self.form["students"][0]
+        row.update(source="form", matched_by="email", email="s.ann.avery@school.example")
+        snapshot = {"source": "form", "matched_by": "email", "email": row["email"], "late": True,
+                    "submitted_at": "2026-10-07T19:43:00Z", "files": [{"id": ident,
+                        "mime": morning.completion.SLIDES, "source_form_id": self.form["form_id"],
+                        "source_response_id": ident + "_RESPONSE", "source_submitted_at": "2026-10-07T19:43:00Z"}]}
+        row["earlier"] = [snapshot]
+        return snapshot
+
+    def test_later_replacement_hidden_in_earlier_is_rechecked_once_not_the_old_on_time_file(self):
+        replacement = self.replacement()
+        before = copy.deepcopy(self.found)
+        with patch.object(morning.completion, "score_file", return_value={"notes_score": 8, "revision_score": 10}) as score:
+            result = self.make(app._score_rows)
+        self.assertEqual(result["code"], "ready")
+        ids = [c.args[5] for c in score.call_args_list]
+        self.assertEqual(sorted(ids), ["FICTIONAL_LATE_FILE_123", replacement["files"][0]["id"]])
+        self.assertNotIn("FICTIONAL_CURRENT_FILE_123", ids)
+        self.assertEqual(sum(r["last"] == "Avery" for r in result["list"]["rows"]), 1)
+        self.assertFalse(any(r["kind"] == "zero" for r in result["list"]["rows"]))
+        self.assertEqual(self.found, before)
+
+    def test_ambiguous_replacement_dates_and_unverified_history_hold_before_scoring(self):
+        replacement = self.replacement()
+        row = self.form["students"][0]
+        tied = copy.deepcopy(replacement)
+        tied["files"][0].update(id="ANOTHER_REPLACEMENT_123", source_response_id="ANOTHER_RESPONSE_123")
+        row["earlier"].append(tied)
+        scorer = Mock()
+        held = self.make(scorer)
+        self.assertEqual(held["code"], "coverage_incomplete")
+        self.assertIn("Biology · Wk 02 · Matter · Avery, Ann (A4 Fictional)", held["problem"])
+        scorer.assert_not_called()
+        row["earlier"] = [{**replacement, "source": "folder", "matched_by": "file name"}]
+        self.assertEqual(self.make(scorer)["code"], "coverage_incomplete")
+        scorer.assert_not_called()
+
+    def test_absence_checks_excused_and_duplicate_identities_keep_their_holds(self):
+        self.form["missing"] += [{**ROW, "last": "Dale", "unsorted": True}, {**ROW, "last": "Eve"}]
+        self.form["elsewhere"] = [{"who": "Eve, Ann", "section": ROW["section"]}]
+        self.form["excused"] = [{**ROW, "last": "Fox"}]
+        self.form["late"].append(copy.deepcopy(self.form["students"][0]))
+        values = morning.rows(self.form, [(self.form["students"][0], {"notes_score": 8}),
+                                         (self.late, {"revision_score": 9})], self.now, recheck=True)
+        self.assertEqual({r["last"]: r["kind"] for r in values}, {
+            "Avery": "check", "Brook": "score", "Cole": "none", "Dale": "check", "Eve": "check", "Fox": "excused"})
+        self.assertTrue(all(r["notes"] is None and r["revision"] is None for r in values if r["kind"] != "score"))
+
+    def test_held_current_sources_never_become_no_scores_or_a_zero_list(self):
+        scorer = Mock(return_value=[(r, {"problem": "needs review"})
+                                    for r in self.form["students"] + self.form["late"]])
+        self.assertEqual(self.make(scorer), {"code": "source_scores_held", "source_holds": {"checks": 2}})
+        blocked = Mock(return_value=[(self.late, {"code": "deck_not_ready", "problem": "Copy needs codes"})])
+        self.assertEqual(self.make(blocked)["code"], "coverage_incomplete")
+        untouched = Mock()
+        self.assertEqual(self.make(untouched, ready={"status": "NOT_READY", "problem": "Teacher hold"})["code"], "coverage_incomplete")
+        untouched.assert_not_called()
+        self.found["other_files"] = [{"files": [{"id": "UNRESOLVED_SOURCE_123"}]}]
+        self.assertEqual(self.make(untouched)["code"], "coverage_incomplete")
+        untouched.assert_not_called()
+
+    def test_closed_first_entry_and_open_assignments_keep_default_candidate_and_zero_rules(self):
+        scorer = Mock(return_value=[(self.form["students"][0], {"notes_score": 8})])
+        result = self.make(scorer, mark={"configured": True})
+        self.assertEqual(scorer.call_args.kwargs, {})
+        self.assertEqual([r["kind"] for r in result["list"]["rows"]], ["score", "zero", "zero"])
+        self.form["window"]["at"] = "2026-10-14T03:59:59Z"
+        result = self.make(scorer)
+        self.assertEqual(scorer.call_args.kwargs, {})
+        self.assertEqual([r["kind"] for r in result["list"]["rows"]], ["score", "zero", "zero"])
+
+    def test_predicate_requires_known_closed_window_and_valid_nonfuture_entry(self):
+        self.assertTrue(morning.closed_recheck(self.form, self.mark, self.now))
+        for mark in ({"configured": False, "entered_at": self.mark["entered_at"]},
+                     {**self.mark, "problem": "unreadable"}, {"configured": True},
+                     {**self.mark, "entered_at": {"at": "not a timestamp"}},
+                     {**self.mark, "entered_at": {"at": "2026-09-29T00:00:00Z"}},
+                     {**self.mark, "entered_at": {"at": "2026-10-12T00:00:00Z"}}):
+            self.assertFalse(morning.closed_recheck(self.form, mark, self.now))
+        for window in (None, {"at": "unknown"}, {"at": "2026-10-14T00:00:00Z"}):
+            self.assertFalse(morning.closed_recheck({**self.form, "window": window}, self.mark, self.now))
+        for mark in ({"configured": False}, {**self.mark, "entered_at": {"at": "unknown"}}):
+            scorer = Mock()
+            self.assertEqual(self.make(scorer, mark=mark)["code"], "receipt_unconfirmed")
+            scorer.assert_not_called()
+
 
 class MorningEndpointTests(unittest.TestCase):
     def request(self, method, path, origin=None, value=None):

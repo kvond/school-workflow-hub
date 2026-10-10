@@ -11,7 +11,7 @@ import os
 import re
 import threading
 import time
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
 
@@ -165,13 +165,56 @@ def api(sub, query, config):
         week = _one(query, "week")
         if not 1 <= len(week) <= 100:
             raise ValueError("week")
-        return {**lesson_work(token, config, agenda, class_key, week), "agenda": sheet}
+        found = lesson_work(token, config, agenda, class_key, week)
+        candidates = {f["form_id"]: {"rows": completion.recheck_candidates(f)}
+                      for lesson in found.get("lessons", []) for f in lesson["forms"] if f.get("form_id")}
+        return {**found, "entry_rechecks": candidates, "agenda": sheet}
     if sub == "api/score":
         class_key = _class_key(_one(query, "class"))
         week, form_id, file_id = _one(query, "week"), _one(query, "form"), _one(query, "file")
         if not 1 <= len(week) <= 100 or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", form_id + file_id):
             raise ValueError("score")
         found = lesson_work(token, config, agenda, class_key, week, fresh=False)
+        form = next((f for lesson in found.get("lessons", []) for f in lesson["forms"]
+                     if f["form_id"] == form_id), None)
+        original_rows = (form or {}).get("students", []) + (form or {}).get("late", [])
+        extended_file = any(r.get("matched") and any(f["id"] == file_id for snapshot in
+                            [r] + r.get("earlier", []) for f in snapshot.get("files", []))
+                            and (r in (form or {}).get("late", []) or r.get("earlier")) for r in original_rows)
+        if extended_file:
+            # A cached page cannot authorize a later or replacement source.
+            found = lesson_work(token, config, agenda, class_key, week, fresh=True)
+            forms = [f for lesson in found.get("lessons", []) for f in lesson["forms"]
+                     if f["form_id"] == form_id]
+            if len(forms) != 1:
+                raise ValueError("form")
+            form = forms[0]
+            context = "%s · %s · %s" % (agenda.classes[class_key]["name"], week,
+                                         form.get("label") or "this assignment")
+            if (found.get("problem") or found.get("problems") or found.get("assessment_problem")
+                    or found.get("other_files") or form.get("problem")):
+                return {"code": "coverage_incomplete", "problem":
+                        context + ": current submission coverage or lesson matches need review before this late-work recheck."}
+            if not any(r.get("matched") and any(f["id"] == file_id for snapshot in
+                       [r] + r.get("earlier", []) for f in snapshot.get("files", []))
+                       for r in form.get("students", []) + form.get("late", [])):
+                raise ValueError("file")
+            current_file = any(any(f["id"] == file_id for f in r["files"]) for r in form.get("students", []))
+            cutoff = work.when((form.get("window") or {}).get("at"))
+            if current_file and (not cutoff or cutoff >= datetime.now(timezone.utc)):
+                return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+            mark = ledger.read(token, config, form_id)
+            if not mark.get("configured") or mark.get("problem"):
+                return {"code": "receipt_unconfirmed", "problem": context + ": entry history could not be verified."}
+            if not morning.closed_recheck(form, mark):
+                if not current_file:
+                    raise ValueError("file")
+                return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+            ready = completion.assignment_readiness(token, config, agenda, class_key, week, form_id)
+            if ready["status"] != "READY":
+                return {"code": "deck_not_ready", "label": ready.get("label"), "readiness": ready,
+                        "problem": ready["problem"], "action": ready.get("action")}
+            return completion.score_file(token, agenda, class_key, week, form_id, file_id, found, include_late=True)
         return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
     if sub == "api/routine":
         prompt, where = feedback.load_embed_prompt(token, agenda)
@@ -225,11 +268,17 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
     return context, _score_rows(token, agenda, class_key, week, form_id, form, found)
 
 
-def _score_rows(token, agenda, class_key, week, form_id, form, found):
-    rows = [r for r in form["students"] if r["matched"] and r["files"]]
+def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include_late=False):
+    candidates = completion.recheck_candidates(form) if include_late else form["students"]
+    if any(r.get("selection_problem") for r in candidates):
+        return [(r, {"code": "coverage_incomplete", "problem": r["selection_problem"]})
+                for r in candidates if r.get("selection_problem")]
+    rows = [r for r in candidates if r["matched"] and r["files"]]
 
     def one(row):
         upload = next((f for f in row["files"] if f.get("mime") in (completion.SLIDES, google.PPTX)), row["files"][0])
+        if include_late:
+            return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found, include_late=True)
         return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)
     with ThreadPoolExecutor(max_workers=4) as pool:
         scores = list(pool.map(one, rows))

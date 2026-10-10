@@ -865,12 +865,110 @@ def submitted_readiness(token, form):
     return {"status": "READY", "label": "Ready", "copies": checked, "student_copies_checked": len(checked)}
 
 
-def score_file(token, agenda, class_key, week_label, form_id, file_id, work_result):
-    """Scores for one student's current, on-time file in one Form's list."""
+def recheck_candidates(form, *, now=None):
+    """Derive one submitted candidate per matched student without changing history.
+
+    Grouping prefers on-time work for the original deadline policy. A later
+    replacement remains in ``earlier``; only its own verified Form event can
+    establish ordering here. Drive creation/modification is never turn-in proof.
+    """
+    from . import google, work
+    from datetime import datetime, timezone
+    now = now or datetime.now(timezone.utc)
+
+    def file_ids(snapshot):
+        return frozenset(f.get("id") for f in snapshot.get("files", []) if f.get("id"))
+
+    def event(snapshot):
+        files = snapshot.get("files", [])
+        at = work.when(snapshot.get("submitted_at"))
+        method = snapshot.get("matched_by")
+        if (snapshot.get("source") != "form" or not at
+                or method not in ("email", "file name", "name typed in the Form")
+                or (method == "email" and not snapshot.get("email"))):
+            return None
+        if any(not f.get("source_form_id") or not f.get("source_response_id")
+               or work.when(f.get("source_submitted_at")) != at for f in files):
+            return None
+        if len({(f["source_form_id"], f["source_response_id"]) for f in files}) > 1:
+            return None
+        return at
+
+    derived = []
+    for row in form.get("students", []) + form.get("late", []):
+        if row.get("matched") is not True:
+            continue
+        candidates = [row]
+        snapshots = [row] + row.get("earlier", [])
+        problem = None
+        current_ids = file_ids(row)
+        for earlier in row.get("earlier", []):
+            at = event(earlier)
+            if not at:
+                if file_ids(earlier) and file_ids(earlier) != current_ids:
+                    problem = "Submission history has files without a verified original Form event; confirm the current revision."
+                continue
+            if (earlier.get("matched_by") == "email" and row.get("matched_by") == "email"
+                    and earlier.get("email", "").lower() != row.get("email", "").lower()):
+                problem = "Submission history has conflicting student identities; confirm the current revision."
+                continue
+            candidates.append(earlier)
+        selected = row
+        if len(candidates) > 1:
+            if not event(row) and current_ids:
+                problem = "The current file's turn-in event cannot be ordered against its replacement; confirm the current revision."
+            else:
+                newest = max(event(c) for c in candidates if event(c))
+                latest = [c for c in candidates if event(c) == newest]
+                if len({file_ids(c) for c in latest}) != 1:
+                    problem = "Different submissions have the same latest turn-in time; confirm which revision to score."
+                else:
+                    selected = latest[0]
+        if any(event(c) and event(c) > now for c in candidates):
+            problem = "A submission's original Form event is in the future; confirm its timestamp before scoring."
+        files = selected.get("files", [])
+        if not files and any(file_ids(c) for c in snapshots):
+            problem = "The latest Form submission has no uploaded file; confirm the intended replacement before scoring."
+        if any(f.get("trashed") or f.get("other_week") for f in files):
+            problem = "The selected submission is unavailable or belongs to another lesson; confirm its revision."
+        decks = {f["id"] for f in files if f.get("mime") in (SLIDES, google.PPTX)}
+        if len(decks) > 1:
+            problem = "The selected submission contains several decks; confirm which revision to score."
+        value = {**row, **{key: selected[key] for key in
+                 ("files", "source", "submitted_at", "late", "email", "matched_by") if key in selected}}
+        if selected is not row:
+            value["earlier"] = [{key: c[key] for key in c if key != "earlier"}
+                for c in snapshots if c is not selected]
+        if problem:
+            value["selection_problem"] = problem
+        derived.append(value)
+    owners = {}
+    for row in derived:
+        identity = (row.get("section"), work.norm(row.get("last", "")), work.norm(row.get("first", "")))
+        for fid in file_ids(row):
+            owners.setdefault(fid, []).append((identity, row))
+    for entries in owners.values():
+        if len({identity for identity, _ in entries}) > 1:
+            for _, row in entries:
+                row["selection_problem"] = "The same submitted file is attributed to different students; confirm its identity."
+    return derived
+
+
+def score_file(token, agenda, class_key, week_label, form_id, file_id, work_result, *, include_late=False):
+    """Score a current file; late candidates require an explicit entry recheck."""
     from . import google
     form = next((f for lesson in work_result.get("lessons", []) for f in lesson["forms"]
                  if f["form_id"] == form_id), None)
-    row = next((r for r in (form or {}).get("students", []) if any(f["id"] == file_id for f in r["files"])), None)
+    candidates = recheck_candidates(form or {}) if include_late else (form or {}).get("students", [])
+    affected = next((r for r in candidates if r.get("selection_problem")), None)
+    if affected:
+        label = (form or {}).get("label") or next((lesson.get("topic") for lesson in work_result.get("lessons", [])
+                                                  if form in lesson["forms"]), "this assignment")
+        context = "%s · %s · %s · %s, %s (%s)" % (
+            agenda.classes.get(class_key, {}).get("name", class_key), week_label, label,
+            affected["last"], affected.get("first", ""), affected["section"])
+        return {"file_id": file_id, "code": "coverage_incomplete", "problem": context + ": " + affected["selection_problem"]}
+    row = next((r for r in candidates if any(f["id"] == file_id for f in r["files"])), None)
     if not form or not row:
         raise ValueError("file")
     upload = next(f for f in row["files"] if f["id"] == file_id)
