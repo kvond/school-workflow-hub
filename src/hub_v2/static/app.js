@@ -1307,7 +1307,7 @@ function icStatus(form) {
 function marksLine(form) {
   const sheet = work.marks[form.form_id];
   if (!sheet?.configured) return null;
-  const parts = [sheet.entered_at ? `✓ Entered in IC ${markDate(sheet.entered_at)}` : '',
+  const parts = [sheet.entered_at ? `✓ ${gradeReadinessHold(form) ? 'Previously entered' : 'Entered'} in IC ${markDate(sheet.entered_at)}` : '',
     sheet.feedback_at ? `✓ Feedback made ${markDate(sheet.feedback_at)}` : ''].filter(Boolean);
   return parts.length ? el('p', {class: 'marks', text: parts.join(' · ')}) : null;
 }
@@ -1887,6 +1887,7 @@ function renderForm(form, lesson) {
   if (missing.length && !weekAssessmentHold()) {
     const held = sourceMatchesHeld() || missing.some(m => m.unsorted);
     box.append(el('div', {class: 'missing'}, el('h4', {text: held ? `No confirmed submission for this assignment (${missing.length}) — scoring held`
+      : gradeReadinessHold(form) ? `Not turned in yet (${missing.length})`
       : recheck || entryHistoryHold(form) ? `No verified submitted file (${missing.length}) — no new zero prepared`
       : closedFor(form) ? `Nothing turned in on time (${missing.length}) — these are 0 now`
       : startedFor(form) ? `Not turned in yet (${missing.length}) — 0 until they turn it in` : `Not turned in yet (${missing.length})`}),

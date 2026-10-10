@@ -597,6 +597,51 @@ test('compact held-copy warnings retain access errors and unresolved teacher-sou
   assert.doesNotMatch(client.icStatus(form).text, /Cannot read lesson|Check this copy’s access/);
 });
 
+test('held code readiness never describes missing submissions as zeros or a prior IC entry as current', async () => {
+  for (const closed of [false, true]) for (const hold of ['unknown', 'teacher', 'copy']) {
+    const {context, client, form, mark} = recheckClient(), requests = [], messages = [];
+    context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+    context.window.postMessage = message => messages.push(message);
+    const render = source.slice(source.indexOf('function studentRow('), source.indexOf('function renderWork('));
+    vm.runInContext(render + '\nglobalThis.renderHeldForTest = renderForm;', context);
+    form.window.at = closed ? '2032-01-10T23:59:00Z' : '2032-01-30T23:59:00Z';
+    form.missing = Array.from({length: 17}, (_, index) => ({first: `Student ${index + 1}`, last: 'Fictional', section: 'A4 Biology'}));
+    form.grade_readiness = hold === 'unknown' ? undefined : hold === 'teacher'
+      ? {status: 'NOT_READY', label: 'Needs embedded codes', action: 'Verify the teacher inventory first.'} : {status: 'READY'};
+    client.work.scores = hold === 'copy' ? {[form.form_id]: {SAMEFILE123: {code: 'deck_not_ready',
+      problem: 'This exact student copy needs embedded codes.'}}} : {};
+    const before = JSON.stringify({form, mark});
+    const rendered = context.renderHeldForTest(form, {});
+    const missing = allNodes(rendered).find(node => node.className === 'missing');
+    assert.equal(missing.children[0].textContent, 'Not turned in yet (17)', `${hold}, closed=${closed}`);
+    assert.doesNotMatch(missing.textContent, /zero|\b0\b/);
+    assert.match(rendered.textContent, /Scoring and IC entry are held; no missing-work zero is prepared/);
+    assert.match(allNodes(rendered).find(node => node.className === 'marks').textContent, /^✓ Previously entered in IC /);
+    assert.equal(client.helperRows(form).length, 0);
+    assert.equal(await client.sendList(form, {}), 'deck_not_ready');
+    if (hold !== 'copy') await client.scoreForm(form);
+    assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+    assert.equal(JSON.stringify({form, mark}), before, 'rendering preserves source rows and the original IC entry receipt');
+  }
+});
+
+test('ready code inventory retains existing open and closed missing-work policy and IC history wording', () => {
+  for (const closed of [false, true]) {
+    const {context, client, form} = recheckClient();
+    const render = source.slice(source.indexOf('function studentRow('), source.indexOf('function renderWork('));
+    vm.runInContext(render + '\nglobalThis.renderReadyForTest = renderForm;', context);
+    form.window.at = closed ? '2032-01-10T23:59:00Z' : '2032-01-30T23:59:00Z';
+    form.missing = [{first: 'Cara', last: 'Cedar', section: 'A4 Biology'}];
+    client.work.marks = {[form.form_id]: {configured: true}};
+    const rendered = context.renderReadyForTest(form, {});
+    const missing = allNodes(rendered).find(node => node.className === 'missing');
+    assert.equal(missing.children[0].textContent, closed
+      ? 'Nothing turned in on time (1) — these are 0 now' : 'Not turned in yet (1) — 0 until they turn it in');
+    client.work.marks[form.form_id].entered_at = {at: '2032-01-12T13:00:00Z'};
+    assert.match(allNodes(context.renderReadyForTest(form, {})).find(node => node.className === 'marks').textContent, /^✓ Entered in IC /);
+  }
+});
+
 test('a closed recheck prepares actual scores, preserves review and Exempt rows, and never creates an absence zero', () => {
   const {client, form} = recheckClient();
   client.helper.state = 'ready';
