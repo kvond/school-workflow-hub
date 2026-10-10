@@ -27,7 +27,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from . import response_binding
+from . import graphical_choice, response_binding
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -255,6 +255,8 @@ def read_deck(raw):
                 if seen[unit["key"]] > 1:
                     unit["key"] += "|%d" % seen[unit["key"]]
             slide = {"number": number, "units": units}
+            if tree is not None and any(u.get("binding", {}).get("kind") == graphical_choice.KIND for u in units):
+                slide["choice_shapes"] = graphical_choice.read_shapes(tree, box=_box, affine=_affine, text=_text, name=_name)
             # Raster regions are evidence only for a reviewed explicit activity,
             # never additional text or pictures in ordinary submission captures.
             if any(u.get("binding", {}).get("kind") in ("raster-card-activity", "raster-highlight-activity") for u in units):
@@ -421,10 +423,12 @@ def _align(student, template):
                 pairs[s["number"]] = best[1]
         bound = [m for m in markers({"slides": [s]}) if "binding" in m]
         if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity", "raster-card-activity", "numeric-record-group",
-                                                     "conditional-response-row", "raster-highlight-activity") for m in bound):
+                                                     "conditional-response-row", "raster-highlight-activity", graphical_choice.KIND) for m in bound):
             source_bound.add(s["number"])
             originals = [t for t in template["slides"]
-                         if response_binding.original_slide_matches(bound, t, student["size"], _plain)]
+                         if (graphical_choice.source(bound[0]["binding"], t, student["size"], _plain) is not None
+                             if len(bound) == 1 and bound[0].get("binding", {}).get("kind") == graphical_choice.KIND
+                             else response_binding.original_slide_matches(bound, t, student["size"], _plain))]
             if len(originals) == 1:
                 pairs[s["number"]] = originals[0]
             else:
@@ -502,6 +506,8 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
             return response_binding.row_answers(slide_markers, written, template_slide, student_slide, size, _plain)
         if all(m.get("binding", {}).get("kind") == "raster-highlight-activity" for m in slide_markers):
             return response_binding.highlight_answers(slide_markers, written, template_slide, student_slide, size, _plain)
+        if any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in slide_markers):
+            return graphical_choice.answers(slide_markers, written, template_slide, student_slide, size, _plain)
         numeric = [m for m in slide_markers if m.get("binding", {}).get("kind") == "numeric-record-group"]
         if numeric:
             ordinary = [m for m in slide_markers if m not in numeric]
@@ -747,6 +753,7 @@ def assess(student, template):
     bank_unbound = False
     response_unbound = False
     numeric_unbound = False
+    choice_unbound = False
     codes = markers(student)
     handed_out = markers(template) if template else []
     current = {(c, qid) for c in CATEGORIES for qid in required[c]}
@@ -757,6 +764,7 @@ def assess(student, template):
             if any("binding" in m for m in mine):
                 response_unbound = True
                 numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
+                choice_unbound |= any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in mine)
             continue  # nothing to compare this slide with
         if template and not any((m["category"], m["id"]) in current for m in mine):
             # A copy of an older version of the deck: this slide lacks today's
@@ -773,6 +781,7 @@ def assess(student, template):
         if basis_here == response_binding.REVIEW:
             response_unbound = True
             numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
+            choice_unbound |= any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in mine)
         if mine and written:
             how.add(basis_here)
         for unit, words in loose:
@@ -805,6 +814,10 @@ def assess(student, template):
                                                       for u, _ in items if u.get("completion_only") == "numeric record"]
                 elif any(u.get("completion_only") == "highlighter placement" for u, _ in items):
                     found[key]["completion_evidence"] = "Original highlighter placed on the review maze"
+                elif any(u.get("completion_only") == "circled choice" for u, _ in items):
+                    found[key]["completion_evidence"] = "One original YES/NO option circled"
+                    found[key]["recorded_choice"] = next(u["recorded_choice"] for u, _ in items
+                                                        if u.get("completion_only") == "circled choice")
                 elif any(u.get("completion_only") for u, _ in items):
                     found[key]["completion_evidence"] = "Original card placed in response region"
     items = []
@@ -827,7 +840,9 @@ def assess(student, template):
         student_note = ("These BANK responses do not have a unique printed term label. "
                         "Check the term-to-response match by hand before scoring or entering grades.")
     if response_unbound:
-        student_note = ("This numeric activity needs its original printed instructions and response blanks checked "
+        student_note = ("This YES/NO activity needs its original question, visible choice mark and separate revision box checked "
+                        "before scoring or entering grades.") if choice_unbound else (
+                       "This numeric activity needs its original printed instructions and response blanks checked "
                         "before scoring or entering grades.") if numeric_unbound else (
                        "This activity needs its original cards or pictures and response regions checked "
                        "before scoring or entering grades.")
