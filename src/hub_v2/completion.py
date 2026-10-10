@@ -427,24 +427,47 @@ def _assign(slide_markers, written, template_slide, size):
         term = _squash(m["id"])
         for item in list(remaining):
             before = next((u for u in template_units if u["key"] == item[0]["key"]), None)
-            if term and _squash((before or item[0])["text"]).startswith(term):
+            if term and _squash((before or item[0])["text"]) == term \
+                    and sum(_squash(u["text"]) == term for u in template_units) == 1:
                 result[("BANK", m["id"])].append(item)
                 remaining.remove(item)
     bank = [m for m in slide_markers if m["category"] == "BANK"]
     if bank and remaining:
         # An answer box without the term in it belongs to the nearest term label.
-        labels = {m["id"]: next((u for u in template_units if u["box"] and _squash(m["id"])
-                                 and _squash(u["text"]).startswith(_squash(m["id"]))), None) for m in bank}
+        # A term label is the whole printed term, not a prefix of a section
+        # heading such as "Symbiosis & Relationships". Repeated labels do
+        # not establish a unique response binding.
+        labels = {}
+        for m in bank:
+            term = _squash(m["id"])
+            matches = [u for u in template_units if term and _squash(u["text"]) == term]
+            labels[m["id"]] = matches[0] if len(matches) == 1 else None
         placed_labels = [(m, labels[m["id"]]) for m in bank if labels[m["id"]]]
         only_bank = len(bank) == len(slide_markers)
+        if len(placed_labels) != len(bank):
+            return result, uncoded + remaining, "BANK term labels need review"
+        bank_unbound = False
         for item in list(remaining):
             if not item[0]["box"] or not placed_labels:
+                if only_bank:
+                    uncoded.append(item)
+                    remaining.remove(item)
+                    bank_unbound = True
                 continue
             c = _center(item[0]["box"])
-            m, label = min(placed_labels, key=lambda ml: _distance(c, ml[1]["box"]))
+            nearest = sorted(placed_labels, key=lambda ml: _distance(c, ml[1]["box"]))
+            m, label = nearest[0]
+            if (only_bank or _distance(c, label["box"]) <= 0.08 * max(size)) and len(nearest) > 1 \
+                    and _distance(c, label["box"]) == _distance(c, nearest[1][1]["box"]):
+                uncoded.append(item)
+                remaining.remove(item)
+                bank_unbound = True
+                continue
             if only_bank or _distance(c, label["box"]) <= 0.08 * max(size):
                 result[("BANK", m["id"])].append(item)
                 remaining.remove(item)
+        if bank_unbound:
+            return result, uncoded, "BANK term labels need review"
     drafts = [m for m in slide_markers if m["category"] == "DRAFT"]
     notes = [m for m in slide_markers if m["category"] in ("NOTES", "OPTIONAL")]
     ordered = sorted(remaining, key=lambda item: (_center(item[0]["box"])[1], _center(item[0]["box"])[0])
@@ -582,6 +605,7 @@ def assess(student, template):
                      for s in (template or {"slides": []})["slides"]}
     found = {}
     uncoded, how = [], set()
+    bank_unbound = False
     codes = markers(student)
     handed_out = markers(template) if template else []
     current = {(c, qid) for c in CATEGORIES for qid in required[c]}
@@ -600,6 +624,8 @@ def assess(student, template):
             written = [(u, _plain(u["text"])) for u in slide["units"] if MARKER.search(u["text"]) and _plain(u["text"])]
             exact = {u["key"]: " ".join(words.split()) for u, words in written}
         assigned, loose, basis_here = _assign(mine, written, match, student["size"])
+        if basis_here == "BANK term labels need review":
+            bank_unbound = True
         if mine and written:
             how.add(basis_here)
         for unit, words in loose:
@@ -637,11 +663,14 @@ def assess(student, template):
     if scored_items and missing_codes * 10 >= len(scored_items) * 3:
         student_note = ("This copy is missing %d of its %d codes, so it may have been copied from an older version "
                         "of the deck. Check it by hand." % (missing_codes, len(scored_items)))
+    if bank_unbound:
+        student_note = ("These BANK responses do not have a unique printed term label. "
+                        "Check the term-to-response match by hand before scoring or entering grades.")
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
             "coding": coding_issues(template or student),
-            "notes_score": score(counts["NOTES"]["done"] + counts["BANK"]["done"],
+            "notes_score": None if bank_unbound else score(counts["NOTES"]["done"] + counts["BANK"]["done"],
                                  counts["NOTES"]["required"] + counts["BANK"]["required"]),
-            "revision_score": score(counts["DRAFT"]["done"], counts["DRAFT"]["required"]),
+            "revision_score": None if bank_unbound else score(counts["DRAFT"]["done"], counts["DRAFT"]["required"]),
             "counts": counts, "items": items, "uncoded": uncoded[:40], "matched_by": sorted(how),
             "compared": bool(template)}
 
