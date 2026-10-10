@@ -99,7 +99,27 @@ def _text(body):
     return "\n".join(lines).strip()
 
 
-def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=()):
+def _highlight_shape(node, orientation):
+    """Exact original paint/geometry, allowing only a shape's translation."""
+    properties = node.find(P + "spPr")
+    if properties is None:
+        return None
+    properties = ET.fromstring(ET.tostring(properties))
+    off = properties.find(A + "xfrm/" + A + "off")
+    if off is not None:
+        off.attrib.clear()
+    visibility = node.find(P + "nvSpPr/" + P + "cNvPr")
+    style = node.find(P + "style")
+    def canonical(element):
+        return (element.tag, tuple(sorted(element.attrib.items())), element.text or "",
+                tuple(canonical(child) for child in element)) if element is not None else None
+    raw = repr((canonical(properties), canonical(style),
+                tuple(tuple(sorted(value.items())) for value in orientation),
+                visibility.get("hidden", "") if visibility is not None else "")).encode()
+    return {"sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=(), highlighters=False):
     for child in node:
         if child.tag == P + "sp":
             ph = child.find(P + "nvSpPr/" + P + "nvPr/" + P + "ph")
@@ -110,6 +130,8 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
             binding = response_binding.description(properties.get("descr") if properties is not None else None)
             if binding is not None:
                 unit["binding"] = binding
+            if highlighters:
+                unit["highlight_shape"] = _highlight_shape(child, picture_orientation)
             units.append(unit)
         elif child.tag == P + "pic":
             blip = child.find(P + "blipFill/" + A + "blip")
@@ -126,9 +148,17 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
         elif child.tag == P + "grpSp":
             xfrm = child.find(P + "grpSpPr/" + A + "xfrm")
             orientation = {k: xfrm.get(k) for k in ("rot", "flipH", "flipV") if xfrm is not None and xfrm.get(k)}
+            if highlighters:
+                properties = child.find(P + "nvGrpSpPr/" + P + "cNvPr")
+                if properties is not None and properties.get("hidden", "").lower() in ("1", "true"):
+                    orientation["hidden"] = "1"
+                paint = child.find(P + "grpSpPr")
+                effects = tuple(ET.tostring(e, encoding="unicode") for e in paint if e.tag != A + "xfrm") if paint is not None else ()
+                if effects:
+                    orientation["group_effects"] = effects
             _walk(child, units, _affine(xfrm, transform, group=True),
                   prefix + _name(child, P + "nvGrpSpPr") + "/", pictures,
-                  picture_orientation + ((orientation,) if orientation else ()))
+                  picture_orientation + ((orientation,) if orientation else ()), highlighters)
         elif child.tag == P + "graphicFrame":
             table = child.find(".//" + A + "tbl")
             frame = _box(child.find(P + "xfrm"), transform)
@@ -212,7 +242,13 @@ def read_deck(raw):
                     pictures[relationship.get("Id")] = media_hashes[target]
             tree = root.find(P + "cSld/" + P + "spTree")
             if tree is not None:
-                _walk(tree, units, (1, 1, 0, 0), pictures=pictures)
+                explicit_highlights = False
+                for properties in tree.iter(P + "cNvPr"):
+                    binding = response_binding.description(properties.get("descr", "") or "")
+                    if binding and binding.get("kind") == "raster-highlight-activity":
+                        explicit_highlights = True
+                        break
+                _walk(tree, units, (1, 1, 0, 0), pictures=pictures, highlighters=explicit_highlights)
             seen = {}
             for unit in units:  # keep keys unique on a slide
                 seen[unit["key"]] = seen.get(unit["key"], 0) + 1
@@ -221,7 +257,7 @@ def read_deck(raw):
             slide = {"number": number, "units": units}
             # Raster regions are evidence only for a reviewed explicit activity,
             # never additional text or pictures in ordinary submission captures.
-            if any(u.get("binding", {}).get("kind") == "raster-card-activity" for u in units):
+            if any(u.get("binding", {}).get("kind") in ("raster-card-activity", "raster-highlight-activity") for u in units):
                 fill = root.find(P + "cSld/" + P + "bg/" + P + "bgPr/" + A + "blipFill")
                 if fill is not None:
                     blip, crop = fill.find(A + "blip"), fill.find(A + "srcRect")
@@ -384,7 +420,8 @@ def _align(student, template):
             if best[1] is not None and best[0] & mine:
                 pairs[s["number"]] = best[1]
         bound = [m for m in markers({"slides": [s]}) if "binding" in m]
-        if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity", "raster-card-activity", "numeric-record-group") for m in bound):
+        if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity", "raster-card-activity", "numeric-record-group",
+                                                     "conditional-response-row", "raster-highlight-activity") for m in bound):
             source_bound.add(s["number"])
             originals = [t for t in template["slides"]
                          if response_binding.original_slide_matches(bound, t, student["size"], _plain)]
@@ -461,6 +498,10 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
     if not slide_markers:
         return result, list(written), "no code"
     if any("binding" in m for m in slide_markers):
+        if all(m.get("binding", {}).get("kind") == "conditional-response-row" for m in slide_markers):
+            return response_binding.row_answers(slide_markers, written, template_slide, student_slide, size, _plain)
+        if all(m.get("binding", {}).get("kind") == "raster-highlight-activity" for m in slide_markers):
+            return response_binding.highlight_answers(slide_markers, written, template_slide, student_slide, size, _plain)
         numeric = [m for m in slide_markers if m.get("binding", {}).get("kind") == "numeric-record-group"]
         if numeric:
             ordinary = [m for m in slide_markers if m not in numeric]
@@ -762,6 +803,8 @@ def assess(student, template):
                     found[key]["completion_evidence"] = "Numeric measurement recorded in original response fields"
                     found[key]["recorded_fields"] = [{"field": u["recorded_field"], "value": u["recorded_value"]}
                                                       for u, _ in items if u.get("completion_only") == "numeric record"]
+                elif any(u.get("completion_only") == "highlighter placement" for u, _ in items):
+                    found[key]["completion_evidence"] = "Original highlighter placed on the review maze"
                 elif any(u.get("completion_only") for u, _ in items):
                     found[key]["completion_evidence"] = "Original card placed in response region"
     items = []

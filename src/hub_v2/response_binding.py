@@ -2,6 +2,7 @@
 import json
 import math
 import re
+from collections import Counter
 
 
 PREFIX = "HUB_COMPLETION_BINDING_V1\n"
@@ -131,6 +132,9 @@ def printed_prompts(student, template, markers, size):
 
 def original_slide_matches(markers, template, size, plain):
     """A new activity ID can match only its explicit authentic source objects."""
+    if markers and all(m.get("binding", {}).get("kind") == "conditional-response-row" for m in markers):
+        return all(m.get("standalone") and m["category"] == "NOTES"
+                   and row_source(m, template, size, plain) is not None for m in markers)
     if len(markers) != 1 or not markers[0].get("standalone") or markers[0]["category"] != "NOTES":
         return False
     data = markers[0].get("binding", {})
@@ -139,6 +143,8 @@ def original_slide_matches(markers, template, size, plain):
         return numeric_source(data, template, size, plain) is not None
     if data.get("kind") == "raster-card-activity":
         return raster_source(data, template, size, plain) is not None
+    if data.get("kind") == "raster-highlight-activity":
+        return highlight_source(markers[0], template, size, plain) is not None
 
     def text_at(text, box):
         found = [u for u in units if not u.get("picture") and plain(u.get("text", "")) == text]
@@ -166,6 +172,171 @@ def original_slide_matches(markers, template, size, plain):
                 and all(picture_at(t.get("target_picture_sha256"), t.get("source_box"))
                         and picture_at(t.get("response_picture_sha256"), t.get("source_response_box")) for t in targets))
     return False
+
+
+def _trusted(marker, template):
+    token = "[[%s:%s:%s]]" % (marker["category"], marker["code"], marker["id"])
+    return len([u for u in (template or {}).get("units", [])
+                if u.get("binding") == marker.get("binding") and u.get("text", "").strip() == token]) == 1
+
+
+def _text_region(source, units, size, plain):
+    if (not isinstance(source, dict) or not isinstance(source.get("text"), str)
+            or not rectangle(source.get("box"), size)):
+        return None
+    matches = [u for u in units if not u.get("picture") and plain(u.get("text", "")) == source["text"]
+               and same_box(u.get("box"), source["box"], size)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def row_source(marker, template, size, plain):
+    """One printed evidence item with its two conditionally related cells."""
+    data = marker.get("binding", {})
+    if (not _trusted(marker, template) or data.get("kind") != "conditional-response-row"
+            or data.get("page_size") != list(size)):
+        return None
+    item, headers, fields = data.get("item"), data.get("headers"), data.get("fields")
+    if (not isinstance(headers, list) or len(headers) != 2 or not isinstance(fields, list) or len(fields) != 2
+            or not isinstance(item, dict) or not item.get("text")
+            or [h.get("text") for h in headers if isinstance(h, dict)] !=
+            ["Direct or Circumstantial?", "Physical or Biological? (Circumstantial)"]
+            or not all(isinstance(f, dict) and f.get("text") == "Type here" for f in fields)
+            or any(_text_region(v, (template or {}).get("units", []), size, plain) is None for v in [item] + headers + fields)):
+        return None
+    boxes = [item["box"]] + [f["box"] for f in fields]
+    if len({tuple(v) for v in boxes}) != 3:
+        return None
+    if any(max(a[0], b[0]) < min(a[0] + a[2], b[0] + b[2])
+           and max(a[1], b[1]) < min(a[1] + a[3], b[1] + b[3])
+           for n, a in enumerate(boxes) for b in boxes[n + 1:]):
+        return None
+    return item, headers, fields
+
+
+def row_answers(markers, written, template, student, size, plain):
+    """Meaningful completion per row; the second cell is never another point."""
+    result = {(m["category"], m["id"]): [] for m in markers}
+    bad = (result, list(written), REVIEW)
+    if not student or len(result) != len(markers):
+        return bad
+    regions, used, loose = [], set(), []
+    supplied = {}
+    for marker in markers:
+        source = row_source(marker, template, size, plain)
+        if marker["category"] != "NOTES" or not marker.get("standalone") or source is None:
+            return bad
+        item, headers, fields = source
+        supplied[(marker["category"], marker["id"])] = {
+            tuple(re.findall(r"\w+", v["text"].lower())) for v in [item] + headers}
+        # A parenthetical condition is source context, not part of the two
+        # choices. Copying just those printed alternatives is still not a choice.
+        supplied[(marker["category"], marker["id"])].update(
+            tuple(re.findall(r"\w+", re.sub(r"\([^)]*\)", "", h["text"]).lower())) for h in headers)
+        if any(_text_region(v, student.get("units", []), size, plain) is None for v in [item] + headers):
+            return bad
+        for field in fields:
+            box = field["box"]
+            if tuple(box) in used:
+                return bad
+            used.add(tuple(box))
+            actual = [u for u in student.get("units", []) if not u.get("picture") and same_box(u.get("box"), box, size)]
+            if len(actual) != 1:
+                return bad
+            regions.append((marker, actual[0], box))
+    for unit, words in written:
+        matches = [(marker, actual) for marker, actual, _ in regions if actual is unit]
+        if len(matches) == 1 and not unit.get("picture") and not words.startswith("moved: "):
+            marker, _ = matches[0]
+            text = plain(unit.get("text", "")).strip()
+            tokens = tuple(re.findall(r"\w+", text.lower()))
+            if (text and not set(tokens) <= {"type", "here"}
+                    and tokens not in supplied[(marker["category"], marker["id"])]):
+                result[(marker["category"], marker["id"])].append((unit, words))
+        elif unit.get("box") and any(inside(center(unit["box"]), box) for _, _, box in regions):
+            return bad
+        else:
+            loose.append((unit, words))
+    if any(u.get("picture") and u.get("box") and any(inside(center(u["box"]), box) for _, _, box in regions)
+           for u in student.get("units", [])):
+        return bad
+    return result, loose, "original conditional evidence row"
+
+
+def highlight_source(marker, template, size, plain):
+    """Authenticated raster and exact stock shapes, including the given example."""
+    data = marker.get("binding", {})
+    if (not _trusted(marker, template) or data.get("kind") != "raster-highlight-activity"
+            or data.get("page_size") != list(size) or template.get("background") != data.get("background")
+            or not isinstance(data.get("background"), dict)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(data["background"].get("sha256", "")))
+            or not rectangle(data.get("maze_region"), size)):
+        return None
+    stock, given = data.get("stock"), data.get("given")
+    if not isinstance(stock, list) or len(stock) != 27 or not isinstance(given, list) or len(given) != 1:
+        return None
+    for shape in stock + given:
+        if (not isinstance(shape, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(shape.get("sha256", "")))
+                or not rectangle(shape.get("box"), size)):
+            return None
+    actual = [u for u in template.get("units", []) if u.get("highlight_shape") and not u.get("text", "").strip()]
+    expected = Counter((s["sha256"], tuple(s["box"])) for s in stock + given)
+    found = Counter((u["highlight_shape"].get("sha256"), tuple(u["box"])) for u in actual if u.get("box"))
+    if (found != expected or any(inside(center(s["box"]), data["maze_region"]) for s in stock)
+            or not inside(center(given[0]["box"]), data["maze_region"])):
+        return None
+    return stock, given
+
+
+def highlight_answers(markers, written, template, student, size, plain):
+    """Original moved/copied highlighters count one activity and never prose."""
+    result = {(m["category"], m["id"]): [] for m in markers}
+    bad = (result, list(written), REVIEW)
+    if len(markers) != 1 or not student:
+        return bad
+    marker = markers[0]
+    source = highlight_source(marker, template, size, plain)
+    if marker["category"] != "NOTES" or not marker.get("standalone") or source is None:
+        return bad
+    data, (stock, given) = marker["binding"], source
+    if student.get("background") != data["background"]:
+        return bad
+    actual = [u for u in student.get("units", []) if u.get("highlight_shape") and not u.get("text", "").strip()]
+    signatures = Counter(s["sha256"] for s in stock + given)
+    found = Counter(u["highlight_shape"].get("sha256") for u in actual)
+    if (len(actual) > 200 or any(k not in signatures for k in found)
+            or any(found[k] < count for k, count in signatures.items())
+            or any(not rectangle(u.get("box"), size) for u in actual)
+            or any(not any(u["highlight_shape"]["sha256"] == s["sha256"]
+                           and max(abs(a - b) for a, b in zip(u["box"][2:], s["box"][2:])) <= .001 * max(size)
+                           for s in stock + given) for u in actual)):
+        return bad
+    used = set()
+    example = given[0]
+    examples = [i for i, u in enumerate(actual) if u["highlight_shape"]["sha256"] == example["sha256"]
+                and same_box(u.get("box"), example["box"], size)]
+    if len(examples) != 1:
+        return bad
+    used.add(examples[0])
+    for old in stock:
+        match = next((i for i, u in enumerate(actual) if i not in used and u["highlight_shape"]["sha256"] == old["sha256"]
+                      and same_box(u.get("box"), old["box"], size)), None)
+        if match is not None:
+            used.add(match)
+    loose = []
+    for i, unit in enumerate(actual):
+        if i in used or any(math.dist(center(unit["box"]), center(s["box"])) <= .03 * max(size) for s in stock):
+            continue
+        evidence = ({**unit, "completion_only": "highlighter placement"}, "highlighter placement")
+        if inside(center(unit["box"]), data["maze_region"]):
+            result[(marker["category"], marker["id"])].append(evidence)
+        else:
+            loose.append((evidence[0], "moved: original highlighter"))
+    # This raster activity has no original prose field or movable source image.
+    if written or any(u.get("picture") for u in student.get("units", [])):
+        return bad
+    if loose and not any(result.values()):
+        return bad
+    return result, loose, "original review-maze highlighter placement"
 
 
 def numeric_source(data, template, size, plain):
