@@ -20,10 +20,14 @@ and reported by slide, so the deck can be coded next time.
 """
 import difflib
 from collections import Counter
+import hashlib
 import io
+import posixpath
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+
+from . import response_binding
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -42,6 +46,7 @@ ID_LIST = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK)_IDS=(.*?)(?=\s+[A-Z][A-Z_]*
 COUNT = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=(\d+)\b")
 MAX_SLIDE_BYTES = 5_000_000
 MAX_SLIDES = 200
+MAX_PICTURE_BYTES = 20_000_000
 COPY_WORDS = 6
 MAX_ANSWER = 4000
 NEEDS_CODES = "Needs embedded codes"
@@ -94,17 +99,36 @@ def _text(body):
     return "\n".join(lines).strip()
 
 
-def _walk(node, units, transform, prefix=""):
+def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=()):
     for child in node:
         if child.tag == P + "sp":
             ph = child.find(P + "nvSpPr/" + P + "nvPr/" + P + "ph")
-            units.append({"key": prefix + _name(child, P + "nvSpPr"), "text": _text(child.find(P + "txBody")),
+            unit = {"key": prefix + _name(child, P + "nvSpPr"), "text": _text(child.find(P + "txBody")),
                           "box": _box(child.find(P + "spPr/" + A + "xfrm"), transform),
-                          "title": ph is not None and ph.get("type") in ("title", "ctrTitle")})
+                          "title": ph is not None and ph.get("type") in ("title", "ctrTitle")}
+            properties = child.find(P + "nvSpPr/" + P + "cNvPr")
+            binding = response_binding.description(properties.get("descr") if properties is not None else None)
+            if binding is not None:
+                unit["binding"] = binding
+            units.append(unit)
+        elif child.tag == P + "pic":
+            blip = child.find(P + "blipFill/" + A + "blip")
+            crop = child.find(P + "blipFill/" + A + "srcRect")
+            xfrm = child.find(P + "spPr/" + A + "xfrm")
+            appearance = {"crop": dict(crop.attrib) if crop is not None else {},
+                          "transform": {k: xfrm.get(k) for k in ("rot", "flipH", "flipV") if xfrm is not None and xfrm.get(k)},
+                          "groups": list(picture_orientation),
+                          "effects": [ET.tostring(e, encoding="unicode") for e in blip if e.tag != A + "extLst"] if blip is not None else []}
+            units.append({"key": prefix + _name(child, P + "nvPicPr"), "text": "", "title": False,
+                          "box": _box(xfrm, transform), "picture": {
+                              "sha256": (pictures or {}).get(blip.get(R + "embed")) if blip is not None else None,
+                              "appearance": appearance}})
         elif child.tag == P + "grpSp":
             xfrm = child.find(P + "grpSpPr/" + A + "xfrm")
+            orientation = {k: xfrm.get(k) for k in ("rot", "flipH", "flipV") if xfrm is not None and xfrm.get(k)}
             _walk(child, units, _affine(xfrm, transform, group=True),
-                  prefix + _name(child, P + "nvGrpSpPr") + "/")
+                  prefix + _name(child, P + "nvGrpSpPr") + "/", pictures,
+                  picture_orientation + ((orientation,) if orientation else ()))
         elif child.tag == P + "graphicFrame":
             table = child.find(".//" + A + "tbl")
             frame = _box(child.find(P + "xfrm"), transform)
@@ -157,6 +181,7 @@ def read_deck(raw):
         except (KeyError, ET.ParseError, ValueError):
             pass
         slides = []
+        media_hashes = {}
         for number, name in enumerate(_slide_names(archive)[:MAX_SLIDES], 1):
             if archive.getinfo(name).file_size > MAX_SLIDE_BYTES:
                 raise Unreadable("One of this deck's slides is too large to read.")
@@ -165,9 +190,29 @@ def read_deck(raw):
             except ET.ParseError:
                 raise Unreadable("This deck couldn't be read.") from None
             units = []
+            pictures = {}
+            relname = posixpath.dirname(name) + "/_rels/" + posixpath.basename(name) + ".rels"
+            if relname in archive.namelist():
+                try:
+                    relationships = ET.fromstring(archive.read(relname))
+                except ET.ParseError:
+                    relationships = []
+                for relationship in relationships:
+                    if relationship.get("TargetMode") == "External" or not relationship.get("Type", "").endswith("/image"):
+                        continue
+                    target = posixpath.normpath(posixpath.join(posixpath.dirname(name), relationship.get("Target", "")))
+                    if not target.startswith("ppt/media/") or target not in archive.namelist() or archive.getinfo(target).file_size > MAX_PICTURE_BYTES:
+                        continue
+                    if target not in media_hashes:
+                        with archive.open(target) as media:
+                            digest = hashlib.sha256()
+                            for block in iter(lambda: media.read(262144), b""):
+                                digest.update(block)
+                        media_hashes[target] = digest.hexdigest()
+                    pictures[relationship.get("Id")] = media_hashes[target]
             tree = root.find(P + "cSld/" + P + "spTree")
             if tree is not None:
-                _walk(tree, units, (1, 1, 0, 0))
+                _walk(tree, units, (1, 1, 0, 0), pictures=pictures)
             seen = {}
             for unit in units:  # keep keys unique on a slide
                 seen[unit["key"]] = seen.get(unit["key"], 0) + 1
@@ -187,8 +232,12 @@ def markers(deck):
     for slide in deck["slides"]:
         for unit in slide["units"]:
             for match in MARKER.finditer(unit["text"]):
-                found.append({"category": match.group(1), "code": match.group(2), "id": match.group(3).strip(),
-                              "slide": slide["number"], "key": unit["key"], "box": unit["box"]})
+                marker = {"category": match.group(1), "code": match.group(2), "id": match.group(3).strip(),
+                          "slide": slide["number"], "key": unit["key"], "box": unit["box"],
+                          "standalone": unit["text"].strip() == match.group(0)}
+                if "binding" in unit:
+                    marker["binding"] = unit["binding"]
+                found.append(marker)
     return found
 
 
@@ -310,7 +359,7 @@ def _align(student, template):
     then by position for slides without codes when the decks are the same
     length, then by the slide's printed text: a copy of an older version of the
     deck may lack codes and have slides added or removed."""
-    by_codes, pairs = [], {}
+    by_codes, pairs, source_bound = [], {}, set()
     for t in template["slides"]:
         by_codes.append((_signature(t), t))
     for s in student["slides"]:
@@ -319,9 +368,19 @@ def _align(student, template):
             best = max(by_codes, key=lambda item: len(item[0] & mine), default=(set(), None))
             if best[1] is not None and best[0] & mine:
                 pairs[s["number"]] = best[1]
+        bound = [m for m in markers({"slides": [s]}) if "binding" in m]
+        if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity") for m in bound):
+            source_bound.add(s["number"])
+            originals = [t for t in template["slides"]
+                         if response_binding.original_slide_matches(bound, t, student["size"], _plain)]
+            if len(originals) == 1:
+                pairs[s["number"]] = originals[0]
+            else:
+                pairs.pop(s["number"], None)
     if len(student["slides"]) == len(template["slides"]):
         for s, t in zip(student["slides"], template["slides"]):
-            pairs.setdefault(s["number"], t)
+            if s["number"] not in source_bound:
+                pairs.setdefault(s["number"], t)
     # How much of a handed-out slide's printed text is on the student's slide
     # (their answers add text, so it's measured against the handed-out slide).
     def kept(printed, mine):
@@ -331,7 +390,7 @@ def _align(student, template):
     printed = {t["number"]: _printed(t) for t in template["slides"]}
     for s in student["slides"]:
         mine = _printed(s)
-        if s["number"] in pairs or not mine:
+        if s["number"] in pairs or not mine or s["number"] in source_bound:
             continue
         best = max(((kept(printed[t["number"]], mine), t) for t in template["slides"]
                     if t["number"] not in taken and len(printed[t["number"]]) >= 15),
@@ -346,15 +405,17 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
     """([(unit, added words)] for boxes the student wrote in on this slide,
     {box key: those words as the student wrote them}). A card dragged to a new
     place counts as 'moved: …' (credited only where it lands on a code)."""
-    base = {u["key"]: u for u in template_slide["units"]} if template_slide else {}
+    base = {u["key"]: u for u in template_slide["units"] if not u.get("picture")} if template_slide else {}
     out, exact = [], {}
     for unit in student_slide["units"]:
+        if unit.get("picture"):
+            continue  # Images are completion evidence only under explicit source bindings.
         before = base.get(unit["key"])
         if template_slide and unit["box"]:
             # Google export renumbers shape names after a copy gains a box.
             # The same name can then refer to an unrelated heading or prompt.
             # Prefer an unambiguous unchanged rectangle, including empty boxes.
-            same_place = [u for u in template_slide["units"] if u["box"] and
+            same_place = [u for u in template_slide["units"] if not u.get("picture") and u["box"] and
                           max(abs(a - b) for a, b in zip(u["box"], unit["box"])) <= 0.001 * max(size)]
             if len(same_place) == 1:
                 before = same_place[0]
@@ -364,7 +425,7 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
         if before is None and template_slide:
             # A box the export renamed: compare with the most similar box on the slide.
             scored = [(difflib.SequenceMatcher(None, _plain(u["text"]), _plain(unit["text"])).ratio(), u)
-                      for u in template_slide["units"] if _plain(u["text"])]
+                      for u in template_slide["units"] if not u.get("picture") and _plain(u["text"])]
             best = max(scored, key=lambda x: x[0], default=(0, None))
             before = best[1] if best[0] >= 0.6 else None
         words = added(before["text"] if before else "", unit["text"])
@@ -379,13 +440,19 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
     return out, exact
 
 
-def _assign(slide_markers, written, template_slide, size):
+def _assign(slide_markers, written, template_slide, size, *, student_slide=None):
     """{(category, id): [(unit, words)]} plus uncoded [(unit, words)] and how it was matched."""
     result = {(m["category"], m["id"]): [] for m in slide_markers}
     if not slide_markers:
         return result, list(written), "no code"
+    if any("binding" in m for m in slide_markers):
+        if all(m.get("binding", {}).get("kind") in ("picture-slot", "picture-activity") for m in slide_markers):
+            return response_binding.picture_answers(slide_markers, written, template_slide, student_slide, size)
+        return response_binding.drag_answers(slide_markers, written, template_slide, student_slide, size, _plain)
+    if response_binding.tiny_points(slide_markers, size):
+        return response_binding.point_answers(slide_markers, written, template_slide, size, marker_pattern=MARKER)
     template_units = [u for u in (template_slide or {}).get("units", [])
-                      if u["box"] and not MARKER.search(u["text"])
+                      if not u.get("picture") and u["box"] and not MARKER.search(u["text"])
                       and u["box"][2] * u["box"][3] < 0.6 * size[0] * size[1]]
     boxed = [m for m in slide_markers if m["box"]]
     placed = [m for m in boxed if any(
@@ -606,6 +673,7 @@ def assess(student, template):
     found = {}
     uncoded, how = [], set()
     bank_unbound = False
+    response_unbound = False
     codes = markers(student)
     handed_out = markers(template) if template else []
     current = {(c, qid) for c in CATEGORIES for qid in required[c]}
@@ -613,6 +681,8 @@ def assess(student, template):
         mine = [m for m in codes if m["slide"] == slide["number"]]
         match = pairs.get(slide["number"])
         if template and match is None:
+            if any("binding" in m for m in mine):
+                response_unbound = True
             continue  # nothing to compare this slide with
         if template and not any((m["category"], m["id"]) in current for m in mine):
             # A copy of an older version of the deck: this slide lacks today's
@@ -623,15 +693,20 @@ def assess(student, template):
         else:
             written = [(u, _plain(u["text"])) for u in slide["units"] if MARKER.search(u["text"]) and _plain(u["text"])]
             exact = {u["key"]: " ".join(words.split()) for u, words in written}
-        assigned, loose, basis_here = _assign(mine, written, match, student["size"])
+        assigned, loose, basis_here = _assign(mine, written, match, student["size"], student_slide=slide)
         if basis_here == "BANK term labels need review":
             bank_unbound = True
+        if basis_here == response_binding.REVIEW:
+            response_unbound = True
         if mine and written:
             how.add(basis_here)
         for unit, words in loose:
             if not words.startswith("moved: "):  # a dragged card isn't writing
                 uncoded.append({"slide": slide["number"], "excerpt": words[:80]})
         printed = template_text.get(match["number"], "") if match else ""
+        received_print = response_binding.printed_prompts(slide, match, mine, student["size"])
+        if received_print:
+            printed += " " + " ".join(t for text in received_print for t in _tokens(text))
         for key, items in assigned.items():
             words = " ".join(w for _, w in items)
             if not items:
@@ -642,11 +717,15 @@ def assess(student, template):
                 status = "done"
             prior = found.get(key)
             if not prior or (prior["status"] != "done" and status == "done"):
-                answer = " ".join(exact.get(u["key"], w) for u, w in items)
+                answer = " ".join(exact.get(u["key"], w) for u, w in items if not u.get("picture") and not u.get("completion_only"))
                 where = match or slide  # named and ordered by the handed-out deck's slide
                 found[key] = {"category": key[0], "id": key[1], "slide": slide["number"], "status": status,
                               "excerpt": words[:80], "answer": answer[:MAX_ANSWER],
                               "at": where["number"], "question": slide_title(where)}
+                if any(u.get("picture") for u, _ in items):
+                    found[key]["completion_evidence"] = "Original picture placed in response region"
+                elif any(u.get("completion_only") for u, _ in items):
+                    found[key]["completion_evidence"] = "Original card placed in response region"
     items = []
     for category in CATEGORIES:
         for qid in required[category]:
@@ -666,11 +745,14 @@ def assess(student, template):
     if bank_unbound:
         student_note = ("These BANK responses do not have a unique printed term label. "
                         "Check the term-to-response match by hand before scoring or entering grades.")
+    if response_unbound:
+        student_note = ("This activity needs its original cards or pictures and response regions checked "
+                        "before scoring or entering grades.")
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
             "coding": coding_issues(template or student),
-            "notes_score": None if bank_unbound else score(counts["NOTES"]["done"] + counts["BANK"]["done"],
+            "notes_score": None if bank_unbound or response_unbound else score(counts["NOTES"]["done"] + counts["BANK"]["done"],
                                  counts["NOTES"]["required"] + counts["BANK"]["required"]),
-            "revision_score": None if bank_unbound else score(counts["DRAFT"]["done"], counts["DRAFT"]["required"]),
+            "revision_score": None if bank_unbound or response_unbound else score(counts["DRAFT"]["done"], counts["DRAFT"]["required"]),
             "counts": counts, "items": items, "uncoded": uncoded[:40], "matched_by": sorted(how),
             "compared": bool(template)}
 
