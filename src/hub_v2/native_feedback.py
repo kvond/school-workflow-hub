@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from . import completion, feedback, google
+from . import completion, feedback, google, work
 from school_workflow_hub.adapters import assessment_provider, assessment_save, grading_records
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, key
@@ -149,6 +149,45 @@ def _row(found, form_id, file_id):
     return row, forms[0]
 
 
+def _submission_receipt(row, scope):
+    """Bind the selected file to its authenticated original Form event.
+
+    ``work.submissions`` attaches these fields directly to each Forms
+    fileUploadAnswers entry. Routing may change the assignment Form, but it
+    must retain that exact source file, response and event timestamp.
+    """
+    files = [item for item in row['files'] if item.get('id') == scope['file']]
+    if len(files) != 1:
+        raise Held('The selected file needs one verified original Form receipt.')
+    item = files[0]
+    source_form = item.get('source_form_id')
+    assignment_form = item.get('assignment_form_id')
+    if (assignment_form not in (None, scope['form'])
+            or (source_form != scope['form'] and assignment_form != scope['form'])):
+        raise Held('The selected file’s original Form receipt is not linked to this assignment.')
+    receipt = {'source_file_id': item['id'], 'source_form_id': source_form,
+               'source_response_id': item.get('source_response_id'),
+               'assignment_form_id': scope['form'], 'submitted_at': item.get('source_submitted_at')}
+    _receipt_date(receipt, scope, receipt['submitted_at'])
+    if work.when(row.get('submitted_at')) != work.when(receipt['submitted_at']):
+        raise Held('The selected file’s receipt disagrees with its current Form event. Verify the original submission date.')
+    return receipt
+
+
+def _receipt_date(receipt, scope, submitted_at):
+    fields = {'source_file_id', 'source_form_id', 'source_response_id', 'assignment_form_id', 'submitted_at'}
+    if (not isinstance(receipt, dict) or set(receipt) != fields
+            or any(not isinstance(receipt.get(field), str)
+                   or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', receipt[field])
+                   for field in fields - {'submitted_at'})
+            or receipt['source_file_id'] != scope['file'] or receipt['assignment_form_id'] != scope['form']):
+        raise Held('The saved report needs its original same-file Form receipt verified. Its PDF remains available.')
+    moment = work.when(receipt['submitted_at'])
+    if moment is None or moment != work.when(submitted_at):
+        raise Held('The saved report needs its original submission timestamp verified. Its PDF remains available.')
+    return moment.astimezone(ZoneInfo('America/New_York')).date().isoformat()
+
+
 def _aspects(reference, score):
     block = re.search(r'(?im)^CRITICAL ASPECTS\s*\n((?:\d+\.\s*[^\n]+\n?){1,4})', reference)
     if not block:
@@ -168,6 +207,7 @@ def _aspects(reference, score):
 
 def evidence(assertion, token, config, agenda, scope, found):
     row, form = _row(found, scope['form'], scope['file'])
+    receipt = _submission_receipt(row, scope)
     score = completion.score_file(token, agenda, scope['class'], scope['week'], scope['form'], scope['file'], found)
     if score.get('problem') or not score.get('compared'):
         raise Held(score.get('problem') or 'The submitted deck could not be matched to its lesson.')
@@ -196,7 +236,7 @@ def evidence(assertion, token, config, agenda, scope, found):
         archive_identity.update(ic_student_id=native_id, ic_identity_verified=True)
     return {'scope': scope, 'person': person, 'assignment': assignments[0],
             'archive_identity': archive_identity,
-            'submitted_at': row.get('submitted_at'),
+            'submitted_at': receipt['submitted_at'], 'submission_receipt': receipt,
             'source': captured, 'reference': reference, 'aspects': _aspects(reference['text'], score),
             'answers': score['items'], 'prompt': prompt, 'prompt_url': where}
 
@@ -294,6 +334,8 @@ def _call(config, inputs):
 
 
 def generate(config, inputs):
+    if inputs.get('submission_receipt'):
+        _receipt_date(inputs['submission_receipt'], inputs['scope'], inputs.get('submitted_at'))
     if not assessment_provider.configured(config):
         raise Held('The feedback provider is not configured.')
     port = configured_store(config)
@@ -347,6 +389,8 @@ def generate(config, inputs):
         value['archive_identity'] = inputs['archive_identity']
     if inputs.get('submitted_at'):
         value['submitted_at'] = inputs['submitted_at']
+    if inputs.get('submission_receipt'):
+        value['submission_receipt'] = dict(inputs['submission_receipt'])
     # Layout validation happens before the draft is offered to the teacher.
     from .feedback_pdf import render
     render(value)
@@ -402,8 +446,16 @@ def save(config, ident, inputs, *, token=None, write_token=None):
         # or a model. Keep it outside the draft fingerprint so an older saved
         # draft can be filed without asking the model to regenerate it.
         updated['archive_identity'] = inputs['archive_identity']
-    if inputs.get('submitted_at') and not value.get('submitted_at'):
-        updated['submitted_at'] = inputs['submitted_at']
+    if inputs.get('submission_receipt') and not value.get('submission_receipt'):
+        # Backfill provenance only from fresh evidence for this same original
+        # timestamp. An unchanged cached report is never relabelled as a new
+        # student submission, and its saved date and PDF remain immutable.
+        try:
+            _receipt_date(inputs['submission_receipt'], value['scope'], value.get('submitted_at'))
+        except Held:
+            pass  # Preserve the report; separate teacher reporting will hold.
+        else:
+            updated['submission_receipt'] = dict(inputs['submission_receipt'])
     if updated != value:
         stored = _commit_checked(configured_store(config), ident, updated, stored.version)
         value = stored.value
@@ -441,21 +493,21 @@ def _refresh_teacher_analysis(config, value, token, write_token):
         active = student_archive.report_roster(token, config, 'biology')
         if archive['student_key'] not in {student['student_key'] for student in active}:
             raise teaching_report.Held('The saved student is outside the current Biology roster; preserve the historical report for review.')
-        try:
-            source_date = datetime.fromisoformat(value['source']['file']['modified_at']).astimezone(
-                ZoneInfo('America/New_York')).date().isoformat()
-        except (KeyError, ValueError, TypeError):
-            raise teaching_report.Held('The saved report lacks its original source modification date.') from None
+        if value['source']['file']['id'] != value['scope']['file']:
+            raise Held('The saved report’s original file needs verification. Its PDF remains available.')
+        source_date = _receipt_date(value.get('submission_receipt'), value['scope'], value.get('submitted_at'))
         rows = teaching_report.native_observations(value, archive['student_key'], source_date,
-            lesson_key=value['reference']['file']['id'], date_basis='source_modified',
+            lesson_key=value['reference']['file']['id'], date_basis='form_receipt',
             submitted_at=value.get('submitted_at'))
         receipt = teaching_report.save_observations(config, rows)
         refreshed = teaching_report.refresh_writing_tables(token, write_token, config, active)
         return {**refreshed, 'saved_feedback_id': value['id'], 'observations': receipt['observations']}
-    except (student_archive.Held, teaching_report.Held, google.GoogleError, StoreUnavailable, Conflict) as error:
+    except (Held, student_archive.Held, teaching_report.Held, google.GoogleError, StoreUnavailable, Conflict) as error:
         # Student feedback remains saved and printable if the separate teacher
         # workbook is temporarily unavailable. No provider or grade retry occurs.
-        return {'status': 'held', 'problem': str(error), 'saved_feedback_id': value['id']}
+        context = 'Biology / ' + value.get('person', {}).get('name', 'Student') + ' / ' + (
+            value.get('assignment', {}).get('assignment_title') or 'Saved lesson')
+        return {'status': 'held', 'problem': context + ': ' + str(error), 'saved_feedback_id': value['id']}
 
 
 def _file_saved(config, value, version, token, write_token):

@@ -14,6 +14,15 @@ and lined practice space. Presentation updates preserve the underlying ratings,
 work dates, source evidence, and earlier PDF versions. A single observation is
 shown as one point; unavailable or unrelated work is not turned into a trend.
 
+Teacher writing observations use the selected file's verified original Form
+receipt date. The assessment date remains separate. Repairing embedded codes
+does not make the repair date a new student-work date; missing or conflicting
+receipt evidence holds teacher reporting while the saved student PDF stays
+available. This date check does not change feedback generation identities,
+source freshness checks, or teacher-controlled delivery checkboxes.
+Existing observation batches remain immutable; an earlier misdated batch
+requires a separately verified correction rather than an automatic rewrite.
+
 Current missing-work contracts also belong in the daily student document after
 a complete fresh source check against the current IC roster, assignment flags,
 recorded due dates, and private student folders. Each student gets one dated

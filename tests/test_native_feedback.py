@@ -427,8 +427,11 @@ class NativeFeedbackTests(unittest.TestCase):
 
 class NativeFeedbackEvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.row = {'files': [{'id': 'file', 'mime': google.PPTX}], 'matched': True,
+        self.row = {'files': [{'id': 'file', 'mime': google.PPTX, 'source_form_id': 'form',
+                              'source_response_id': 'FictionalResponse12345',
+                              'source_submitted_at': '2026-09-30T15:00:00Z'}], 'matched': True,
                     'matched_by': 'email', 'source': 'form', 'late': False,
+                    'submitted_at': '2026-09-30T15:00:00Z',
                     'first': 'Ana', 'last': 'Rivera', 'email': 'fictional@example.test', 'section': 'A4'}
         self.found = {'lessons': [{'forms': [{'form_id': 'form', 'students': [self.row]}]}]}
         self.scope = fb.target('biology', 'Wk 05', 'form', 'file')
@@ -458,6 +461,35 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
         self.assertEqual(result['archive_identity']['matched_by'], 'email')
         self.assertEqual(result['archive_identity']['source'], 'form')
         self.assertNotIn('school_email', result['person'])
+        self.assertEqual(result['submitted_at'], self.row['submitted_at'])
+        self.assertEqual(result['submission_receipt'], {
+            'source_file_id': 'file', 'source_form_id': 'form',
+            'source_response_id': 'FictionalResponse12345', 'assignment_form_id': 'form',
+            'submitted_at': '2026-09-30T15:00:00Z'})
+
+    def test_original_exact_file_receipt_survives_verified_assignment_form_routing(self):
+        self.row['files'][0].update(source_form_id='FictionalOriginalForm', assignment_form_id='form')
+        result = self.read()
+        self.assertEqual(result['submission_receipt']['source_form_id'], 'FictionalOriginalForm')
+        self.assertEqual(result['submission_receipt']['assignment_form_id'], 'form')
+        self.assertEqual(result['submitted_at'], '2026-09-30T15:00:00Z')
+
+    def test_unknown_incomplete_or_disagreeing_file_receipt_is_held_before_source_capture(self):
+        original = deepcopy(self.row)
+        changes = [lambda row: row['files'][0].pop('source_response_id'),
+                   lambda row: row['files'][0].pop('source_form_id'),
+                   lambda row: row['files'][0].pop('source_submitted_at'),
+                   lambda row: row['files'][0].update(source_submitted_at='2026-09-29T15:00:00Z'),
+                   lambda row: row['files'][0].update(source_form_id='UnknownForm'),
+                   lambda row: row['files'][0].update(assignment_form_id='DifferentAssignmentForm'),
+                   lambda row: row.update(submitted_at='2026-09-30T15:00:00'),
+                   lambda row: row['files'][0].update(source_submitted_at='not-a-date')]
+        for change in changes:
+            self.row.clear(); self.row.update(deepcopy(original)); change(self.row)
+            with self.subTest(change=change), patch.object(fb.assessment_save, 'capture') as capture:
+                with self.assertRaises(fb.Held):
+                    fb.evidence('signed', 'token', {}, {}, self.scope, self.found)
+                capture.assert_not_called()
 
     def test_wrong_registry_source_or_agenda_deck_is_held_before_model(self):
         self.assignment['source_deck_id'] = 'another-deck'
