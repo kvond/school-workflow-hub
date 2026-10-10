@@ -83,6 +83,45 @@ Do not invalidate saved grades merely because routing prose changed. Any
 reassessment must use the relevant source and assessment-policy change, not an
 unrelated documentation difference.
 
+The native feedback generator now holds a changed original file from the same
+authenticated Form event before reserving another model call. A later verified
+Form submission, including a resubmitted response with the same response ID,
+retains the ordinary source freshness checks. A technical change is not a new
+student submission or an additional growth observation.
+
+Technical-repair reuse requires an exact-capture receipt in the existing private
+CAS store; there is no browser receipt writer or live importer in this change.
+An authorized host importer must create the deterministic receipt key once
+with CAS expected version `None`, preserving earlier receipts. The receipt
+binds the original file, MIME, before/after Drive versions, unchanged owner/ACL
+and parents, original Form event, raw native and export hashes, and actual
+all-page operator readback. Inverse validation permits only declared embedded
+code alt-text edits or code-only text boxes wholly outside the teaching page;
+all remaining native content, answers, geometry, styles and media must match.
+Complete native captures use explicit lossless zlib or identity encoding; raw
+SHA-256 is checked after decompression. The existing 250KB private-state limit
+is unchanged, and each native capture has a 4MB decoded limit. Oversized,
+truncated, concatenated, corrupt or uncompressible receipts remain held.
+Names, client claims, hash pairs alone, marker-stripped hashes, conversions and
+unsupported repair operations cannot establish this provenance.
+
+Only a saved report with the same complete assessed-answer basis and retained
+raw capture provenance may reopen as historical feedback for that same writing.
+Its original bytes, dates, archive, delivery states and observation batch stay
+unchanged; this does not allow Save to bypass its fresh-source checks. Changed
+or newly readable assessment bindings, old reports without raw provenance,
+missing receipts and ambiguous revisions remain held for correction review.
+This change supplies no corrected-analysis migration, new report/print queue,
+teacher-checkbox change, provider permission, publication or live activation.
+
+New authenticated draft identities bind the exact source file/version and raw
+capture metadata separately from the existing text hash. An immutable Form-event
+call anchor is reserved atomically with its provider call. A repair cannot change
+bytes to bypass an unfinished call, and missing/mismatched anchors cannot create
+a replacement call. Legacy call reservations without source provenance require
+review; they are never silently migrated or retried. A later authenticated Form
+event preserves a genuine new revision even when extracted text is unchanged.
+
 ## Student report order (v3, teacher decision September 23, 2026)
 
 This replaces the September 18 student report order and graph rules. Completion

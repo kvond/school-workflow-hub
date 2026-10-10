@@ -218,7 +218,22 @@ def read_deck(raw):
                 seen[unit["key"]] = seen.get(unit["key"], 0) + 1
                 if seen[unit["key"]] > 1:
                     unit["key"] += "|%d" % seen[unit["key"]]
-            slides.append({"number": number, "units": units})
+            slide = {"number": number, "units": units}
+            # Raster regions are evidence only for a reviewed explicit activity,
+            # never additional text or pictures in ordinary submission captures.
+            if any(u.get("binding", {}).get("kind") == "raster-card-activity" for u in units):
+                fill = root.find(P + "cSld/" + P + "bg/" + P + "bgPr/" + A + "blipFill")
+                if fill is not None:
+                    blip, crop = fill.find(A + "blip"), fill.find(A + "srcRect")
+                    stretch, tile = fill.find(A + "stretch/" + A + "fillRect"), fill.find(A + "tile")
+                    slide["background"] = {
+                        "sha256": pictures.get(blip.get(R + "embed")) if blip is not None else None,
+                        "appearance": {"crop": dict(crop.attrib) if crop is not None else {},
+                            "stretch": dict(stretch.attrib) if stretch is not None else None,
+                            "tile": dict(tile.attrib) if tile is not None else None,
+                            "effects": [ET.tostring(e, encoding="unicode") for e in blip
+                                        if e.tag != A + "extLst"] if blip is not None else []}}
+            slides.append(slide)
     if not slides:
         raise Unreadable("This file has no slides.")
     return {"slides": slides, "size": size}
@@ -369,7 +384,7 @@ def _align(student, template):
             if best[1] is not None and best[0] & mine:
                 pairs[s["number"]] = best[1]
         bound = [m for m in markers({"slides": [s]}) if "binding" in m]
-        if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity") for m in bound):
+        if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity", "raster-card-activity", "numeric-record-group") for m in bound):
             source_bound.add(s["number"])
             originals = [t for t in template["slides"]
                          if response_binding.original_slide_matches(bound, t, student["size"], _plain)]
@@ -446,6 +461,22 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
     if not slide_markers:
         return result, list(written), "no code"
     if any("binding" in m for m in slide_markers):
+        numeric = [m for m in slide_markers if m.get("binding", {}).get("kind") == "numeric-record-group"]
+        if numeric:
+            ordinary = [m for m in slide_markers if m not in numeric]
+            if len(numeric) != 1 or any("binding" in m for m in ordinary):
+                return result, list(written), response_binding.REVIEW
+            records, loose, basis = response_binding.numeric_answers(numeric, written, template_slide, student_slide, size, _plain)
+            if basis == response_binding.REVIEW:
+                return result, list(written), basis
+            if ordinary:
+                other, loose, other_basis = _assign(ordinary, loose, template_slide, size, student_slide=student_slide)
+                records.update(other)
+                if other_basis == response_binding.REVIEW:
+                    return result, list(written), other_basis
+            return records, loose, basis
+        if all(m.get("binding", {}).get("kind") == "raster-card-activity" for m in slide_markers):
+            return response_binding.raster_answers(slide_markers, written, template_slide, student_slide, size, _plain)
         if all(m.get("binding", {}).get("kind") in ("picture-slot", "picture-activity") for m in slide_markers):
             return response_binding.picture_answers(slide_markers, written, template_slide, student_slide, size)
         return response_binding.drag_answers(slide_markers, written, template_slide, student_slide, size, _plain)
@@ -674,6 +705,7 @@ def assess(student, template):
     uncoded, how = [], set()
     bank_unbound = False
     response_unbound = False
+    numeric_unbound = False
     codes = markers(student)
     handed_out = markers(template) if template else []
     current = {(c, qid) for c in CATEGORIES for qid in required[c]}
@@ -683,6 +715,7 @@ def assess(student, template):
         if template and match is None:
             if any("binding" in m for m in mine):
                 response_unbound = True
+                numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
             continue  # nothing to compare this slide with
         if template and not any((m["category"], m["id"]) in current for m in mine):
             # A copy of an older version of the deck: this slide lacks today's
@@ -698,6 +731,7 @@ def assess(student, template):
             bank_unbound = True
         if basis_here == response_binding.REVIEW:
             response_unbound = True
+            numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
         if mine and written:
             how.add(basis_here)
         for unit, words in loose:
@@ -724,6 +758,10 @@ def assess(student, template):
                               "at": where["number"], "question": slide_title(where)}
                 if any(u.get("picture") for u, _ in items):
                     found[key]["completion_evidence"] = "Original picture placed in response region"
+                elif any(u.get("completion_only") == "numeric record" for u, _ in items):
+                    found[key]["completion_evidence"] = "Numeric measurement recorded in original response fields"
+                    found[key]["recorded_fields"] = [{"field": u["recorded_field"], "value": u["recorded_value"]}
+                                                      for u, _ in items if u.get("completion_only") == "numeric record"]
                 elif any(u.get("completion_only") for u, _ in items):
                     found[key]["completion_evidence"] = "Original card placed in response region"
     items = []
@@ -746,8 +784,10 @@ def assess(student, template):
         student_note = ("These BANK responses do not have a unique printed term label. "
                         "Check the term-to-response match by hand before scoring or entering grades.")
     if response_unbound:
-        student_note = ("This activity needs its original cards or pictures and response regions checked "
-                        "before scoring or entering grades.")
+        student_note = ("This numeric activity needs its original printed instructions and response blanks checked "
+                        "before scoring or entering grades.") if numeric_unbound else (
+                       "This activity needs its original cards or pictures and response regions checked "
+                       "before scoring or entering grades.")
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
             "coding": coding_issues(template or student),
             "notes_score": None if bank_unbound or response_unbound else score(counts["NOTES"]["done"] + counts["BANK"]["done"],

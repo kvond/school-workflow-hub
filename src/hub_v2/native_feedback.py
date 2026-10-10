@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from . import completion, feedback, google, work
+from . import completion, feedback, google, source_repair_provenance, work
 from school_workflow_hub.adapters import assessment_provider, assessment_save, grading_records
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, key
@@ -112,6 +112,14 @@ def target(cls, week, form, file):
 def _ref(scope):
     # Moving the lesson to another Agenda week doesn't lose saved feedback.
     return key('feedbackref', {k: scope[k] for k in ('class', 'form', 'file')})
+
+
+def _capture_identity(source):
+    return {k: source[k] for k in ('file', 'sha256', 'raw_sha256', 'metadata_sha256') if k in source}
+
+
+def _same_capture(saved, source):
+    return all(k in source and source[k] == v for k, v in saved.items())
 
 
 def _read(port, ident):
@@ -336,9 +344,46 @@ def _call(config, inputs):
 def generate(config, inputs):
     if inputs.get('submission_receipt'):
         _receipt_date(inputs['submission_receipt'], inputs['scope'], inputs.get('submitted_at'))
+    for field in ('raw_sha256', 'metadata_sha256'):
+        if field in inputs['source'] and not re.fullmatch(r'[a-f0-9]{64}', str(inputs['source'][field])):
+            raise Held('The source raw capture provenance is invalid. No provider call was made.')
     if not assessment_provider.configured(config):
         raise Held('The feedback provider is not configured.')
     port = configured_store(config)
+    decision = None
+    basis = content_hash([POLICY, source_repair_provenance.analysis_basis(
+        inputs, assessment_provider.model_name(config))])
+    # Live evidence carries an authenticated exact-file Form event. A changed
+    # source from that same event must not automatically become new writing,
+    # another provider charge or a new growth point after a technical repair.
+    # Legacy internal callers without Form evidence retain their old behavior;
+    # the browser API always constructs this evidence on the server.
+    if inputs.get('submission_receipt'):
+        prior_ref = _read(port, _ref(inputs['scope']))
+        if prior_ref:
+            prior = _read(port, prior_ref.value['id'])
+            if not prior or prior.value.get('schema') != VERSION:
+                raise Held('The previous feedback source could not be verified. Its saved PDF remains available.')
+            decision = source_repair_provenance.classify(port, inputs['scope'], prior.value, inputs, basis)
+            if decision.get('reuse_saved'):
+                # Serve the immutable historical report. Its old source bytes,
+                # source date, archive and Printed/Handed states remain intact.
+                return {**reply(prior.value, cached=True), 'source_change': decision}
+            if not decision['eligible']:
+                if decision['classification'] == 'corrected_analysis_review':
+                    raise Held('Verified embedded-code repair changes or lacks the prior assessment bindings. '
+                               'Review a corrected analysis of the original submission; no new student-writing or growth report was generated. Saved feedback remains available.')
+                raise Held(decision['problem'])
+    capture_bound = bool(inputs.get('submission_receipt') and inputs['source']['file'].get('version')
+                         and inputs['source'].get('raw_sha256') and inputs['source'].get('metadata_sha256'))
+    event_id = key('feedbacksubmissioncall', [
+        {k: inputs['scope'][k] for k in ('class', 'form', 'file')}, inputs['submission_receipt']]) if capture_bound else None
+    event = _read(port, event_id) if event_id else None
+    source_identity = _capture_identity(inputs['source'])
+    if event and (event.value.get('schema') != 'hub-feedback-submission-call/v1'
+                  or event.value.get('source') != source_identity):
+        raise Held('This original Form event has an earlier feedback call against different source bytes. '
+                   'Review its repair or unfinished call before generating; no duplicate provider call was made.')
     fingerprint = {'version': VERSION, 'scope': {k: v for k, v in inputs['scope'].items() if k != 'week'}, 'person': inputs['person'],
                    'assignment': inputs['assignment'], 'source': inputs['source']['sha256'],
                    'reference': inputs['reference']['sha256'],
@@ -348,23 +393,47 @@ def generate(config, inputs):
     # bypass an uncertain legacy provider-call reservation for identical work.
     legacy_ident = key('feedbackdraft', fingerprint)
     legacy_stored = _read(port, legacy_ident)
-    if legacy_stored:
+    if legacy_stored and _same_capture(legacy_stored.value['source'], inputs['source']):
         _point_to(port, inputs['scope'], legacy_ident)
         return reply(legacy_stored.value, cached=True)
     legacy_call = _read(port, key('feedbackcall', fingerprint))
+    if capture_bound and legacy_call:
+        if not decision or decision['classification'] != 'actual_student_submission_change':
+            raise Held('The earlier provider reservation lacks this exact source-capture provenance. '
+                       'It needs review; no duplicate provider call was made.')
+        legacy_call = None  # A verified later Form event is a distinct submission.
     if legacy_call is None:
         fingerprint = {**fingerprint, 'prompt': content_hash([POLICY, inputs['prompt']])}
+    unbound_ident = key('feedbackdraft', fingerprint)
+    unbound_stored = _read(port, unbound_ident)
+    if unbound_stored and _same_capture(unbound_stored.value['source'], inputs['source']):
+        _point_to(port, inputs['scope'], unbound_ident)
+        return reply(unbound_stored.value, cached=True)
+    if capture_bound:
+        unbound_call = _read(port, key('feedbackcall', fingerprint))
+        if unbound_call and (not decision or decision['classification'] != 'actual_student_submission_change'):
+            raise Held('The earlier provider reservation lacks this exact source-capture provenance. '
+                       'It needs review; no duplicate provider call was made.')
+        fingerprint = {**fingerprint, 'source_capture': source_identity}
     ident = key('feedbackdraft', fingerprint)
     stored = _read(port, ident)
     if stored:
         _point_to(port, inputs['scope'], ident)
         return reply(stored.value, cached=True)
     call_id = key('feedbackcall', fingerprint)
+    if event and event.value.get('call_id') != call_id:
+        raise Held('This Form event already has another feedback-call reservation. Review it before another assessment.')
     call = _read(port, call_id)
     cached = call is not None
     if not call:
         # Only one request can win this reservation, including same-worker races.
-        port.commit({call_id: ({'status': 'started', 'at': now()}, None)})
+        if event:
+            raise Held('The earlier feedback-call reservation could not be recovered. No replacement call was made.')
+        changes = {call_id: ({'status': 'started', 'at': now()}, None)}
+        if event_id:
+            changes[event_id] = ({'schema': 'hub-feedback-submission-call/v1', 'call_id': call_id,
+                                  'source': source_identity, 'submission_receipt': dict(inputs['submission_receipt'])}, None)
+        port.commit(changes)
         call = _read(port, call_id)
         try:
             raw, usage = _call(config, inputs)
@@ -385,6 +454,10 @@ def generate(config, inputs):
              'report': report, 'usage': call.value['usage'], 'created_at': now(),
              'prompt_sha256': content_hash(inputs['prompt']), 'prompt_url': inputs['prompt_url'],
              'saved_at': None}
+    value['analysis_basis_sha256'] = basis
+    for field in ('raw_sha256', 'metadata_sha256'):
+        if field in inputs['source']:
+            value['source'][field] = inputs['source'][field]
     if inputs.get('archive_identity'):
         value['archive_identity'] = inputs['archive_identity']
     if inputs.get('submitted_at'):

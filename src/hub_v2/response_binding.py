@@ -1,6 +1,7 @@
 """Explicit graphical completion bindings; never a source of student writing."""
 import json
 import math
+import re
 
 
 PREFIX = "HUB_COMPLETION_BINDING_V1\n"
@@ -134,6 +135,10 @@ def original_slide_matches(markers, template, size, plain):
         return False
     data = markers[0].get("binding", {})
     units = template.get("units", [])
+    if data.get("kind") == "numeric-record-group":
+        return numeric_source(data, template, size, plain) is not None
+    if data.get("kind") == "raster-card-activity":
+        return raster_source(data, template, size, plain) is not None
 
     def text_at(text, box):
         found = [u for u in units if not u.get("picture") and plain(u.get("text", "")) == text]
@@ -161,6 +166,142 @@ def original_slide_matches(markers, template, size, plain):
                 and all(picture_at(t.get("target_picture_sha256"), t.get("source_box"))
                         and picture_at(t.get("response_picture_sha256"), t.get("source_response_box")) for t in targets))
     return False
+
+
+def numeric_source(data, template, size, plain):
+    """The three literal pulse blanks are one original empirical activity."""
+    text, placeholder = data.get("source_text"), data.get("placeholder")
+    if (not isinstance(text, str) or len(text) > 4000 or placeholder != "____"
+            or data.get("fields") != 3 or data.get("unit") != "bpm"
+            or text.count(placeholder) != 3 or not rectangle(data.get("source_box"), size)
+            or not rectangle(data.get("box"), size)):
+        return None
+    parts = text.split(placeholder)
+    if not all(part.lstrip().startswith("bpm") for part in parts[1:]):
+        return None
+    sources = [u for u in (template or {}).get("units", []) if not u.get("picture")
+               and plain(u.get("text", "")) == text and same_box(u.get("box"), data["source_box"], size)]
+    return sources[0] if len(sources) == 1 else None
+
+
+def numeric_answers(markers, written, template, student, size, plain):
+    """Extract only numbers replacing actual blanks, never instruction numbers."""
+    result = {(m["category"], m["id"]): [] for m in markers}
+    bad = (result, list(written), REVIEW)
+    if len(markers) != 1 or not student:
+        return bad
+    marker = markers[0]
+    data = marker.get("binding", {})
+    if marker["category"] != "NOTES" or not marker.get("standalone") or numeric_source(data, template, size, plain) is None:
+        return bad
+    actual = [u for u in student.get("units", []) if not u.get("picture") and same_box(u.get("box"), data["box"], size)]
+    if len(actual) != 1:
+        return bad
+    unit = actual[0]
+    # Whitespace wrapping is immaterial; the printed instruction words and all
+    # three measured slots must otherwise remain exact. No physiology grading.
+    skeleton = " ".join(data["source_text"].split())
+    chunks = skeleton.split(data["placeholder"])
+    value = r"(____|[-+]?\d{1,16}(?:\.\d{1,8})?)"
+    pattern = value.join(re.escape(part) for part in chunks)
+    match = re.fullmatch(pattern, " ".join(plain(unit.get("text", "")).split()))
+    if match is None:
+        return bad
+    loose = []
+    for item in written:
+        other, _ = item
+        if other is unit:
+            continue
+        if other.get("box") and inside(center(other["box"]), data["box"]):
+            return bad  # An overlay has no authenticated individual blank location.
+        loose.append(item)
+    for field, measured in enumerate(match.groups(), 1):
+        if measured != data["placeholder"]:
+            result[(marker["category"], marker["id"])].append(({
+                **unit, "completion_only": "numeric record", "recorded_field": field,
+                "recorded_value": measured}, measured))
+    return result, loose, "original numeric response group"
+
+
+def raster_source(data, template, size, plain):
+    """Raster geometry must come from the authenticated teacher's own manifest."""
+    if not template or data.get("kind") != "raster-card-activity" or data.get("page_size") != list(size):
+        return None
+    trusted = [u for u in template.get("units", []) if u.get("binding", {}).get("kind") == "raster-card-activity"]
+    if len(trusted) != 1 or trusted[0]["binding"] != data:
+        return None
+    background = data.get("background")
+    if (not isinstance(background, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(background.get("sha256", "")))
+            or template.get("background") != background):
+        return None
+    cards, targets, given = data.get("cards"), data.get("targets"), data.get("given_cards")
+    if (not isinstance(cards, list) or len(cards) != 14 or not isinstance(targets, list) or len(targets) != 14
+            or not isinstance(given, list) or len(given) != 1):
+        return None
+    labels = set()
+    for card in cards + given:
+        if (not isinstance(card, dict) or not isinstance(card.get("text"), str) or not card["text"].strip()
+                or card["text"] in labels or not rectangle(card.get("box"), size)):
+            return None
+        found = [u for u in template.get("units", []) if not u.get("picture") and plain(u.get("text", "")) == card["text"]]
+        if len(found) != 1 or not same_box(found[0].get("box"), card["box"], size):
+            return None
+        labels.add(card["text"])
+    if (type(data.get("given_target")) is not int or not 1 <= data["given_target"] <= 15
+            or not all(isinstance(t, dict) and type(t.get("number")) is int and rectangle(t.get("box"), size) for t in targets)
+            or {t["number"] for t in targets} != set(range(1, 16)) - {data.get("given_target")}):
+        return None
+    areas = [t["box"] for t in targets]
+    if (len({tuple(box) for box in areas}) != 14 or any(inside(center(c["box"]), box) for c in cards + given for box in areas)
+            or any(max(a[0], b[0]) < min(a[0] + a[2], b[0] + b[2])
+                   and max(a[1], b[1]) < min(a[1] + a[3], b[1] + b[3])
+                   for n, a in enumerate(areas) for b in areas[n + 1:])):
+        return None
+    return cards, targets, given
+
+
+def raster_answers(markers, written, template, student, size, plain):
+    """Only a unique unchanged original tray card moved into a real raster slot."""
+    result = {(m["category"], m["id"]): [] for m in markers}
+    bad = (result, list(written), REVIEW)
+    if len(markers) != 1 or not student:
+        return bad
+    marker = markers[0]
+    data = marker.get("binding", {})
+    source = raster_source(data, template, size, plain)
+    if marker["category"] != "NOTES" or not marker.get("standalone") or source is None or student.get("background") != data["background"]:
+        return bad
+    cards, targets, given = source
+    actual, off_target = {}, []
+    for card in cards + given:
+        found = [u for u in student.get("units", []) if not u.get("picture") and plain(u.get("text", "")) == card["text"]]
+        if len(found) != 1 or not rectangle(found[0].get("box"), size):
+            return bad
+        actual[card["text"]] = found[0]
+    if any(not same_box(actual[c["text"]]["box"], c["box"], size) for c in given):
+        return bad
+    for card in cards:
+        unit = actual[card["text"]]
+        if math.dist(center(unit["box"]), center(card["box"])) <= .03 * max(size):
+            continue
+        landed = [t for t in targets if inside(center(unit["box"]), t["box"])]
+        if len(landed) > 1:
+            return bad
+        if not landed:
+            off_target.append(({**unit, "completion_only": "card placement"}, "Off-target original card placement"))
+        else:
+            result[(marker["category"], marker["id"])].append(({**unit, "completion_only": "card placement"}, "card placement"))
+    for unit, _ in written:
+        if unit in actual.values():
+            continue
+        if unit.get("box") and any(inside(center(unit["box"]), t["box"]) for t in targets):
+            return bad  # Retyping or an unknown response needs review, never a zero.
+    if any(u.get("picture") and u.get("box") and any(inside(center(u["box"]), t["box"]) for t in targets)
+           for u in student.get("units", [])):
+        return bad
+    if off_target and not any(result.values()):
+        return bad
+    return result, off_target, "original raster card placement"
 
 
 def drag_answers(markers, written, template, student, size, plain):

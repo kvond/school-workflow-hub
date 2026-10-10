@@ -12,6 +12,7 @@ could not display correctly fails here first.
 from datetime import datetime, timezone
 import hashlib
 import io
+import json
 import re
 import uuid
 import zipfile
@@ -148,9 +149,9 @@ def capture(assertion, file_id, config):
     if not isinstance(file_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", file_id):
         raise ConnectionError("invalid_assessment_source")
     token = service_token(config.get("HUB_READER_SERVICE_ACCOUNT", ""), DRIVE_READ_SCOPE)
-    meta = _drive(token, "files/" + file_id,
-                  {"fields": "id,name,mimeType,trashed,modifiedTime,version",
-                   "supportsAllDrives": "true"})
+    params = {"fields": "id,name,mimeType,trashed,modifiedTime,version,parents,driveId,owners,permissions",
+              "supportsAllDrives": "true"}
+    meta = _drive(token, "files/" + file_id, params)
     if not isinstance(meta, dict) or meta.get("id") != file_id or meta.get("trashed") is not False:
         raise ConnectionError("assessment_source_unavailable")
     if meta.get("mimeType") not in EXPORTABLE:
@@ -165,12 +166,20 @@ def capture(assertion, file_id, config):
         if not raw or len(raw) > 2_000_000:
             raise ConnectionError("assessment_source_too_large")
         text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").lstrip("﻿")
+    # Preserve the existing extracted-text identity; keep raw-byte and full
+    # source/access metadata hashes separately for verified repair provenance.
+    # A fresh read brackets the export, so a racing source/access change holds.
+    if _drive(token, "files/" + file_id, params) != meta:
+        raise ConnectionError("assessment_source_changed_during_capture")
     return {"schema_version": CAPTURE_VERSION,
             "file": {"id": meta["id"], "name": str(meta.get("name", ""))[:200],
                      "mime_type": meta["mimeType"],
                      "modified_at": str(meta.get("modifiedTime", "")),
                      "version": str(meta.get("version", ""))},
             "text": text, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "raw_sha256": hashlib.sha256(raw).hexdigest(),
+            "metadata_sha256": hashlib.sha256(json.dumps(meta, sort_keys=True, separators=(",", ":"),
+                                                        ensure_ascii=False).encode()).hexdigest(),
             "captured_at": _now(), "external_writes": 0}
 
 

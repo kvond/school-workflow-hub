@@ -38,12 +38,31 @@ class PptxCaptureTests(unittest.TestCase):
         with patch.object(save, "_identity_configuration", return_value=("aud", {"teacher@example.com"})), \
              patch.object(save, "authorize"), \
              patch.object(save, "service_token", return_value="token"), \
-             patch.object(save, "_drive", side_effect=[meta, pptx_bytes()]) as drive:
+             patch.object(save, "_drive", side_effect=[meta, pptx_bytes(), meta]) as drive:
             result = save.capture("signed", file_id, {"HUB_READER_SERVICE_ACCOUNT": "reader"})
         self.assertEqual(result["file"]["mime_type"], save.PPTX)
         self.assertIn("student answer", result["text"])
         self.assertEqual(drive.call_args_list[1].args[1], "files/" + file_id)
         self.assertEqual(drive.call_args_list[1].args[2]["alt"], "media")
+        import hashlib
+        self.assertEqual(result['raw_sha256'], hashlib.sha256(pptx_bytes()).hexdigest())
+        self.assertEqual(len(result['metadata_sha256']), 64)
+
+    def test_changed_source_or_access_during_export_holds_the_capture(self):
+        from copy import deepcopy
+        file_id = 'f' * 24
+        meta = {'id': file_id, 'name': 'student.pptx', 'mimeType': save.PPTX,
+                'trashed': False, 'modifiedTime': '2026-09-20T14:00:00Z', 'version': '7',
+                'parents': ['private'], 'permissions': [{'type': 'user', 'role': 'reader'}]}
+        for field, value in [('version', '8'), ('parents', ['different']),
+                             ('permissions', [{'type': 'anyone', 'role': 'reader'}])]:
+            changed = deepcopy(meta); changed[field] = value
+            with self.subTest(field=field), \
+                 patch.object(save, '_identity_configuration', return_value=('aud', {'teacher@example.com'})), \
+                 patch.object(save, 'authorize'), patch.object(save, 'service_token', return_value='token'), \
+                 patch.object(save, '_drive', side_effect=[meta, pptx_bytes(), changed]), \
+                 self.assertRaisesRegex(save.ConnectionError, 'changed_during_capture'):
+                save.capture('signed', file_id, {'HUB_READER_SERVICE_ACCOUNT': 'reader'})
 
     def test_invalid_powerpoint_is_rejected(self):
         with self.assertRaisesRegex(save.ConnectionError, "unsupported"):
