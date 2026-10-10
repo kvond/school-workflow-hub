@@ -35,7 +35,7 @@ function background(options={}){
    calls.push(m.action);
    if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
-   if(m.action==='list')return {ok:true,data:{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
+   if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
    if(m.action==='recovery'){if(options.recoveryFail)throw Error('unavailable');return {ok:true,data:{recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}}};}
    if(m.action==='report'&&options.disableDuringReport){state.morning_enabled=false;options.disableDuringReport=false;}
    return {ok:true,data:{recorded:true}};
@@ -133,6 +133,113 @@ test('empty assignment results cannot permit retry after a write-capable request
  const h=background({stored:{morning_enabled:true,morning_state:{day:prior.day,execution_started:true,blocked:false,inflight:false,report_pending:false,report:prior}}});
  await settle();assert.equal((await h.invoke({type:'morning_status'})).can_retry,false);
  await h.invoke({type:'morning_retry'});await settle();assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+});
+test('all-check source assignments remain held in the receipt without any IC operation',async()=>{
+ const form=fixture().list.form_id;
+ const h=background({listByForm:{[form]:{code:'source_scores_held',source_holds:{checks:3,names:['Private Student']}}}});await h.alarm();
+ const s=h.state.morning_state,report=s.report,item=report.items[0];
+ assert.equal(report.code,'source_scores_held');assert.equal(item.code,'source_scores_held');
+ assert.deepEqual([item.class_name,item.week,item.assignment],['Biology','Wk 05','Matter']);
+ assert.deepEqual(item.source_holds,{checks:3});assert.deepEqual([item.filled,item.raised,item.kept,item.left],[0,0,0,0]);
+ assert.ok(!JSON.stringify(h.state).includes('Private Student'));assert.equal(s.execution_started,false);assert.equal(s.report_pending,false);
+ assert.ok(!h.calls.includes('navigate'));assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+ await h.alarm();assert.equal(h.calls.filter(c=>c==='list').length,1);
+ const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,false);
+});
+test('a true no-scores assignment remains visible and is not an IC comparison',async()=>{
+ const form=fixture().list.form_id,h=background({listByForm:{[form]:{code:'no_scores'}}});await h.alarm();
+ const report=h.state.morning_state.report;
+ assert.equal(report.code,'finished');assert.equal(report.items.length,1);assert.equal(report.items[0].code,'no_scores');
+ assert.deepEqual([report.items[0].filled,report.items[0].raised,report.items[0].kept,report.items[0].left],[0,0,0,0]);
+ assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+});
+test('held source-only checks do not hide separately confirmed assignments or become a finished batch',async()=>{
+ const form='HELD_SYNTHETIC_FORM',h=background({catalogAssignments:[
+  {class:'biology',week:'Wk 05',form,assignment:'Held work'},
+  {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'}],
+  listByForm:{[form]:{code:'source_scores_held',source_holds:{checks:2}}}});await h.alarm();
+ const report=h.state.morning_state.report;
+ assert.equal(report.code,'source_scores_held');assert.deepEqual(report.items.map(i=>i.code),['source_scores_held','read_back']);
+ assert.equal(report.items[0].filled,0);assert.equal(report.items[1].filled,1);
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+test('a batch containing only retained readiness or mapping holds is not finished',async()=>{
+ for(const codes of [['coverage_incomplete','mapping_required'],['mapping_required','coverage_incomplete']]){
+  const h=background({catalogAssignments:codes.map((code,i)=>({class:'biology',week:`Wk 0${i+2}`,form:`HELD_FORM_${i}`,assignment:`Held lesson ${i+1}`})),
+   listByForm:Object.fromEntries(codes.map((code,i)=>[`HELD_FORM_${i}`,{code}]))});await h.alarm();
+  const s=h.state.morning_state;
+  assert.equal(s.report.code,codes[0]);assert.deepEqual(s.report.items.map(i=>i.code),codes);
+  assert.deepEqual(s.report.items.map(i=>[i.class_name,i.week,i.assignment]),[
+   ['Biology','Wk 02','Held lesson 1'],['Biology','Wk 03','Held lesson 2']]);
+  assert.ok(s.report.items.every(i=>[i.filled,i.raised,i.kept,i.left].every(n=>n===0)));
+  assert.equal(s.execution_started,false);assert.equal(s.blocked,false);assert.equal(s.report_pending,false);
+  assert.ok(!h.calls.includes('navigate'));assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+  const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,false);
+ }
+});
+test('a retained gate hold preserves independently saved readback counts without finishing the batch',async()=>{
+ for(const code of ['coverage_incomplete','mapping_required']){
+  const form='HELD_FORM',h=background({catalogAssignments:[
+   {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'},
+   {class:'forensics',week:'Wk 04',form,assignment:'Held lesson'}],listByForm:{[form]:{code}}});await h.alarm();
+  const s=h.state.morning_state;
+  assert.equal(s.report.code,code);assert.deepEqual(s.report.items.map(i=>i.code),['read_back',code]);
+  assert.deepEqual(s.report.items.map(i=>[i.filled,i.raised,i.kept,i.left]),[[1,0,0,0],[0,0,0,0]]);
+  assert.equal(s.execution_started,true);assert.equal(s.blocked,false);assert.equal(s.report_pending,false);
+  assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.calls.filter(c=>c==='record').length,1);
+ }
+});
+test('source-only checks take summary priority over other retained gate holds',async()=>{
+ const h=background({catalogAssignments:[
+  {class:'biology',week:'Wk 02',form:'READINESS_FORM',assignment:'Unreadable lesson'},
+  {class:'forensics',week:'Wk 05',form:'CHECK_FORM',assignment:'Held source work'}],
+  listByForm:{READINESS_FORM:{code:'coverage_incomplete'},CHECK_FORM:{code:'source_scores_held',source_holds:{checks:2}}}});await h.alarm();
+ assert.equal(h.state.morning_state.report.code,'source_scores_held');
+ assert.deepEqual(h.state.morning_state.report.items.map(i=>i.code),['coverage_incomplete','source_scores_held']);
+ assert.ok(!h.calls.includes('execute'));
+});
+test('all completed iterations including absent scores and exclusions still finish',async()=>{
+ for(const confirmedKept of [0,4]){
+  const h=background({confirmedKept,catalogAssignments:[
+   {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'},
+   {class:'biology',week:'Wk 03',form:'EMPTY_FORM',assignment:'No eligible work'},
+   {class:'biology',week:'Wk 02',form:'EXCLUDED_FORM',assignment:'Not assessed this year'},
+   {class:'biology',week:'Wk 01',form:'SKIPPED_FORM',assignment:'https://docs.google.com/forms/d/SKIPPED_FORM/viewform'}],
+   listByForm:{EMPTY_FORM:{code:'no_scores'},EXCLUDED_FORM:{code:'excluded_week'}}});await h.alarm();
+  const s=h.state.morning_state;
+  assert.equal(s.report.code,'finished');assert.deepEqual(s.report.items.map(i=>i.code),[
+   confirmedKept?'nothing_to_enter':'read_back','no_scores','excluded_week','nothing_to_enter']);
+  assert.deepEqual([s.report.items[0].filled,s.report.items[0].kept],[confirmedKept?0:1,confirmedKept]);
+  assert.equal(s.blocked,false);assert.equal(s.report_pending,false);
+  assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.calls.filter(c=>c==='record').length,1);
+ }
+});
+test('unacknowledged held or empty-source receipt stops before the next assignment; retries deliver only',async()=>{
+ const form='HELD_SYNTHETIC_FORM';
+ for(const initial of [{code:'source_scores_held',source_holds:{checks:2}},{code:'no_scores'},{code:'ready',list:{},targets:[]}]){
+  const h=background({catalogAssignments:[
+   {class:'biology',week:'Wk 05',form,assignment:'Held work'},
+   {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'}],
+   listByForm:{[form]:initial},reportReplies:[{ok:true,data:{recorded:true}},Error('connection closed'),Error('still closed')]});
+  await h.alarm();
+  const s=h.state.morning_state,run_id=s.report.run_id;
+  assert.equal(s.report.code,'receipt_unconfirmed');assert.equal(s.report_pending,true);assert.equal(s.execution_started,false);
+  assert.equal(s.report.items.length,1);assert.equal(s.report.items[0].code,initial.code==='ready'?'mapping_required':initial.code);
+  assert.equal(h.calls.filter(c=>c==='list').length,1);assert.ok(!h.calls.includes('navigate'));
+  assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+  await h.alarm();assert.equal(h.state.morning_state.report_pending,false);
+  assert.equal(h.state.morning_state.report.run_id,run_id);assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');
+  assert.equal(h.calls.filter(c=>c==='list').length,1);assert.ok(!h.calls.includes('execute'));
+ }
+});
+test('malformed source-hold diagnostics remain coverage holds without retaining raw values',async()=>{
+ const form=fixture().list.form_id;
+ for(const checks of [0,-1,3601,true,'Private Student']){
+  const h=background({listByForm:{[form]:{code:'source_scores_held',source_holds:{checks}}}});await h.alarm();
+  const item=h.state.morning_state.report.items[0];assert.equal(item.code,'coverage_incomplete');
+  assert.equal(h.state.morning_state.report.code,'coverage_incomplete');
+  assert.equal(Object.hasOwn(item,'source_holds'),false);assert.ok(!h.calls.includes('execute'));
+ }
 });
 test('morning receipt keeps the catalog class and week for follow-up context',async()=>{
  const h=background({catalogAssignments:[{class:'biology',class_name:'Biology A4',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'}]});

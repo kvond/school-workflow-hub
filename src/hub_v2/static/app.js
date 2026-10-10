@@ -140,7 +140,33 @@ const MORNING_REASONS = {
 };
 
 const MORNING_COVERAGE = 'Source coverage was incomplete, so scoring and IC entry stopped for this assignment. Open Student work to see whether Form or roster access, or a submission’s lesson match, needs repair.';
+// These checks do not establish an uncertain save. Earlier columns may still
+// have confirmed results, so describe the held step rather than the whole run.
+const MORNING_ENTRY_HOLDS = {
+  mapping_required: 'Entry held at the assignment-mapping check. In Student work, confirm this lesson’s Form, class section and Notes/Revision column map to the exact IC assignment, then prepare a fresh list.',
+  source_changed: 'Entry held at the source check. Refresh this assignment in Student work, review its current submissions and lesson-match checks, then prepare a fresh list.',
+  unsupported_points_scale: 'Entry held because this IC assignment is not scored out of 10. Open this class’s correct 10-point Notes/Revision assignment and confirm the exact mapping before running the helper. Do not rescale existing scores.',
+  unsupported_gradebook: 'Entry held because the IC score panel is unsupported. Open this class’s mapped assignment in the IC score-entry panel and let the helper check it again.',
+  destination_mapping_changed: 'Entry held because the IC destination no longer matches the list. Confirm this class section, assignment and Notes/Revision column against the exact Hub mapping, then prepare a fresh list.',
+  students_dont_match: 'Entry held because this IC assignment’s students do not match the Hub list. Open the correct class section and assignment in IC, then refresh its list in Student work.',
+  several_sections: 'Entry held because the list contains several class sections. Prepare a list for this IC assignment’s one class section.',
+  list_expired: 'Entry held because the Hub list expired. Refresh this assignment in Student work and prepare a new list.',
+  ic_changed: 'Entry held because IC changed after the helper’s review. Review this assignment again against a fresh Hub list before entry.',
+  ic_not_saved: 'Entry held because this IC assignment already has unsaved edits. Review those edits, save them if intended or reload to discard them, then let the helper review the assignment again.',
+  signed_out: 'Entry held because IC requires sign-in. Sign in to IC in the school Chrome profile and reopen this class’s mapped assignment.',
+  ic_unavailable: 'Entry held because the helper could not reach IC. Open one signed-in IC tab in the school Chrome profile and reopen this class’s mapped assignment.',
+  hub_unavailable: 'Entry held because the helper could not reach the Hub. Open one signed-in Hub tab in the school Chrome profile, refresh it and prepare a fresh list for this assignment.',
+  disabled: 'Entry held because the score helper is disabled. Open the installed helper in the school Chrome profile and check its enabled state before running this assignment.',
+};
 const morningContext = row => [row.class_name, row.week, row.assignment].filter(Boolean).join(' · ') || 'Assignment unavailable';
+
+function morningSourceHold(row) {
+  const checks = row.source_holds?.checks;
+  const count = Number.isInteger(checks) && checks > 0
+    ? `${checks} submitted-work row${checks === 1 ? '' : 's'} need${checks === 1 ? 's' : ''} source checks.`
+    : 'Submitted work needs source checks.';
+  return `${count} No IC score comparison or entry was attempted for this assignment. Open Student work for this class and lesson and read the reason on each row marked “Check by hand”.`;
+}
 
 function morningRowReview(row) {
   const reasons = row.reasons || {};
@@ -226,8 +252,12 @@ function renderMorningCockpit(report, routineData) {
             ? 'No eligible Hub scores were available. This assignment was not entered or compared in IC.'
             : item.code === 'coverage_incomplete'
               ? MORNING_COVERAGE
-              : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`,
-      morningRowReview(item).unavailable ? el('p', {class: 'muted', text: morningRowReview(item).unavailable}) : null));
+              : item.code === 'source_scores_held'
+                ? morningSourceHold(item)
+                : Object.hasOwn(MORNING_ENTRY_HOLDS, item.code)
+                  ? MORNING_ENTRY_HOLDS[item.code]
+                  : `Save/readback not confirmed: ${String(item.code || 'status unavailable').replaceAll('_', ' ')}. Open this IC assignment, inspect the scores, correct/save only if needed, and reload to verify before clearing the helper verification block.`,
+      item.code !== 'source_scores_held' && morningRowReview(item).unavailable ? el('p', {class: 'muted', text: morningRowReview(item).unavailable}) : null));
   return cockpitPanel('What ran',
     el('p', {class: 'cockpit-number', text: String(handled)}),
     el('p', {class: 'cockpit-label', text: saved
@@ -245,6 +275,10 @@ function renderNeedsYou(report) {
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
+    if (row.code === 'source_scores_held') {
+      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row)));
+      continue;
+    }
     if (row.code === 'no_scores') {
       items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
       continue;
@@ -2184,6 +2218,7 @@ async function loadMorningSummary() {
     box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
     reports.forEach((report, i) => {
       const lines = el('ul', {}, report.items.map(row => {
+        if (row.code === 'source_scores_held') return el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row));
         const review = morningRowReview(row);
         const reasons = review.reasons.map(([reason, count]) => `${count} — ${MORNING_REASONS[reason]}.`);
         if (row.code === 'coverage_incomplete' && review.detailKnown) reasons.unshift(MORNING_COVERAGE);

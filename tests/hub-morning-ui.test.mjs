@@ -148,6 +148,103 @@ test('coverage failures explain possible source access or matching repairs witho
   await ui.loadMorningSummary();
   assert.match(document.getElementById('morning-summary').textContent, /Form or roster access/);
 });
+
+test('mapping, source and scale holds give the named assignment’s repair instead of uncertain-save recovery', () => {
+  const cases = [
+    ['mapping_required', /Form, class section and Notes\/Revision column.*exact IC assignment/],
+    ['source_changed', /Refresh this assignment in Student work.*current submissions and lesson-match checks.*fresh list/],
+    ['unsupported_points_scale', /correct 10-point Notes\/Revision assignment.*exact mapping.*Do not rescale existing scores/],
+  ];
+  for (const [code, action] of cases) {
+    const held = row({code, filled: 0, raised: 0, kept: 0});
+    const {ui} = boot([held]);
+    const text = ui.renderMorningCockpit(report([held]), {}).textContent;
+    assert.match(text, /Biology · Wk 04 · Fictional cell structures/);
+    assert.match(text, action);
+    assert.doesNotMatch(text, /Save\/readback not confirmed|inspect the scores|correct\/save|clearing the helper verification block/);
+  }
+});
+
+test('a later source hold preserves earlier confirmed results without claiming no entry occurred', () => {
+  const confirmed = row({assignment: 'Fictional energy flow'});
+  const held = row({code: 'source_changed', filled: 0, raised: 0, kept: 0});
+  const {ui} = boot([confirmed, held]);
+  const panel = ui.renderMorningCockpit(report([confirmed, held]), {});
+  assert.match(panel.textContent, /Fictional energy flow: 1 new · 2 raised · 3 already matched in IC.*confirmed after reload/);
+  const sourceDetail = allNodes(panel).find(node => node.tagName === 'li' && node.textContent.includes(held.assignment));
+  assert.match(sourceDetail.textContent, /Entry held at the source check/);
+  assert.doesNotMatch(sourceDetail.textContent, /nothing was typed|no IC entry|no scores were entered|clearing the helper verification block/);
+});
+
+test('pre-entry roster, panel and list checks do not direct the teacher to clear a verification block', () => {
+  const cases = [
+    ['students_dont_match', /correct class section and assignment in IC/],
+    ['several_sections', /one class section/],
+    ['destination_mapping_changed', /class section, assignment and Notes\/Revision column/],
+    ['unsupported_gradebook', /mapped assignment in the IC score-entry panel/],
+    ['list_expired', /prepare a new list/],
+    ['ic_changed', /Review this assignment again against a fresh Hub list/],
+    ['signed_out', /Sign in to IC in the school Chrome profile/],
+    ['ic_unavailable', /one signed-in IC tab/],
+    ['hub_unavailable', /one signed-in Hub tab/],
+    ['disabled', /check its enabled state/],
+  ];
+  for (const [code, action] of cases) {
+    const held = row({code, filled: 0, raised: 0, kept: 0});
+    const {ui} = boot([held]);
+    const text = ui.renderMorningCockpit(report([held]), {}).textContent;
+    assert.match(text, /Biology · Wk 04 · Fictional cell structures/);
+    assert.match(text, action);
+    assert.doesNotMatch(text, /Save\/readback not confirmed|correct\/save|clearing the helper verification block/);
+  }
+});
+
+test('existing unsaved IC edits have their own review direction while uncertain saves retain recovery', () => {
+  const pending = row({code: 'ic_not_saved', filled: 0, raised: 0, kept: 0});
+  const {ui} = boot([pending]);
+  const text = ui.renderMorningCockpit(report([pending]), {}).textContent;
+  assert.match(text, /already has unsaved edits.*save them if intended or reload to discard them/);
+  assert.doesNotMatch(text, /Save\/readback not confirmed|clearing the helper verification block/);
+  for (const code of ['save_unconfirmed', 'readback_incomplete', 'readback_mismatch', 'uncertain_blocked', 'panel_unusable']) {
+    const held = row({code});
+    const recovery = ui.renderMorningCockpit(report([held]), {}).textContent;
+    assert.match(recovery, /Biology · Wk 04 · Fictional cell structures/);
+    assert.match(recovery, /Save\/readback not confirmed.*inspect the scores, correct\/save only if needed/);
+    assert.match(recovery, /reload to verify before clearing the helper verification block/);
+  }
+});
+
+test('source-only score holds retain assignment context and never become IC results or save recovery', async () => {
+  const held = row({code: 'source_scores_held', filled: 0, raised: 0, kept: 0,
+    source_holds: {checks: 4}, reasons: {check: 0}});
+  const receipt = {...report([held]), code: 'source_scores_held'};
+  const {ui, context, document} = boot([held]);
+  for (const panel of [ui.renderNeedsYou(receipt), ui.renderMorningCockpit(receipt, {})]) {
+    assert.match(panel.textContent, /Biology · Wk 04 · Fictional cell structures/);
+    assert.match(panel.textContent, /4 submitted-work rows need source checks/);
+    assert.match(panel.textContent, /No IC score comparison or entry was attempted for this assignment/);
+    assert.match(panel.textContent, /Open Student work.*reason on each row marked “Check by hand”/);
+    assert.doesNotMatch(panel.textContent, /✓ No grade rows need attention|✓ These IC results are confirmed|Save\/readback not confirmed|clearing the helper verification block|Exempt counts.*unavailable/);
+  }
+  context.fetch = async () => ({ok: true, json: async () => ({reports: [receipt]})});
+  await ui.loadMorningSummary();
+  const text = document.getElementById('morning-summary').textContent;
+  assert.match(text, /4 submitted-work rows need source checks/);
+  assert.match(text, /No IC score comparison or entry was attempted for this assignment/);
+  assert.doesNotMatch(text, /0 entered|0 kept|Exempt counts.*unavailable/);
+});
+
+test('a source hold cannot invent a count and prevents all-clear even on a legacy finished receipt', () => {
+  const {ui} = boot([]);
+  for (const source_holds of [undefined, {checks: 0}, {checks: -1}, {checks: '4'}]) {
+    const receipt = report([row({code: 'source_scores_held', source_holds, filled: 0, raised: 0, kept: 0})]);
+    const text = ui.renderMorningCockpit(receipt, {}).textContent;
+    assert.match(text, /Submitted work needs source checks/);
+    assert.match(text, /1 assignment did not finish/);
+    assert.doesNotMatch(text, /\d+ submitted-work rows?|✓ These IC results are confirmed|clearing the helper verification block/);
+  }
+});
+
 test('empty preflight receipts show the precise safe cause in Today and Routine without an IC hand check', async () => {
   const held = {day: '2032-01-07', code: 'receipt_unconfirmed', items: [],
     preflight: {stage: 'summary_publish', cause: 'hub_bridge_missing'}};

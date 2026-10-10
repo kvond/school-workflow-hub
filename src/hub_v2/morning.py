@@ -16,7 +16,7 @@ CODES = frozenset(("running", "finished", "no_scores", "mapping_required", "sign
     "read_back", "nothing_to_enter", "ic_changed", "ic_unreadable", "typing_stopped", "typed_values_differ",
     "save_unconfirmed", "readback_incomplete", "readback_mismatch", "destination_mapping_changed",
     "students_dont_match", "several_sections", "ic_not_saved", "unsupported_points_scale",
-    "unsupported_gradebook", "list_expired", "source_changed", "receipt_unconfirmed", "coverage_incomplete", "excluded_week"))
+    "unsupported_gradebook", "list_expired", "source_changed", "receipt_unconfirmed", "coverage_incomplete", "excluded_week", "source_scores_held"))
 
 
 def bindings(config):
@@ -143,6 +143,11 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
                 "problem": blocked["problem"], "action": blocked.get("action")}
     values = rows(form, scored, now)
     if not any(r["kind"] in ("score", "zero") for r in values):
+        checks = sum(r["kind"] == "check" for r in values)
+        if checks:
+            # A submitted score needing review is not an empty assignment.
+            # Keep its count visible without claiming any IC comparison.
+            return {"code": "source_scores_held", "source_holds": {"checks": checks}}
         return {"code": "no_scores"}
     matched = [m for m in bindings(config) if m.get("class_key") == cls and m.get("form_id") == fid]
     if len(matched) != 1:
@@ -183,7 +188,8 @@ def validate_report(value):
     for item in value["items"]:
         legacy_item = {"assignment", "code", "filled", "raised", "kept", "left", "reasons"}
         current_item = legacy_item | {"class_name", "week"}
-        if not isinstance(item, dict) or set(item) not in (legacy_item, current_item):
+        source_item = current_item | {"source_holds"}
+        if not isinstance(item, dict) or set(item) not in (legacy_item, current_item, source_item):
             raise ValueError("report")
         if not isinstance(item["assignment"], str) or len(item["assignment"]) > 200 or item["code"] not in CODES:
             raise ValueError("report")
@@ -199,6 +205,18 @@ def validate_report(value):
                 or set(item["reasons"]) not in (legacy_reasons, current_reasons)
                 or any(type(n) is not int or not 0 <= n <= 3600 for n in item["reasons"].values())):
             raise ValueError("report")
+        if item["code"] == "source_scores_held" or "source_holds" in item:
+            detail = item.get("source_holds")
+            if (set(item) != source_item or item["code"] != "source_scores_held"
+                    or not isinstance(detail, dict) or set(detail) != {"checks"}
+                    or type(detail["checks"]) is not int or not 1 <= detail["checks"] <= 3600
+                    or any(item[k] for k in ("filled", "raised", "kept", "left"))
+                    or any(item["reasons"].values())):
+                raise ValueError("report")
+    source_held = any(item["code"] == "source_scores_held" for item in value["items"])
+    if (value["code"] == "source_scores_held" and not source_held
+            or value["code"] == "finished" and source_held):
+        raise ValueError("report")
     return value
 
 

@@ -13,7 +13,13 @@
  const reasons=()=>({flag:0,exempt:0,excused:0,check:0,name:0,missing:0});
  const classNames={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy & Physiology'};
  const item=(entry,code)=>({assignment:String(entry.assignment).slice(0,200),class_name:String(entry.class_name||classNames[entry.class]||entry.class||'Class unavailable').slice(0,100),week:String(entry.week||'Week unavailable').slice(0,100),code,filled:0,raised:0,kept:0,left:0,reasons:reasons()});
- const safe=new Set(['signed_out','hub_unavailable','ic_unavailable','panel_unusable','disabled','source_changed','receipt_unconfirmed','mapping_required','missed_noon','ic_changed','destination_mapping_changed','students_dont_match','several_sections','ic_not_saved','unsupported_points_scale','unsupported_gradebook','list_expired','coverage_incomplete']);
+ const safe=new Set(['signed_out','hub_unavailable','ic_unavailable','panel_unusable','disabled','source_changed','receipt_unconfirmed','mapping_required','missed_noon','ic_changed','destination_mapping_changed','students_dont_match','several_sections','ic_not_saved','unsupported_points_scale','unsupported_gradebook','list_expired','coverage_incomplete','no_scores','source_scores_held','excluded_week']);
+ const completedBatchCodes=new Set(['read_back','nothing_to_enter','no_scores','excluded_week']);
+ const batchCode=items=>{
+  if(items.some(i=>i.code==='source_scores_held'))return 'source_scores_held';
+  const held=items.find(i=>!completedBatchCodes.has(i.code));
+  return held?(safe.has(held.code)?held.code:'coverage_incomplete'):'finished';
+ };
  const code=e=>safe.has(e?.message)?e.message:'panel_unusable';
  const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
  const bridgeCause=e=>/Receiving end does not exist/i.test(e?.message||'')?'hub_bridge_missing':/message (?:port|channel) closed|back.forward cache/i.test(e?.message||'')?'hub_bridge_closed':'hub_bridge_unavailable';
@@ -160,12 +166,19 @@
      let initial;
      try{initial=await hub(source,'list',scope);}catch(e){summary.code=code(e);s.report.items.push(summary);throw e;}
      if(initial.code!=='ready'){
-      if(initial.code==='no_scores')continue;
-      summary.code=safe.has(initial.code)?initial.code:'mapping_required';s.report.items.push(summary);await publish(s,source);continue;
+      summary.code=safe.has(initial.code)?initial.code:'mapping_required';
+      if(initial.code==='source_scores_held'){
+       const checks=initial.source_holds?.checks;
+       if(Number.isInteger(checks)&&checks>0&&checks<=3600)summary.source_holds={checks};
+       else summary.code='coverage_incomplete';
+      }
+      s.report.items.push(summary);await publish(s,source);
+      if(s.report_pending)throw Error('receipt_unconfirmed');
+      continue;
      }
      s.report.items.push(summary);
      let list,targets;
-     try{list=E.validateList(initial.list);targets=M.targets(list,initial.targets,C.IC_ORIGIN);}catch{summary.code='mapping_required';await publish(s,source);continue;}
+     try{list=E.validateList(initial.list);targets=M.targets(list,initial.targets,C.IC_ORIGIN);}catch{summary.code='mapping_required';await publish(s,source);if(s.report_pending)throw Error('receipt_unconfirmed');continue;}
      const results=[];
      for(const binding of targets){
       targetInProgress={summary,binding};
@@ -203,7 +216,7 @@
      await publish(s,source);
      if(s.report_pending)throw Error('receipt_unconfirmed');
     }
-    s.report.code='finished';
+    s.report.code=batchCode(s.report.items);
    }catch(e){
     s.report.code=code(e);const last=s.report.items.at(-1);
     if(last?.code==='running')last.code=s.report.code;

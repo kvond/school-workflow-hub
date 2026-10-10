@@ -60,6 +60,55 @@ class MorningTests(unittest.TestCase):
         self.assertEqual(result, {"code": "coverage_incomplete"})
         scorer.assert_not_called()
 
+    def test_all_checked_source_rows_are_held_instead_of_reported_empty(self):
+        agenda = Mock(classes={"biology": {"name": "Biology"}})
+        found = {"lessons": [{"topic": "Matter", "forms": [FORM]}], "problems": []}
+        binding = {"class_key": "biology", "form_id": FORM["form_id"], "targets": []}
+        with patch.object(morning.ledger, "read", return_value={"configured": True}), \
+                patch.object(morning.completion, "assignment_readiness", return_value={"status": "READY"}):
+            for score in ({"problem": "unreadable"}, {"notes_score": 7, "note": "needs check"},
+                          {"notes_score": None, "revision_score": None}):
+                value = morning.make_list("t", {"HUB_IC_ASSIGNMENT_MAP": json.dumps([binding])}, agenda,
+                    "biology", "Wk 05", FORM["form_id"], Mock(return_value=found), Mock(return_value=[(ROW, score)]))
+                self.assertEqual(value, {"code": "source_scores_held", "source_holds": {"checks": 1}})
+                self.assertNotIn("Ann", json.dumps(value))
+
+    def test_empty_before_start_is_distinct_from_checked_submitted_work(self):
+        form = {**FORM, "students": [], "missing": [ROW], "window": None}
+        found = {"lessons": [{"topic": "Matter", "forms": [form]}], "problems": []}
+        with patch.object(morning.ledger, "read", return_value={"configured": True}), \
+                patch.object(morning.completion, "assignment_readiness", return_value={"status": "READY"}):
+            value = morning.make_list("t", {}, Mock(classes={"biology": {"name": "Biology"}}), "biology",
+                "Wk 05", form["form_id"], Mock(return_value=found), Mock(return_value=[]))
+        self.assertEqual(value, {"code": "no_scores"})
+
+    def test_mixed_safe_scores_and_checks_keep_the_existing_list_behavior(self):
+        other = {**ROW, "last": "Brook"}
+        form = {**FORM, "students": [ROW, other]}
+        found = {"lessons": [{"topic": "Matter", "forms": [form]}], "problems": []}
+        binding = {"class_key": "biology", "form_id": FORM["form_id"], "targets": []}
+        with patch.object(morning.ledger, "read", return_value={"configured": True}), \
+                patch.object(morning.completion, "assignment_readiness", return_value={"status": "READY"}):
+            value = morning.make_list("t", {"HUB_IC_ASSIGNMENT_MAP": json.dumps([binding])},
+                Mock(classes={"biology": {"name": "Biology"}}), "biology", "Wk 05", form["form_id"],
+                Mock(return_value=found), Mock(return_value=[(ROW, {"notes_score": 8}), (other, {"problem": "held"})]))
+        self.assertEqual(value["code"], "ready")
+        self.assertEqual([r["kind"] for r in value["list"]["rows"]], ["score", "check"])
+
+    def test_source_hold_receipt_is_counts_only_and_never_claims_ic_results(self):
+        item = {**report()["items"][0], "class_name": "Biology", "week": "Wk 05", "code": "source_scores_held",
+                "filled": 0, "raised": 0, "kept": 0, "left": 0,
+                "reasons": {"flag": 0, "exempt": 0, "excused": 0, "check": 0, "name": 0, "missing": 0},
+                "source_holds": {"checks": 2}}
+        value = {**report(), "code": "source_scores_held", "items": [item]}
+        self.assertEqual(morning.validate_report(value), value)
+        for changes in ({"source_holds": {"checks": 0}}, {"source_holds": {"checks": True}},
+                        {"source_holds": {"checks": 2, "names": ["Private Person"]}},
+                        {"code": "no_scores"}, {"filled": 1}, {"class_name": None}):
+            invalid = copy.deepcopy(value); invalid["items"][0].update(changes)
+            with self.assertRaises(ValueError): morning.validate_report(invalid)
+        with self.assertRaises(ValueError): morning.validate_report({**value, "code": "finished"})
+
     def test_receipts_accept_only_counts_and_allowlisted_reasons(self):
         self.assertEqual(morning.validate_report(report()), report())
         for mutate in (lambda r: r.update(names=["Private Person"]), lambda r: r["items"][0].update(filled=True), lambda r: r["items"][0].update(code="raw provider error"), lambda r: r["items"][0]["reasons"].update(student="Private Person")):

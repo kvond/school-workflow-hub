@@ -1,6 +1,19 @@
 # Signed-in school browser companion ("Chrome helper")
 
-## Weekday batch, current IC roster and missing-work zeros (0.5.17)
+## Weekday batch, current IC roster and missing-work zeros (0.5.18)
+
+Assignments whose submitted-work rows all need a score check stay in the receipt
+as `source_scores_held`, with class, week, assignment and a count only. The helper
+does not compare or enter IC for those assignments, and the overall receipt
+remains held. An assignment with truly no eligible work remains visible as
+`no_scores`; it does not establish a current IC comparison. Mixed lists retain
+their existing safe-score and check-by-hand handling.
+
+Any retained readiness, access or mapping hold also keeps the batch from being
+reported as `finished`. Counts from separately saved and confirmed assignments
+remain in the same receipt. True no-score and intentionally excluded assignments
+complete their iteration without an IC entry. An unacknowledged assignment
+receipt stops the batch before the next assignment.
 
 An attempt that stops before reading assignments now retains a bounded,
 student-free failure stage and cause in its receipt. The Hub and popup name
