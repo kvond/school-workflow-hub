@@ -565,6 +565,38 @@ test('one server-held replacement holds every score request and numeric handoff 
   assert.match(client.icStatus(form).text, /Avery, Ann \(A4 Biology\)/);
 });
 
+test('a ready teacher deck cannot label a named held student copy Ready or lend it the teacher action', async () => {
+  const {client, form} = recheckClient();
+  form.grade_readiness = {status: 'READY', label: 'Ready', problem: 'Linked completion codes are ready.', action: 'Teacher source action must not mask a copy hold.'};
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 8, revision_score: 10}, LATEFILE123: {code: 'deck_not_ready',
+    readiness: {status: 'NOT_READY', label: 'Needs embedded codes', problem: 'BANK lists14terms but this copy carries11markers.'},
+    action: 'Restore only the missing codes in this student copy; preserve its responses.'}};
+  for (const text of [client.icStatus(form).text, client.icPanel(form, client.work.scores[form.form_id], {}).textContent,
+    ...client.weekToEnter().held]) {
+    assert.match(text, /Biology · Wk 03 · Fictional ecosystems/);
+    assert.match(text, /Brook, Ben \(A4 Biology\): Needs embedded codes/);
+    assert.match(text, /copy carries11markers/);
+    assert.match(text, /Restore only the missing codes/);
+    assert.doesNotMatch(text, /: Ready|Linked completion codes are ready|Teacher source action/);
+  }
+  assert.equal(client.icStatus(form).kind, 'held');
+  assert.equal(client.helperRows(form).length, 0);
+  assert.equal(client.weekToEnter().ready.length, 0);
+  assert.equal(await client.sendList(form, {}), 'deck_not_ready');
+});
+
+test('compact held-copy warnings retain access errors and unresolved teacher-source holds distinctly', () => {
+  const {client, form} = recheckClient();
+  client.work.scores[form.form_id] = {SAMEFILE123: {code: 'deck_not_ready', label: 'Cannot read lesson',
+    problem: 'This exact student deck could not be read.', action: 'Check this copy’s access before rerunning.'}};
+  assert.match(client.icStatus(form).text, /Avery, Ann \(A4 Biology\): Cannot read lesson/);
+  assert.match(client.icStatus(form).text, /Check this copy’s access/);
+  assert.doesNotMatch(client.icStatus(form).text, /Needs embedded codes/);
+  form.grade_readiness = {status: 'NOT_READY', label: 'Needs embedded codes', problem: 'Teacher inventory is missing.', action: 'Repair the teacher inventory first.'};
+  assert.match(client.icStatus(form).text, /Needs embedded codes.*Repair the teacher inventory first/);
+  assert.doesNotMatch(client.icStatus(form).text, /Cannot read lesson|Check this copy’s access/);
+});
+
 test('a closed recheck prepares actual scores, preserves review and Exempt rows, and never creates an absence zero', () => {
   const {client, form} = recheckClient();
   client.helper.state = 'ready';

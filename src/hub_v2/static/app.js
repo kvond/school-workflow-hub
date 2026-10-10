@@ -1433,9 +1433,19 @@ function acceptedIntakeKeys(form) {
 // same rules as the table above.
 function gradeReadinessHold(form) {
   const readiness = form.grade_readiness;
-  const held = Object.values(work.scores[form.form_id] || {}).find(score => score?.code === 'deck_not_ready');
+  const [fileId, held] = Object.entries(work.scores[form.form_id] || {}).find(([, score]) => score?.code === 'deck_not_ready') || [];
   if (readiness?.status === 'READY' && !held) return '';
   const context = `${CLASSES.find(([key]) => key === work.cls)?.[1] || work.cls} · ${work.week} · ${form.label || 'this assignment'}`;
+  if (readiness?.status === 'READY' && held) {
+    const copy = held.readiness || {label: held.label || 'Needs embedded codes'};
+    const row = assessmentRows(form).find(row => row.files.some(file => file.id === fileId));
+    const student = row ? `${row.last}, ${row.first}${row.section ? ` (${row.section})` : ''}` : 'student copy';
+    const label = releaseLabel(copy);
+    const problem = copy.problem || held.problem || '';
+    const detail = [problem.startsWith(label + '. ') ? problem.slice(label.length + 2) : problem, held.action || copy.action].filter(Boolean).join(' ')
+      || 'Recheck this student copy’s embedded codes before rerunning grades.';
+    return `${context} · ${student}: ${label}. ${detail} Scoring and IC entry are held; no missing-work zero is prepared.`;
+  }
   return `${context}: ${releaseLabel(readiness || held?.readiness)}. ${readiness?.action || held?.readiness?.action || readiness?.problem || held?.problem || 'Embedded codes are not verified. Recheck the lesson and student copies before rerunning grades.'} Scoring and IC entry are held; no missing-work zero is prepared.`;
 }
 
