@@ -1378,6 +1378,26 @@ def recheck_candidates(form, *, now=None):
     for row in form.get("students", []) + form.get("late", []):
         if row.get("matched") is not True:
             continue
+        if not event(row):
+            # Original grouping prefers on-time work, including a routed folder
+            # copy. Explicit recheck may have the later canonical Form event in
+            # history. Apply the same strictly older archive guard in this
+            # direction; never turn a routing stamp into a Form submission.
+            snapshots = [row] + row.get("earlier", [])
+            verified = [c for c in snapshots if event(c)]
+            if verified:
+                newest = max(event(c) for c in verified)
+                latest = [c for c in verified if event(c) == newest]
+                selected = latest[0]
+                current = {**row, **{key: selected[key] for key in
+                    ("files", "source", "submitted_at", "late", "email", "matched_by") if key in selected}}
+                canonical = all(c.get("matched_by") == "email" and c.get("email", "").lower() == current.get("email", "").lower()
+                    and len(c.get("files", [])) == 1 and c["files"][0].get("source_form_id") == form.get("form_id")
+                    for c in verified)
+                if (canonical and len({file_ids(c) for c in latest}) == 1
+                        and all(older_routed_folder(current, c) for c in snapshots if not event(c))):
+                    row = {**current, "earlier": [{key: c[key] for key in c if key != "earlier"}
+                        for c in snapshots if c is not selected]}
         candidates = [row]
         snapshots = [row] + row.get("earlier", [])
         problem = None

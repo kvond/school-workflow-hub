@@ -106,7 +106,7 @@
   const report=s.report,items=report?.items;
   if(!validDay(s.day)||s.day>=t.day||report?.day!==s.day||!validRun(report?.run_id)||!Array.isArray(items)
    ||(s.manual_run_day&&(!validDay(s.manual_run_day)||s.manual_run_day>s.day)))return false;
-  if(verifiedReport(s))return true;
+  if(verifiedReport(s))return s.verified?.recovery!=='partial_receipt';
   if(s.report_pending!==false)return false;
   if(report.code==='finished'&&(items.length?[true,false].includes(s.execution_started)&&items.every(i=>
    (completedRecheckCodes.has(i.code)||i.code==='excluded_week')
@@ -125,10 +125,49 @@
    &&!Object.hasOwn(s,'execution_started')&&!verifiedReport(s)
    &&(!s.manual_run_day||(validDay(s.manual_run_day)&&s.manual_run_day<=s.day));
  }
+ function currentReceiptReport(s,t=M.clock()){
+  const report=s.report,items=report?.items,version=chrome.runtime.getManifest().version;
+  const counts=i=>['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600);
+  const reasons=i=>i.reasons&&!Array.isArray(i.reasons)
+   &&Object.keys(i.reasons).sort().join('|')==='check|excused|exempt|flag|missing|name'
+   &&Object.values(i.reasons).every(n=>Number.isInteger(n)&&n>=0&&n<=3600);
+  const held=i=>i.code!=='source_scores_held'||(i.source_holds&&!Array.isArray(i.source_holds)
+   &&Object.keys(i.source_holds).join('|')==='checks'&&Number.isInteger(i.source_holds.checks)
+   &&i.source_holds.checks>0&&i.source_holds.checks<=3600);
+  const shape=i=>Object.keys(i).sort().join('|')===(i.code==='source_scores_held'
+   ?'assignment|class_name|code|filled|kept|left|raised|reasons|source_holds|week'
+   :'assignment|class_name|code|filled|kept|left|raised|reasons|week');
+  const unused=(!Object.hasOwn(s,'receipt_recheck_version')&&!Object.hasOwn(s,'receipt_recheck_run_id')&&!Object.hasOwn(s,'receipt_recheck_day'))
+   ||(typeof s.receipt_recheck_version==='string'&&/^\d+\.\d+\.\d+$/.test(s.receipt_recheck_version)
+    &&validRun(s.receipt_recheck_run_id)&&validDay(s.receipt_recheck_day)&&s.receipt_recheck_day<=s.day);
+  return s.enabled&&s.blocked===false&&s.inflight===false&&s.report_pending===false
+   &&s.execution_started===true&&Array.isArray(s.outbox)&&s.outbox.length===0&&!pending.size&&!active
+   &&validDay(s.day)&&s.day===t.day&&report?.day===s.day&&validRun(report?.run_id)
+   &&(!s.manual_run_day||(validDay(s.manual_run_day)&&s.manual_run_day<=s.day))
+   &&Object.keys(report).sort().join('|')==='code|day|items|roster|run_id'&&unused
+   &&report.roster==='unavailable'&&report.code==='receipt_unconfirmed'&&!report.preflight
+   &&Array.isArray(items)&&items.length>0&&items.length<=300&&items.at(-1)?.code==='receipt_unconfirmed'
+   &&items.every((i,n)=>i&&shape(i)&&typeof i.assignment==='string'&&i.assignment.trim()&&i.assignment.length<=200
+    &&typeof i.class_name==='string'&&i.class_name.trim()&&i.class_name.length<=100
+    &&typeof i.week==='string'&&i.week.trim()&&i.week.length<=100&&counts(i)&&reasons(i)
+    &&(n===items.length-1||((completedRecheckCodes.has(i.code)||['excluded_week','source_scores_held'].includes(i.code))
+     &&(completedCodes.has(i.code)||(zeroCounts(i)&&Object.values(i.reasons).every(v=>v===0)))&&held(i))))
+   &&s.receipt_recheck_version!==version;
+ }
+ function currentReceiptRecoveryAllowed(s,t=M.clock()){
+  return currentReceiptReport(s,t)&&!verifiedReport(s);
+ }
+ function currentReceiptRecoveryGrant(s,t=M.clock()){
+  const v=s.verified;
+  return currentReceiptReport(s,t)&&verifiedReport(s)&&v.scope==='current_mapped_assignments'
+   &&v.recovery==='partial_receipt'&&v.prior_day===s.day
+   &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
+   &&v.prior_report_signature===JSON.stringify(s.report);
+ }
  function manualNowAllowed(s,t=M.clock()){
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
-  const verifiedRecovery=verifiedReport(s);
+  const verifiedRecovery=verifiedReport(s)&&s.verified?.recovery!=='partial_receipt';
   // A completed receipt can be explicitly rechecked once later that day.
   // The new pass rereads every source and destination; uncertain writes remain blocked.
   const completedRun=completedRecheckReport(s)&&s.finished_recheck_day!==t.day;
@@ -139,7 +178,7 @@
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
   const repeat=safePreflightRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
-  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat);
+  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t));
   return s.enabled&&(sameDay||freshManualDay(s,t))
    &&!s.blocked&&!s.inflight&&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
@@ -151,6 +190,13 @@
    const requestedAt=M.clock();
    const preflightRepeat=manualNow&&safePreflightRepeat(s,requestedAt);
    if(manualNow&&!manualNowAllowed(s,requestedAt))return;
+   if(manualNow&&currentReceiptRecoveryGrant(s,requestedAt)){
+    // Consume the explicit once-per-version grant before any tab/network action.
+    // The earlier report remains unchanged and its private history is retained.
+    s.receipt_recheck_version=chrome.runtime.getManifest().version;
+    s.receipt_recheck_run_id=s.report.run_id;s.receipt_recheck_day=requestedAt.day;
+    await write(s);
+   }
    const completedRecheck=manualNow&&completedRecheckReport(s);
    const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
    s.outbox=s.outbox||[];
@@ -262,7 +308,7 @@
       if(!good)throw Error('panel_unusable');
      }
      targetInProgress=null;
-     try{await hub(source,'record',{scope,list,targets,results});}catch{summary.code='receipt_unconfirmed';throw Error('receipt_unconfirmed');}
+     try{await hub(source,'record',{run_id:s.report.run_id,scope,revision:initial.revision,list,targets,results});}catch{summary.code='receipt_unconfirmed';throw Error('receipt_unconfirmed');}
      await publish(s,source);
      if(s.report_pending)throw Error('receipt_unconfirmed');
     }
@@ -288,35 +334,44 @@
    if(m.type==='morning_setting'&&typeof m.enabled==='boolean'){const enabling=m.enabled&&!s.enabled;s.enabled=m.enabled;await chrome.storage.local.set({morning_enabled:m.enabled,...(enabling?{morning_enabled_day:M.clock().day}:{})});await ensureAlarm();}
    let recovery_error='';
    const legacyVerification=m.current_mapped_confirmed===true&&legacyRecoveryAllowed(s);
-   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&((s.blocked&&m.current_mapped_confirmed!==true)||legacyVerification)&&s.report){
+   const receiptVerification=m.current_mapped_confirmed===true&&m.receipt_recovery_confirmed===true&&currentReceiptRecoveryAllowed(s);
+   const receiptVersion=receiptVerification?chrome.runtime.getManifest().version:null;
+   const currentVerification=legacyVerification||receiptVerification;
+   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&((s.blocked&&m.current_mapped_confirmed!==true)||currentVerification)&&s.report){
     const note=typeof m.note==='string'?m.note.trim():'';
-    const verificationNote=legacyVerification?`Current mapped IC scores verified for a new run. Prior ${s.report.day} receipt remains unconfirmed. ${note}`:note;
+    const verificationNote=receiptVerification?`Current mapped IC scores checked for one new run. Prior ${s.report.day} run remains incomplete and its entry receipt unconfirmed. ${note}`:
+     legacyVerification?`Current mapped IC scores verified for a new run. Prior ${s.report.day} receipt remains unconfirmed. ${note}`:note;
     if(!note||verificationNote.length>500)recovery_error='Add a short verification note.';
     else try{
      const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
      if(hubs.length!==1)throw Error();
      let ic=null;
-     if(legacyVerification){
+     if(currentVerification){
       const tabs=await chrome.tabs.query({url:C.IC_ORIGIN+'/*'});
       if(tabs.length!==1)throw Error();
       ic=await chrome.tabs.get(tabs[0].id);
       if(new URL(ic.url).origin!==C.IC_ORIGIN||(await chrome.tabs.sendMessage(ic.id,{type:'morning_session'},{frameId:0}))?.ok!==true)throw Error();
      }
-     const run_id=legacyVerification?s.report.run_id:s.blocked_run_id||s.report.run_id,event_id=crypto.randomUUID();
+     const hubUrl=hubs[0].url,icUrl=ic?.url;
+     const run_id=currentVerification?s.report.run_id:s.blocked_run_id||s.report.run_id,event_id=crypto.randomUUID();
      const saved=await hub(hubs[0].id,'recovery',{event_id,run_id,type:'verified',note:verificationNote});
      if(saved?.recorded!==true||saved.record?.run_id!==run_id||saved.record?.event_id!==event_id||saved.record?.type!=='verified'||saved.record?.note!==verificationNote||typeof saved.record?.by!=='string'||!saved.record.by.trim()||typeof saved.record?.at!=='string'||!Number.isFinite(Date.parse(saved.record.at)))throw Error();
      const fresh=await read();
      if(busy||fresh.report?.run_id!==s.report.run_id||(legacyVerification&&(!legacyRecoveryAllowed(fresh)
-      ||fresh.day!==s.day||JSON.stringify(fresh.report)!==JSON.stringify(s.report))))throw Error();
-     if(legacyVerification&&((await chrome.tabs.get(hubs[0].id)).url!==hubs[0].url||(await chrome.tabs.get(ic.id)).url!==ic.url))throw Error();
+      ||fresh.day!==s.day||JSON.stringify(fresh.report)!==JSON.stringify(s.report)))
+      ||(receiptVerification&&(!currentReceiptRecoveryAllowed(fresh)||fresh.day!==s.day
+       ||JSON.stringify(fresh.report)!==JSON.stringify(s.report)||chrome.runtime.getManifest().version!==receiptVersion)))throw Error();
+     if(currentVerification&&((await chrome.tabs.get(hubs[0].id)).url!==hubUrl||(await chrome.tabs.get(ic.id)).url!==icUrl))throw Error();
      Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by,
-      ...(legacyVerification?{scope:'current_mapped_assignments',prior_day:s.report.day}:{})}});
+      ...(currentVerification?{scope:'current_mapped_assignments',prior_day:s.report.day}:{}),
+      ...(receiptVerification?{recovery:'partial_receipt',event_id,for_helper_version:receiptVersion,
+       prior_report_signature:JSON.stringify(s.report)}:{})}});
      await write(s);
     }catch{recovery_error='Verification could not be saved. A new run is still unavailable. Keep one signed-in Hub tab open and try again.';}
    }
    if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
    if(m.type==='morning_run_now'&&!busy&&manualNowAllowed(s))run(false,true).catch(()=>{});
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s)};
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s),can_verify_current_receipt:!busy&&currentReceiptRecoveryAllowed(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
  globalThis.HubMorningStatus=async()=>{

@@ -17,7 +17,7 @@
    const type=r.headers.get('content-type')||'';
    if(!type.includes('application/json'))throw failure('hub_unavailable','hub_invalid_response',r.status);
    let value;try{value=await r.json();}catch(e){throw failure('hub_unavailable',e?.name==='AbortError'?'hub_request_timeout':'hub_invalid_response',r.status);}
-   if(path==='morning/reports'&&payload&&value?.recorded!==true)throw failure('receipt_unconfirmed','hub_report_not_acknowledged',r.status);
+   if(['morning/reports','morning/entry'].includes(path)&&payload&&value?.recorded!==true)throw failure('receipt_unconfirmed','hub_report_not_acknowledged',r.status);
    return value;
   }finally{clearTimeout(timer);}
  }
@@ -33,8 +33,11 @@
    if(message.action==='record'&&scope(p?.scope)){
     const list=E.validateList(p.list),ts=M.targets(list,p.targets,C.IC_ORIGIN);
     const results=p.results.map(E.validateResult);
-    if(list.form_id!==p.scope.form||list.class_key!==p.scope.class||list.week!==p.scope.week||results.length!==ts.length||!ts.every(t=>results.filter(r=>r.list_id===list.list_id&&r.form_id===list.form_id&&r.class_key===list.class_key&&r.week===list.week&&r.section===t.section&&r.column===t.column&&r.at>=list.sent_at&&r.certain&&['entered','checked'].includes(r.outcome)&&r.counts.not_saved===0).length===1))throw Error('receipt_unconfirmed');
-    return call('record',{...p.scope,kind:'ic',note:'Morning Chrome helper: '+results.map(r=>`${r.section} ${r.column}: ${r.counts.filled} entered, ${r.counts.raised} raised, ${r.counts.left} left`).join('; ').slice(0,440)});
+    if(!E.UUID.test(p.run_id||'')||!/^[a-f0-9]{64}$/.test(p.revision||'')||list.form_id!==p.scope.form||list.class_key!==p.scope.class||list.week!==p.scope.week||results.length!==ts.length||!ts.every(t=>results.filter(r=>r.list_id===list.list_id&&r.form_id===list.form_id&&r.class_key===list.class_key&&r.week===list.week&&r.section===t.section&&r.column===t.column&&r.at>=list.sent_at&&r.certain&&['entered','checked'].includes(r.outcome)&&r.counts.not_saved===0).length===1))throw Error('receipt_unconfirmed');
+    const saved=await call('morning/entry',{run_id:p.run_id,scope:p.scope,revision:p.revision,list,targets:ts,results});
+    const ack=saved?.receipt,keys=['filled','raised','kept','left','not_saved'],counts=Object.fromEntries(keys.map(k=>[k,results.reduce((n,r)=>n+r.counts[k],0)]));
+    if(!ack||Object.keys(ack).sort().join('|')!==['schema','run_id','scope','list_id','source_revision','target_count','certain','counts','source_check_rows','whole_assignment_recorded','receipt_sha256'].sort().join('|')||ack.schema!=='hub-morning-entry-ack/v1'||ack.run_id!==p.run_id||!ack.scope||Object.keys(ack.scope).sort().join('|')!==['class','week','form'].sort().join('|')||['class','week','form'].some(k=>ack.scope[k]!==p.scope[k])||ack.list_id!==list.list_id||ack.source_revision!==p.revision||ack.target_count!==ts.length||ack.certain!==true||typeof ack.whole_assignment_recorded!=='boolean'||ack.source_check_rows!==list.rows.filter(r=>r.kind==='check').length||(ack.source_check_rows>0&&ack.whole_assignment_recorded)||!ack.counts||Object.keys(ack.counts).sort().join('|')!==keys.sort().join('|')||keys.some(k=>ack.counts[k]!==counts[k])||!/^[a-f0-9]{64}$/.test(ack.receipt_sha256||''))throw Error('receipt_unconfirmed');
+    return saved;
    }
    throw Error('hub_unavailable');
   })().then(data=>reply({ok:true,data}),error=>reply({ok:false,code:error.message==='signed_out'?'signed_out':error.message==='receipt_unconfirmed'?'receipt_unconfirmed':'hub_unavailable',...M.preflight('summary_publish',error)})).finally(()=>clearInterval(ping));

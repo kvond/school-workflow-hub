@@ -46,3 +46,27 @@ test('acknowledged current-score verification is distinct from completion of the
  await h.click('morning-run-now',{isTrusted:false,target:h.element('morning-run-now')});assert.ok(!h.messages.some(m=>m.type==='morning_run_now'));
  await h.click('morning-run-now',{isTrusted:true,target:h.element('morning-run-now')});assert.ok(h.messages.some(m=>m.type==='morning_run_now'));
 });
+
+test('delivered partial receipt uses explicit current saved-score checkbox and preserves incomplete wording',async()=>{
+ const status={...legacy(),can_verify_legacy:false,can_verify_current_receipt:true,report:{...legacy().report,day:'2026-10-11',items:[{code:'receipt_unconfirmed',assignment:'Fictional current lesson'}]}};
+ const h=popup(status);await settle();
+ assert.equal(h.element('morning-recovery').hidden,false);assert.equal(h.element('morning-run-now').hidden,true);
+ assert.match(h.element('morning-next').textContent,/saved scores in every current mapped IC assignment/);
+ assert.match(h.element('morning-next').textContent,/does not complete/);
+ assert.match(h.element('morning-recovery-label').textContent,/one new pass/);
+ h.element('morning-note').value='All current saved panels checked.';
+ await h.click('morning-clear',{isTrusted:true});assert.ok(!h.messages.some(m=>m.type==='morning_clear'));
+ h.element('morning-checked').checked=true;await h.click('morning-clear',{isTrusted:false});assert.ok(!h.messages.some(m=>m.type==='morning_clear'));
+ await h.click('morning-clear',{isTrusted:true});const m=h.messages.find(m=>m.type==='morning_clear');
+ assert.equal(m.current_mapped_confirmed,true);assert.equal(m.receipt_recovery_confirmed,true);assert.equal(m.confirmed,true);
+ h.show({...status,can_verify_current_receipt:false,can_run_now:true,verified:{run_id:status.report.run_id,recovery:'partial_receipt',scope:'current_mapped_assignments',prior_day:status.report.day,by:'teacher@fictional.example',at:'2026-10-11T16:00:00Z'}});
+ assert.match(h.element('morning-status').textContent,/run remains incomplete/);assert.equal(h.element('morning-recovery').hidden,true);
+});
+test('an unavailable exact partial receipt grant never promises a future run',async()=>{
+ const status={...legacy(),can_verify_legacy:false,can_run_now:false,verified:{run_id:legacy().report.run_id,recovery:'partial_receipt',scope:'current_mapped_assignments',prior_day:'2026-10-11',by:'teacher@fictional.example',at:'2026-10-11T16:00:00Z'}};
+ const h=popup(status);await settle();
+ assert.match(h.element('morning-next').textContent,/unavailable for this run and helper version/);
+ assert.match(h.element('morning-next').textContent,/remains incomplete/);
+ assert.doesNotMatch(h.element('morning-next').textContent,/allows a future/);
+ assert.equal(h.element('morning-run-now').hidden,true);
+});

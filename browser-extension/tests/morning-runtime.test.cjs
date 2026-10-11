@@ -9,6 +9,15 @@ function fixture(){
  return {list,target};
 }
 const settle=()=>new Promise(resolve=>setTimeout(resolve,15));
+function deliveredReceiptFailure(){
+ const day='2026-10-01',run_id=uuid(),counts={filled:0,raised:0,kept:0,left:0};
+ const reasons={flag:0,exempt:0,excused:0,check:0,name:0,missing:0};
+ const item=(code,extra={})=>({assignment:'Fictional lesson',class_name:'Biology',week:'Wk 05',code,...counts,reasons:{...reasons},...extra});
+ return {morning_enabled:true,morning_state:{day,blocked:false,inflight:false,execution_started:true,report_pending:false,
+  outbox:[],manual_run_day:day,report:{day,run_id,code:'receipt_unconfirmed',roster:'unavailable',
+   items:[item('nothing_to_enter',{kept:2}),item('coverage_incomplete'),item('receipt_unconfirmed',{raised:1,kept:1,left:1,reasons:{...reasons,check:1}})]}}};
+}
+const verifyCurrent={type:'morning_clear',confirmed:true,current_mapped_confirmed:true,receipt_recovery_confirmed:true,note:'All current mapped saved panels checked; source holds retained.'};
 function background(options={}){
  const state=options.stored||{morning_enabled:options.enabled??true},messages=[],listeners={},calls=[],writes=[];
  let probeFailures=options.probeFailures||0;
@@ -19,12 +28,12 @@ function background(options={}){
   targets.push({...f.target,column:'revision',assignment_id:'124',label_code:'S',url:f.target.url.replace('resource/123/','resource/124/').replace('objectSectionID/123/','objectSectionID/124/')});
  }
  const tabs={1:{id:1,url:C.HUB_ORIGIN+'/v2/',status:'complete'},2:{id:2,url:C.IC_ORIGIN+'/campus/',status:'complete'}};
- const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,getManifest:()=>({version:'0.5.14'}),onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
+ const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,getManifest:()=>({version:options.version||'0.5.14'}),onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
  const invoke=(m,sender={id:'extension',url:runtime.getURL('popup.html')})=>new Promise(resolve=>{if(listeners.message(m,sender,resolve)!==true)resolve(undefined);});
  const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:new Map(),chrome:{runtime,
  storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>{if(data.morning_state)writes.push(structuredClone(data.morning_state));Object.assign(state,structuredClone(data));},setAccessLevel:async v=>{state.access=v.accessLevel;}}},
  alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
- tabs:{query:async({url})=>Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1))),get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{calls.push('navigate');if(options.failSecondNavigation&&calls.filter(c=>c==='navigate').length===2)throw Error('panel_unusable');Object.assign(tabs[id],v);return tabs[id];},sendMessage:async(id,m)=>{
+ tabs:{query:async({url})=>{if(options.checkQuery)options.checkQuery(state,url);return Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1)));},get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{calls.push('navigate');if(options.failSecondNavigation&&calls.filter(c=>c==='navigate').length===2)throw Error('panel_unusable');Object.assign(tabs[id],v);return tabs[id];},sendMessage:async(id,m)=>{
   messages.push(m);
   if(m.type==='morning_session'||m.type==='morning_probe'){
    if(options.signedOut)return {ok:false,code:'signed_out'};
@@ -35,7 +44,7 @@ function background(options={}){
    calls.push(m.action);
    if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
-   if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
+   if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:options.sourceRevision||'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
    if(m.action==='recovery'){
     if(options.recoveryFail)throw Error('unavailable');
     const data={recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}};
@@ -298,15 +307,15 @@ test('Hub bridge only accepts private worker messages and cannot fetch arbitrary
  assert.equal(calls[0].options.credentials,'same-origin');assert.equal(calls[0].options.redirect,'error');
 });
 
-test('Hub bridge refuses an Entered in IC receipt until every mapped panel read back',async()=>{
+test('Hub bridge refuses a comparison receipt until every mapped panel read back',async()=>{
  let listener;const calls=[];const window={};window.top=window;const f=fixture();
- vm.runInNewContext(source('morning-hub.js'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:fn=>listener=fn}}},fetch:async url=>{calls.push(url);return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({recorded:1})};}});
+ vm.runInNewContext(source('morning-hub.js'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout,clearTimeout,setInterval,clearInterval,chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:fn=>listener=fn}}},fetch:async(url,options)=>{calls.push(url);const p=JSON.parse(options.body);return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({recorded:true,receipt:{schema:'hub-morning-entry-ack/v1',run_id:p.run_id,scope:p.scope,list_id:p.list.list_id,source_revision:p.revision,target_count:p.targets.length,certain:true,counts:p.results[0].counts,source_check_rows:0,whole_assignment_recorded:true,receipt_sha256:'b'.repeat(64)}})};}});
  const scope={class:'biology',week:'Wk 05',form:f.list.form_id};
- const invoke=payload=>new Promise(resolve=>listener({type:'morning_hub',action:'record',payload},{id:'extension'},resolve));
+ const invoke=payload=>new Promise(resolve=>listener({type:'morning_hub',action:'record',payload:{run_id:uuid(),revision:'a'.repeat(64),...payload}},{id:'extension'},resolve));
  assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[]})).ok,false);assert.equal(calls.length,0);
  const result={list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'entered',certain:true,counts:{filled:1,raised:0,kept:0,left:0,not_saved:0},at:new Date(Date.now()+1000).toISOString()};
  assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[{...result,certain:false}]})).ok,false);assert.equal(calls.length,0);
- assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[result]})).ok,true);assert.deepEqual(calls,['/v2/api/record']);
+ assert.equal((await invoke({scope,list:f.list,targets:[f.target],results:[result]})).ok,true);assert.deepEqual(calls,['/v2/api/morning/entry']);
 });
 test('receipt bridge reports allowlisted HTTP, connection and acknowledgement failures without raw data',async()=>{
  const cases=[
@@ -921,6 +930,127 @@ test('source-held explicit recheck requires exact positive bounded detail, zero 
   if(change==='false_finished')s.report.code='finished';
   const h=background({stored});await settle();
   assert.notEqual((await h.invoke({type:'morning_status'})).can_run_now,true,change);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
+ }
+});
+
+test('delivered partial receipt offers explicit current-score verification without clearing or rerunning',async()=>{
+ const stored=deliveredReceiptFailure(),before=structuredClone(stored.morning_state),h=background({stored});await settle();
+ const status=await h.invoke({type:'morning_status'});
+ assert.equal(status.can_verify_current_receipt,true);assert.equal(status.can_run_now,false);assert.equal(status.can_retry,false);
+ await h.alarm();assert.deepEqual(h.state.morning_state,before);assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('catalog'));
+});
+test('explicit acknowledged current verification preserves prior report and all daily flags',async()=>{
+ const stored=deliveredReceiptFailure(),before=structuredClone(stored.morning_state),h=background({stored});await settle();
+ const status=await h.invoke(verifyCurrent);
+ assert.equal(status.can_run_now,true);assert.equal(status.can_verify_current_receipt,false);
+ for(const key of ['report','manual_run_day','day','execution_started','outbox','blocked','inflight'])assert.deepEqual(h.state.morning_state[key],before[key]);
+ const event=h.messages.find(m=>m.action==='recovery').payload;
+ assert.equal(event.run_id,before.report.run_id);assert.equal(event.type,'verified');assert.ok(event.note.includes('run remains incomplete'));
+ const v=h.state.morning_state.verified;
+ assert.equal(v.run_id,event.run_id);assert.equal(v.event_id,event.event_id);assert.equal(v.recovery,'partial_receipt');assert.equal(v.for_helper_version,'0.5.14');
+ assert.equal(v.prior_report_signature,JSON.stringify(before.report));assert.ok(!h.calls.includes('execute'));
+ await h.alarm();assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+});
+test('current verification needs explicit checkbox scope and a nonempty note',async()=>{
+ for(const change of ['unchecked','no_scope','no_receipt','blank_note','content_sender']){
+  const h=background({stored:deliveredReceiptFailure()});await settle();const message={...verifyCurrent};
+  if(change==='unchecked')message.confirmed=false;if(change==='no_scope')message.current_mapped_confirmed=false;
+  if(change==='no_receipt')message.receipt_recovery_confirmed=false;if(change==='blank_note')message.note='  ';
+  await h.invoke(message,change==='content_sender'?{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'}:undefined);
+  assert.ok(!h.messages.some(m=>m.action==='recovery'),change);assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false,change);
+ }
+});
+test('missing flags, unknown execution, uncertain saves, active lists and malformed reports cannot use current receipt shortcut',async()=>{
+ for(const change of ['blocked','inflight','pending','unknown_execution','unknown_inflight','missing_outbox','outbox','previous_uncertain','last_uncertain','empty','running','preflight','unknown_item','unknown_reason','bad_count','bad_day','future_manual','bad_used_grant']){
+  const stored=deliveredReceiptFailure(),s=stored.morning_state;
+  if(['blocked','inflight'].includes(change))s[change]=true;
+  if(change==='pending')s.report_pending=true;if(change==='unknown_execution')delete s.execution_started;
+  if(change==='unknown_inflight')delete s.inflight;if(change==='missing_outbox')delete s.outbox;
+  if(change==='outbox')s.outbox=[{day:'2026-09-30'}];
+  if(change==='previous_uncertain')s.report.items[0].code='save_unconfirmed';
+  if(change==='last_uncertain')s.report.items.at(-1).code='readback_mismatch';
+  if(change==='empty')s.report.items=[];if(change==='running')s.report.code='running';
+  if(change==='preflight')s.report.preflight={stage:'summary_publish',cause:'unrecorded'};
+  if(change==='unknown_item')s.report.items.at(-1).not_saved=1;
+  if(change==='unknown_reason')s.report.items.at(-1).reasons.unknown=1;
+  if(change==='bad_count')s.report.items.at(-1).raised=true;
+  if(change==='bad_day')s.report.day='2026-09-30';if(change==='future_manual')s.manual_run_day='2026-10-02';
+  if(change==='bad_used_grant')s.receipt_recheck_version='opaque';
+  const h=background({stored});await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_verify_current_receipt,false,change);
+  await h.invoke(verifyCurrent);assert.ok(!h.messages.some(m=>m.action==='recovery'),change);
+ }
+});
+test('unacknowledged, mismatched or failed verification never creates a grant',async()=>{
+ for(const change of ['failed','wrongrun','wrongnote','wrongevent','wrongtype','wrongactor','missingrecorded']){
+  const options={stored:deliveredReceiptFailure()};
+  if(change==='failed')options.recoveryFail=true;
+  else options.recoveryReply=data=>{
+   if(change==='wrongrun')data.record.run_id=uuid();if(change==='wrongnote')data.record.note='Different';
+   if(change==='wrongevent')data.record.event_id=uuid();if(change==='wrongtype')data.record.type='readback';
+   if(change==='wrongactor')data.record.by='';if(change==='missingrecorded')data.recorded=false;
+  };
+  const h=background(options);await settle();const status=await h.invoke(verifyCurrent);
+  assert.equal(status.can_run_now,false,change);assert.ok(status.recovery_error,change);assert.equal(h.state.morning_state.verified,undefined,change);
+ }
+});
+test('state, helper version, session and exact tab URL drift during verification hold the grant',async()=>{
+ for(const change of ['report','disabled','inflight','outbox','version','HubURL','ICURL','ICsignedout','multipleIC']){
+  const options={stored:deliveredReceiptFailure()};let h;
+  if(change==='ICsignedout')options.signedOut=true;
+  else if(change==='multipleIC')options.checkQuery=()=>{h.tabs[3]={id:3,url:C.IC_ORIGIN+'/another',status:'complete'};};
+  else options.afterRecovery=state=>{
+   if(change==='report')state.morning_state.report.items.at(-1).kept++;
+   if(change==='disabled')state.morning_enabled=false;if(change==='inflight')state.morning_state.inflight=true;
+   if(change==='outbox')state.morning_state.outbox=[{}];if(change==='version')options.version='0.5.15';
+   if(change==='HubURL')h.tabs[1].url=C.HUB_ORIGIN+'/changed';if(change==='ICURL')h.tabs[2].url=C.IC_ORIGIN+'/changed';
+  };
+  h=background(options);await settle();const status=await h.invoke(verifyCurrent);
+  assert.equal(status.can_run_now,false,change);assert.equal(h.state.morning_state.verified,undefined,change);
+ }
+});
+test('explicit grant is consumed durably before the first new tab request and starts a new guarded pass once',async()=>{
+ let starting=false,checked=false;
+ const options={stored:deliveredReceiptFailure(),sourceRevision:'c'.repeat(64),checkQuery:state=>{
+  if(starting&&!checked){checked=true;assert.equal(state.morning_state.receipt_recheck_version,'0.5.14');assert.equal(state.morning_state.report.code,'receipt_unconfirmed');}
+ }};
+ const h=background(options);await settle();const prior=structuredClone(h.state.morning_state.report);
+ await h.invoke(verifyCurrent);starting=true;await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(checked,true);assert.equal(h.state.morning_state.receipt_recheck_run_id,prior.run_id);
+ assert.notEqual(h.state.morning_state.report.run_id,prior.run_id);assert.equal(h.state.morning_state.report.code,'finished');
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.verified.prior_report_signature,JSON.stringify(prior));
+ const record=h.messages.find(m=>m.action==='record').payload;
+ const execution=h.messages.find(m=>m.type==='morning_execute');
+ assert.equal(record.run_id,h.state.morning_state.report.run_id);assert.equal(record.run_id,execution.run_id);
+ assert.equal(record.revision,options.sourceRevision);
+ assert.equal(JSON.stringify(record.list),JSON.stringify(execution.list));
+ assert.equal(JSON.stringify(record.targets),JSON.stringify([execution.target]));
+ assert.equal(record.results.length,1);assert.equal(record.results[0].list_id,execution.list.list_id);
+ assert.equal(record.results[0].section,execution.target.section);assert.equal(record.results[0].column,execution.target.column);
+ assert.ok(!JSON.stringify(h.state).includes('Avery'));
+});
+test('used helper version, changed prior report and wrong grant event version cannot enable another receipt pass',async()=>{
+ for(const change of ['used','report','version','event']){
+  const h=background({stored:deliveredReceiptFailure()});await settle();await h.invoke(verifyCurrent);const s=h.state.morning_state;
+  if(change==='used'){s.receipt_recheck_version='0.5.14';s.receipt_recheck_run_id=s.report.run_id;s.receipt_recheck_day=s.day;}
+  if(change==='report')s.report.items.at(-1).left++;
+  if(change==='version')s.verified.for_helper_version='0.5.15';if(change==='event')s.verified.event_id='bad';
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false,change);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
+ }
+});
+test('automatic-started receipt verification cannot borrow generic first-run or future-day permission',async()=>{
+ for(const change of ['report','version','day','used']){
+  const stored=deliveredReceiptFailure();delete stored.morning_state.manual_run_day;
+  const h=background({stored});await settle();await h.invoke(verifyCurrent);const s=h.state.morning_state;
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+  if(change==='report')s.report.items.at(-1).left++;
+  if(change==='version')s.verified.for_helper_version='0.5.15';
+  if(change==='day')h.advance('2026-10-02T11:00:00Z');
+  if(change==='used'){s.receipt_recheck_version='0.5.14';s.receipt_recheck_run_id=s.report.run_id;s.receipt_recheck_day=s.day;}
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false,change);
   await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
  }
 });

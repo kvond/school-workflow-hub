@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, native_feedback, recovery, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, morning_entry, native_feedback, recovery, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -554,6 +554,62 @@ def _json_body(environ, limit):
     return payload
 
 
+def morning_entry_post(environ, respond, config):
+    """Record this verified eligible comparison; unresolved students stay held."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = _json_body(environ, 250000)
+        selected = morning_entry.scope(payload)
+        token = google.service_token(config)
+        agenda = load_agenda(token, config, fresh=True)
+        captures = []
+        def fresh_work(*args, **kwargs):
+            found = lesson_work(*args, **kwargs)
+            captures.append(found)
+            return found
+        current = morning.make_list(token, config, agenda, selected["class"], selected["week"],
+                                    selected["form"], fresh_work, _score_rows)
+        if current.get("code") != "ready":
+            return respond("409 Conflict", {"error": "The current source list is not ready; nothing was recorded.",
+                                             **current})
+        receipt = morning_entry.validate(payload, current)
+        whole = receipt["source_check_rows"] == 0
+        if whole:
+            forms = [form for lesson in captures[0]["lessons"] for form in lesson["forms"]
+                     if form["form_id"] == selected["form"]]
+            if len(forms) != 1:
+                raise morning_entry.Refused()
+            form = forms[0]
+            ready = completion.submitted_readiness(token, form,
+                require_complete_codes=completion.student_coding_required(
+                    agenda, selected["class"], selected["week"], selected["form"]),
+                include_late=morning.closed_recheck(form, ledger.read(token, config, selected["form"])))
+            if ready["status"] != "READY":
+                return respond("409 Conflict", {"error": ready["problem"], "action": ready.get("action"),
+                                                 "code": "coverage_incomplete", "readiness": ready})
+            # The extra whole-assignment checks cannot change which source
+            # list this destination receipt authorizes.
+            current = morning.make_list(token, config, agenda, selected["class"], selected["week"],
+                                        selected["form"], fresh_work, _score_rows)
+            receipt = morning_entry.validate(payload, current)
+        source = current["list"]
+        context = {"class": source["class_name"], "week": source["week"],
+                   "assignment": source["assignment"], "form_id": source["form_id"]}
+        saved = morning_entry.record(token, google.service_token(config, write=True), config,
+                                     context, receipt, whole_assignment=whole)
+        return respond("200 OK", {"recorded": True, "receipt": morning_entry.acknowledgement(saved)})
+    except morning_entry.Refused as error:
+        return respond("409 Conflict", {"error": "The mapped comparison could not be verified; nothing was recorded.",
+                                         "code": error.code})
+    except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+        return respond("400 Bad Request", {"error": "Invalid mapped comparison receipt."})
+    except google.GoogleError:
+        return respond("502 Bad Gateway", {"error": "The mapped comparison receipt is unconfirmed.",
+                                            "code": "receipt_unconfirmed"})
+
+
 def morning_post(environ, respond, config):
     refused = _same_origin_json(environ, respond, config)
     if refused:
@@ -599,6 +655,8 @@ def application(environ, start_response, config=None):
 
     if method == "POST" and path == "/v2/api/morning/recovery":
         return recovery_post(environ, respond, config)
+    if method == "POST" and path == "/v2/api/morning/entry":
+        return morning_entry_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/morning/reports":
         return morning_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/tidy":
