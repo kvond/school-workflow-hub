@@ -5,13 +5,17 @@ response issue is usable only with fresh source and linked-template fingerprints
 Historical counts-only receipts are deliberately not an input to this module.
 """
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import re
 from urllib.parse import parse_qs, urlsplit
 
+from . import agenda as agenda_module
 from . import completion, google, morning, work
 
 SCHEMA = 'hub-source-review-context/v1'
+OVERVIEW_SCHEMA = 'hub-source-review-context-summary/v1'
+MAX_REVIEW_SCOPES = 100
 _ID = re.compile(r'[A-Za-z0-9_-]{10,200}\Z')
 _META = 'id,mimeType,trashed,modifiedTime,version,md5Checksum,size'
 
@@ -86,7 +90,7 @@ def _slides(reason):
     return sorted(set(values)) if values and max(values) <= completion.MAX_SLIDES else []
 
 
-def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis=None):
+def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis=None, affected_scope=None):
     """One shared notice shape for discovery and existing scoring routes."""
     files = files if files is not None else [f for snapshot in [row] + row.get('earlier', [])
                                             for f in snapshot.get('files', [])]
@@ -103,7 +107,7 @@ def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis
         else:
             action = ('Open the linked originals and confirm the current revision; preserve existing grades.'
                       if sources else 'Identify the exact original source for this lesson; preserve existing grades.')
-    return {'kind': 'review', 'affected_scope': 'student' if row else 'lesson',
+    return {'kind': 'review', 'affected_scope': affected_scope or ('student' if row else 'lesson'),
             'student': student, 'reason': str(reason),
             'sources': sources,
             'slides': [{'file_id': s['file_id'], 'numbers': numbers if assessed and len(sources) == 1 else [],
@@ -113,8 +117,8 @@ def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis
             'source_basis': basis or {'kind': 'current_selection'}}
 
 
-def scope(agenda, config, class_key, week, form_id):
-    matches = [item for item in morning.catalog(agenda, config)['assignments']
+def scope(agenda, config, class_key, week, form_id, *, catalog=None):
+    matches = [item for item in (catalog or morning.catalog(agenda, config))['assignments']
                if (item['class'], item['week'], item['form']) == (class_key, week, form_id)]
     lessons = [lesson for lesson in agenda.lessons(class_key, week)
                if any(f.get('form_id') == form_id for f in lesson['forms'])]
@@ -242,9 +246,15 @@ def build(current_scope, found, cached=None, *, checked_at=None):
     for item in form.get('elsewhere', []):
         if item.get('accepted_intake'):
             continue
-        matched = [r for r in form.get('missing', []) if item.get('who') == '%s, %s' % (r.get('last'), r.get('first'))
+        identities = form.get('students', []) + form.get('late', []) + form.get('missing', []) + form.get('excused', [])
+        matched = [r for r in identities if item.get('who') == '%s, %s' % (r.get('last'), r.get('first'))
                    and item.get('section') == r.get('section')]
-        row = {**matched[0], 'matched': True} if len(matched) == 1 else {}
+        # The same person may be represented in more than one current list,
+        # but identical names alone cannot collapse distinct students.
+        identities = [(r.get('student_id') or r.get('id'), str(r.get('email') or '').strip().lower()) for r in matched]
+        one_person = len(matched) == 1 or (bool(matched) and len(set(identities)) == 1
+                                          and any(identities[0]))
+        row = {**matched[0], 'matched': True} if one_person else {}
         if _exempt(row):
             continue
         verified_route = bool(current_scope['form_id'] and item.get('source_form_id') == current_scope['form_id']
@@ -254,7 +264,7 @@ def build(current_scope, found, cached=None, *, checked_at=None):
         link = source_link(item.get('url'))
         files = [{**link, 'label': item.get('file') or 'Original source'}] if link else []
         notices.append(notice(current_scope, row, reason, files=files,
-            action='Review the original turn-in route shown here; preserve current grades.'))
+            action='Review the original turn-in route shown here; preserve current grades.', affected_scope='student'))
     for reason in [form.get('problem'), found.get('assessment_problem'), found.get('folder_note'), *found.get('problems', [])]:
         if reason:
             notices.append(notice(current_scope, {}, reason, files=current_scope['sources'],
@@ -278,17 +288,121 @@ def build(current_scope, found, cached=None, *, checked_at=None):
             'source_selection': {'submitted_originals': submitted, 'assessment_performed': False}}
 
 
-def read(token, config, agenda, class_key, week, form_id):
-    current_scope = scope(agenda, config, class_key, week, form_id)
-    found = work.lesson_work(token, config, agenda, class_key, week, review_only=True)
+def _rate_limited(reason):
+    return bool(re.search(r'\b429\b|rate[- ]limit|rateLimitExceeded|Google is limiting requests', str(reason), re.I))
+
+
+def _unavailable(current_scope, reason, *, checked_at=None):
+    action = ('Read again after Google allows requests. No source repair or student identity decision is requested.'
+              if _rate_limited(reason) else
+              'Refresh when this source read is available. No student identity decision or grade change is requested from an incomplete read.')
+    return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
+            'scope': current_scope, 'status': 'unavailable',
+            'notices': [notice(current_scope, {}, reason, files=current_scope['sources'], action=action, affected_scope='lesson')],
+            'limitations': [str(reason), action, 'Current source details are unavailable; no claim about student identity or missing work is made.'],
+            'source_selection': {'submitted_originals': None, 'assessment_performed': False}}
+
+
+def _roster_problem(snapshot, classes):
+    by_class, problems = snapshot
+    if problems:
+        return 'The current roster could not be verified: ' + ' '.join(problems)
+    if any(not by_class.get(cls) for cls in classes):
+        return 'The current class roster is empty or unavailable; student identities were not reviewed.'
+    return None
+
+
+def _agenda_basis(agenda):
+    return deepcopy((agenda.spreadsheet_id, agenda.title, agenda.problems, agenda.weeks, agenda.classes))
+
+
+def _bookend(token, config, agenda_basis, catalog, roster_snapshot, reload_agenda):
+    try:
+        after_agenda = reload_agenda()
+        after_catalog = morning.catalog(after_agenda, config)
+        after_roster = work.roster.load(token, config)
+    except google.GoogleError as error:
+        return 'The final Agenda or roster read could not be verified: ' + str(error)
+    problem = _roster_problem(after_roster, {item['class'] for item in catalog['assignments']})
+    if problem:
+        return problem
+    if (_agenda_basis(after_agenda) != agenda_basis or after_catalog != catalog
+            or after_roster != roster_snapshot):
+        return 'The Agenda or roster changed during this read. Refresh to read its current source details.'
+    return None
+
+
+def _read_found(token, config, agenda, current_scope, found):
+    if found.get('review_unavailable'):
+        return _unavailable(current_scope, ' '.join(found['review_unavailable']))
+    form_id = current_scope['form_id']
     forms = [f for lesson in found.get('lessons', []) for f in lesson.get('forms', []) if f.get('form_id') == form_id]
     if len(forms) != 1:
         raise ValueError('review form')
-    cached, limitations = cached_reviews(token, agenda, class_key, week, form_id,
+    candidates = forms[0].get('students', []) + forms[0].get('late', []) + found.get('other_files', [])
+    problems = [forms[0].get('problem'), found.get('folder_note'), *found.get('problems', []),
+                *(f.get('problem') for row in candidates for snapshot in [row] + row.get('earlier', [])
+                  for f in snapshot.get('files', []))]
+    rate_problem = next((p for p in problems if p and _rate_limited(p)), None)
+    if rate_problem:
+        return _unavailable(current_scope, rate_problem)
+    cached, limitations = cached_reviews(token, agenda, current_scope['class_key'], current_scope['week'], form_id,
                                          completion.recheck_candidates(forms[0]))
+    rate_problem = next((p for p in limitations if _rate_limited(p)), None)
+    if rate_problem:
+        return _unavailable(current_scope, rate_problem)
     result = build(current_scope, found, cached)
     result['limitations'].extend(limitations)
     return result
+
+
+def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None):
+    catalog = morning.catalog(agenda, config)
+    current_scope = scope(agenda, config, class_key, week, form_id, catalog=catalog)
+    roster_snapshot = work.roster.load(token, config)
+    problem = _roster_problem(roster_snapshot, [class_key])
+    if problem:
+        return _unavailable(current_scope, problem)
+    before_agenda, before_roster = _agenda_basis(agenda), deepcopy(roster_snapshot)
+    found = work.lesson_work(token, config, agenda, class_key, week, review_only=True, roster_snapshot=roster_snapshot)
+    result = _read_found(token, config, agenda, current_scope, found)
+    problem = _bookend(token, config, before_agenda, catalog, before_roster,
+                        reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])))
+    return _unavailable(current_scope, problem) if problem else result
+
+
+def overview(token, config, agenda, *, reload_agenda=None):
+    """One bounded current overview, sharing discovery within this request only."""
+    catalog = morning.catalog(agenda, config)
+    assignments = catalog['assignments']
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if len(assignments) > MAX_REVIEW_SCOPES:
+        return {'schema': OVERVIEW_SCHEMA, 'checked_at': checked_at, 'reviews': [], 'status': 'unavailable',
+                'limitations': ['The current review scope is too large for one read. No student identity or missing-work decision is requested.']}
+    scopes = [scope(agenda, config, item['class'], item['week'], item['form'], catalog=catalog) for item in assignments]
+    roster_snapshot = work.roster.load(token, config)
+    problem = _roster_problem(roster_snapshot, {item['class'] for item in assignments})
+    if problem:
+        return {'schema': OVERVIEW_SCHEMA, 'checked_at': checked_at, 'reviews': [_unavailable(s, problem, checked_at=checked_at) for s in scopes],
+                'status': 'unavailable', 'limitations': [problem]}
+    before_agenda, before_roster = _agenda_basis(agenda), deepcopy(roster_snapshot)
+    groups = list(dict.fromkeys((s['class_key'], s['week']) for s in scopes))
+
+    def discover(key):
+        try:
+            return work.lesson_work(token, config, agenda, *key, review_only=True, roster_snapshot=roster_snapshot)
+        except google.GoogleError as error:
+            return {'review_unavailable': [str(error)]}
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        found_by_scope = dict(zip(groups, pool.map(discover, groups)))
+    reviews = [_read_found(token, config, agenda, s, found_by_scope[s['class_key'], s['week']]) for s in scopes]
+    problem = _bookend(token, config, before_agenda, catalog, before_roster,
+                        reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])))
+    if problem:
+        reviews = [_unavailable(s, problem, checked_at=checked_at) for s in scopes]
+    return {'schema': OVERVIEW_SCHEMA, 'checked_at': checked_at, 'reviews': reviews,
+            'status': 'unavailable' if problem else 'current', 'limitations': [problem] if problem else []}
 
 
 def for_score(agenda, class_key, week, form_id, file_id, found, score):

@@ -393,6 +393,9 @@ function renderSourceReviewContext(data, expected, options = {}) {
   const limitations = data.limitations.filter(value => typeof value === 'string' && value
     && (!options.limitationsSeen || !options.limitationsSeen.has(value)));
   if (options.limitationsSeen) limitations.forEach(value => options.limitationsSeen.add(value));
+  if (data.status === 'unavailable') return el('div', {},
+    note('Current source context is unavailable. No student identity decision is requested from this failed read; the saved helper receipt is unchanged.', 'info'),
+    ...limitations.map(value => note(value, 'info')));
   const empty = data.status === 'waiting' ? 'Waiting for original submissions; no student-copy repair is requested.'
     : data.status === 'excluded' ? 'This scope is excluded from current grading review.'
     : 'No current selection issue was returned; assessment is not established by this view.';
@@ -420,17 +423,7 @@ async function loadSourceReviewContext(body, scope, options = {}) {
     if (options.cache && !options.cache.has(key)) options.cache.set(key, read());
     const data = await (options.cache ? options.cache.get(key) : read());
     if (!active()) return;
-    const rendered = renderSourceReviewContext(data, scope, options);
-    if (options.group && !data.notices.length && data.status === 'not_assessed') {
-      options.group.hidden = true;
-      if (!options.limitationsSeen.has('unassessed-summary')) {
-        options.limitationsSeen.add('unassessed-summary');
-        options.sharedLimitations.append(note('Some original submissions have no current verified assessment details. This view did not score them; complete coverage or IC completion is not established.', 'info'));
-      }
-    } else if (options.group && !data.notices.length && ['waiting', 'excluded'].includes(data.status)) {
-      options.group.replaceChildren(el('p', {class: 'muted', text: `${options.scopeLabel}: ${data.status === 'waiting'
-        ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
-    } else body.replaceChildren(rendered);
+    body.replaceChildren(renderSourceReviewContext(data, scope, options));
     return true;
   } catch (error) {
     if (active()) body.replaceChildren(note('Current source context is unavailable: ' + error.message + ' The saved helper receipt is unchanged.', 'info'));
@@ -447,51 +440,50 @@ function invalidateReviewPanel(panel) {
 }
 
 function currentSourceReviewPanel(active = true) {
-  const progress = el('p', {class: 'muted', role: 'status', text: 'Reading exact current lesson scopes…'});
+  const progress = el('p', {class: 'muted', role: 'status', text: 'Reading shared current source context…'});
   const body = el('div', {'aria-live': 'polite'});
   const panel = cockpitPanel('Current source checks',
     el('p', {class: 'muted', text: 'Current source details are read separately from historical helper counts. This view does not score work; an empty review is not completed assessment or complete coverage.'}), progress, body);
   reviewPanels.set(panel, {body});
   if (!active) { progress.textContent = 'Current source checks are read when this page is opened.'; return panel; }
   const seq = nextReviewRequest(panel);
-  getJSON('api/morning/catalog').then(async data => {
+  getJSON('api/review-context').then(data => {
     if (reviewRequests.get(panel) !== seq) return;
-    if (!Array.isArray(data.assignments)) throw new Error('Exact lesson scopes are unavailable.');
-    const scopes = data.assignments.map(entry => ({entry, scope: reviewScope(entry)}));
+    if (data.schema !== 'hub-source-review-context-summary/v1' || !['current', 'unavailable'].includes(data.status)
+        || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
+        || !Array.isArray(data.reviews) || data.reviews.length > 300 || !Array.isArray(data.limitations))
+      throw new Error('The shared current source response could not be confirmed.');
+    const scopes = data.reviews.map(review => ({review, scope: reviewScope(review.scope)}));
     if (scopes.some(item => !item.scope) || new Set(scopes.map(item => JSON.stringify(item.scope))).size !== scopes.length)
       throw new Error('Exact lesson scopes could not be confirmed.');
-    const sharedLimitations = el('div'); body.append(sharedLimitations);
-    const groups = scopes.map(({entry}) => {
-      const detail = el('div');
-      const label = [entry.class_name || entry.class, entry.week, entry.assignment].join(' · ');
-      const group = el('section', {}, el('h3', {text: label}), detail);
-      body.append(group);
-      return {group, detail, label};
-    });
-    if (data.problems?.length) body.append(note('Some lesson scopes could not be confirmed. No scope was inferred from receipt titles.', 'info'));
-    let cursor = 0, complete = 0, unavailable = 0;
     const limitationsSeen = new Set();
-    const current = () => reviewRequests.get(panel) === seq;
-    const update = () => { if (current()) progress.textContent = scopes.length
-      ? `Current source checks · ${complete} of ${scopes.length} exact lesson scopes read${unavailable ? `; ${unavailable} unavailable` : ''}.`
-      : 'No exact current lesson scopes were returned; coverage is not established.'; };
-    update();
-    const worker = async () => {
-      while (current() && cursor < scopes.length) {
-        const index = cursor++;
-        const ok = await loadSourceReviewContext(groups[index].detail, scopes[index].scope,
-          {current, compactEmpty: true, limitationsSeen, group: groups[index].group,
-            scopeLabel: groups[index].label, sharedLimitations});
-        if (!current()) return;
-        complete++; if (!ok) unavailable++;
-        update();
+    const rendered = scopes.map(({review, scope}) => ({review,
+      detail: renderSourceReviewContext(review, scope, {compactEmpty: true, limitationsSeen})}));
+    if (data.status === 'unavailable') {
+      progress.textContent = 'Current source checks are unavailable; no named review is issued.';
+      body.replaceChildren(note('The shared source read could not be verified. No student identity decision is requested from this failed read; the saved helper receipt is unchanged.', 'info'),
+        ...[...data.limitations, ...data.reviews.flatMap(review => review.limitations)].filter(value => typeof value === 'string' && value)
+          .filter((value, index, all) => all.indexOf(value) === index).map(value => note(value, 'info')));
+      return;
+    }
+    let unassessed = false, unavailable = 0;
+    for (const {review, detail} of rendered) {
+      const label = [review.scope.class_name, review.scope.week, review.scope.lesson].join(' · ');
+      if (!review.notices.length && review.status === 'not_assessed') { unassessed = true; continue; }
+      if (!review.notices.length && ['waiting', 'excluded'].includes(review.status)) {
+        body.append(el('p', {class: 'muted', text: `${label}: ${review.status === 'waiting'
+          ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
+      } else {
+        if (review.status === 'unavailable') unavailable++;
+        body.append(el('section', {}, el('h3', {text: label}), detail));
       }
-    };
-    // Two independent exact-scope GETs at a time; never infer scopes from titles
-    // or receipt counts, and never invoke Student work's automatic scoring path.
-    await Promise.all([worker(), worker()]);
+    }
+    if (unassessed) body.append(note('Some original submissions have no current verified assessment details. This view did not score them; complete coverage or IC completion is not established.', 'info'));
+    body.append(...data.limitations.filter(value => typeof value === 'string' && value && !limitationsSeen.has(value)).map(value => note(value, 'info')));
+    progress.textContent = scopes.length ? `Current source checks · ${scopes.length} exact lesson scopes read${unavailable ? `; ${unavailable} unavailable` : ''}. Checked ${when(data.checked_at)}.`
+      : 'No exact current lesson scopes were returned; coverage is not established.';
   }).catch(error => {
-    if (reviewRequests.get(panel) === seq) { progress.textContent = ''; body.replaceChildren(note('Current source checks are unavailable: ' + error.message, 'info')); }
+    if (reviewRequests.get(panel) === seq) { progress.textContent = ''; body.replaceChildren(note('Current source checks are unavailable: ' + error.message + ' No student identity decision is requested from a failed read; the saved helper receipt is unchanged.', 'info')); }
   });
   return panel;
 }
@@ -545,14 +537,32 @@ function issueAction(release) {
 
 const MISSING_CODE_ADVISORIES = new Set(['marker_inventory_missing_or_duplicated', 'marker_inventory_counts_unparsed',
   'marker_inventory_count_mismatch', 'marker_inventory_id_mismatch', 'student_copies_uncoded', 'teacher_distributed_uncoded_copies']);
+function lessonPhotosynthesis(row) {
+  if (row.classKey !== 'biology') return false;
+  const decks = row.release?.source_resolution?.decks || [];
+  const current = decks.some(deck => deck.id === row.release?.deck_id)
+    ? decks.filter(deck => deck.id === row.release.deck_id) : decks;
+  const named = current.map(deck => deck.metadata?.name || deck.title || deck.name).filter(Boolean);
+  const forms = (row.forms || []).map(form => form.student_title || form.title).filter(Boolean);
+  const names = named.length ? named : forms;
+  // A mixed Agenda topic is not a source identity. Actual resolved source names
+  // take precedence, then verified Form titles; the topic is only a fallback.
+  return names.length ? names.every(name => /\bphotosynthesis\b/i.test(String(name).replace(/[_-]/g, ' ')))
+    : /photosynthesis/i.test(row.topic || '');
+}
 function lessonCodeAdvisory(row) {
   const release = row.release;
-  return !(row.classKey === 'biology' && /photosynthesis/i.test(row.topic || '')) && !release?.readability
+  return !lessonPhotosynthesis(row) && !release?.readability
     && !release?.teacher_holds?.length && release?.issues?.length > 0
     && release.issues.every(issue => MISSING_CODE_ADVISORIES.has(issue));
 }
 function lessonReviewAction(row) {
-  const photo = row.classKey === 'biology' && /photosynthesis/i.test(row.topic || '');
+  const photo = lessonPhotosynthesis(row);
+  if (photo) {
+    const conditional = 'Wait for received Photosynthesis originals. When an original is received, repair any missing embedded codes without changing answers before grading it. No student-copy verification is needed before an original arrives. This linked-source check does not establish submission status.';
+    return row.release?.readability || row.release?.source_resolution?.problem
+      ? `${issueAction(row.release)} ${conditional}` : conditional;
+  }
   if (!photo && !row.release?.teacher_holds?.length && (lessonCodeAdvisory(row) || row.release?.status === 'READY'))
     return 'Count the usable coded boxes actually present in readable, correctly matched student copies. Keep Notes and Revision separate. Missing codes alone do not hold grading; this linked-source check does not verify student copies.';
   return issueAction(row.release);
@@ -568,11 +578,19 @@ function lessonReviewNotice(row) {
     label: folder.name || 'Open verified lesson folder', url: `https://drive.google.com/drive/folders/${folder.id}`});
   for (const form of row.forms || []) if (form.form_id) sources.push({file_id: form.form_id,
     label: form.student_title || form.title || form.label || 'Open exact turn-in Form', url: `https://docs.google.com/forms/d/${form.form_id}/edit`});
+  const ids = new Set(), urls = new Set();
+  const uniqueSources = sources.filter(source => {
+    const url = reviewSourceURL(source);
+    const key = url ? source.file_id : JSON.stringify([source.file_id, source.url]);
+    if (ids.has(key) || (url && urls.has(url))) return false;
+    ids.add(key); if (url) urls.add(url);
+    return true;
+  });
   return {kind: 'lesson', student: {verified: false}, reason: lessonCodeAdvisory(row)
     ? 'The linked source’s code inventory needs checking. Missing codes alone are advisory for this lesson; only usable coded items in correctly matched copies count.'
     : release.problem || (release.status === 'READY' ? 'The linked source passed its code check; student copies are checked separately.'
       : (release.issues || []).map(releaseIssue).join(' ') || 'The exact linked-source issue was not returned.'),
-    sources, slides: sources.map(source => ({file_id: source.file_id, numbers: [], verified: false})),
+    sources: uniqueSources, slides: uniqueSources.map(source => ({file_id: source.file_id, numbers: [], verified: false})),
     next_action: lessonReviewAction(row)};
 }
 function lessonReviewBadge(row) {
@@ -599,13 +617,15 @@ function renderNextLessons(audits) {
   if (!rows.length) return cockpitPanel('Next from Agenda',
     note('No current/upcoming lesson code check is available. Open Lessons / VT to inspect the Agenda and links.', 'info'));
   const bodyRows = rows.map(row => {
+    const ready = row.release.status === 'READY' && !row.release.problem && !row.release.issues?.length
+      && !row.release.teacher_holds?.length;
     return el('tr', {},
       el('td', {text: row.className}),
       el('td', {text: row.week}),
       el('td', {text: row.topic}),
       el('td', {}, lessonReviewBadge(row)),
-      el('td', {}, renderSourceReviewNotice(lessonReviewNotice(row),
-        {class_name: row.className, week: row.week, lesson: row.topic}),
+      el('td', {}, ready ? el('p', {text: 'Linked lesson source is ready. Student copies are checked separately.'})
+        : renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
         el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
   });
   const table = el('table', {class: 'cockpit-table'},

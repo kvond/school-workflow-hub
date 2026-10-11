@@ -17,6 +17,13 @@ extension storage. Keep morning receipts counts-only and the IC list contract
 unchanged. Exempt flags and zero-denominator N/A components do not create a
 teacher review. Not-yet-submitted work is waiting for submissions.
 
+Today and Routine use one review overview request. Discovery reuses one roster
+snapshot and one scan per class/week, then rereads the roster and Agenda before
+publishing names. A failed read or changed roster/Agenda discards named details;
+it must not create student-identity questions from a provider failure. The exact
+teacher-controlled Form title determines the Photosynthesis exception when a
+weekly Agenda row contains several lesson topics; student filenames never do.
+
 ## October 8 student records
 
 The teacher-facing Drive layout uses private class/section/student folders
