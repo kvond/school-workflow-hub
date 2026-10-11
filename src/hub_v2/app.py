@@ -189,6 +189,10 @@ def api(sub, query, config):
         week, form_id, file_id = _one(query, "week"), _one(query, "form"), _one(query, "file")
         if not 1 <= len(week) <= 100 or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", form_id + file_id):
             raise ValueError("score")
+        policy = work.assignment_policy(config, agenda, class_key, week, form_id)
+        if policy.get("problem") or policy.get("excluded"):
+            return {"file_id": file_id, "code": "coverage_incomplete" if policy.get("problem") else "excluded_week",
+                    "problem": policy.get("problem") or policy["reason"]}
         found = lesson_work(token, config, agenda, class_key, week, fresh=False)
         form = next((f for lesson in found.get("lessons", []) for f in lesson["forms"]
                      if f["form_id"] == form_id), None)
@@ -313,6 +317,10 @@ def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include
     rows = [r for r in candidates if r["matched"] and (r["files"] or r.get("selection_problem"))]
 
     def one(row):
+        policy = form.get("grade_policy") or {}
+        if policy.get("problem") or policy.get("excluded"):
+            return {"code": "coverage_incomplete" if policy.get("problem") else "excluded_week",
+                    "problem": policy.get("problem") or policy.get("reason")}
         if row.get("selection_problem"):
             return {"code": "coverage_incomplete", "problem": row["selection_problem"]}
         upload = next((f for f in row["files"] if f.get("mime") in (completion.SLIDES, google.PPTX)), row["files"][0])
@@ -441,7 +449,7 @@ def record_post(environ, respond, config):
         token = google.service_token(config)
         agenda = load_agenda(token, config, fresh=kind == "ic")
         if kind == "ic":
-            policy = work.week_policy(config, agenda, class_key, week)
+            policy = work.assignment_policy(config, agenda, class_key, week, form_id)
             if policy.get("problem") or policy.get("excluded"):
                 return respond("409 Conflict", {"error": policy.get("problem") or policy["reason"],
                                                 "code": "coverage_incomplete" if policy.get("problem") else "excluded_week"})

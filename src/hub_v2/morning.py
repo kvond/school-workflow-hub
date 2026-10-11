@@ -184,7 +184,7 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
 
 
 def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
-    policy = work.week_policy(config, agenda, cls, week)
+    policy = work.assignment_policy(config, agenda, cls, week, fid)
     if policy["problem"]:
         return {"code": "coverage_incomplete", "problem": policy["problem"]}
     if policy["excluded"]:

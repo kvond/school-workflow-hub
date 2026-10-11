@@ -158,6 +158,12 @@ def definition(config, agenda, cls, week, fid):
                    if (m := re.search(r'/folders/([A-Za-z0-9_-]+)', material.get('url', '')))}
         teachers = {m.group(1) for material in materials
                     if (m := re.search(r'/presentation/d/([A-Za-z0-9_-]+)', material.get('url', '')))}
+        binding = work.form_teacher_sources(config, agenda, cls, week, fid)
+        if binding:
+            folders = {binding['source_folder_id']}
+            teachers = set(binding['teacher_ids'])
+            if teachers != {c['teacher_id'] for c in entry['components']}:
+                raise ValueError()
         if folders != {entry['lesson_folder_id']} or not {c['teacher_id'] for c in entry['components']} <= teachers:
             raise ValueError()
         return deepcopy(entry)
