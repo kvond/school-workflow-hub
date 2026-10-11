@@ -1,4 +1,4 @@
-/* At most one morning attempt per Eastern weekday. Persistent state is opt-in,
+/* At most one automatic morning attempt per Eastern weekday. Persistent state is opt-in,
  * dates, counts and verification attribution; student lists remain in memory/session storage.
  * Reserve each destination before contacting IC. A restart never repeats it. */
 (() => {
@@ -38,7 +38,7 @@
  }
  async function authorize(message,sender){
   const s=await read(),t=M.clock();
-  if(!active||!s.enabled||s.day!==t.day||!t.weekday||(!active.manualNow&&(t.minutes<420||t.minutes>=720))||sender.id!==chrome.runtime.id||sender.frameId!==0||sender.tab?.id!==active.tab||sender.url!==active.url||message.run_id!==active.run_id||message.nonce!==active.nonce)return {ok:false,code:'disabled'};
+  if(!active||!s.enabled||s.day!==t.day||(!active.manualNow&&(!t.weekday||t.minutes<420||t.minutes>=720))||sender.id!==chrome.runtime.id||sender.frameId!==0||sender.tab?.id!==active.tab||sender.url!==active.url||message.run_id!==active.run_id||message.nonce!==active.nonce)return {ok:false,code:'disabled'};
   const tab=await chrome.tabs.get(active.tab);
   return {ok:tab.url===active.url};
  }
@@ -77,11 +77,42 @@
    &&(items.length===0?s.execution_started===false:items.some(i=>i.code===s.report.code&&zeroCounts(i))
     &&items.every(i=>completedCodes.has(i.code)||(i.code===s.report.code&&zeroCounts(i))));
  }
+ const validDay=day=>typeof day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day)
+  &&Number.isFinite(Date.parse(day+'T12:00:00Z'))&&new Date(day+'T12:00:00Z').toISOString().slice(0,10)===day;
+ const validRun=id=>typeof id==='string'&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
+ const verifiedReport=s=>validRun(s.report?.run_id)&&s.verified?.run_id===s.report.run_id
+  &&typeof s.verified.by==='string'&&!!s.verified.by&&Number.isFinite(Date.parse(s.verified.at));
+ function freshManualDay(s,t){
+  // A new install has no old attempt to resolve. An old receipt with missing
+  // execution flags is unknown; absence of inflight alone cannot clear it.
+  if(!s.day&&!s.report)return !Object.hasOwn(s,'execution_started')&&!Object.hasOwn(s,'inflight')&&!s.manual_run_day;
+  const report=s.report,items=report?.items;
+  if(!validDay(s.day)||s.day>=t.day||report?.day!==s.day||!validRun(report?.run_id)||!Array.isArray(items)
+   ||(s.manual_run_day&&(!validDay(s.manual_run_day)||s.manual_run_day>s.day)))return false;
+  if(verifiedReport(s))return true;
+  if(s.report_pending!==false)return false;
+  if(report.code==='finished'&&(items.length?[true,false].includes(s.execution_started)&&items.every(i=>
+   (completedRecheckCodes.has(i.code)||i.code==='excluded_week')
+   &&['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600))
+   &&(s.execution_started===true||items.every(zeroCounts)):s.execution_started===false))return true;
+  return s.execution_started===false&&(safe.has(report.code)||report.code==='interrupted')
+   &&items.every(i=>(safe.has(i.code)||i.code==='interrupted')&&zeroCounts(i));
+ }
+ function legacyRecoveryAllowed(s,t=M.clock()){
+  // This offers an explicit current-gradebook verification, never evidence
+  // about whether the old empty attempt wrote anything or why it failed.
+  return s.enabled&&!s.blocked&&!s.inflight&&s.report_pending===false&&!(s.outbox?.length)&&!pending.size
+   &&validDay(s.day)&&s.day<t.day&&s.report?.day===s.day&&validRun(s.report?.run_id)
+   &&s.report.code==='receipt_unconfirmed'&&Array.isArray(s.report.items)&&s.report.items.length===0
+   &&(!s.report.preflight||s.report.preflight.cause==='unrecorded')
+   &&!Object.hasOwn(s,'execution_started')&&!verifiedReport(s)
+   &&(!s.manual_run_day||(validDay(s.manual_run_day)&&s.manual_run_day<=s.day));
+ }
  function manualNowAllowed(s,t=M.clock()){
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
-  const verifiedRecovery=s.verified?.run_id===s.report?.run_id;
-  // A finished receipt can be explicitly rechecked once later that weekday.
+  const verifiedRecovery=verifiedReport(s);
+  // A finished receipt can be explicitly rechecked once later that day.
   // The new pass rereads every source and destination; uncertain writes remain blocked.
   const completedRun=s.report?.code==='finished'&&s.finished_recheck_day!==t.day&&Array.isArray(s.report.items)
    &&s.report.items.every(i=>completedRecheckCodes.has(i.code));
@@ -93,7 +124,8 @@
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
   const repeat=safePreflightRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
-  return s.enabled&&t.weekday&&s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat)
+  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat);
+  return s.enabled&&(sameDay||freshManualDay(s,t))
    &&!s.blocked&&!s.inflight&&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
  async function run(manual=false,manualNow=false){
@@ -237,24 +269,36 @@
    const s=await read();
    if(m.type==='morning_setting'&&typeof m.enabled==='boolean'){const enabling=m.enabled&&!s.enabled;s.enabled=m.enabled;await chrome.storage.local.set({morning_enabled:m.enabled,...(enabling?{morning_enabled_day:M.clock().day}:{})});await ensureAlarm();}
    let recovery_error='';
-   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&s.blocked&&s.report){
+   const legacyVerification=m.current_mapped_confirmed===true&&legacyRecoveryAllowed(s);
+   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&((s.blocked&&m.current_mapped_confirmed!==true)||legacyVerification)&&s.report){
     const note=typeof m.note==='string'?m.note.trim():'';
-    if(!note||note.length>500)recovery_error='Add a short verification note.';
+    const verificationNote=legacyVerification?`Current mapped IC scores verified for a new run. Prior ${s.report.day} receipt remains unconfirmed. ${note}`:note;
+    if(!note||verificationNote.length>500)recovery_error='Add a short verification note.';
     else try{
      const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
      if(hubs.length!==1)throw Error();
-     const run_id=s.blocked_run_id||s.report.run_id,event_id=crypto.randomUUID();
-     const saved=await hub(hubs[0].id,'recovery',{event_id,run_id,type:'verified',note});
-     if(!saved?.recorded||saved.record?.run_id!==run_id||saved.record?.event_id!==event_id||saved.record?.type!=='verified'||!saved.record?.by||!Number.isFinite(Date.parse(saved.record?.at)))throw Error();
+     let ic=null;
+     if(legacyVerification){
+      const tabs=await chrome.tabs.query({url:C.IC_ORIGIN+'/*'});
+      if(tabs.length!==1)throw Error();
+      ic=await chrome.tabs.get(tabs[0].id);
+      if(new URL(ic.url).origin!==C.IC_ORIGIN||(await chrome.tabs.sendMessage(ic.id,{type:'morning_session'},{frameId:0}))?.ok!==true)throw Error();
+     }
+     const run_id=legacyVerification?s.report.run_id:s.blocked_run_id||s.report.run_id,event_id=crypto.randomUUID();
+     const saved=await hub(hubs[0].id,'recovery',{event_id,run_id,type:'verified',note:verificationNote});
+     if(saved?.recorded!==true||saved.record?.run_id!==run_id||saved.record?.event_id!==event_id||saved.record?.type!=='verified'||saved.record?.note!==verificationNote||typeof saved.record?.by!=='string'||!saved.record.by.trim()||typeof saved.record?.at!=='string'||!Number.isFinite(Date.parse(saved.record.at)))throw Error();
      const fresh=await read();
-     if(busy||fresh.report?.run_id!==s.report.run_id)throw Error();
-     Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by}});
+     if(busy||fresh.report?.run_id!==s.report.run_id||(legacyVerification&&(!legacyRecoveryAllowed(fresh)
+      ||fresh.day!==s.day||JSON.stringify(fresh.report)!==JSON.stringify(s.report))))throw Error();
+     if(legacyVerification&&((await chrome.tabs.get(hubs[0].id)).url!==hubs[0].url||(await chrome.tabs.get(ic.id)).url!==ic.url))throw Error();
+     Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by,
+      ...(legacyVerification?{scope:'current_mapped_assignments',prior_day:s.report.day}:{})}});
      await write(s);
-    }catch{recovery_error='Verification could not be saved. The block remains. Keep one signed-in Hub tab open and try again.';}
+    }catch{recovery_error='Verification could not be saved. A new run is still unavailable. Keep one signed-in Hub tab open and try again.';}
    }
    if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
    if(m.type==='morning_run_now'&&!busy&&manualNowAllowed(s))run(false,true).catch(()=>{});
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s)};
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
  globalThis.HubMorningStatus=async()=>{

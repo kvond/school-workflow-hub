@@ -36,15 +36,22 @@ function background(options={}){
    if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
    if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
-   if(m.action==='recovery'){if(options.recoveryFail)throw Error('unavailable');return {ok:true,data:{recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}}};}
+   if(m.action==='recovery'){
+    if(options.recoveryFail)throw Error('unavailable');
+    const data={recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}};
+    if(options.recoveryReply)options.recoveryReply(data);
+    if(options.afterRecovery)await options.afterRecovery(state);
+    return {ok:true,data};
+   }
    if(m.action==='report'&&options.disableDuringReport){state.morning_enabled=false;options.disableDuringReport=false;}
    return {ok:true,data:{recorded:true}};
   }
   if(m.type==='morning_execute'){
    calls.push('execute');
-   assert.equal(state.morning_state.blocked,true);assert.equal(state.morning_state.day,'2026-10-01');
+   assert.equal(state.morning_state.blocked,true);assert.equal(state.morning_state.day,M.clock(now).day);
    const authorization=await invoke({type:'morning_authorize',run_id:m.run_id,nonce:m.nonce},{id:'extension',frameId:0,tab:{id:2},url:m.target.url});
    assert.equal(authorization.ok,true);
+   if(options.checkAuthorization)await options.checkAuthorization(invoke,m);
    if(options.lostResponse)throw Error('lost');
    if(options.readbackFailure)return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:'notes',section:f.target.section,ic_title:'Matter (F)',outcome:'uncertain',certain:false,counts:{filled:0,raised:0,kept:0,left:0,not_saved:0},at:new Date().toISOString()},code:'readback_incomplete',diagnostics:['Avery, Ann'],reasons:{missing:1}}};
    return {ok:true,data:{result:{list_id:f.list.list_id,form_id:f.list.form_id,class_key:'biology',week:'Wk 05',column:m.target.column,section:m.target.section,ic_title:`Matter (${m.target.column==='notes'?'F':'S'})`,outcome:options.confirmedKept?'checked':'entered',certain:true,counts:{filled:options.confirmedKept?0:1,raised:0,kept:options.confirmedKept||0,left:0,not_saved:0},at:new Date().toISOString()},code:options.confirmedKept?'nothing_to_enter':'read_back',reasons:{flag:0,excused:0,check:0,name:0,missing:0}}};
@@ -337,7 +344,7 @@ test('receipt bridge accepts only an explicit positive acknowledgement',async()=
 test('popup names safe preflight failures and admits an old empty receipt has no retained cause',()=>{
  const nodes=new Map(),document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',hidden:false,disabled:false});return nodes.get(id);}};
  const popup=source('popup.js'),start=popup.indexOf('function morningShow('),end=popup.indexOf("chrome.runtime.sendMessage({type:'morning_status'})");
- const context={HubMorning:M,document,morningBox:document.getElementById('morning-enabled'),morningText:document.getElementById('morning-status')};
+ const context={HubMorning:M,document,morningBox:document.getElementById('morning-enabled'),morningText:document.getElementById('morning-status'),legacyRecoveryMode:false,recoveryContext:''};
  vm.createContext(context);vm.runInContext(popup.slice(start,end),context);
  const report={day:'2026-10-01',code:'receipt_unconfirmed',items:[]};
  context.morningShow({enabled:true,report:{...report,preflight:{stage:'summary_publish',cause:'hub_bridge_missing'}}});
@@ -593,4 +600,202 @@ test('readback names go to the private recovery endpoint, never persistent local
  const diagnostic=h.messages.find(m=>m.action==='recovery');
  assert.deepEqual(Array.from(diagnostic.payload.names),['Avery, Ann']);
  assert.ok(!JSON.stringify(h.state).includes('Avery'));assert.ok(!h.calls.includes('record'));
+});
+
+function olderDeliveredNoWrite(changes={}){
+ const day='2026-10-09';return {morning_enabled:true,morning_state:{day,blocked:false,inflight:false,execution_started:false,report_pending:false,
+  report:{day,run_id:uuid(),code:'receipt_unconfirmed',items:[]},...changes}};
+}
+const Saturday='2026-10-10T16:00:00Z';
+test('explicit weekend fresh-day run follows the full catalog only after its durable acknowledged startup',async()=>{
+ const h=background({stored:olderDeliveredNoWrite(),catalogAssignments:[
+  {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Biology'},
+  {class:'forensics',week:'Wk 05',form:fixture().list.form_id,assignment:'Forensics'},
+  {class:'anatomy',week:'Wk 05',form:fixture().list.form_id,assignment:'Anatomy'}]});
+ h.advance(Saturday);await settle();
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+ await h.alarm();assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,3);assert.equal(h.calls.filter(c=>c==='record').length,3);
+ assert.equal(h.state.morning_state.day,'2026-10-10');assert.equal(h.state.morning_state.manual_run_day,'2026-10-10');
+ assert.equal(h.state.morning_state.report.code,'finished');assert.equal(h.state.morning_state.blocked,false);
+ const stamped=h.writes.find(s=>s.day==='2026-10-10'&&s.report?.code==='running'&&s.execution_started===false);
+ assert.equal(stamped.manual_run_day,'2026-10-10');assert.equal(stamped.report_pending,true);
+ assert.ok(h.calls.indexOf('report')<h.calls.indexOf('catalog'));
+ assert.deepEqual(h.state.morning_state.report.items.map(i=>i.class_name),['Biology','Forensics','Anatomy & Physiology']);
+ await h.alarm();assert.equal(h.calls.filter(c=>c==='execute').length,3);
+});
+test('new opted-in install can explicitly run before seven or on Sunday but automatic timing stays unchanged',async()=>{
+ for(const time of ['2026-10-10T09:00:00Z','2026-10-11T16:00:00Z','2026-10-12T09:00:00Z']){
+  const h=background();h.advance(time);await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+  await h.alarm();assert.ok(!h.calls.includes('catalog'));
+  await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+  assert.equal(h.state.morning_state.report.code,'finished');
+ }
+});
+test('weekend manual execution retains every active exact-context authorization boundary',async()=>{
+ let checked=0;
+ const h=background({stored:olderDeliveredNoWrite(),checkAuthorization:async(invoke,m)=>{
+  const request={type:'morning_authorize',run_id:m.run_id,nonce:m.nonce};
+  const sender={id:'extension',frameId:0,tab:{id:2},url:m.target.url};
+  for(const [message,caller]of [[{...request,nonce:uuid()},sender],[{...request,run_id:uuid()},sender],
+   [request,{...sender,frameId:1}],[request,{...sender,id:'other'}],[request,{...sender,tab:{id:1}}],
+   [request,{...sender,url:C.IC_ORIGIN+'/campus/'}]]){
+   assert.equal((await invoke(message,caller)).ok,false);checked++;
+  }
+  assert.equal((await invoke(request,sender)).ok,true);
+ }});h.advance(Saturday);await settle();await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(checked,6);assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.equal((await h.invoke({type:'morning_authorize',run_id:uuid(),nonce:uuid()},{id:'extension',frameId:0,tab:{id:2},url:h.tabs[2].url})).ok,false);
+});
+test('unacknowledged weekend startup durably stops before catalog and a second click cannot replay it',async()=>{
+ const h=background({stored:olderDeliveredNoWrite(),reportReplies:[{ok:true,data:{recorded:false}}]});h.advance(Saturday);await settle();
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.state.morning_state.day,'2026-10-10');assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');
+ assert.equal(h.state.morning_state.report_pending,true);assert.equal(h.state.morning_state.execution_started,false);
+ assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('catalog'));
+});
+test('old unknown execution flags and empty executed receipts do not authorize a fresh-day manual run',async()=>{
+ for(const changes of [{execution_started:undefined},{execution_started:true},{report:{day:'2026-10-09',run_id:uuid(),code:'finished',items:[]},execution_started:true}]){
+  const stored=olderDeliveredNoWrite(changes);if(changes.execution_started===undefined)delete stored.morning_state.execution_started;
+  const h=background({stored});h.advance(Saturday);await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('catalog'));
+ }
+ const stored=olderDeliveredNoWrite();delete stored.morning_state.execution_started;delete stored.morning_state.inflight;
+ const h=background({stored});h.advance(Saturday);await settle();assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+});
+test('malformed future or mismatched old receipts never become fresh-day proof',async()=>{
+ for(const changes of [{day:'2026-10-11'},{day:'2026-02-31'},{report_pending:undefined},
+  {report:{day:'2026-10-08',run_id:uuid(),code:'receipt_unconfirmed',items:[]}},
+  {report:{day:'2026-10-09',code:'receipt_unconfirmed',items:[]}},
+  {report:{day:'2026-10-09',run_id:uuid(),code:'receipt_unconfirmed',items:[{code:'signed_out',filled:1,raised:0,kept:0,left:0}]}},
+  {manual_run_day:'2026-10-11'}]){
+  const h=background({stored:olderDeliveredNoWrite(changes)});h.advance(Saturday);await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'));
+ }
+});
+test('fresh-day explicit run requires enabled idle delivered state and a trusted popup caller',async()=>{
+ for(const changes of [{blocked:true},{inflight:true},{report_pending:true},{outbox:[{day:'2026-10-08',run_id:uuid(),code:'finished',items:[]}]}]){
+  const h=background({stored:olderDeliveredNoWrite(changes)});h.advance(Saturday);await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('catalog'));
+ }
+ const stored=olderDeliveredNoWrite();stored.morning_enabled=false;
+ const disabled=background({stored});disabled.advance(Saturday);await settle();assert.equal((await disabled.invoke({type:'morning_status'})).can_run_now,false);
+ const h=background({stored:olderDeliveredNoWrite()});h.advance(Saturday);await settle();
+ await h.invoke({type:'morning_run_now'},{id:'extension',frameId:0,tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});await settle();assert.ok(!h.calls.includes('catalog'));
+});
+test('delivered completed previous-day panels allow one fresh manual pass without reopening uncertainty',async()=>{
+ const report={day:'2026-10-09',run_id:uuid(),code:'finished',items:[{assignment:'Matter',code:'read_back',filled:1,raised:0,kept:0,left:0}]};
+ const h=background({stored:olderDeliveredNoWrite({execution_started:true,report})});h.advance(Saturday);await settle();
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+ for(const code of ['save_unconfirmed','readback_incomplete','readback_mismatch','panel_unusable']){
+  const bad=structuredClone(report);bad.items[0].code=code;
+  const stopped=background({stored:olderDeliveredNoWrite({execution_started:true,report:bad})});stopped.advance(Saturday);await settle();
+  assert.equal((await stopped.invoke({type:'morning_status'})).can_run_now,false);await stopped.invoke({type:'morning_run_now'});await settle();assert.ok(!stopped.calls.includes('execute'));
+ }
+});
+test('weekend lost Save remains blocked across explicit clicks and the next automatic weekday',async()=>{
+ const h=background({stored:olderDeliveredNoWrite(),lostResponse:true});h.advance(Saturday);await settle();await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.blocked,true);
+ await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ h.advance('2026-10-12T11:00:00Z');await h.alarm();assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.report.code,'uncertain_blocked');
+});
+test('weekend manual pass still leaves unmapped assignments and signed-out destinations untouched',async()=>{
+ for(const options of [{noMapping:true},{signedOut:true}]){
+  const h=background({...options,stored:olderDeliveredNoWrite()});h.advance(Saturday);await settle();await h.invoke({type:'morning_run_now'});await settle();
+  assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+  assert.equal(h.state.morning_state.report.code,options.noMapping?'mapping_required':'signed_out');
+ }
+});
+
+function olderUnknownEmpty(changes={}){
+ const stored=olderDeliveredNoWrite(changes);delete stored.morning_state.execution_started;return stored;
+}
+test('older empty unknown receipt requires explicit current-mapped verification and preserves its old uncertainty',async()=>{
+ const stored=olderUnknownEmpty(),old=structuredClone(stored.morning_state.report),h=background({stored});h.advance(Saturday);await settle();
+ const initial=await h.invoke({type:'morning_status'});assert.equal(initial.can_run_now,false);assert.equal(initial.can_verify_legacy,true);
+ await h.invoke({type:'morning_clear',confirmed:true,note:'Checked every currently mapped IC assignment.'});assert.ok(!h.calls.includes('recovery'));
+ await h.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked every currently mapped IC assignment.'},{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});assert.ok(!h.calls.includes('recovery'));
+ const reply=await h.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked every currently mapped IC assignment.'});
+ assert.equal(reply.can_run_now,true);assert.equal(reply.can_verify_legacy,false);assert.equal(reply.can_retry,false);
+ assert.deepEqual(h.state.morning_state.report,old);assert.equal(h.state.morning_state.verified.run_id,old.run_id);
+ assert.equal(h.state.morning_state.verified.scope,'current_mapped_assignments');assert.equal(h.state.morning_state.verified.prior_day,old.day);
+ assert.equal(Object.hasOwn(h.state.morning_state,'execution_started'),false);assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ const payload=h.messages.find(m=>m.action==='recovery').payload;
+ assert.equal(payload.run_id,old.run_id);assert.equal(payload.type,'verified');assert.ok(payload.note.includes('Prior 2026-10-09 receipt remains unconfirmed.'));
+ assert.ok(!JSON.stringify(h.state).includes('Checked every currently mapped IC assignment.'));
+ await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.notEqual(h.state.morning_state.report.run_id,old.run_id);
+});
+test('unknown receipt verification needs an exact recorded event, run, note, type and actor/time readback',async()=>{
+ const mutations=[data=>data.recorded=false,data=>data.recorded=1,data=>data.record.event_id=uuid(),
+  data=>data.record.run_id=uuid(),data=>data.record.type='readback',data=>data.record.note='different',
+  data=>data.record.by='',data=>data.record.by=123,data=>data.record.at='not-a-time',data=>data.record.at=123];
+ for(const recoveryReply of mutations){
+  const h=background({stored:olderUnknownEmpty(),recoveryReply});h.advance(Saturday);await settle();
+  const reply=await h.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'All current mapped panels checked.'});
+  assert.equal(reply.can_run_now,false);assert.ok(reply.recovery_error);assert.equal(h.state.morning_state.verified,undefined);
+  assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');assert.ok(!h.calls.includes('execute'));
+ }
+});
+test('unknown receipt verification stops for pending busy malformed known-write or changed source state',async()=>{
+ const report={day:'2026-10-09',run_id:uuid(),code:'receipt_unconfirmed',items:[]};
+ for(const changes of [{blocked:true},{inflight:true},{report_pending:true},{report_pending:undefined},{outbox:[report]},
+  {day:'2026-10-11'},{day:'invalid'},{report:{...report,day:'2026-10-08'}},{report:{...report,run_id:'invalid'}},
+  {report:{...report,items:[{code:'save_unconfirmed'}]}},{report:{...report,preflight:{stage:'summary_publish',cause:'hub_network_error'}}},
+  {manual_run_day:'2026-10-11'}]){
+  const h=background({stored:olderUnknownEmpty(changes)});h.advance(Saturday);await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_verify_legacy,false);
+  await h.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked.'});assert.ok(!h.calls.includes('recovery'));
+ }
+ const known=olderUnknownEmpty();known.morning_state.execution_started=true;
+ const h=background({stored:known});h.advance(Saturday);await settle();assert.equal((await h.invoke({type:'morning_status'})).can_verify_legacy,false);
+ for(const afterRecovery of [state=>state.morning_state.report.day='2026-10-08',state=>state.morning_state.report.run_id=uuid(),
+  state=>state.morning_state.report.code='finished',state=>state.morning_state.inflight=true,state=>state.morning_state.report_pending=true,
+  state=>state.morning_enabled=false,state=>state.morning_state.blocked=true]){
+  const changed=background({stored:olderUnknownEmpty(),afterRecovery});changed.advance(Saturday);await settle();
+  const reply=await changed.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked.'});
+  assert.equal(reply.can_run_now,false);assert.ok(reply.recovery_error);assert.equal(changed.state.morning_state.verified,undefined);
+ }
+});
+test('a paused active manual attempt cannot verify an older unknown receipt',async()=>{
+ const h=background({stored:olderDeliveredNoWrite(),checkAuthorization:async(invoke)=>{
+  const reply=await invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked.'});
+  assert.equal(reply.busy,true);assert.equal(reply.can_verify_legacy,false);assert.equal(reply.can_run_now,false);
+ }});h.advance(Saturday);await settle();await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.ok(!h.calls.includes('recovery'));
+});
+test('unknown receipt verification fails for foreign Hub navigation, several tabs, disabled setting and absent consent',async()=>{
+ for(const options of [{recoveryFail:true},{wrongReceipt:true}]){
+  const h=background({...options,stored:olderUnknownEmpty()});h.advance(Saturday);await settle();
+  const r=await h.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked.'});assert.equal(r.can_run_now,false);assert.equal(h.state.morning_state.verified,undefined);
+ }
+ for(const mode of ['foreign','several','disabled','no-note','not-confirmed','IC-foreign','IC-several','IC-signed-out']){
+  const stored=olderUnknownEmpty();if(mode==='disabled')stored.morning_enabled=false;
+  const h=background({stored,signedOut:mode==='IC-signed-out'});h.advance(Saturday);await settle();
+  if(mode==='foreign')h.tabs[1].url='https://elsewhere.example.test/';
+  if(mode==='several')h.tabs[3]={id:3,url:C.HUB_ORIGIN+'/v2/',status:'complete'};
+  if(mode==='IC-foreign')h.tabs[2].url='https://elsewhere.example.test/';
+  if(mode==='IC-several')h.tabs[4]={id:4,url:C.IC_ORIGIN+'/campus/',status:'complete'};
+  const r=await h.invoke({type:'morning_clear',confirmed:mode!=='not-confirmed',current_mapped_confirmed:true,note:mode==='no-note'?'':'Checked.'});
+  assert.equal(r.can_run_now,false);assert.equal(h.state.morning_state.verified,undefined);assert.ok(!h.calls.includes('recovery'));
+ }
+});
+test('legacy verification cannot enable a new run if the Hub or IC navigates before acknowledgement',async()=>{
+ for(const tab of [1,2]){
+  let h;h=background({stored:olderUnknownEmpty(),afterRecovery:()=>{h.tabs[tab]={...h.tabs[tab],url:'https://elsewhere.example.test/'};}});
+  h.advance(Saturday);await settle();const reply=await h.invoke({type:'morning_clear',confirmed:true,current_mapped_confirmed:true,note:'Checked.'});
+  assert.equal(reply.can_run_now,false);assert.ok(reply.recovery_error);assert.equal(h.state.morning_state.verified,undefined);
+ }
+});
+test('finished no-execution and zero-count panels permit a fresh day but inconsistent count evidence holds',async()=>{
+ for(const filled of [0,1]){
+  const report={day:'2026-10-09',run_id:uuid(),code:'finished',items:[{assignment:'No scores',code:'no_scores',filled,raised:0,kept:0,left:0}]};
+  const h=background({stored:olderDeliveredNoWrite({report})});h.advance(Saturday);await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,filled===0);
+ }
 });

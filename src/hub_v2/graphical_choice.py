@@ -1,5 +1,6 @@
-"""An authentic circled choice is completion evidence, never authored prose."""
+"""An authentic marked choice is completion evidence, never authored prose."""
 import hashlib
+from copy import deepcopy
 import json
 import math
 import re
@@ -32,6 +33,46 @@ def _filled_rgb(node):
     solid = sp.find(A + "solidFill") if sp is not None else None
     color = solid.find(A + "srgbClr") if solid is not None else None
     return color.get("val").upper() if solid is not None and len(solid) == 1 and _opaque(color) else None
+
+
+def _highlighted_option(node, words, context):
+    """One visibly highlighted original label; all other XML stays source-bound."""
+    props = node.find(P + "nvSpPr/" + P + "cNvPr")
+    if (node.tag != P + "sp" or node.attrib or words not in ("YES", "NO") or context
+            or props is None or props.get("hidden", "0") not in ("0", "false")):
+        return None
+    runs = [r for r in node.findall(P + "txBody/" + A + "p/" + A + "r") if r.findtext(A + "t", "")]
+    if len(runs) != 1 or runs[0].findtext(A + "t") != words:
+        return None
+    style = runs[0].find(A + "rPr")
+    try:
+        size = int(style.get("sz", "0")) if style is not None else 0
+    except ValueError:
+        return None
+    ink = style.find(A + "solidFill/" + A + "srgbClr") if style is not None else None
+    if not 800 <= size <= 5000 or not _opaque(ink) or style.find(A + "highlight") is None:
+        return None
+    clone, colors, run_marked = deepcopy(node), [], False
+    for parent in clone.iter():
+        for highlight in list(parent):
+            if highlight.tag != A + "highlight":
+                continue
+            color = highlight.find(A + "srgbClr")
+            if (parent.tag not in (A + "rPr", A + "endParaRPr") or highlight.attrib or len(highlight) != 1
+                    or not _opaque(color) or color.get("val").upper() != "FDE047"
+                    or set(color.attrib) != {"val"} or len(color) > 1
+                    or any(c.attrib != {"val": "100000"} or list(c) for c in color)):
+                return None
+            colors.append(color.get("val").upper())
+            run_marked |= parent.tag == A + "rPr"
+            parent.remove(highlight)
+    if not run_marked or not 1 <= len(colors) <= 2:
+        return None
+    rgb = [int(colors[0][n:n + 2], 16) for n in (0, 2, 4)]
+    if max(abs(rgb[n] - int(ink.get("val")[n * 2:n * 2 + 2], 16)) for n in range(3)) < 64:
+        return None
+    base = hashlib.sha256(json.dumps([_canonical(clone), context], separators=(",", ":")).encode()).hexdigest()
+    return {"base_sha256": base, "rgb": colors[0]}
 
 
 def _circle(node, text, context):
@@ -102,6 +143,10 @@ def read_shapes(tree, *, box, affine, text, name, transform=(1, 1, 0, 0), prefix
             out.append({"key": prefix + name(child, P + nv), "text": words, "box": box(xfrm, transform),
                         "sha256": digest, "circle": circle,
                         "outline_rgb": line.get("val").upper() if circle else None, "fill_rgb": _filled_rgb(child)})
+            if transform[0] == transform[1] == 1:
+                highlight = _highlighted_option(child, words, context)
+                if highlight:
+                    out[-1]["text_highlight"] = highlight
     for n, shape in enumerate(out):
         shape["order"] = n
     return out
@@ -197,17 +242,32 @@ def answers(markers, written, template, student, size, plain):
             _text_at(student, o["text"], o["box"], plain) for o in data["options"]):
         return bad
     remaining = [s for s in student.get("choice_shapes", []) if _overlaps(s.get("box"), data["region"])]
-    baseline_orders = []
+    baseline_orders, highlighted = [], []
     for expected in data["original_shapes"]:
         matches = [s for s in remaining if s["sha256"] == expected["sha256"] and _same(s["box"], expected["box"])]
+        if not matches:
+            matches = [s for s in remaining if s.get("text_highlight", {}).get("base_sha256") == expected["sha256"]
+                       and _same(s["box"], expected["box"])
+                       and any(s["text"] == o["text"] and _same(s["box"], o["box"]) for o in data["options"])]
+            if len(matches) == 1:
+                highlighted.append(matches[0])
         if len(matches) != 1:
             return bad
         baseline_orders.append(matches[0]["order"])
         remaining.remove(matches[0])
     if baseline_orders != sorted(baseline_orders):
         return bad  # Unchanged paper moved above the printed question can hide it.
-    if len(remaining) > 1:
+    if len(highlighted) > 1 or (highlighted and remaining) or len(remaining) > 1:
         return bad  # Two marks, including two competing circles, need review.
+    if highlighted:
+        mark = highlighted[0]
+        color = mark["text_highlight"]["rgb"]
+        paper = [s["fill_rgb"] for s in template["choice_shapes"] if s.get("fill_rgb") and _overlaps(s.get("box"), mark["box"])]
+        rgb = [int(color[n:n + 2], 16) for n in (0, 2, 4)]
+        if not paper or any(max(abs(rgb[n] - int(p[n * 2:n * 2 + 2], 16)) for n in range(3)) < 64 for p in paper):
+            return bad
+        result[(marker["category"], marker["id"])].append(({
+            **mark, "completion_only": "highlighted choice", "recorded_choice": mark["text"]}, "highlighted choice"))
     if remaining:
         mark = remaining[0]
         box = mark.get("box")
@@ -245,4 +305,44 @@ def answers(markers, written, template, student, size, plain):
     if len(revision_items) > 1 or not _text_at(student, revision["prompt"]["text"], revision["prompt"]["box"], plain):
         return bad
     result[(revision["category"], revision["id"])] = revision_items
-    return result, loose, "original circled choice and separate written revision"
+    return result, loose, "original highlighted choice and separate written revision" if highlighted else "original circled choice and separate written revision"
+
+
+def revision_answers(marker, written, template, student, size, plain):
+    """Use the authenticated revision field when the student lacks the choice code.
+
+    The missing initial-choice marker contributes no requirement or completion.
+    Its teacher-only descriptor can still identify the independent blank field
+    and printed question for the actual DRAFT marker found in the older copy.
+    """
+    result = {(marker["category"], marker["id"]): []}
+    bad = (result, list(written), binding.REVIEW)
+    trusted = [u.get("binding") for u in (template or {}).get("units", [])
+               if u.get("binding", {}).get("kind") == KIND]
+    if (len(trusted) != 1 or not student or marker["category"] != "DRAFT"
+            or "binding" in marker or source(trusted[0], template, size, plain) is None):
+        return bad
+    data = trusted[0]
+    revision = data["revision"]
+    expected = f'[[NOTES:{marker["code"]}:{marker["id"]}]]'
+    old = [u for u in template["units"] if f'[[DRAFT:{marker["code"]}:{marker["id"]}]]' in u.get("text", "")
+           and _same(u.get("box"), marker.get("box"))]
+    if (data["marker_text"] != expected or (marker["category"], marker["id"]) !=
+            (revision["category"], revision["id"]) or len(old) != 1
+            or not _text_at(student, revision["prompt"]["text"], revision["prompt"]["box"], plain)):
+        return bad
+    loose, responses = [], []
+    for item in written:
+        unit, words = item
+        if binding.rectangle(unit.get("box"), size) and _contains(revision["box"], unit["box"]):
+            if unit.get("picture") or words.startswith("moved: "):
+                return bad
+            responses.append(item)
+        elif _overlaps(unit.get("box"), revision["box"]):
+            return bad
+        else:
+            loose.append(item)
+    if len(responses) > 1:
+        return bad
+    result[(marker["category"], marker["id"])] = responses
+    return result, loose, "original separate revision field; initial choice code absent"

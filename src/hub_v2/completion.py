@@ -537,6 +537,10 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
                        and response_binding.same_box(m["box"], draft["box"], size) for m in original) == 1
                    for draft in orphan_drafts):
             return result, list(written), response_binding.REVIEW
+        if len(slide_markers) == len(orphan_drafts) == 1 and any(
+                n.get("binding", {}).get("kind") == graphical_choice.KIND for n in original):
+            return graphical_choice.revision_answers(orphan_drafts[0], written, template_slide,
+                                                      student_slide, size, _plain)
         labels = (template_slide or {}).get("units", [])
         fields = [u for u in labels if u.get("box") and not u["text"].strip()]
         if (response_binding.tiny_points(slide_markers, size) and all(any(
@@ -872,6 +876,7 @@ def assess(student, template, *, found_codes_only=False):
     numeric_unbound = False
     choice_unbound = False
     draft_unbound = False
+    bank_review_slides, response_review_slides = set(), set()
     handed_out = markers(template) if template else []
     current = {(c, qid) for c in CATEGORIES for qid in required[c]}
     for slide in student["slides"]:
@@ -880,6 +885,7 @@ def assess(student, template, *, found_codes_only=False):
         if template and match is None:
             if any("binding" in m for m in mine):
                 response_unbound = True
+                response_review_slides.add(slide["number"])
                 numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
                 choice_unbound |= any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in mine)
             continue  # nothing to compare this slide with
@@ -895,8 +901,10 @@ def assess(student, template, *, found_codes_only=False):
         assigned, loose, basis_here = _assign(mine, written, match, student["size"], student_slide=slide)
         if basis_here == "BANK term labels need review":
             bank_unbound = True
+            bank_review_slides.add(slide["number"])
         if basis_here == response_binding.REVIEW:
             response_unbound = True
+            response_review_slides.add(slide["number"])
             draft_unbound |= any(m["category"] == "DRAFT" and not any(
                 n["category"] == "NOTES" and n["id"] == m["id"] for n in mine) for m in mine)
             numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
@@ -937,6 +945,10 @@ def assess(student, template, *, found_codes_only=False):
                     found[key]["completion_evidence"] = "One original YES/NO option circled"
                     found[key]["recorded_choice"] = next(u["recorded_choice"] for u, _ in items
                                                         if u.get("completion_only") == "circled choice")
+                elif any(u.get("completion_only") == "highlighted choice" for u, _ in items):
+                    found[key]["completion_evidence"] = "One original YES/NO option highlighted"
+                    found[key]["recorded_choice"] = next(u["recorded_choice"] for u, _ in items
+                                                        if u.get("completion_only") == "highlighted choice")
                 elif any(u.get("completion_only") for u, _ in items):
                     found[key]["completion_evidence"] = "Original card placed in response region"
     items = []
@@ -970,6 +982,10 @@ def assess(student, template, *, found_codes_only=False):
                         "before scoring or entering grades.") if numeric_unbound else (
                        "This activity needs its original cards or pictures and response regions checked "
                        "before scoring or entering grades.")
+    if student_note:
+        locations = sorted(response_review_slides if response_unbound else bank_review_slides)
+        if locations:
+            student_note = ("Slide " if len(locations) == 1 else "Slides ") + ", ".join(map(str, locations)) + ": " + student_note
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
             "missing_code_warning": missing_code_warning,
             "scoring_basis": "found_codes" if found_codes_only else "inventory",
