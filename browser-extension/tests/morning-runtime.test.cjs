@@ -30,7 +30,7 @@ function background(options={}){
  const tabs={1:{id:1,url:C.HUB_ORIGIN+'/v2/',status:'complete'},2:{id:2,url:C.IC_ORIGIN+'/campus/',status:'complete'}};
  const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,getManifest:()=>({version:options.version||'0.5.14'}),onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
  const invoke=(m,sender={id:'extension',url:runtime.getURL('popup.html')})=>new Promise(resolve=>{if(listeners.message(m,sender,resolve)!==true)resolve(undefined);});
- const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:new Map(),chrome:{runtime,
+ const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:options.pending||new Map(),chrome:{runtime,
  storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>{if(data.morning_state)writes.push(structuredClone(data.morning_state));Object.assign(state,structuredClone(data));},setAccessLevel:async v=>{state.access=v.accessLevel;}}},
  alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
  tabs:{query:async({url})=>{if(options.checkQuery)options.checkQuery(state,url);return Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1)));},get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{calls.push('navigate');if(options.failSecondNavigation&&calls.filter(c=>c==='navigate').length===2)throw Error('panel_unusable');Object.assign(tabs[id],v);return tabs[id];},sendMessage:async(id,m)=>{
@@ -44,6 +44,7 @@ function background(options={}){
    calls.push(m.action);
    if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
+   if(m.action==='list'&&options.listReply)return {ok:true,data:options.listReply(m)};
    if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:options.sourceRevision||'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
    if(m.action==='recovery'){
     if(options.recoveryFail)throw Error('unavailable');
@@ -1053,4 +1054,151 @@ test('automatic-started receipt verification cannot borrow generic first-run or 
   assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false,change);
   await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
  }
+});
+
+function deliveredSourceChanged(){
+ const stored=deliveredReceiptFailure(),s=stored.morning_state;
+ s.report.code='source_changed';
+ s.report.items.at(-1).code='source_changed';
+ Object.assign(s.report.items.at(-1),{filled:0,raised:0,kept:0,left:0,reasons:{flag:0,exempt:0,excused:0,check:0,name:0,missing:0}});
+ s.report.items.splice(2,0,{...structuredClone(s.report.items[1]),code:'source_scores_held',source_holds:{checks:2}});
+ return stored;
+}
+const verifySource={type:'morning_clear',confirmed:true,current_mapped_confirmed:true,source_recovery_confirmed:true,note:'Every current mapped saved panel checked after source repair; genuine holds retained.'};
+test('source-change recovery offers a separate explicit verification and never retries automatically',async()=>{
+ const stored=deliveredSourceChanged(),prior=structuredClone(stored.morning_state),h=background({stored,version:'0.5.23'});await settle();
+ const status=await h.invoke({type:'morning_status'});
+ assert.equal(status.can_verify_current_source_change,true);assert.equal(status.can_verify_current_receipt,false);
+ assert.equal(status.can_run_now,false);assert.equal(status.can_retry,false);
+ await h.alarm();await h.invoke({type:'morning_run_now'});await settle();
+ assert.deepEqual(h.state.morning_state,prior);assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ // A known stop before the first entry is also safe; unknown execution is not.
+ const untouched=deliveredSourceChanged();untouched.morning_state.execution_started=false;
+ for(const i of untouched.morning_state.report.items)for(const k of ['filled','raised','kept','left'])i[k]=0;
+ const none=background({stored:untouched,version:'0.5.23'});await settle();assert.equal((await none.invoke({type:'morning_status'})).can_verify_current_source_change,true);
+});
+test('source-change verification saves exact acknowledged scope while preserving the stopped report',async()=>{
+ const stored=deliveredSourceChanged(),prior=structuredClone(stored.morning_state),h=background({stored,version:'0.5.23'});await settle();
+ const status=await h.invoke(verifySource);
+ assert.equal(status.can_run_now,true);assert.equal(status.can_verify_current_source_change,false);
+ for(const key of ['report','manual_run_day','day','execution_started','outbox','blocked','inflight'])assert.deepEqual(h.state.morning_state[key],prior[key]);
+ const event=h.messages.find(m=>m.action==='recovery').payload,v=h.state.morning_state.verified;
+ assert.equal(event.run_id,prior.report.run_id);assert.equal(event.type,'verified');
+ assert.match(event.note,/after source repair/);assert.match(event.note,/stopped at a source change and incomplete/);assert.doesNotMatch(event.note,/receipt unconfirmed/);
+ assert.equal(v.recovery,'source_changed_before_entry');assert.equal(v.scope,'current_mapped_assignments');assert.equal(v.for_helper_version,'0.5.23');
+ assert.equal(v.event_id,event.event_id);assert.equal(v.prior_day,prior.day);assert.equal(v.prior_report_signature,JSON.stringify(prior.report));
+ await h.alarm();assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+});
+test('source-change recovery rejects uncertainty, nonzero terminal counts or reasons and malformed histories',async()=>{
+ for(const change of ['blocked','inflight','pending','unknown_execution','unknown_inflight','missing_outbox','outbox','previous_uncertain','previous_running','previous_source_changed','terminal_raised','terminal_kept','terminal_left','terminal_filled','terminal_reason','unknown_reason','unknown_item','preflight','bad_day','invalid_uuid','future_manual','bad_marker','marker_used','empty','false_execution','held_zero','held_unknown','held_nonzero','unknown_prior','unknown_report','bad_count','bad_reason','terminal_wrong','receipt_mode','pending_list']){
+  const stored=deliveredSourceChanged(),s=stored.morning_state,last=s.report.items.at(-1);
+  if(['blocked','inflight'].includes(change))s[change]=true;
+  if(change==='pending')s.report_pending=true;if(change==='unknown_execution')delete s.execution_started;
+  if(change==='unknown_inflight')delete s.inflight;if(change==='missing_outbox')delete s.outbox;if(change==='outbox')s.outbox=[{}];
+  if(change==='previous_uncertain')s.report.items[0].code='save_unconfirmed';if(change==='previous_running')s.report.items[0].code='running';
+  if(change==='previous_source_changed')s.report.items[0].code='source_changed';
+  if(change.startsWith('terminal_')&&['raised','kept','left','filled'].includes(change.slice(9)))last[change.slice(9)]=1;
+  if(change==='terminal_reason')last.reasons.check=1;if(change==='unknown_reason')last.reasons.other=0;
+  if(change==='unknown_item')last.not_saved=0;if(change==='preflight')s.report.preflight={stage:'source',cause:'unknown'};
+  if(change==='bad_day')s.report.day='2026-09-30';if(change==='invalid_uuid')s.report.run_id='opaque';
+  if(change==='future_manual')s.manual_run_day='2026-10-02';if(change==='bad_marker')s.source_recheck_version='opaque';
+  if(change==='marker_used')Object.assign(s,{source_recheck_version:'0.5.23',source_recheck_run_id:s.report.run_id,source_recheck_day:s.day});
+  if(change==='empty')s.report.items=[];if(change==='false_execution')s.execution_started=false;
+  if(change==='held_zero')s.report.items[2].source_holds.checks=0;if(change==='held_unknown')s.report.items[2].source_holds.other=0;
+  if(change==='held_nonzero')s.report.items[2].kept=1;if(change==='unknown_prior')s.report.items[0].code='unknown';
+  if(change==='unknown_report')s.report.other=0;if(change==='bad_count')last.kept=true;if(change==='bad_reason')last.reasons.check='0';
+  if(change==='terminal_wrong')last.code='coverage_incomplete';if(change==='receipt_mode')s.report.code='receipt_unconfirmed';
+  const h=background({stored,version:'0.5.23',pending:change==='pending_list'?new Map([['current-list',{}]]):undefined});await settle();
+  assert.equal((await h.invoke({type:'morning_status'})).can_verify_current_source_change,false,change);
+  await h.invoke(verifySource);await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('recovery'),change);assert.ok(!h.calls.includes('execute'),change);
+ }
+});
+test('source-change acknowledgement needs scoped trusted popup flags and a useful note',async()=>{
+ for(const change of ['unchecked','no_scope','no_source_flag','receipt_flag_only','blank_note','overlong_note','content_sender']){
+  const h=background({stored:deliveredSourceChanged(),version:'0.5.23'});await settle();const message={...verifySource};
+  if(change==='unchecked')message.confirmed=false;if(change==='no_scope')message.current_mapped_confirmed=false;
+  if(change==='no_source_flag')message.source_recovery_confirmed=false;if(change==='receipt_flag_only'){message.source_recovery_confirmed=false;message.receipt_recovery_confirmed=true;}
+  if(change==='blank_note')message.note='  ';if(change==='overlong_note')message.note='x'.repeat(500);
+  await h.invoke(message,change==='content_sender'?{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'}:undefined);
+  assert.ok(!h.calls.includes('recovery'),change);assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false,change);
+ }
+});
+test('source-change verification requires an authenticated exact acknowledgement and unchanged signed-in tabs',async()=>{
+ for(const change of ['failed','wrongrun','wrongnote','wrongevent','wrongtype','wrongactor','missingrecorded','ICsignedout','multipleIC','HubURL','ICURL','report','disabled','inflight','pending','version']){
+  const options={stored:deliveredSourceChanged(),version:'0.5.23'};let h;
+  if(change==='failed')options.recoveryFail=true;
+  if(['wrongrun','wrongnote','wrongevent','wrongtype','wrongactor','missingrecorded'].includes(change))options.recoveryReply=data=>{
+   if(change==='wrongrun')data.record.run_id=uuid();if(change==='wrongnote')data.record.note='Different';if(change==='wrongevent')data.record.event_id=uuid();
+   if(change==='wrongtype')data.record.type='readback';if(change==='wrongactor')data.record.by='';if(change==='missingrecorded')data.recorded=false;
+  };
+  if(change==='ICsignedout')options.signedOut=true;
+  if(change==='multipleIC')options.checkQuery=()=>{h.tabs[3]={id:3,url:C.IC_ORIGIN+'/another',status:'complete'};};
+  if(['HubURL','ICURL','report','disabled','inflight','pending','version'].includes(change))options.afterRecovery=state=>{
+   if(change==='HubURL')h.tabs[1].url=C.HUB_ORIGIN+'/changed';if(change==='ICURL')h.tabs[2].url=C.IC_ORIGIN+'/changed';
+   if(change==='report')state.morning_state.report.items[0].kept++;if(change==='disabled')state.morning_enabled=false;
+   if(change==='inflight')state.morning_state.inflight=true;if(change==='pending')state.morning_state.report_pending=true;if(change==='version')options.version='0.5.24';
+  };
+  h=background(options);await settle();const status=await h.invoke(verifySource);
+  assert.equal(status.can_run_now,false,change);assert.equal(h.state.morning_state.verified,undefined,change);
+ }
+});
+test('source-change grant is consumed before any tab or network action and runs one fresh guarded source pass',async()=>{
+ let starting=false,checked=false;
+ const options={stored:deliveredSourceChanged(),version:'0.5.23',sourceRevision:'c'.repeat(64),checkQuery:state=>{
+  if(starting&&!checked){checked=true;assert.equal(state.morning_state.source_recheck_version,'0.5.23');assert.equal(state.morning_state.report.code,'source_changed');}
+ }};
+ const h=background(options);await settle();const prior=structuredClone(h.state.morning_state.report);
+ await h.invoke(verifySource);starting=true;await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(checked,true);assert.equal(h.state.morning_state.source_recheck_run_id,prior.run_id);assert.equal(h.state.morning_state.source_recheck_day,prior.day);
+ assert.notEqual(h.state.morning_state.report.run_id,prior.run_id);assert.equal(h.state.morning_state.report.code,'finished');
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.verified.prior_report_signature,JSON.stringify(prior));
+ const execution=h.messages.find(m=>m.type==='morning_execute'),record=h.messages.find(m=>m.action==='record').payload;
+ assert.equal(record.run_id,execution.run_id);assert.equal(record.run_id,h.state.morning_state.report.run_id);assert.equal(record.revision,options.sourceRevision);
+ assert.equal(JSON.stringify(record.list),JSON.stringify(execution.list));assert.equal(JSON.stringify(record.targets),JSON.stringify([execution.target]));
+ // Even if a persisted crash view retained the original report, the consumed grant cannot be reused.
+ h.state.morning_state.report=structuredClone(prior);const before=h.calls.filter(c=>c==='execute').length;
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);await h.invoke({type:'morning_run_now'});await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,before);
+});
+test('source-change verification cannot borrow generic first-run or future-day permission',async()=>{
+ for(const change of ['used','report','version','event','run','day']){
+  const stored=deliveredSourceChanged();delete stored.morning_state.manual_run_day;
+  const h=background({stored,version:'0.5.23'});await settle();await h.invoke(verifySource);const s=h.state.morning_state;
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+  if(change==='used')Object.assign(s,{source_recheck_version:'0.5.23',source_recheck_run_id:s.report.run_id,source_recheck_day:s.day});
+  if(change==='report')s.report.items[0].kept++;if(change==='version')s.verified.for_helper_version='0.5.24';
+  if(change==='event')s.verified.event_id='opaque';if(change==='run')s.verified.run_id=uuid();
+  if(change==='day')h.advance('2026-10-02T11:00:00Z');
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false,change);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
+ }
+});
+test('source-change popup explains the source stop and sends its own flag only from a trusted checked click',async()=>{
+ const nodes=new Map();const document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',hidden:false,disabled:false,checked:false,value:'',handlers:{},addEventListener(type,fn){this.handlers[type]=fn;}});return nodes.get(id);}};
+ let poll;const sent=[],status={enabled:true,blocked:false,busy:false,report:deliveredSourceChanged().morning_state.report,can_verify_current_source_change:true};
+ vm.runInNewContext(source('popup.js'),{document,HubMorning:M,setInterval:fn=>{poll=fn;return 0;},chrome:{runtime:{sendMessage:async m=>{sent.push(m);return m.type==='companion_popup_status'?{configured:true}:status;}}}});await settle();
+ assert.equal(nodes.get('morning-recovery').hidden,false);assert.equal(nodes.get('morning-run-now').hidden,true);
+ assert.match(nodes.get('morning-next').textContent,/source comparison changed before this item entered grades/);
+ assert.match(nodes.get('morning-recovery-label').textContent,/source repair is ready/);assert.match(nodes.get('morning-clear').textContent,/current mapped grades checked/);
+ const checked=nodes.get('morning-checked'),note=nodes.get('morning-note'),clear=nodes.get('morning-clear');checked.checked=true;note.value='All current mapped panels checked after repair.';
+ await clear.handlers.click({isTrusted:false});assert.ok(!sent.some(m=>m.type==='morning_clear'));
+ await clear.handlers.click({isTrusted:true});const m=sent.find(m=>m.type==='morning_clear');
+ assert.equal(m.current_mapped_confirmed,true);assert.equal(m.source_recovery_confirmed,true);assert.equal(m.receipt_recovery_confirmed,false);
+ Object.assign(status,{can_verify_current_source_change:false,can_run_now:true,verified:{run_id:status.report.run_id,scope:'current_mapped_assignments',recovery:'source_changed_before_entry',by:'teacher@example.test',at:'2026-10-01T12:00:00Z',prior_day:status.report.day}});
+ await poll();await settle();assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
+ status.report={...status.report,run_id:uuid(),code:'finished'};await poll();await settle();
+ assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
+});
+test('source-change helper package has the next version without broad automatic retry expansion',()=>{
+ assert.equal(JSON.parse(source('manifest.json')).version,'0.5.23');
+ assert.match(source('morning-background.js'),/const completedRecheckCodes=new Set\(\['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores'\]\)/);
+});
+
+test('source-change new explicit pass still stops at a freshly changed source before any IC entry',async()=>{
+ const f=fixture();let reads=0;
+ const h=background({stored:deliveredSourceChanged(),version:'0.5.23',listReply:()=>({code:'ready',list:f.list,targets:[f.target],revision:++reads===1?'a'.repeat(64):'b'.repeat(64)})});
+ await settle();await h.invoke(verifySource);await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(reads,2);assert.equal(h.state.morning_state.report.code,'source_changed');assert.ok(!h.calls.includes('navigate'));assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
+ const s=h.state.morning_state;assert.equal(s.source_recheck_version,'0.5.23');assert.deepEqual([s.report.items[0].filled,s.report.items[0].raised,s.report.items[0].kept,s.report.items[0].left],[0,0,0,0]);
+ assert.equal((await h.invoke({type:'morning_status'})).can_verify_current_source_change,false);await h.alarm();assert.equal(reads,2);
 });

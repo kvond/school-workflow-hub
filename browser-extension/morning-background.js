@@ -106,7 +106,7 @@
   const report=s.report,items=report?.items;
   if(!validDay(s.day)||s.day>=t.day||report?.day!==s.day||!validRun(report?.run_id)||!Array.isArray(items)
    ||(s.manual_run_day&&(!validDay(s.manual_run_day)||s.manual_run_day>s.day)))return false;
-  if(verifiedReport(s))return s.verified?.recovery!=='partial_receipt';
+  if(verifiedReport(s))return !['partial_receipt','source_changed_before_entry'].includes(s.verified?.recovery);
   if(s.report_pending!==false)return false;
   if(report.code==='finished'&&(items.length?[true,false].includes(s.execution_started)&&items.every(i=>
    (completedRecheckCodes.has(i.code)||i.code==='excluded_week')
@@ -164,10 +164,52 @@
    &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
    &&v.prior_report_signature===JSON.stringify(s.report);
  }
+ function currentSourceChangedReport(s,t=M.clock()){
+  const report=s.report,items=report?.items,version=chrome.runtime.getManifest().version;
+  const counts=i=>['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600);
+  const reasons=i=>i.reasons&&!Array.isArray(i.reasons)
+   &&Object.keys(i.reasons).sort().join('|')==='check|excused|exempt|flag|missing|name'
+   &&Object.values(i.reasons).every(n=>Number.isInteger(n)&&n>=0&&n<=3600);
+  const held=i=>i.code!=='source_scores_held'||(i.source_holds&&!Array.isArray(i.source_holds)
+   &&Object.keys(i.source_holds).join('|')==='checks'&&Number.isInteger(i.source_holds.checks)
+   &&i.source_holds.checks>0&&i.source_holds.checks<=3600);
+  const shape=i=>Object.keys(i).sort().join('|')===(i.code==='source_scores_held'
+   ?'assignment|class_name|code|filled|kept|left|raised|reasons|source_holds|week'
+   :'assignment|class_name|code|filled|kept|left|raised|reasons|week');
+  const unused=(!Object.hasOwn(s,'source_recheck_version')&&!Object.hasOwn(s,'source_recheck_run_id')&&!Object.hasOwn(s,'source_recheck_day'))
+   ||(typeof s.source_recheck_version==='string'&&/^\d+\.\d+\.\d+$/.test(s.source_recheck_version)
+    &&validRun(s.source_recheck_run_id)&&validDay(s.source_recheck_day)&&s.source_recheck_day<=s.day);
+  // Only a delivered, known source comparison stop BEFORE this item's entry
+  // is recoverable here. Prior items retain their real comparisons and gaps.
+  return s.enabled&&s.blocked===false&&s.inflight===false&&s.report_pending===false
+   &&typeof s.execution_started==='boolean'&&Array.isArray(s.outbox)&&s.outbox.length===0&&!pending.size&&!active
+   &&validDay(s.day)&&s.day===t.day&&report?.day===s.day&&validRun(report?.run_id)
+   &&(!s.manual_run_day||(validDay(s.manual_run_day)&&s.manual_run_day<=s.day))
+   &&Object.keys(report).sort().join('|')==='code|day|items|roster|run_id'&&unused
+   &&report.roster==='unavailable'&&report.code==='source_changed'
+   &&Array.isArray(items)&&items.length>0&&items.length<=300&&items.at(-1)?.code==='source_changed'
+   &&items.every((i,n)=>i&&shape(i)&&typeof i.assignment==='string'&&i.assignment.trim()&&i.assignment.length<=200
+    &&typeof i.class_name==='string'&&i.class_name.trim()&&i.class_name.length<=100
+    &&typeof i.week==='string'&&i.week.trim()&&i.week.length<=100&&counts(i)&&reasons(i)
+    &&(n===items.length-1?(zeroCounts(i)&&Object.values(i.reasons).every(v=>v===0)):
+     ((completedRecheckCodes.has(i.code)||['excluded_week','source_scores_held'].includes(i.code))
+      &&(completedCodes.has(i.code)||(zeroCounts(i)&&Object.values(i.reasons).every(v=>v===0)))&&held(i))))
+   &&(s.execution_started||items.every(zeroCounts))&&s.source_recheck_version!==version;
+ }
+ function currentSourceChangedRecoveryAllowed(s,t=M.clock()){
+  return currentSourceChangedReport(s,t)&&!verifiedReport(s);
+ }
+ function currentSourceChangedRecoveryGrant(s,t=M.clock()){
+  const v=s.verified;
+  return currentSourceChangedReport(s,t)&&verifiedReport(s)&&v.scope==='current_mapped_assignments'
+   &&v.recovery==='source_changed_before_entry'&&v.prior_day===s.day
+   &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
+   &&v.prior_report_signature===JSON.stringify(s.report);
+ }
  function manualNowAllowed(s,t=M.clock()){
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
-  const verifiedRecovery=verifiedReport(s)&&s.verified?.recovery!=='partial_receipt';
+  const verifiedRecovery=verifiedReport(s)&&!['partial_receipt','source_changed_before_entry'].includes(s.verified?.recovery);
   // A completed receipt can be explicitly rechecked once later that day.
   // The new pass rereads every source and destination; uncertain writes remain blocked.
   const completedRun=completedRecheckReport(s)&&s.finished_recheck_day!==t.day;
@@ -178,7 +220,7 @@
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
   const repeat=safePreflightRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
-  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t));
+  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t));
   return s.enabled&&(sameDay||freshManualDay(s,t))
    &&!s.blocked&&!s.inflight&&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
@@ -195,6 +237,13 @@
     // The earlier report remains unchanged and its private history is retained.
     s.receipt_recheck_version=chrome.runtime.getManifest().version;
     s.receipt_recheck_run_id=s.report.run_id;s.receipt_recheck_day=requestedAt.day;
+    await write(s);
+   }
+   if(manualNow&&currentSourceChangedRecoveryGrant(s,requestedAt)){
+    // The source-specific grant is consumed before any tab/network action.
+    // Its exact old report stays in verified.prior_report_signature and Hub history.
+    s.source_recheck_version=chrome.runtime.getManifest().version;
+    s.source_recheck_run_id=s.report.run_id;s.source_recheck_day=requestedAt.day;
     await write(s);
    }
    const completedRecheck=manualNow&&completedRecheckReport(s);
@@ -335,11 +384,13 @@
    let recovery_error='';
    const legacyVerification=m.current_mapped_confirmed===true&&legacyRecoveryAllowed(s);
    const receiptVerification=m.current_mapped_confirmed===true&&m.receipt_recovery_confirmed===true&&currentReceiptRecoveryAllowed(s);
-   const receiptVersion=receiptVerification?chrome.runtime.getManifest().version:null;
-   const currentVerification=legacyVerification||receiptVerification;
+   const sourceVerification=m.current_mapped_confirmed===true&&m.source_recovery_confirmed===true&&currentSourceChangedRecoveryAllowed(s);
+   const receiptVersion=(receiptVerification||sourceVerification)?chrome.runtime.getManifest().version:null;
+   const currentVerification=legacyVerification||receiptVerification||sourceVerification;
    if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&((s.blocked&&m.current_mapped_confirmed!==true)||currentVerification)&&s.report){
     const note=typeof m.note==='string'?m.note.trim():'';
-    const verificationNote=receiptVerification?`Current mapped IC scores checked for one new run. Prior ${s.report.day} run remains incomplete and its entry receipt unconfirmed. ${note}`:
+    const verificationNote=sourceVerification?`Current mapped IC grades checked after source repair for one new source pass. Prior ${s.report.day} run remains stopped at a source change and incomplete. ${note}`:
+     receiptVerification?`Current mapped IC scores checked for one new run. Prior ${s.report.day} run remains incomplete and its entry receipt unconfirmed. ${note}`:
      legacyVerification?`Current mapped IC scores verified for a new run. Prior ${s.report.day} receipt remains unconfirmed. ${note}`:note;
     if(!note||verificationNote.length>500)recovery_error='Add a short verification note.';
     else try{
@@ -360,10 +411,14 @@
      if(busy||fresh.report?.run_id!==s.report.run_id||(legacyVerification&&(!legacyRecoveryAllowed(fresh)
       ||fresh.day!==s.day||JSON.stringify(fresh.report)!==JSON.stringify(s.report)))
       ||(receiptVerification&&(!currentReceiptRecoveryAllowed(fresh)||fresh.day!==s.day
+       ||JSON.stringify(fresh.report)!==JSON.stringify(s.report)||chrome.runtime.getManifest().version!==receiptVersion))
+      ||(sourceVerification&&(!currentSourceChangedRecoveryAllowed(fresh)||fresh.day!==s.day
        ||JSON.stringify(fresh.report)!==JSON.stringify(s.report)||chrome.runtime.getManifest().version!==receiptVersion)))throw Error();
      if(currentVerification&&((await chrome.tabs.get(hubs[0].id)).url!==hubUrl||(await chrome.tabs.get(ic.id)).url!==icUrl))throw Error();
      Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by,
       ...(currentVerification?{scope:'current_mapped_assignments',prior_day:s.report.day}:{}),
+      ...(sourceVerification?{recovery:'source_changed_before_entry',event_id,for_helper_version:receiptVersion,
+       prior_report_signature:JSON.stringify(s.report)}:{}),
       ...(receiptVerification?{recovery:'partial_receipt',event_id,for_helper_version:receiptVersion,
        prior_report_signature:JSON.stringify(s.report)}:{})}});
      await write(s);
@@ -371,7 +426,7 @@
    }
    if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
    if(m.type==='morning_run_now'&&!busy&&manualNowAllowed(s))run(false,true).catch(()=>{});
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s),can_verify_current_receipt:!busy&&currentReceiptRecoveryAllowed(s)};
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s),can_verify_current_receipt:!busy&&currentReceiptRecoveryAllowed(s),can_verify_current_source_change:!busy&&currentSourceChangedRecoveryAllowed(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
  globalThis.HubMorningStatus=async()=>{
