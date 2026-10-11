@@ -54,6 +54,13 @@ const retainedSourceHistory = overrides => {
     verified_at: '2032-01-20T15:00:00Z', basis: 'manual_saved_history',
     source_basis: {record_key: 'fictional-exact-record', receipt_sha256: 'a'.repeat(64)}, ...overrides};
 };
+const matchedOtherLesson = overrides => {
+  const {next_action, ...original} = sourceNotice();
+  return {...original, kind: 'matched_other_lesson',
+    reason: 'This original was received for the exact current Reasoning Form rather than Observation.',
+    target: {class_key: 'forensics', class_name: 'Forensics', week: 'Wk 03', form_id: 'TARGETCURRENT123',
+      lesson: 'Reasoning', url: 'https://docs.google.com/forms/d/TARGETCURRENT123/edit'}, ...overrides};
+};
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('source context renders full current identity/reason/action and verified source slides as literal text', () => {
@@ -1199,4 +1206,59 @@ test('a failed or superseded entry-history read cannot opt into late files or se
     assert.equal(client.helperRows(form).length, 0);
     assert.equal(client.work.scores[form.form_id], undefined);
   }
+});
+
+
+test('matched other current lesson shows exact Form and original links outside attention without Saved or action claims', () => {
+  const {ui} = boot([]);
+  const data = sourceContext(sourceScope, [], {status: 'not_assessed',
+    matched_other_lessons: [matchedOtherLesson({reason: '<script>Exact current association is literal</script>'})]});
+  const before = JSON.stringify(data), panel = ui.renderSourceReviewContext(data, sourceScope);
+  assert.equal(attention(panel).length, 0);
+  assert.match(panel.textContent, /Original matched to another current lesson.*Avery, Ann/);
+  assert.match(panel.textContent, /Current lesson: Forensics · Wk 03 · Reasoning/);
+  assert.ok(panel.textContent.includes('<script>Exact current association is literal</script>'));
+  assert.match(panel.textContent, /Slide 19/);
+  assert.deepEqual(allNodes(panel).filter(node => node.tagName === 'a').map(node => node.href),
+    ['https://drive.google.com/open?id=FICTIONALFILE123', 'https://docs.google.com/forms/d/TARGETCURRENT123/edit']);
+  assert.equal(allNodes(panel).some(node => ['script', 'input', 'button', 'select', 'time'].includes(node.tagName)), false);
+  assert.doesNotMatch(panel.textContent, /Next action:|Saved verification|Manual entry verified|grade entry completed|all caught up|No current source review notices/i);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test('matched lesson information preserves genuine unknown notices and rejects foreign or unverified non-action entries', () => {
+  const {ui} = boot([]);
+  const unknown = sourceNotice({student: {first: 'Pat', last: 'Parker', verified: false},
+    reason: 'Actual unknown source identity remains unresolved.', next_action: 'Check that exact original.'});
+  const panel = ui.renderSourceReviewContext(sourceContext(sourceScope, [unknown],
+    {matched_other_lessons: [matchedOtherLesson()], retained_history: [retainedSourceHistory()]}), sourceScope);
+  assert.equal(attention(panel).length, 1);
+  assert.match(attention(panel)[0].textContent, /Parker, Pat.*identity unverified.*unknown source identity.*Next action: Check/);
+  assert.doesNotMatch(attention(panel)[0].textContent, /Original matched|Avery, Ann|Manual entry verified/);
+  assert.match(panel.textContent, /Saved verification as of/);
+  const entry = matchedOtherLesson();
+  for (const altered of [matchedOtherLesson({student: {...entry.student, verified: false}}),
+      matchedOtherLesson({target: {...entry.target, class_key: 'biology'}}),
+      matchedOtherLesson({target: {...entry.target, week: 'Wk 05'}}),
+      matchedOtherLesson({target: {...entry.target, form_id: sourceScope.form_id, url: `https://docs.google.com/forms/d/${sourceScope.form_id}/edit`}}),
+      matchedOtherLesson({target: {...entry.target, url: 'https://docs.google.com/forms/d/OTHERFORM12345/edit'}})])
+    assert.throws(() => ui.renderSourceReviewContext(sourceContext(sourceScope, [unknown],
+      {matched_other_lessons: [altered]}), sourceScope), /could not be confirmed/);
+});
+
+test('aggregate displays non-action current lesson matches with one model-free GET and discards stale names', async () => {
+  const {ui, context} = boot([]), requests = [], writes = [];
+  context.localStorage = {getItem: () => null, setItem: (...args) => writes.push(args)};
+  const data = sourceContext(sourceScope, [], {status: 'not_assessed', matched_other_lessons: [matchedOtherLesson()]});
+  context.fetch = async (url, options) => { requests.push({url, options}); return {ok: true, json: async () => sourceSummary([data])}; };
+  const panel = ui.currentSourceReviewPanel(); await tick();
+  assert.match(panel.textContent, /Original matched to another current lesson.*Avery, Ann/);
+  assert.equal(attention(panel).length, 0); assert.equal(writes.length, 0);
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, 'api/review-context');
+  assert.equal(requests[0].options.method, undefined); assert.equal(requests[0].options.body, undefined);
+  assert.doesNotMatch(panel.textContent, /Next action:|Saved verification as of|No current selection issue/);
+  let answer; context.fetch = () => new Promise(resolve => { answer = resolve; });
+  const stale = ui.currentSourceReviewPanel(); ui.invalidateReviewPanel(stale);
+  answer({ok: true, json: async () => sourceSummary([data])}); await tick();
+  assert.doesNotMatch(stale.textContent, /Avery, Ann|Original matched|Exact current association/);
 });

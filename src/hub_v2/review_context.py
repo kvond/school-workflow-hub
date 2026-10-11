@@ -216,7 +216,7 @@ def build(current_scope, found, cached=None, *, checked_at=None):
         raise ValueError('review work scope')
     form = forms[0]
     rows = completion.recheck_candidates(form)
-    notices, limitations = [], []
+    notices, limitations, matched_other_lessons = [], [], []
     policy = current_scope.get('grade_policy') or {}
     case_skip = (current_scope['class_key'] == 'forensics' and work.week_number(current_scope['week']) == 1
                  and bool(re.fullmatch(r'(?:work\s+a\s+case|(?:.*\b)?sheppard(?:\b.*)?)',
@@ -275,9 +275,28 @@ def build(current_scope, found, cached=None, *, checked_at=None):
                   if verified_route and item.get('to') else 'This original’s lesson and turn-in route could not be confirmed.')
         link = source_link(item.get('url'))
         files = [{**link, 'label': item.get('file') or 'Original source'}] if link else []
-        notices.append(notice(current_scope, row, reason, files=files,
+        detail = notice(current_scope, row, reason, files=files,
             action='Review the original turn-in route shown here; preserve current grades.', affected_scope='student',
-            issue_kind='source_route_resolved' if verified_route else 'source_route_unverified'))
+            issue_kind='source_route_resolved' if verified_route else 'source_route_unverified')
+        destinations = [(lesson, target) for lesson in found.get('lessons', [])
+                        for target in lesson.get('forms', [])
+                        if target.get('form_id') == item.get('assignment_form_id')]
+        if (verified_route and detail['student']['verified'] and files and len(destinations) == 1
+                and not destinations[0][1].get('problem')):
+            lesson, target = destinations[0]
+            target_link = source_link('https://docs.google.com/forms/d/' + target['form_id'] + '/edit', target['form_id'])
+            if target_link:
+                label = target.get('label') or lesson.get('topic') or 'Linked current lesson'
+                if source_link(label, target['form_id']):
+                    label = lesson.get('topic') or 'Linked current lesson'
+                information = {k: deepcopy(v) for k, v in detail.items() if k != 'next_action'}
+                information.update(kind='matched_other_lesson',
+                    reason='This original is matched to %s in %s; it remains linked here as source context.' % (label, current_scope['week']),
+                    target={'class_key': current_scope['class_key'], 'class_name': current_scope['class_name'],
+                            'week': current_scope['week'], 'form_id': target['form_id'], 'lesson': label, 'url': target_link['url']})
+                matched_other_lessons.append(information)
+                continue
+        notices.append(detail)
     for reason in [form.get('problem'), found.get('assessment_problem'), found.get('folder_note'), *found.get('problems', [])]:
         if reason:
             notices.append(notice(current_scope, {}, reason, files=current_scope['sources'],
@@ -296,7 +315,7 @@ def build(current_scope, found, cached=None, *, checked_at=None):
     elif submitted:
         limitations.append('This view shows current source issues, not a new grading pass. Earlier response checks appear only when the original and linked teacher copy still match. Other responses have not been checked here.')
     return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
-            'scope': current_scope, 'notices': notices, 'limitations': limitations,
+            'scope': current_scope, 'notices': notices, 'matched_other_lessons': matched_other_lessons, 'limitations': limitations,
             'status': 'review' if notices else 'waiting' if waiting else 'not_assessed',
             'source_selection': {'submitted_originals': submitted, 'assessment_performed': False}}
 
