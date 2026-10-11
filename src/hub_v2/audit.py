@@ -54,7 +54,7 @@ def _titles(token, ids):
         return dict(zip(ids, pool.map(fetch, ids)))
 
 
-def _release_deck(token, deck_id, prompt0="", prompt2=""):
+def _release_deck(token, deck_id, prompt0="", prompt2="", *, native_teacher=False):
     """Read-only completion coding validation; VT curriculum audit is separate."""
     stage, meta = "metadata", {}
     try:
@@ -64,14 +64,21 @@ def _release_deck(token, deck_id, prompt0="", prompt2=""):
         if meta.get("trashed"):
             raise completion.Unreadable("This linked deck is in trash; it was not restored or used as a current lesson source.")
         stage = "download"
-        raw = google.deck_bytes(token, deck_id, meta.get("mimeType", ""))
+        if native_teacher:
+            meta, deck = completion._teacher_template(token, deck_id)
+        else:
+            raw = google.deck_bytes(token, deck_id, meta.get("mimeType", ""))
+            stage = "parse"
+            deck = completion.read_deck(raw)
         stage = "parse"
         result = completion.readiness(
-            completion.read_deck(raw),
+            deck,
             revision=str(meta.get("version") or meta.get("modifiedTime") or ""),
         )
         result["title"] = meta.get("name", "")
         result.update(deck_id=deck_id, scope="linked_deck", student_copies_checked=False)
+        if native_teacher:
+            result["_teacher_source_metadata"] = meta
         return result
     except (google.GoogleError, completion.Unreadable, ValueError) as error:
         status = getattr(error, "status", None)
@@ -153,21 +160,59 @@ def check(token, agenda, class_key, config=None):
             active_rows = rows[start:start + 3]
         except ValueError:
             active_rows = []
+    native_teacher_ids = set()
     for r in active_rows:
-        r["source_resolution"] = completion.lesson_sources(token, r["lesson"])
-        selected = r["source_resolution"]["decks"]
+        source = completion.lesson_sources(token, r["lesson"])
+        r["source_resolution"] = source
+        selected = source["decks"]
         r["release_deck"] = selected[0]["id"] if selected else ""
+        r["registered_teacher_sources"] = []
+        if source["problem"]:
+            continue
+        for form_id in dict.fromkeys(f.get("form_id") for f in r["lesson"]["forms"] if f.get("form_id")):
+            try:
+                binding = work.form_teacher_sources(config or {}, agenda, class_key, r["week"], form_id)
+                if not binding:
+                    continue
+                bound = completion.lesson_sources(token, r["lesson"], binding=binding)
+                if bound["problem"]:
+                    raise completion.Unreadable(bound["problem"])
+                if not set(binding["teacher_ids"]).issubset({d["id"] for d in selected}):
+                    raise completion.Unreadable("The registered teacher sources do not match this current Agenda source collection.")
+                r["registered_teacher_sources"].append((binding, bound))
+                native_teacher_ids.update(binding["teacher_ids"])
+            except (ValueError, TypeError, KeyError, completion.Unreadable) as error:
+                source["problem"] = str(error)
+                break
     release_ids = list(dict.fromkeys(d["id"] for r in active_rows
                     if not r["source_resolution"]["problem"] for d in r["source_resolution"]["decks"]))
     releases = {}
     if release_ids:
         with ThreadPoolExecutor(max_workers=3) as pool:
             results = pool.map(
-                lambda deck_id: _release_deck(token, deck_id),
+                lambda deck_id: _release_deck(token, deck_id, native_teacher=True)
+                                if deck_id in native_teacher_ids else _release_deck(token, deck_id),
                 release_ids,
             )
             releases = dict(zip(release_ids, results))
 
+    for r in active_rows:
+        if r["source_resolution"]["problem"]:
+            continue
+        for binding, bound in r["registered_teacher_sources"]:
+            templates = [(fid, releases[fid]["_teacher_source_metadata"], None)
+                         for fid in binding["teacher_ids"]
+                         if fid in releases and "_teacher_source_metadata" in releases[fid]]
+            if len(templates) != len(binding["teacher_ids"]):
+                continue  # The real failed read is retained below; no READY claim.
+            try:
+                completion._registered_teacher_bookend(token, binding, bound, templates)
+            except (google.GoogleError, completion.Unreadable) as error:
+                r["source_resolution"]["problem"] = str(error)
+                break
+    # Consumed metadata is only an internal freshness operand, not UI output.
+    releases = {fid: {k: v for k, v in result.items() if k != "_teacher_source_metadata"}
+                for fid, result in releases.items()}
     for r in active_rows:
         source = r["source_resolution"]
         checks = [releases[d["id"]] for d in source["decks"] if d["id"] in releases]
