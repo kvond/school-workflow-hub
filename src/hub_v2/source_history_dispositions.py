@@ -113,13 +113,17 @@ def validate(value):
     if not instant(native['save_verified_at']) <= native_at <= verified:
         raise ValueError('source history native verification time')
     from . import morning_entry
-    if not isinstance(native['targets'], list) or len(native['targets']) != 2:
+    single_manual = (value['basis'] == 'manual_saved_history'
+                     and isinstance(native['targets'], list) and len(native['targets']) == 1)
+    if not isinstance(native['targets'], list) or (len(native['targets']) != 2 and not single_manual):
         raise ValueError('source history native targets')
     for target in native['targets']:
         morning_entry._target(target)
     components = native['components']
-    if not isinstance(components, list) or len(components) != 2 or {c.get('column') for c in components} != {'notes', 'revision'}:
-        raise ValueError('source history exact two components')
+    if (not isinstance(components, list)
+            or (not single_manual and (len(components) != 2 or {c.get('column') for c in components} != {'notes', 'revision'}))
+            or (single_manual and (len(components) != 1 or not isinstance(components[0], dict) or components[0].get('column') != native['targets'][0]['column']))):
+        raise ValueError('source history exact saved components')
     for component in components:
         expected = {'column', 'assignment_id', 'score_group', 'term_id', 'calendar_id', 'structure_id', 'school_id', 'task_id', 'year', 'points', 'value', 'saved'}
         if (set(component) != expected or component['saved'] is not True
@@ -130,7 +134,7 @@ def validate(value):
             raise ValueError('source history native component')
         if value['basis'] == 'maximum_saved_as_of' and component['value'] != 10:
             raise ValueError('source history maximum evidence')
-    if len({c['assignment_id'] for c in components}) != 2:
+    if len({c['assignment_id'] for c in components}) != len(components):
         raise ValueError('source history duplicate assignment')
     return deepcopy(value)
 
@@ -206,9 +210,13 @@ def verify_current(value, basis, detail, metadata, *, now=None):
             raise ValueError('source history source fingerprint or event changed')
     from . import morning_entry
     targets = basis['expected_targets']
+    single_manual = value['basis'] == 'manual_saved_history' and len(targets) == 1
     if (basis['native_instruction_sha256'] != value['instruction_sha256']
-            or targets != value['native_saved']['targets'] or len(targets) != 2 or {t.get('column') for t in targets} != {'notes', 'revision'}):
+            or targets != value['native_saved']['targets']
+            or (not single_manual and (len(targets) != 2 or {t.get('column') for t in targets} != {'notes', 'revision'}))):
         raise ValueError('source history has no exact independently declared native targets')
+    if single_manual and targets != basis['mapped_targets']:
+        raise ValueError('source history single component has no exact current partial mapping')
     for target in targets:
         morning_entry._target(target)
         if target['section'] != value['identity']['section'] or target['section_id'] != value['identity']['section_id']:

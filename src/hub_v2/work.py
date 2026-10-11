@@ -393,14 +393,14 @@ def _school_year(agenda, week_label):
     return "%d-%02d" % (first, (first + 1) % 100)
 
 
-def _scoped_config(config, name, required):
+def _scoped_config(config, name, required, optional=()):
     raw = config.get(name)
     if not raw:
         return []
     try:
         values = json.loads(raw)
         if (not isinstance(values, list) or len(values) > 500
-                or any(not isinstance(v, dict) or set(v) != required
+                or any(not isinstance(v, dict) or not required <= set(v) <= required | set(optional)
                        or not isinstance(v.get("class_key"), str)
                        or not isinstance(v.get("school_year"), str)
                        or not re.fullmatch(r"20\d\d-\d\d", v["school_year"])
@@ -552,33 +552,111 @@ def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
 
 
 def accepted_form_routes(config, agenda, class_key, week_label, forms):
-    """Exact approved alternate intake Forms, separate from assignment identity."""
+    """Exact approved alternate intake Forms, separate from assignment identity.
+
+    ``week`` is the assignment's Agenda week. Optional ``source_week`` names
+    an explicitly approved other-week intake; it never changes a Form event.
+    """
     try:
         values = _scoped_config(config, "HUB_ACCEPTED_FORM_ROUTES",
-                                {"school_year", "class_key", "week", "source_form_id", "assignment_form_id"})
+                                {"school_year", "class_key", "week", "source_form_id", "assignment_form_id"},
+                                {"source_week"})
         year = _school_year(agenda, week_label) if values else None
         for value in values:
             if (value["class_key"] not in agenda.classes or not isinstance(value["week"], str)
+                    or ("source_week" in value and not isinstance(value["source_week"], str))
                     or any(not isinstance(value[k], str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", value[k])
                            for k in ("source_form_id", "assignment_form_id"))
                     or value["source_form_id"] == value["assignment_form_id"]):
                 raise ValueError
             labels = {label for _, label in (agenda.classes[value["class_key"]].get("layout") or {"rows": []})["rows"]}
-            if value["school_year"] == year and value["week"] not in labels:
-                raise ValueError
+            if value["school_year"] == year:
+                source_week = value.get("source_week", value["week"])
+                if value["week"] not in labels or source_week not in labels:
+                    raise ValueError
+                if source_week != value["week"]:
+                    # A cross-week declaration must name two unique actual
+                    # Agenda Forms in the same class and teaching year.
+                    for fid, expected in ((value["source_form_id"], source_week),
+                                          (value["assignment_form_id"], value["week"])):
+                        scopes = [(cls, label) for cls, entry in agenda.classes.items()
+                                  for label in dict.fromkeys(label for _, label in (entry.get("layout") or {"rows": []})["rows"])
+                                  if _school_year(agenda, label) == year
+                                  for lesson in agenda.lessons(cls, label) for form in lesson["forms"]
+                                  if form.get("form_id") == fid]
+                        if (scopes.count((value["class_key"], expected)) != 1
+                                or any(cls != value["class_key"] for cls, _ in scopes)):
+                            raise ValueError
         if not values:
             return set(), None
         ids = [form["form_id"] for form in forms if form.get("form_id")]
-        if year is None and any(v["class_key"] == class_key and v["week"] == week_label for v in values):
+        relevant = [v for v in values if v["class_key"] == class_key and v["school_year"] == year
+                    and week_label in (v["week"], v.get("source_week", v["week"]))]
+        if year is None and any(v["class_key"] == class_key and
+                               week_label in (v["week"], v.get("source_week", v["week"])) for v in values):
             raise ValueError
-        routes = [(v["source_form_id"], v["assignment_form_id"]) for v in values
-                  if v["class_key"] == class_key and v["school_year"] == year
-                  and v["week"] == week_label]
-        if len(routes) != len(set(routes)) or any(ids.count(fid) != 1 for route in routes for fid in route):
+        routes = [(v["source_form_id"], v["assignment_form_id"]) for v in relevant]
+        if len(routes) != len(set(routes)):
             raise ValueError
+        for value in relevant:
+            source_week = value.get("source_week", value["week"])
+            current_ids = ([value["source_form_id"], value["assignment_form_id"]]
+                           if source_week == value["week"] else
+                           [value["source_form_id"] if week_label == source_week else value["assignment_form_id"]])
+            if any(ids.count(fid) != 1 for fid in current_ids):
+                raise ValueError
+            if source_week != value["week"] and sum(
+                    v["class_key"] == class_key and v["school_year"] == year
+                    and v["source_form_id"] == value["source_form_id"] for v in values) != 1:
+                raise ValueError
         return set(routes), None
     except (ValueError, TypeError, KeyError):
         return set(), "The teacher-approved alternate submission Form mapping needs checking before grading."
+
+
+def _accepted_route_move(routes, entries, source_index, target_index, submission, students, domains, prefix, *, class_key, school_year, config):
+    """Accept explicit cross-week intake only after the existing unique move.
+
+    This flag suppresses a false source-week missing-work review. Target
+    assessment, source/history guards and the original Form event stay intact.
+    """
+    source, target = entries[source_index], entries[target_index]
+    source_id = source.get("form", {}).get("form_id") or source.get("form_id")
+    target_id = target.get("form", {}).get("form_id") or target.get("form_id")
+    if (source_id, target_id) not in routes:
+        return False
+    if source["week"] == target["week"]:
+        return True  # Preserve the established same-week route contract.
+    declarations = [v for v in json.loads(config["HUB_ACCEPTED_FORM_ROUTES"])
+                    if (v["class_key"], v["school_year"], v["source_form_id"], v["assignment_form_id"])
+                    == (class_key, school_year, source_id, target_id)]
+    if (len(declarations) != 1 or declarations[0].get("source_week") != source["week"]
+            or declarations[0]["week"] != target["week"]):
+        return False
+    files = submission.get("files") or []
+    at = when(submission.get("submitted_at"))
+    student, how = identify(submission, students, domains, prefix)
+    if (not student or how != "email" or submission.get("source") != "form"
+            or not submission.get("event") or not submission.get("key") or not at
+            or not files or len({f.get("id") for f in files}) != len(files)
+            or any(not e.get("current") and (e.get("class_key") != class_key
+                   or e.get("school_year") != school_year) for e in (source, target))
+            or source.get("problem") or target.get("problem")
+            or source.get("form", {}).get("problem") or target.get("form", {}).get("problem")
+            or any(e.get("teacher_source_binding") and not e.get("teacher_source_verified")
+                   for e in (source, target))
+            or any(sum((e.get("form", {}).get("form_id") or e.get("form_id")) == fid for e in entries) != 1
+                   for fid in (source_id, target_id))):
+        return False
+    if any(not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", str(f.get("id") or ""))
+           or f.get("source_form_id") != source_id or f.get("source_response_id") != submission["key"]
+           or when(f.get("source_submitted_at")) != at or f.get("trashed") is not False or f.get("problem")
+           or not (any(len(known) >= 16 and known in deck_stem(f.get("name", ""))
+                       for known in target.get("teacher_signature", ()))
+                   or _corroborates_assignment_title(f, target)) for f in files):
+        return False
+    return any(i == source_index and s is submission and j == target_index
+               for i, s, j in wrong_form_moves(entries))
 
 
 def form_weeks(agenda, class_key):
@@ -1354,8 +1432,14 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
         source, target = entries[i], entries[j]
         if submission not in source["found"]:
             continue
+        pair = (source.get("form", {}).get("form_id") or source.get("form_id"),
+                target.get("form", {}).get("form_id") or target.get("form_id"))
+        if pair in accepted_routes and source["week"] != target["week"]:
+            known.update(_metadata(token, [f["id"] for f in submission["files"] if f["id"] not in known]))
+            describe_files(token, [submission], known)
+        accepted = _accepted_route_move(accepted_routes, entries, i, j, submission, students, domains, prefix,
+                                        class_key=class_key, school_year=_school_year(agenda, week_label), config=config)
         source["found"].remove(submission)
-        accepted = (source.get("form", {}).get("form_id"), target.get("form", {}).get("form_id")) in accepted_routes
         if source["current"]:
             source["form"].setdefault("moved_out", []).append(
                 {"submission": submission, "to": "%s · %s" % (target["week"], target["label"]),
