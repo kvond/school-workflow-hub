@@ -226,6 +226,16 @@ test('readiness review links name exact sources and missing codes stay advisory 
   assert.equal(context.lessonReviews.lessonReviewBadge({...base, topic: 'Photosynthesis'}).textContent, 'Needs embedded codes');
   const trueHold = context.lessonReviews.lessonReviewNotice({...base, release: {...release, issues: ['duplicate_feedback_marker'], action: 'Review the duplicate marker.'}});
   assert.equal(trueHold.next_action, 'Review the duplicate marker.');
+  const linkAudit = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
+  vm.runInContext('function omittedFormProblem() { return false; }\n' + linkAudit + '\nglobalThis.linkReview = linkCheckResult;', context);
+  const table = context.linkReview('Biology', {flags: [], rows: [{...base, forms: [{form_id: 'FICTIONALFORM123'}],
+    release: {...release, source_resolution: {decks: base.decks, folders: [{id: 'EXACTFOLDER123', name: 'Verified lesson folder'}]}}}]}).filter(Boolean);
+  const text = table.map(node => node.textContent).join(' ');
+  assert.match(text, /Code advisory.*Missing codes alone do not hold grading/);
+  assert.doesNotMatch(text, /Unmarked copies are held without scores/);
+  const links = table.flatMap(allNodes).filter(node => node.tagName === 'a');
+  assert.ok(links.some(node => node.href === 'https://docs.google.com/forms/d/FICTIONALFORM123/edit'));
+  assert.ok(links.some(node => node.href === 'https://drive.google.com/drive/folders/EXACTFOLDER123'));
 });
 
 test('readiness labels name embedded-code repairs while keeping access failures distinct', () => {

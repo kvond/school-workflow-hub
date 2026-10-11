@@ -562,7 +562,12 @@ function lessonReviewNotice(row) {
   const decks = release.source_resolution?.decks || row.decks || [];
   const sources = decks.filter(deck => typeof deck.id === 'string').map(deck => ({file_id: deck.id,
     label: deck.title || deck.name || deck.label || 'Open linked lesson source',
-    url: `https://docs.google.com/presentation/d/${deck.id}/edit`}));
+    url: deck.metadata?.mimeType === 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+      ? `https://drive.google.com/open?id=${deck.id}` : `https://docs.google.com/presentation/d/${deck.id}/edit`}));
+  for (const folder of release.source_resolution?.folders || []) sources.push({file_id: folder.id,
+    label: folder.name || 'Open verified lesson folder', url: `https://drive.google.com/drive/folders/${folder.id}`});
+  for (const form of row.forms || []) if (form.form_id) sources.push({file_id: form.form_id,
+    label: form.student_title || form.title || form.label || 'Open exact turn-in Form', url: `https://docs.google.com/forms/d/${form.form_id}/edit`});
   return {kind: 'lesson', student: {verified: false}, reason: lessonCodeAdvisory(row)
     ? 'The linked source’s code inventory needs checking. Missing codes alone are advisory for this lesson; only usable coded items in correctly matched copies count.'
     : release.problem || (release.status === 'READY' ? 'The linked source passed its code check; student copies are checked separately.'
@@ -2435,10 +2440,12 @@ function linkCheckResult(name, data) {
   const noAgendaForm = data.flags.filter(f => f.kind === 'no-form');
   const releases = data.rows.filter(r => r.release);
   const notReady = releases.filter(r => r.release.status !== 'READY');
-  const releaseText = release => {
+  const releaseText = row => {
+    const release = row.release;
     if (!release) return '—';
     if (release.status === 'READY') return `Ready · revision ${release.revision || 'verified'}`;
-    return `${releaseLabel(release)} · ${issueAction(release)}`;
+    const context = {...row, className: name, classKey: CLASSES.find(([, label]) => label === name)?.[0]};
+    return `${lessonCodeAdvisory(context) ? 'Code advisory' : releaseLabel(release)} · ${lessonReviewAction(context)}`;
   };
   return [
     data.problem ? note(data.problem) : null,
@@ -2461,7 +2468,9 @@ function linkCheckResult(name, data) {
           el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ')
             || (r.week_policy?.excluded === true && !r.week_policy.problem ? 'Not assigned this school year' : '—')}),
           el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}),
-          el('td', {text: releaseText(r.release)})))))))];
+          el('td', {}, el('p', {text: releaseText(r)}), r.release ? renderSourceReviewNotice(
+            lessonReviewNotice({...r, className: name, classKey: CLASSES.find(([, label]) => label === name)?.[0]}),
+            {class_name: name, week: r.week, lesson: r.topic}) : null)))))))];
 }
 
 async function runLinkCheck() {
