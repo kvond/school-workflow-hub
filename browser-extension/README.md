@@ -1,5 +1,16 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Exact comparison receipt wait (0.5.28)
+
+After all mapped IC panels return verified results, the helper allows up to
+200 seconds for the Hub to validate and record that comparison; its worker
+bridge allows 210 seconds. Other Hub operations retain their 90-second request
+and 100-second bridge waits, and IC entry retains its existing limits. A late
+or missing acknowledgement still stops the batch and preserves its incomplete
+receipt. This wait does not retry any request, score entry, Save or recovery.
+Check the existing private receipt and current Saved panels before any further
+run; a server response arriving after the local deadline cannot resume grading.
+
 ## Saved-panel readback and student copy scoring (0.5.19)
 
 After native Save, the helper waits for the current IC workspace to finish

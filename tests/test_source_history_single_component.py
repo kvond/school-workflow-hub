@@ -30,7 +30,7 @@ class SingleSavedComponentTests(unittest.TestCase):
   self.assertEqual(dispositions.verify_current(value,basis,detail,md,now=NOW),value)
   row,found,scope,roster,result=captures();before=deepcopy(found)
   store=Mock();store.read.return_value=Snapshot({value['record_key']:Document(value,'1')},NOW.isoformat())
-  with patch.object(dispositions,'configured_store',return_value=store),patch.object(google,'drive_file',side_effect=lambda _t,fid,_f:metadata(fid)),patch.object(completion,'assess',side_effect=AssertionError('no assessment')),patch.object(google,'append_rows',side_effect=AssertionError('no school writes')):
+  with patch.object(dispositions,'configured_store',return_value=store),patch.object(dispositions,'_source_metadata',side_effect=lambda _t,fid,_f:metadata(fid)),patch.object(completion,'assess',side_effect=AssertionError('no assessment')),patch.object(google,'append_rows',side_effect=AssertionError('no school writes')):
    out=dispositions.apply('read',config,Agenda(),scope,found,result,roster)
   self.assertEqual(out['status'],'history_retained');self.assertEqual(out['notices'],[])
   retained=out['retained_history'][0]

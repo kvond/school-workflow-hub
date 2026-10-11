@@ -83,7 +83,7 @@ def apply(value, *, found=None, scope=None, roster=None, result=None, md=None):
     store = Mock()
     store.read.return_value = Snapshot({value['record_key']: Document(value, '1')}, NOW.isoformat())
     with patch.object(dispositions, 'configured_store', return_value=store), \
-         patch.object(google, 'drive_file', side_effect=md or (lambda token, fid, fields: metadata(fid))), \
+         patch.object(dispositions, '_source_metadata', side_effect=md or (lambda token, fid, fields: metadata(fid))), \
          patch.object(completion, 'assess', side_effect=AssertionError('no assessment')), \
          patch.object(google, 'deck_bytes', side_effect=AssertionError('no source bytes')):
         output = dispositions.apply('read', configured(value), Agenda(), scope or actual_scope,
@@ -218,7 +218,7 @@ class SourceHistoryDispositionTests(unittest.TestCase):
         value, _, _ = receipt()
         row, found, scope, roster, result = captures()
         store = Mock(); store.read.side_effect = StoreUnavailable('Private source history is temporarily unavailable.')
-        with patch.object(dispositions, 'configured_store', return_value=store), patch.object(google, 'drive_file') as md:
+        with patch.object(dispositions, 'configured_store', return_value=store), patch.object(dispositions, '_source_metadata') as md:
             output = dispositions.apply('read', configured(value), Agenda(), scope, found, result, roster)
         self.assertEqual(output['status'], 'unavailable')
         self.assertFalse(output['notices'][0]['student']['verified'])
@@ -228,7 +228,7 @@ class SourceHistoryDispositionTests(unittest.TestCase):
         # A genuinely absent receipt does not imply unavailable proof or
         # create an acknowledgement; preserve the actual source notice.
         store.read.side_effect = None; store.read.return_value = Snapshot({}, NOW.isoformat())
-        with patch.object(dispositions, 'configured_store', return_value=store), patch.object(google, 'drive_file') as md:
+        with patch.object(dispositions, 'configured_store', return_value=store), patch.object(dispositions, '_source_metadata') as md:
             output = dispositions.apply('read', configured(value), Agenda(), scope, found, result, roster)
         self.assertEqual(output['notices'], result['notices'])
         self.assertFalse(output['retained_history']); md.assert_not_called()
@@ -254,7 +254,7 @@ class SourceHistoryDispositionTests(unittest.TestCase):
         old_candidates = completion.recheck_candidates(found['lessons'][0]['forms'][0])
         store = Mock(); store.read.return_value = Snapshot({value['record_key']: Document(value, '1')}, NOW.isoformat())
         with patch.object(dispositions, 'configured_store', return_value=store), \
-             patch.object(google, 'drive_file', side_effect=lambda token, fid, fields: metadata(fid)), \
+             patch.object(dispositions, '_source_metadata', side_effect=lambda token, fid, fields: metadata(fid)), \
              patch.object(completion, 'assess') as assess, patch.object(completion, 'score_file') as score, \
              patch.object(google, 'deck_bytes') as byte_read, patch.object(google, 'append_rows') as append:
             output = review_context._read_found('read', configured(value), Agenda(), scope, found, roster_snapshot=roster)
