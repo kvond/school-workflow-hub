@@ -172,6 +172,53 @@ def rows(form, scored, now, *, recheck=False):
     return list(result.values())
 
 
+
+def mapped_entry_rows(values, targets):
+    """Project only helper values to an intentional exact component mapping.
+
+    Source assessments and feedback are not modified. An absent mapping is not
+    an intentional partial map; its existing downstream refusal is unchanged.
+    """
+    from . import morning_entry
+    if not targets:
+        return values, targets, False
+    if not isinstance(targets, list) or len(targets) > 12:
+        raise ValueError("mapping")
+    pairs, urls, sections, section_ids = set(), set(), {}, {}
+    for target in targets:
+        morning_entry._target(target)
+        pair = (target["section"], target["column"])
+        context = tuple(target[k] for k in ("section_id", "term_id", "year", "school_id", "calendar_id", "structure_id", "task_id"))
+        if (pair in pairs or target["url"] in urls
+                or target["section"] in sections and sections[target["section"]][0] != context
+                or target["section_id"] in section_ids and section_ids[target["section_id"]] != target["section"]):
+            raise ValueError("mapping")
+        pairs.add(pair); urls.add(target["url"])
+        sections.setdefault(target["section"], (context, set()))[1].add(target["column"])
+        section_ids[target["section_id"]] = target["section"]
+    if any(row["kind"] in ("score", "zero") and row["section"] not in sections for row in values):
+        raise ValueError("mapping")
+    partial = any(columns != {"notes", "revision"} for _, columns in sections.values())
+    if not partial:
+        return values, targets, False
+    projected = []
+    for row in values:
+        # A partial mapping does not authorize an automatic absence zero.
+        if row["kind"] == "zero":
+            continue
+        item = dict(row)
+        if row["kind"] == "score":
+            for column in ("notes", "revision"):
+                if (row["section"], column) not in pairs:
+                    item[column] = None
+            if item["notes"] is None and item["revision"] is None:
+                item.update(kind="none", reason="Mapped IC component has no measured score; no zero prepared")
+        projected.append(item)
+    needed = {(row["section"], column) for row in projected if row["kind"] == "score"
+              for column in ("notes", "revision") if row[column] is not None}
+    return projected, [target for target in targets if (target["section"], target["column"]) in needed], True
+
+
 def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     from . import combined_assessment
     try:
@@ -238,13 +285,22 @@ def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     matched = [m for m in bindings(config) if m.get("class_key") == cls and m.get("form_id") == fid]
     if len(matched) != 1:
         return {"code": "mapping_required"}
+    try:
+        values, targets, partial = mapped_entry_rows(values, matched[0].get("targets", []))
+    except ValueError:
+        return {"code": "mapping_required"}
+    if not any(r["kind"] == "score" or r["kind"] == "zero" for r in values):
+        checks = sum(r["kind"] == "check" for r in values)
+        return ({"code": "source_scores_held", "source_holds": {"checks": checks}} if checks else {"code": "no_scores"})
     label = " ".join(str(form.get("label") or lesson["topic"]).split())[:200]
     value = {"schema": "hub-ic-list/v1", "list_id": str(uuid.uuid4()), "class_key": cls,
         "class_name": agenda.classes[cls]["name"], "week": week, "form_id": fid, "assignment": label,
         "form_label": label, "status": "closed" if closed else "open", "status_text": "Morning scores",
         "sent_at": now.isoformat(), "rows": values}
-    revision = hashlib.sha256(json.dumps([form, scored], sort_keys=True, default=str).encode()).hexdigest()
-    return {"code": "ready", "list": value, "revision": revision, "targets": matched[0].get("targets", [])}
+    basis = [form, scored, values, targets] if partial else [form, scored]
+    revision = hashlib.sha256(json.dumps(basis, sort_keys=True, default=str).encode()).hexdigest()
+    return {"code": "ready", "list": value, "revision": revision, "targets": targets,
+            **({"partial_components": True} if partial else {})}
 
 
 PREFLIGHT_STAGES = frozenset(("summary_publish", "summary_backlog", "hub_connection"))
