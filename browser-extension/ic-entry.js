@@ -10,6 +10,7 @@
  if(!E||!A?.panel||!P.origin(C.IC_ORIGIN)||location.origin!==C.IC_ORIGIN||window.top!==window)return;
  const {surface,waitSurface,renderedFlags,until,norm}=A.panel;
  const SAVED='All scores have been saved.';
+ const DIRTY='(Alt + Enter)';
  const LABEL=/^(.+?) MP: Marking Period Score input for (.+)$/;
  const fail=code=>{throw Error(code);};
  const ask=(op,extra={})=>chrome.runtime.sendMessage({type:'entry_ic',op,...extra});
@@ -36,7 +37,20 @@
   const expectedLabels=(plan.snapshot?.rows||plan.rows).map(row=>row.label).sort();
   return {
    diagnostic:()=>diagnostic,
-   snapshot:async requireSaved=>read(requireSaved).snapshot,
+   snapshot:async requireSaved=>{
+    if(requireSaved===false){
+     // The visible input value can change before IC accepts its input event.
+     // Require its dirty marker before the executor may reach Save.
+     diagnostic='edited_scores_not_recognized';
+     await until(()=>{
+      const {s,snapshot}=read(false);
+      if(!sameContext(s,plan))fail('ic_changed');
+      return s.save.getAttribute('title')===DIRTY;
+     },20000);
+     diagnostic='';
+    }
+    return read(requireSaved).snapshot;
+   },
    fill:async change=>{
     const {s,snapshot}=read(false);if(!sameContext(s,plan))fail('ic_changed');
     const inputs=s.inputs.filter(i=>norm(i.getAttribute('aria-label'))===change.label),row=snapshot.rows.find(r=>r.label===change.label);
@@ -48,14 +62,29 @@
     if(inputs.length!==1||!row||!planned||row.score!==change.before||row.other!==null||JSON.stringify(row.flags)!==JSON.stringify(planned.flags)||(row.flags.length&&!zeroWithMissing))fail('ic_changed');
     const input=inputs[0],view=s.doc.defaultView,setter=Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype,'value').set;
     input.focus();setter.call(input,String(change.value));
-    input.dispatchEvent(new view.Event('input',{bubbles:true}));input.dispatchEvent(new view.Event('change',{bubbles:true}));input.blur();
+    input.dispatchEvent(new view.Event('input',{bubbles:true}));input.dispatchEvent(new view.Event('change',{bubbles:true}));
+    // IC's original multiscore input validates its ngModel-backed displayScore
+    // on blur and on its own keyup subscription. Let the input model's event
+    // turn finish before blur, and notify that existing score-only listener.
+    input.dispatchEvent(new view.KeyboardEvent('keyup',{bubbles:true,key:String(change.value).slice(-1)}));
+    await new Promise(resolve=>setTimeout(resolve,0));
+    const current=read(false);
+    if(!sameContext(current.s,plan)||!current.s.inputs.includes(input))fail('ic_changed');
+    input.blur();
     if(input.value.trim()!==String(change.value))fail('typing_not_taken');
    },
    save:async()=>{
-    const {s}=read(false);if(!sameContext(s,plan))fail('ic_changed');
+    const {s,snapshot}=read(false);if(!sameContext(s,plan))fail('ic_changed');
+    // A stale saved marker cannot acknowledge this Save. Losing the dirty
+    // state after the typed snapshot also invalidates this attempt.
+    if(s.save.getAttribute('title')!==DIRTY){diagnostic='edited_scores_not_recognized';fail('ic_changed');}
     diagnostic='save_confirmation_pending';
     s.save.click();
-    await until(()=>{try{return norm(surface().save.getAttribute('title'))===SAVED;}catch{return false;}},20000);
+    await until(()=>{
+     const {s:current,snapshot:after}=read(false);
+     if(!sameContext(current,plan))fail('ic_changed');
+     return after.saved;
+    },20000);
     diagnostic='';
    },
    reload:async()=>{
@@ -96,6 +125,7 @@
  };
  const READBACK_MESSAGES={
   save_confirmation_pending:'IC did not show its saved-state confirmation in time.',
+  edited_scores_not_recognized:'IC did not confirm that it recognized the edited scores. Do not repeat entry; reload and check this assignment first.',
   reload_document_pending:'The reloaded assignment did not finish opening in time.',
   reload_panel_unusable:'The reloaded score panel could not be read safely.',
   reload_context_changed:'The assignment context changed after reload.',

@@ -106,7 +106,7 @@
   const report=s.report,items=report?.items;
   if(!validDay(s.day)||s.day>=t.day||report?.day!==s.day||!validRun(report?.run_id)||!Array.isArray(items)
    ||(s.manual_run_day&&(!validDay(s.manual_run_day)||s.manual_run_day>s.day)))return false;
-  if(verifiedReport(s))return !['partial_receipt','source_changed_before_entry'].includes(s.verified?.recovery);
+  if(verifiedReport(s))return !['partial_receipt','source_changed_before_entry','checked_readback_after_helper_update'].includes(s.verified?.recovery);
   if(s.report_pending!==false)return false;
   if(report.code==='finished'&&(items.length?[true,false].includes(s.execution_started)&&items.every(i=>
    (completedRecheckCodes.has(i.code)||i.code==='excluded_week')
@@ -206,10 +206,68 @@
    &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
    &&v.prior_report_signature===JSON.stringify(s.report);
  }
+ function currentReadbackMismatchReport(s,t=M.clock()){
+  const report=s.report,items=report?.items,version=chrome.runtime.getManifest().version;
+  const counts=i=>['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600);
+  const reasons=i=>i.reasons&&!Array.isArray(i.reasons)
+   &&Object.keys(i.reasons).sort().join('|')==='check|excused|exempt|flag|missing|name'
+   &&Object.values(i.reasons).every(n=>Number.isInteger(n)&&n>=0&&n<=3600);
+  const held=i=>i.code!=='source_scores_held'||(i.source_holds&&!Array.isArray(i.source_holds)
+   &&Object.keys(i.source_holds).join('|')==='checks'&&Number.isInteger(i.source_holds.checks)
+   &&i.source_holds.checks>0&&i.source_holds.checks<=3600);
+  const shape=i=>Object.keys(i).sort().join('|')===(i.code==='source_scores_held'
+   ?'assignment|class_name|code|filled|kept|left|raised|reasons|source_holds|week'
+   :'assignment|class_name|code|filled|kept|left|raised|reasons|week');
+  // The 0.5.23 report predates the durable run-version stamp. Its missing
+  // version is accepted only through the exact consumed source-recovery chain.
+  const sourceVerified=s.verified?.recovery==='checked_readback_after_helper_update'?s.verified.prior_source_recovery:s.verified;
+  let prior=null;try{prior=JSON.parse(sourceVerified?.prior_report_signature);}catch{}
+  const legacyVersion=!Object.hasOwn(s,'run_helper_version')
+   &&s.source_recheck_version==='0.5.23'&&s.source_recheck_day===s.day
+   &&validRun(s.source_recheck_run_id)&&sourceVerified?.run_id===s.source_recheck_run_id
+   &&sourceVerified.recovery==='source_changed_before_entry'&&sourceVerified.scope==='current_mapped_assignments'
+   &&sourceVerified.for_helper_version==='0.5.23'&&sourceVerified.prior_day===s.day
+   &&validRun(sourceVerified.event_id)&&typeof sourceVerified.by==='string'&&!!sourceVerified.by.trim()
+   &&Number.isFinite(Date.parse(sourceVerified.at))&&prior?.run_id===s.source_recheck_run_id
+   &&prior.day===s.day&&prior.code==='source_changed'&&report?.run_id!==prior.run_id
+   &&currentSourceChangedReport({...s,blocked:false,report:prior,verified:sourceVerified},t);
+  const priorVersion=s.run_helper_version==='0.5.23'||legacyVersion;
+  const unused=(!Object.hasOwn(s,'readback_recheck_version')&&!Object.hasOwn(s,'readback_recheck_run_id')&&!Object.hasOwn(s,'readback_recheck_day'))
+   ||(s.readback_recheck_version==='0.5.23'&&validRun(s.readback_recheck_run_id)
+    &&validDay(s.readback_recheck_day)&&s.readback_recheck_day<=s.day);
+  return version==='0.5.24'&&priorVersion&&unused&&s.enabled&&[true,false].includes(s.blocked)
+   &&s.blocked_run_id===report?.run_id&&Array.isArray(s.blocked_assignments)&&s.blocked_assignments.length===1
+   &&typeof s.blocked_assignments[0]==='string'&&!!s.blocked_assignments[0].trim()
+   &&s.inflight===false&&s.report_pending===false&&s.execution_started===true
+   &&Array.isArray(s.outbox)&&s.outbox.length===0&&!pending.size&&!active
+   &&validDay(s.day)&&s.day===t.day&&report?.day===s.day&&validRun(report?.run_id)
+   &&s.manual_run_day===s.day&&Object.keys(report).sort().join('|')==='code|day|items|roster|run_id'
+   &&report.roster==='unavailable'&&report.code==='panel_unusable'
+   &&Array.isArray(items)&&items.length>0&&items.length<=300&&items.at(-1)?.code==='readback_mismatch'
+   &&typeof items.at(-1).assignment==='string'
+   &&(items.at(-1).assignment===s.blocked_assignments[0]||items.at(-1).assignment.startsWith(s.blocked_assignments[0]+' · '))
+   &&items.every((i,n)=>i&&shape(i)&&typeof i.assignment==='string'&&i.assignment.trim()&&i.assignment.length<=200
+    &&typeof i.class_name==='string'&&i.class_name.trim()&&i.class_name.length<=100
+    &&typeof i.week==='string'&&i.week.trim()&&i.week.length<=100&&counts(i)&&reasons(i)
+    &&(n===items.length-1?(zeroCounts(i)&&Object.values(i.reasons).every(v=>v===0)):
+     ((completedRecheckCodes.has(i.code)||['excluded_week','source_scores_held'].includes(i.code))
+      &&(completedCodes.has(i.code)||(zeroCounts(i)&&Object.values(i.reasons).every(v=>v===0)))&&held(i))));
+ }
+ function currentReadbackMismatchRecoveryAllowed(s,t=M.clock()){
+  return currentReadbackMismatchReport(s,t)&&s.blocked===true&&!verifiedReport(s);
+ }
+ function currentReadbackMismatchRecoveryGrant(s,t=M.clock()){
+  const v=s.verified;
+  return currentReadbackMismatchReport(s,t)&&s.blocked===false&&verifiedReport(s)
+   &&v.scope==='current_mapped_assignments'&&v.recovery==='checked_readback_after_helper_update'
+   &&v.prior_day===s.day&&v.prior_helper_version==='0.5.23'
+   &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
+   &&v.prior_report_signature===JSON.stringify(s.report);
+ }
  function manualNowAllowed(s,t=M.clock()){
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
-  const verifiedRecovery=verifiedReport(s)&&!['partial_receipt','source_changed_before_entry'].includes(s.verified?.recovery);
+  const verifiedRecovery=verifiedReport(s)&&!['partial_receipt','source_changed_before_entry','checked_readback_after_helper_update'].includes(s.verified?.recovery);
   // A completed receipt can be explicitly rechecked once later that day.
   // The new pass rereads every source and destination; uncertain writes remain blocked.
   const completedRun=completedRecheckReport(s)&&s.finished_recheck_day!==t.day;
@@ -220,7 +278,7 @@
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
   const repeat=safePreflightRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
-  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t));
+  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t)||currentReadbackMismatchRecoveryGrant(s,t));
   return s.enabled&&(sameDay||freshManualDay(s,t))
    &&!s.blocked&&!s.inflight&&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
@@ -244,6 +302,13 @@
     // Its exact old report stays in verified.prior_report_signature and Hub history.
     s.source_recheck_version=chrome.runtime.getManifest().version;
     s.source_recheck_run_id=s.report.run_id;s.source_recheck_day=requestedAt.day;
+    await write(s);
+   }
+   if(manualNow&&currentReadbackMismatchRecoveryGrant(s,requestedAt)){
+    // Consume this distinct checked-readback grant before any tab or network work.
+    // Zero successful result counts do not imply that the old Save was unattempted.
+    s.readback_recheck_version=chrome.runtime.getManifest().version;
+    s.readback_recheck_run_id=s.report.run_id;s.readback_recheck_day=requestedAt.day;
     await write(s);
    }
    const completedRecheck=manualNow&&completedRecheckReport(s);
@@ -274,7 +339,7 @@
     if(preflightRepeat)s.manual_run_retry_day=due.day;
    }
    s.report={day:due.day,run_id:crypto.randomUUID(),code:due.skip?'missed_noon':s.blocked?'uncertain_blocked':'running',roster:'unavailable',items:[]};
-   s.report_pending=true;s.execution_started=false;
+   s.report_pending=true;s.execution_started=false;s.run_helper_version=chrome.runtime.getManifest().version;
    // A durable stamp BEFORE any network or tab action enforces once per day.
    await write(s);
    if(hubs.length!==1){s.report.code='hub_unavailable';s.report.preflight=M.preflight('hub_connection',{cause:hubs.length?'hub_tab_count':'hub_tab_missing'});await write(s);return;}
@@ -385,11 +450,13 @@
    const legacyVerification=m.current_mapped_confirmed===true&&legacyRecoveryAllowed(s);
    const receiptVerification=m.current_mapped_confirmed===true&&m.receipt_recovery_confirmed===true&&currentReceiptRecoveryAllowed(s);
    const sourceVerification=m.current_mapped_confirmed===true&&m.source_recovery_confirmed===true&&currentSourceChangedRecoveryAllowed(s);
-   const receiptVersion=(receiptVerification||sourceVerification)?chrome.runtime.getManifest().version:null;
-   const currentVerification=legacyVerification||receiptVerification||sourceVerification;
-   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&((s.blocked&&m.current_mapped_confirmed!==true)||currentVerification)&&s.report){
+   const readbackVerification=m.current_mapped_confirmed===true&&m.readback_recovery_confirmed===true&&currentReadbackMismatchRecoveryAllowed(s);
+   const receiptVersion=(receiptVerification||sourceVerification||readbackVerification)?chrome.runtime.getManifest().version:null;
+   const currentVerification=legacyVerification||receiptVerification||sourceVerification||readbackVerification;
+   if(m.type==='morning_clear'&&m.confirmed===true&&!busy&&((s.blocked&&m.current_mapped_confirmed!==true&&!currentReadbackMismatchReport(s))||currentVerification)&&s.report){
     const note=typeof m.note==='string'?m.note.trim():'';
-    const verificationNote=sourceVerification?`Current mapped IC grades checked after source repair for one new source pass. Prior ${s.report.day} run remains stopped at a source change and incomplete. ${note}`:
+    const verificationNote=readbackVerification?`Current mapped IC grades checked after helper update for one new pass. Prior ${s.report.day} run remains incomplete after a saved-result mismatch; its Fill and Save history is unchanged. ${note}`:
+     sourceVerification?`Current mapped IC grades checked after source repair for one new source pass. Prior ${s.report.day} run remains stopped at a source change and incomplete. ${note}`:
      receiptVerification?`Current mapped IC scores checked for one new run. Prior ${s.report.day} run remains incomplete and its entry receipt unconfirmed. ${note}`:
      legacyVerification?`Current mapped IC scores verified for a new run. Prior ${s.report.day} receipt remains unconfirmed. ${note}`:note;
     if(!note||verificationNote.length>500)recovery_error='Add a short verification note.';
@@ -413,10 +480,15 @@
       ||(receiptVerification&&(!currentReceiptRecoveryAllowed(fresh)||fresh.day!==s.day
        ||JSON.stringify(fresh.report)!==JSON.stringify(s.report)||chrome.runtime.getManifest().version!==receiptVersion))
       ||(sourceVerification&&(!currentSourceChangedRecoveryAllowed(fresh)||fresh.day!==s.day
+       ||JSON.stringify(fresh.report)!==JSON.stringify(s.report)||chrome.runtime.getManifest().version!==receiptVersion))
+      ||(readbackVerification&&(!currentReadbackMismatchRecoveryAllowed(fresh)||fresh.day!==s.day
        ||JSON.stringify(fresh.report)!==JSON.stringify(s.report)||chrome.runtime.getManifest().version!==receiptVersion)))throw Error();
      if(currentVerification&&((await chrome.tabs.get(hubs[0].id)).url!==hubUrl||(await chrome.tabs.get(ic.id)).url!==icUrl))throw Error();
      Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by,
       ...(currentVerification?{scope:'current_mapped_assignments',prior_day:s.report.day}:{}),
+      ...(readbackVerification?{recovery:'checked_readback_after_helper_update',event_id,for_helper_version:receiptVersion,
+       prior_helper_version:'0.5.23',prior_report_signature:JSON.stringify(s.report),
+       ...(!Object.hasOwn(s,'run_helper_version')?{prior_source_recovery:s.verified}:{})}:{}),
       ...(sourceVerification?{recovery:'source_changed_before_entry',event_id,for_helper_version:receiptVersion,
        prior_report_signature:JSON.stringify(s.report)}:{}),
       ...(receiptVerification?{recovery:'partial_receipt',event_id,for_helper_version:receiptVersion,
@@ -426,7 +498,7 @@
    }
    if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
    if(m.type==='morning_run_now'&&!busy&&manualNowAllowed(s))run(false,true).catch(()=>{});
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s),can_verify_current_receipt:!busy&&currentReceiptRecoveryAllowed(s),can_verify_current_source_change:!busy&&currentSourceChangedRecoveryAllowed(s)};
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s),can_verify_legacy:!busy&&legacyRecoveryAllowed(s),can_verify_current_receipt:!busy&&currentReceiptRecoveryAllowed(s),can_verify_current_source_change:!busy&&currentSourceChangedRecoveryAllowed(s),can_verify_current_readback:!busy&&currentReadbackMismatchRecoveryAllowed(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
  globalThis.HubMorningStatus=async()=>{

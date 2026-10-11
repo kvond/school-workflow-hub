@@ -1,0 +1,87 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),vm=require('node:vm'),crypto=require('node:crypto');
+// Reuse the existing mocked browser harness without executing its test bodies.
+const harnessPath=path.join(__dirname,'morning-runtime.test.cjs');
+const harnessSource=fs.readFileSync(harnessPath,'utf8').split("test('school-year skip rules")[0];
+assert.ok(harnessSource.includes('function background('));
+const harness=new Module(harnessPath,module);harness.filename=harnessPath;harness.paths=module.paths;
+harness._compile(harnessSource+'\nmodule.exports={background,settle};',harnessPath);
+const {background,settle}=harness.exports;
+const uuid=()=>crypto.randomUUID(),DAY='2026-10-01',VERSION='0.5.24';
+const reason=()=>({flag:0,exempt:0,excused:0,check:0,name:0,missing:0});
+const item=(code,extra={})=>({assignment:'Fictional lesson',class_name:'Forensics',week:'Wk 06',code,filled:0,raised:0,kept:0,left:0,reasons:reason(),...extra});
+function stored(){
+ const old=uuid(),run=uuid();
+ const prior={day:DAY,run_id:old,code:'source_changed',roster:'unavailable',items:[item('nothing_to_enter',{kept:2}),item('source_changed')]};
+ return {morning_enabled:true,morning_state:{day:DAY,blocked:true,blocked_run_id:run,blocked_assignments:['Fictional lesson'],inflight:false,execution_started:true,report_pending:false,outbox:[],manual_run_day:DAY,
+ source_recheck_version:'0.5.23',source_recheck_run_id:old,source_recheck_day:DAY,
+ verified:{run_id:old,at:'2026-10-01T12:00:00Z',by:'teacher@example.test',scope:'current_mapped_assignments',prior_day:DAY,recovery:'source_changed_before_entry',event_id:uuid(),for_helper_version:'0.5.23',prior_report_signature:JSON.stringify(prior)},
+ report:{day:DAY,run_id:run,code:'panel_unusable',roster:'unavailable',items:[item('nothing_to_enter',{kept:2}),item('coverage_incomplete'),item('source_scores_held',{source_holds:{checks:3}}),item('readback_mismatch',{assignment:'Fictional lesson · A4 Fictional · Notes'})]}}};
+}
+const ack={type:'morning_clear',confirmed:true,current_mapped_confirmed:true,readback_recovery_confirmed:true,note:'All current mapped saved panels checked; prior Fill and Save history retained.'};
+const status=h=>h.invoke({type:'morning_status'});
+async function ready(options={}){const h=background({stored:stored(),version:VERSION,...options});await settle();return h;}
+test('024 offers exact prior023 known mismatch acknowledgement, never a direct or automatic repeat',async()=>{
+ const h=await ready(),before=structuredClone(h.state.morning_state.report);const s=await status(h);
+ assert.equal(s.can_verify_current_readback,true);assert.equal(s.can_run_now,false);assert.equal(s.can_retry,false);
+ await h.alarm();await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));assert.deepEqual(h.state.morning_state.report,before);
+});
+test('authenticated allmapped acknowledgement preserves old report and exact source-recovery chain',async()=>{
+ const h=await ready(),before=structuredClone(h.state.morning_state),s=await h.invoke(ack);
+ assert.equal(s.can_run_now,true);assert.equal(s.blocked,false);assert.deepEqual(h.state.morning_state.report,before.report);
+ assert.equal(h.state.morning_state.manual_run_day,before.manual_run_day);assert.equal(h.state.morning_state.verified.recovery,'checked_readback_after_helper_update');
+ assert.equal(h.state.morning_state.verified.prior_helper_version,'0.5.23');assert.equal(h.state.morning_state.verified.for_helper_version,VERSION);
+ assert.equal(h.state.morning_state.verified.prior_report_signature,JSON.stringify(before.report));assert.deepEqual(h.state.morning_state.verified.prior_source_recovery,before.verified);
+ assert.ok(!Object.hasOwn(h.state.morning_state,'run_helper_version'));assert.ok(!h.calls.includes('execute'));
+});
+test('one checked mismatch grant is consumed before any tab query and future run stamps actual helper version',async()=>{
+ const h=await ready({checkQuery:(s)=>{if(s.morning_state?.verified?.recovery==='checked_readback_after_helper_update'&&s.morning_state?.report?.code==='panel_unusable')assert.equal(s.morning_state.readback_recheck_version,VERSION);}});
+ // The acknowledgement itself queries tabs before a grant exists.
+ await h.invoke(ack);h.calls.length=0;const old=h.state.morning_state.report.run_id;
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.state.morning_state.readback_recheck_version,VERSION);assert.equal(h.state.morning_state.readback_recheck_run_id,old);assert.equal(h.state.morning_state.readback_recheck_day,DAY);
+ assert.notEqual(h.state.morning_state.report.run_id,old);assert.equal(h.state.morning_state.run_helper_version,VERSION);
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ // A new024 mismatch cannot borrow the old023 grant or its legacy missing-version path.
+ h.state.morning_state.report.code='panel_unusable';h.state.morning_state.report.items=[item('readback_mismatch')];h.state.morning_state.blocked=true;h.state.morning_state.blocked_run_id=h.state.morning_state.report.run_id;
+ assert.equal((await status(h)).can_verify_current_readback,false);
+});
+test('uncertain save/incomplete/running/unknown terminal shapes and malformed counts remain unavailable',async()=>{
+ const changes=[s=>s.report.items.at(-1).code='save_unconfirmed',s=>s.report.items.at(-1).code='readback_incomplete',s=>s.report.items.at(-1).code='running',s=>s.report.code='source_changed',s=>s.report.preflight={cause:'unrecorded'},s=>s.report.items.at(-1).filled=1,s=>s.report.items.at(-1).reasons.check=1,s=>s.report.items[0].code='unknown',s=>s.report.items[0].kept=-1,s=>delete s.report.items.at(-1).reasons,s=>s.report.items.at(-1).assignment=17,s=>s.report.items[1].kept=1,s=>s.report.items[2].source_holds.checks=0];
+ for(const change of changes){const x=stored();change(x.morning_state);const h=await ready({stored:x});assert.equal((await status(h)).can_verify_current_readback,false);await h.invoke(ack);assert.ok(!h.calls.includes('recovery'));assert.equal(h.state.morning_state.blocked,true);}
+});
+test('pending/inflight/outbox/wrong blocked run/day/version and missing old version evidence reject',async()=>{
+ const changes=[s=>s.inflight=true,s=>s.report_pending=true,s=>s.outbox=[s.report],s=>s.execution_started=false,s=>s.blocked_run_id=uuid(),s=>s.blocked_assignments=['Other lesson'],s=>s.manual_run_day='2026-09-30',s=>s.day='2026-09-30',s=>s.run_helper_version=VERSION,s=>delete s.source_recheck_version,s=>s.source_recheck_version='0.5.22',s=>s.verified.event_id='invalid',s=>s.verified.prior_report_signature='{}',s=>s.readback_recheck_version=VERSION];
+ for(const change of changes){const x=stored();change(x.morning_state);const h=await ready({stored:x});assert.equal((await status(h)).can_verify_current_readback,false);}
+ for(const version of ['0.5.23','0.5.25']){const h=await ready({version});assert.equal((await status(h)).can_verify_current_readback,false);}
+ const h=await ready({pending:new Map([['manual-list',{}]])});assert.equal((await status(h)).can_verify_current_readback,false);
+});
+test('known stamped023 version supports recovery but absent version alone is never evidence',async()=>{
+ const x=stored();x.morning_state.run_helper_version='0.5.23';delete x.morning_state.verified;delete x.morning_state.source_recheck_version;const h=await ready({stored:x});assert.equal((await status(h)).can_verify_current_readback,true);await h.invoke(ack);assert.equal((await status(h)).can_run_now,true);
+ const y=stored();delete y.morning_state.verified;const no=await ready({stored:y});assert.equal((await status(no)).can_verify_current_readback,false);
+});
+test('checkbox protocol, exact authenticated record, fresh state and signedin IC remain mandatory',async()=>{
+ for(const altered of [{...ack,current_mapped_confirmed:false},{...ack,readback_recovery_confirmed:false},{...ack,confirmed:false},{...ack,note:''}]){const h=await ready();await h.invoke(altered);assert.equal(h.state.morning_state.blocked,true);assert.ok(!h.calls.includes('recovery'));}
+ for(const options of [{signedOut:true},{wrongReceipt:true},{recoveryFail:true},{afterRecovery:s=>{s.morning_state.report.items[0].kept++;}}]){const h=await ready(options);const s=await h.invoke(ack);assert.equal(h.state.morning_state.blocked,true);assert.equal(s.can_run_now,false);assert.match(s.recovery_error,/could not be saved/);}
+ const h=await ready();await h.invoke(ack,{id:'extension',tab:{id:1},url:'https://hub.example.test/v2/'});assert.equal(h.state.morning_state.blocked,true);
+});
+test('checked mismatch grant is bound to exact old report/day/version and cannot use generic recovery',async()=>{
+ for(const change of [s=>s.report.items[0].kept++,s=>s.verified.for_helper_version='0.5.25',s=>s.verified.event_id='invalid',s=>s.verified.recovery='partial_receipt',s=>s.verified.prior_source_recovery.for_helper_version='0.5.22']){const h=await ready();await h.invoke(ack);change(h.state.morning_state);assert.equal((await status(h)).can_run_now,false);}
+ const h=await ready();await h.invoke(ack);h.advance('2026-10-02T15:00:00Z');assert.equal((await status(h)).can_run_now,false);
+});
+function popup(status){
+ const elements={},messages=[],element=id=>elements[id]||(elements[id]={textContent:'',checked:false,disabled:false,hidden:false,value:'',listeners:{},addEventListener(type,fn){this.listeners[type]=fn;}});
+ const context={document:{getElementById:element},HubMorning:{preflightText:()=>''},setInterval:()=>{},chrome:{runtime:{sendMessage:async m=>{messages.push(m);return m.type==='companion_popup_status'?{configured:true}:status;}}}};
+ vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../popup.js'),'utf8'),context);return {element,messages,show:context.morningShow};
+}
+test('popup exposes distinct checked-readback scope and only trusted checked click sends acknowledgement',async()=>{
+ const h=await ready(),s=await status(h),ui=popup(s);await settle();assert.equal(ui.element('morning-recovery').hidden,false);assert.match(ui.element('morning-next').textContent,/saved-result check did not match/);assert.match(ui.element('morning-recovery-label').textContent,/Fill and Save history remain unchanged/);
+ ui.element('morning-note').value='All mapped current grades checked.';await ui.element('morning-clear').listeners.click({isTrusted:true});assert.ok(!ui.messages.some(m=>m.type==='morning_clear'));
+ ui.element('morning-checked').checked=true;await ui.element('morning-clear').listeners.click({isTrusted:false});assert.ok(!ui.messages.some(m=>m.type==='morning_clear'));
+ await ui.element('morning-clear').listeners.click({isTrusted:true});const m=ui.messages.find(m=>m.type==='morning_clear');assert.equal(m.readback_recovery_confirmed,true);assert.equal(m.current_mapped_confirmed,true);
+ ui.show(await h.invoke(ack));assert.match(ui.element('morning-status').textContent,/remains incomplete after a saved-result mismatch/);assert.equal(ui.element('morning-run-now').hidden,false);
+});
+test('manifest only advances024; original origins permissions and exact approved v3 executor remain bound',()=>{
+ const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../manifest.json'),'utf8'));assert.equal(manifest.version,VERSION);
+ const {execFileSync}=require('node:child_process');const root=path.join(__dirname,'../..');const old=JSON.parse(execFileSync('git',['show','HEAD:browser-extension/manifest.json'],{cwd:root,encoding:'utf8'}));old.version=VERSION;assert.deepEqual(manifest,old);
+ assert.equal(require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(__dirname,'../ic-entry.js'))).digest('hex'),'2dabd1f1a1a96b2dd6361b98da84f754088f3b11e4eb2be1d2c4bebf5a2c2a04');
+});
