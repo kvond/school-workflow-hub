@@ -17,6 +17,7 @@ from urllib.parse import parse_qs
 
 from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, morning_entry, native_feedback, recovery, routine, student_archive, tidy, work
 
@@ -299,7 +300,10 @@ def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include
             return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found, include_late=True)
         return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        scores = list(pool.map(one, rows))
+        # Each worker gets its own context while sharing the request's guarded
+        # combined-source captures. Context never leaks into another request.
+        scores = list(pool.map(lambda pair: pair[0].run(one, pair[1]),
+                               [(copy_context(), row) for row in rows]))
     return list(zip(rows, scores))
 
 

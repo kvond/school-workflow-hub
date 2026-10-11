@@ -17,6 +17,16 @@ creation date, explicitly labeled **file created**. Multiple dated observations 
 one evolving source are retained in the private index. Class-level packets
 containing several students' feedback remain at class level.
 
+Authenticated Schoology PDF and PNG originals can be registered after an
+authorized worker uploads and verifies them in an existing indexed student
+folder. Registration binds the original submission URL, revision, attachment,
+audited identity and receipt hashes, actual bytes and private filed location.
+It creates no Form event or feedback and changes no Drive properties or access.
+One atomic CAS update adds the artifact and student attachment; repeated identical
+registration reuses it. The work index retains the observed local submission day,
+original Schoology link and filed-work link on later refreshes. Registration time
+stays separate, and worksheet feedback remains pending until separately verified.
+
 Teacher-confirmed former-student work can stay in a tagged private class
 `Former students` container with an explicitly unconfirmed former section.
 The class index's `historical_sources` binding must match the saved student,

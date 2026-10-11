@@ -36,6 +36,7 @@ SCHEMA = "hub-student-archive/v1"
 SHORTCUT = "application/vnd.google-apps.shortcut"
 PDF = "application/pdf"
 TAG = "hubArchiveKey"
+IMPORTED_ORIGINAL = "authenticated_schoology_original"
 FIELDS = "id,name,mimeType,parents,driveId,trashed,permissions,capabilities,properties,shortcutDetails,createdTime,modifiedTime,version,md5Checksum,size"
 # Original uploads need read access, not authority to list their private ACL.
 # Keep full access checks on every archive destination and saved artifact.
@@ -356,6 +357,164 @@ def _private(meta, *, parent=None, folder=False, write=False):
     if write and not (meta.get("capabilities") or {}).get("canAddChildren"):
         raise Held("The Hub's existing account cannot file in this private folder yet.")
     return meta
+
+
+def _import_provenance(value):
+    """An audited attachment receipt, never a Form event or grade identity."""
+    fields = {"provider", "original_url", "assignment_id", "user_id", "revision", "attachment_path",
+              "archive_sha256", "source_receipt_sha256", "identity_proof_sha256", "submitted_local_date",
+              "submitted_local_time", "submitted_timezone", "worksheet_teacher_id", "worksheet_role"}
+    if not isinstance(value, dict) or set(value) != fields or value.get("provider") != "schoology":
+        raise Held("Imported work needs its exact authenticated original attachment receipt.")
+    if not isinstance(value.get("original_url"), str):
+        raise Held("The imported original's authenticated URL needs checking.")
+    try:
+        address = urlsplit(value["original_url"])
+        port = address.port
+    except ValueError:
+        raise Held("The imported original's authenticated URL needs checking.") from None
+    if (address.scheme != "https" or not address.hostname or not address.hostname.endswith(".schoology.com")
+            or address.username or address.password or port is not None or address.query or address.fragment
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", str(value.get("assignment_id", "")))
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", str(value.get("user_id", "")))
+            or address.path != "/assignment/" + str(value["assignment_id"]) + "/dropbox/view/" + str(value["user_id"])
+            or not isinstance(value.get("revision"), int) or isinstance(value["revision"], bool) or not 1 <= value["revision"] <= 100):
+        raise Held("The imported original URL, student submission and revision do not agree.")
+    for field in ("archive_sha256", "source_receipt_sha256", "identity_proof_sha256"):
+        if not isinstance(value.get(field), str) or not re.fullmatch(r"[a-f0-9]{64}", value[field]):
+            raise Held("Imported work needs retained source and identity proof hashes.")
+    path = value.get("attachment_path")
+    if (not isinstance(path, str) or not 1 <= len(path) <= 1500 or path.startswith("/") or "\\" in path
+            or any(part in {"", ".", ".."} for part in path.split("/")) or any(ord(c) < 32 for c in path)):
+        raise Held("The original attachment path needs checking.")
+    try:
+        day = datetime.strptime(value["submitted_local_date"], "%Y-%m-%d").date()
+        if day.isoformat() != value["submitted_local_date"]:
+            raise ValueError()
+        if value["submitted_local_time"] is not None:
+            if datetime.strptime(value["submitted_local_time"], "%H:%M").strftime("%H:%M") != value["submitted_local_time"]:
+                raise ValueError()
+    except (ValueError, TypeError):
+        raise Held("The imported original's observed submission date needs checking.") from None
+    if (value["submitted_timezone"] not in {None, "America/New_York"}
+            or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", value.get("worksheet_teacher_id") or "")
+            or not isinstance(value.get("worksheet_role"), str) or value["worksheet_role"] != _clean(value["worksheet_role"], 300)
+            or not value["worksheet_role"]):
+        raise Held("The imported worksheet's source role needs checking.")
+    return dict(value)
+
+
+def _verify_imported_original(meta, record):
+    _private(meta, parent=record.get("parent"))
+    provenance = _import_provenance(record.get("import_provenance"))
+    proof = record.get("copied_content_proof") or {}
+    if (record.get("kind") != "work" or record.get("source_kind") != IMPORTED_ORIGINAL
+            or meta.get("id") != record.get("drive_file_id") or meta.get("mimeType") not in {PDF, "image/png"}
+            or meta.get("mimeType") != record.get("mime") or record.get("date") != provenance["submitted_local_date"]
+            or record.get("date_basis") != "authenticated_external_local_date"
+            or any(record.get(k) for k in ("source_file_id", "form_id", "assignment_form_id", "submitted_at", "source_response_id"))
+            or proof.get("basis") != "file_bytes" or not re.fullmatch(r"[a-f0-9]{64}", proof.get("sha256") or "")
+            or not re.fullmatch(r"[a-f0-9]{32}", proof.get("md5") or "")
+            or meta.get("md5Checksum") != proof.get("md5") or str(meta.get("size")) != str(proof.get("size"))
+            or _source_revision(meta) != record.get("imported_file_revision")
+            or meta.get("properties", {}) != record.get("imported_properties")
+            or meta.get("permissions") != record.get("imported_permissions")
+            or (meta.get("properties") or {}).get(TAG)):
+        raise Held("This imported original changed or no longer matches its private source receipt.")
+    return meta
+
+
+def register_imported_original(token, config, class_key, student_key, file_id, *, provenance,
+                               original_bytes, expected_metadata, expected_student,
+                               assignment, source_context, filing_note=""):
+    """Trusted filing worker only: register an already uploaded, audited original.
+
+    The caller must authenticate the external receipt and existing student-folder
+    association. This adds one CAS artifact and its student attachment atomically;
+    it creates no Drive file, property, Form event, feedback, assessment or grade.
+    A lost CAS response is read back once, never retried. Date is the observed
+    external local day; registration time remains a separate private fact.
+    """
+    provenance = _import_provenance(provenance)
+    if (not isinstance(original_bytes, bytes) or not 0 < len(original_bytes) <= google.MAX_DECK_BYTES
+            or not isinstance(expected_metadata, dict) or not isinstance(expected_student, dict)
+            or not isinstance(assignment, str) or not assignment or assignment != _clean(assignment, 500)
+            or not isinstance(filing_note, str) or filing_note != _clean(filing_note, 1500)
+            or not isinstance(source_context, dict) or set(source_context) != {"class_key", "school_year", "week"}
+            or source_context["class_key"] != class_key or not re.fullmatch(r"20[0-9]{2}-[0-9]{2}", source_context.get("school_year", ""))
+            or not source_context.get("week") or source_context["week"] != _clean(source_context["week"], 100)):
+        raise Held("The imported original's exact bytes and filing context need checking.")
+    actual_root, course = _location(token, config, class_key)
+    root, port = _scope_root(config, actual_root), configured_store(config)
+    index_key = key("archiveclass", [root, class_key])
+    ident = key("archiveimportedwork", [root, class_key, student_key, provenance["original_url"],
+                provenance["revision"], provenance["attachment_path"]])
+    snapshot = port.read([index_key, student_key, ident])
+    index, owner, existing = (snapshot.documents[k] for k in (index_key, student_key, ident))
+    student = owner.value if owner else {}
+    if (not index or index.value.get("schema") != SCHEMA or not owner or student != expected_student
+            or student.get("status") != "verified" or student.get("schema") != SCHEMA
+            or student.get("student_key") != student_key or student.get("record_key") != student_key
+            or student.get("class_key", class_key) != class_key
+            or index.value.get("students", {}).get(student_key) != student.get("drive_file_id")):
+        raise Held("Imported work must belong to one unchanged existing indexed student folder.")
+    section = _private(google.drive_file(token, student["parent"], FIELDS), parent=course["id"], folder=True)
+    folder = _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=section["id"], folder=True)
+    meta = google.drive_file(token, file_id, FIELDS)
+    if meta != expected_metadata or meta.get("id") != file_id:
+        raise Held("The uploaded original's full metadata changed since its filing readback.")
+    if not ((meta.get("mimeType") == PDF and original_bytes.startswith(b"%PDF-"))
+            or (meta.get("mimeType") == "image/png" and original_bytes.startswith(b"\x89PNG\r\n\x1a\n"))):
+        raise Held("The imported original's actual file format needs checking.")
+    record = {"schema": SCHEMA, "record_key": ident, "status": "verified", "kind": "work",
+        "source_kind": IMPORTED_ORIGINAL, "class_key": class_key, "student_key": student_key,
+        "drive_file_id": file_id, "parent": folder["id"], "mime": meta.get("mimeType"), "name": meta.get("name"),
+        "url": _url(file_id), "date": provenance["submitted_local_date"], "date_basis": "authenticated_external_local_date",
+        "assignment": assignment, "source_context": dict(source_context), "lesson_status": "verified",
+        "import_provenance": provenance, "imported_file_revision": _source_revision(meta),
+        "imported_properties": meta.get("properties", {}), "imported_permissions": meta.get("permissions"),
+        "copied_content_proof": {"basis": "file_bytes", "sha256": hashlib.sha256(original_bytes).hexdigest(),
+                                "md5": hashlib.md5(original_bytes).hexdigest(), "size": len(original_bytes)},
+        "filing_note": filing_note, "registered_at": existing.value.get("registered_at") if existing else snapshot.read_time}
+    _verify_imported_original(meta, record)
+    items = dict(student.get("items", {}))
+    if len(items) > MAX_ITEMS:
+        raise Held("This student's archive exceeds its verified record limit.")
+    attached = _batch_read(port, list(items))
+    if any(doc and doc.value.get("drive_file_id") == file_id and other != ident for other, doc in attached.items()):
+        raise Held("This filed original is already attached to a different source record.")
+    if existing and existing.value != record:
+        raise Held("This original attachment is already registered with different bytes, provenance or location.")
+    expected_item = {"kind": "work", "date": record["date"]}
+    if ident in items and (not existing or items[ident] != expected_item):
+        raise Held("This student's imported-original attachment needs checking.")
+    items[ident] = expected_item
+    if len(items) > MAX_ITEMS:
+        raise Held("This student's archive exceeds its verified record limit.")
+    # Bookend all destination resources before the atomic, version-bound CAS.
+    if (google.drive_file(token, file_id, FIELDS) != meta
+            or google.drive_file(token, student["drive_file_id"], FIELDS) != folder
+            or google.drive_file(token, student["parent"], FIELDS) != section):
+        raise Held("The original or existing private destination changed during registration.")
+    desired = {index_key: index.value, student_key: {**student, "items": items}, ident: record}
+    reused = bool(existing and desired[student_key] == student)
+    if not reused:
+        try:
+            port.commit({k: (v, snapshot.documents[k].version if snapshot.documents[k] else None) for k, v in desired.items()})
+        except (Conflict, StoreUnavailable):
+            actual = port.read(list(desired)).documents
+            if any(not actual[k] or actual[k].value != v for k, v in desired.items()):
+                raise
+    actual = port.read(list(desired)).documents
+    if any(not actual[k] or actual[k].value != v for k, v in desired.items()):
+        raise StoreUnavailable("imported_original_registration_readback_unconfirmed")
+    if (google.drive_file(token, file_id, FIELDS) != meta
+            or google.drive_file(token, student["drive_file_id"], FIELDS) != folder
+            or google.drive_file(token, student["parent"], FIELDS) != section):
+        raise Held("The registered original or private destination changed; preserve its record for review.")
+    return {"status": "verified", "record_key": ident, "drive_file_id": file_id,
+            "student_key": student_key, "filed": 0 if reused else 1, "reused": reused,
+            "source_kind": IMPORTED_ORIGINAL, "registered_at": record["registered_at"]}
 
 
 def _location(token, config, cls, write=False):
@@ -2059,7 +2218,7 @@ def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
                 continue
             meta = (_feedback_file(token, root, course, student, artifact, metadata) if artifact["kind"] == "feedback"
                     else _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"]))
-            if (meta.get("properties") or {}).get(TAG) != item_id:
+            if artifact.get("source_kind") != IMPORTED_ORIGINAL and (meta.get("properties") or {}).get(TAG) != item_id:
                 raise Held("An archived record no longer matches its private index.")
             if artifact["kind"] == "feedback":
                 if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
@@ -2086,6 +2245,8 @@ def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
                 _verify_work_copy(meta, artifact)
             elif artifact.get("source_kind") == "submitted_work_export":
                 _verify_work_export(meta, artifact)
+            elif artifact.get("source_kind") == IMPORTED_ORIGINAL:
+                _verify_imported_original(meta, artifact)
             elif (meta.get("mimeType") != SHORTCUT
                   or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
                 raise Held("An archived work shortcut no longer points to its verified source.")
@@ -2269,12 +2430,15 @@ def _sheet_date(value):
 def _index_row(class_name, student, submitted, report, status, ident):
     submitted, report = submitted or {}, report or {}
     context = submitted.get("source_context") or report.get("source_context") or {}
+    imported = submitted.get("source_kind") == IMPORTED_ORIGINAL
+    original_url = ((submitted.get("import_provenance") or {}).get("original_url") if imported
+                    else _url(submitted["source_file_id"]) if submitted.get("source_file_id") else None)
     return [class_name, student.get("section", ""), student["name"], submitted.get("assignment") or report.get("assignment", ""),
             context.get("week", ""), _sheet_date(submitted.get("date")), _sheet_date(report.get("date")),
             _link(submitted.get("url") if submitted.get("mime") != SHORTCUT else None, "Open work copy"),
-            _link(_url(submitted["source_file_id"]) if submitted.get("source_file_id") else None, "Open original"),
+            _link(original_url, "Open original"),
             _link(report.get("url"), "Open feedback"), _link(_url(student["drive_file_id"], True), "Open student folder"),
-            status, "", ident]
+            status, submitted.get("filing_note", "") if imported else "", ident]
 
 
 def work_index_rows(token, config):
@@ -2298,7 +2462,8 @@ def work_index_rows(token, config):
                 for report in feedback:
                     if report.get("report_type") == "science_writing" and report.get("source_records"):
                         for source_record in report["source_records"]:
-                            candidates = [a for a in works if a.get("source_file_id") == source_record.get("source_file_id")
+                            candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
+                                and a.get("source_file_id") == source_record.get("source_file_id")
                                 and a.get("source_version") == source_record.get("source_version")]
                             linked = next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
                             if linked:
@@ -2309,7 +2474,8 @@ def work_index_rows(token, config):
                             rows.append(_index_row(class_name, student, linked, report, status,
                                 key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")])))
                         continue
-                    candidates = [a for a in works if a.get("source_file_id") == report.get("source_file_id")
+                    candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
+                        and a.get("source_file_id") == report.get("source_file_id")
                         and a.get("assignment_form_id") and a.get("assignment_form_id") == report.get("assignment_form_id")
                         and a.get("lesson_status") == "verified"
                         and (not report.get("source_version") or a.get("source_version") == report["source_version"])]
@@ -2336,6 +2502,8 @@ def work_index_rows(token, config):
                     if submitted["record_key"] in used:
                         continue
                     status = "Work saved; feedback not located" if submitted.get("mime") != SHORTCUT else "Original link only; work copy pending"
+                    if submitted.get("source_kind") == IMPORTED_ORIGINAL:
+                        status = "Original filed; worksheet feedback pending"
                     if submitted.get("lesson_status") != "verified":
                         status += "; lesson not confirmed"
                     rows.append(_index_row(class_name, student, submitted, None, status,

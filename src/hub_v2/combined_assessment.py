@@ -7,10 +7,13 @@ rounded component grades, are pooled. Missing components are disclosed and
 never supply a fabricated denominator or absence zero.
 """
 from copy import deepcopy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import hashlib
 import json
 import re
+from threading import Lock
 
 from . import completion, google, work
 
@@ -23,6 +26,65 @@ MAX_SOURCES = 200
 
 class Held(ValueError):
     pass
+
+
+SOURCE_FIELDS = google.FILE_FIELDS + ',version,md5Checksum,size,headRevisionId'
+_request_captures = ContextVar('combined_request_captures', default=None)
+
+
+class _RequestCaptures:
+    """Successful immutable captures shared only by this request's workers."""
+    def __init__(self):
+        self.lock = Lock()
+        self.source_locks = {}
+        self.values = {}
+        self.token = None
+
+    def read(self, token, fid):
+        with self.lock:
+            if self.token is None:
+                self.token = token
+            if token != self.token:
+                raise Held('The source reader identity changed during this request.')
+            if fid not in self.source_locks and len(self.source_locks) >= MAX_SOURCES + 4:
+                raise Held('This combined request has too many sources to verify.')
+            source_lock = self.source_locks.setdefault(fid, Lock())
+        with source_lock:
+            before = _source_metadata(token, fid)
+            cached = self.values.get(fid)
+            if cached is not None:
+                if before != cached['metadata']:
+                    raise Held('A combined-assignment source changed during this request.')
+                if before['mimeType'] == completion.SLIDES or before.get('md5Checksum'):
+                    after = _source_metadata(token, fid)
+                    if after != before:
+                        raise Held('A combined-assignment source changed while it was being read.')
+                    return deepcopy(cached)
+            captured = _capture_source(token, fid, before)
+            # Binary source bytes are reusable only with the provider checksum.
+            # Without it, every use retains the original full-byte read guard.
+            self.values[fid] = deepcopy(captured)
+            return captured
+
+    def verify_bookend(self):
+        for fid, captured in self.values.items():
+            if _source_metadata(self.token, fid) != captured['metadata']:
+                raise Held('A combined-assignment source changed before the request finished.')
+
+
+@contextmanager
+def source_request():
+    """No capture survives a request; each reuse and final return fresh-checks metadata."""
+    if _request_captures.get() is not None:
+        yield
+        return
+    captures = _RequestCaptures()
+    context = _request_captures.set(captures)
+    try:
+        yield
+        captures.verify_bookend()
+    finally:
+        _request_captures.reset(context)
 
 
 def digest(value):
@@ -86,19 +148,34 @@ def definition(config, agenda, cls, week, fid):
         raise Held('The combined assignment needs its exact Form, Agenda folder and cycle-to-teacher mapping checked.') from None
 
 
-def read_source(token, fid):
-    """Bracket one actual byte read; no cache may accept a changed source."""
-    before = google.drive_file(token, fid, google.FILE_FIELDS + ',version')
+def _source_metadata(token, fid):
+    before = google.drive_file(token, fid, SOURCE_FIELDS)
     if (before.get('id') != fid or before.get('trashed') is not False
             or before.get('mimeType') not in (completion.SLIDES, google.PPTX)
             or not before.get('version')):
         raise Held('An exact combined-assignment source is unavailable or has no verified revision.')
+    return before
+
+
+def _capture_source(token, fid, before):
     raw = google.deck_bytes(token, fid, before['mimeType'])
+    if before['mimeType'] == google.PPTX and before.get('md5Checksum'):
+        if hashlib.md5(raw).hexdigest() != before['md5Checksum']:
+            raise Held('A combined Office source does not match its current checksum.')
+        if before.get('size') is not None and str(len(raw)) != str(before['size']):
+            raise Held('A combined Office source does not match its current byte size.')
     deck = completion.read_deck(raw)
-    after = google.drive_file(token, fid, google.FILE_FIELDS + ',version')
+    after = _source_metadata(token, fid)
     if before != after:
         raise Held('A combined-assignment source changed while it was being read; reload Student work.')
     return {'metadata': before, 'sha256': hashlib.sha256(raw).hexdigest(), 'deck': deck}
+
+
+def read_source(token, fid):
+    """Bracket source bytes; reuse only within a fresh-checked request scope."""
+    captures = _request_captures.get()
+    return (captures.read(token, fid) if captures is not None
+            else _capture_source(token, fid, _source_metadata(token, fid)))
 
 
 def source_basis(capture):
@@ -349,4 +426,6 @@ def score_row(token, form, row, *, component_file_id=None):
                     'component_provenance': {k: v for k, v in component.items() if k != 'result'}}
         return pooled(scope, components)
     except (Held, google.GoogleError, completion.Unreadable) as error:
-        return {'code': 'coverage_incomplete', 'problem': str(error)}
+        return {'code': 'coverage_incomplete', 'problem': str(error),
+                **({'provider_status': error.status, 'provider_reason': error.reason}
+                   if isinstance(error, google.GoogleError) else {})}

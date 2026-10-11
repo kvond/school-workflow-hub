@@ -35,9 +35,10 @@ FOLDER = "application/vnd.google-apps.folder"
 class GoogleError(Exception):
     """A problem worth showing the teacher, with the HTTP status if there was one."""
 
-    def __init__(self, message, status=None):
+    def __init__(self, message, status=None, reason=None):
         super().__init__(message)
         self.status = status
+        self.reason = reason
 
 
 class SignInRequired(Exception):
@@ -138,7 +139,30 @@ def get_json(url, token, params=None, timeout=20, method="GET", body=None):
             return response.json()
         except ValueError:
             raise GoogleError("Google sent an unreadable answer.", 200) from None
-    raise GoogleError(_status_message(response.status_code), response.status_code)
+    raise _response_error(response)
+
+
+def _response_error(response):
+    """Disclose only an actual provider reason; never infer quota from status403."""
+    reason = None
+    try:
+        errors = response.json().get('error', {}).get('errors', [])
+        found = {item.get('reason') for item in errors if isinstance(item, dict)
+                 and isinstance(item.get('reason'), str)
+                 and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,80}', item['reason'])}
+        if len(found) == 1:
+            reason = next(iter(found))
+    except (ValueError, TypeError, AttributeError):
+        pass
+    quota = {'rateLimitExceeded', 'userRateLimitExceeded', 'dailyLimitExceeded', 'downloadQuotaExceeded'}
+    permission = {'insufficientFilePermissions', 'permissionDenied', 'accessDenied', 'forbidden', 'notAuthorizedToAccessFile'}
+    if response.status_code == 403 and reason in quota:
+        message = 'Google is limiting requests (' + reason + '). Wait before a fresh source check.'
+    elif response.status_code == 403 and reason not in permission:
+        message = 'Google rejected the request (403); its access or request limit needs review.'
+    else:
+        message = _status_message(response.status_code)
+    return GoogleError(message, response.status_code, reason)
 
 
 def _status_message(status):
@@ -305,7 +329,7 @@ def deck_bytes(token, file_id, mime):
         raise GoogleError("Google didn't answer in time. Try again.") from None
     with response:
         if response.status_code != 200:
-            raise GoogleError(_status_message(response.status_code), response.status_code)
+            raise _response_error(response)
         chunks, total = [], 0
         try:
             for chunk in response.iter_content(1 << 20):

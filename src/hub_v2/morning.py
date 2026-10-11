@@ -98,6 +98,10 @@ def rows(form, scored, now, *, recheck=False):
         if key in result:
             result[key].update(kind="check", notes=None, revision=None, reason="listed twice on the roster")
             return
+        # The helper accepts plain reasons of at most 200 UTF-16 characters.
+        # Keep the complete source problem in scored/work; bound only this row view.
+        reason = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", str(reason or "")).split())
+        reason = reason.encode("utf-16-le", errors="replace")[:400].decode("utf-16-le", errors="ignore")
         result[key] = {"last": row["last"], "first": row.get("first", ""), "section": row["section"],
                        "kind": kind, "notes": notes, "revision": revision, "reason": reason}
 
@@ -116,7 +120,8 @@ def rows(form, scored, now, *, recheck=False):
                 and all(score.get("counts", {}).get(category, {}).get("required") == 0 for category in ("NOTES", "BANK", "DRAFT"))):
             add(row, "none", reason="N/A: no countable coded boxes; no zero prepared")
         elif not score or score.get("problem") or score.get("note") or all(score.get(k) is None for k in ("notes_score", "revision_score")):
-            add(row, "check", reason="deck needs scoring by hand")
+            add(row, "check", reason=(score.get('problem') or score.get('note') or 'deck needs scoring by hand')
+                if score else 'deck needs scoring by hand')
         else:
             add(row, "score", score.get("notes_score"), score.get("revision_score"),
                 reason=(score.get('component_coverage') or {}).get('text', '')[:200])
@@ -147,6 +152,17 @@ def rows(form, scored, now, *, recheck=False):
 
 
 def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
+    from . import combined_assessment
+    try:
+        with combined_assessment.source_request():
+            return _make_list(token, config, agenda, cls, week, fid, load_work, score_rows)
+    except (combined_assessment.Held, google.GoogleError) as error:
+        return {'code': 'coverage_incomplete', 'problem': str(error),
+                **({'provider_status': error.status, 'provider_reason': error.reason}
+                   if isinstance(error, google.GoogleError) else {})}
+
+
+def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     policy = work.week_policy(config, agenda, cls, week)
     if policy["problem"]:
         return {"code": "coverage_incomplete", "problem": policy["problem"]}
