@@ -560,6 +560,7 @@ def _json_body(environ, limit):
 
 def morning_entry_post(environ, respond, config):
     """Record this verified eligible comparison; unresolved students stay held."""
+    from . import combined_assessment
     refused = _same_origin_json(environ, respond, config)
     if refused:
         return refused
@@ -573,31 +574,32 @@ def morning_entry_post(environ, respond, config):
             found = lesson_work(*args, **kwargs)
             captures.append(found)
             return found
-        current = morning.make_list(token, config, agenda, selected["class"], selected["week"],
-                                    selected["form"], fresh_work, _score_rows)
-        if current.get("code") != "ready":
-            return respond("409 Conflict", {"error": "The current source list is not ready; nothing was recorded.",
-                                             **current})
-        receipt = morning_entry.validate(payload, current)
-        whole = receipt["source_check_rows"] == 0
-        if whole:
-            forms = [form for lesson in captures[0]["lessons"] for form in lesson["forms"]
-                     if form["form_id"] == selected["form"]]
-            if len(forms) != 1:
-                raise morning_entry.Refused()
-            form = forms[0]
-            ready = completion.submitted_readiness(token, form,
-                require_complete_codes=completion.student_coding_required(
-                    agenda, selected["class"], selected["week"], selected["form"]),
-                include_late=morning.closed_recheck(form, ledger.read(token, config, selected["form"])))
-            if ready["status"] != "READY":
-                return respond("409 Conflict", {"error": ready["problem"], "action": ready.get("action"),
-                                                 "code": "coverage_incomplete", "readiness": ready})
-            # The extra whole-assignment checks cannot change which source
-            # list this destination receipt authorizes.
+        with combined_assessment.source_request():
             current = morning.make_list(token, config, agenda, selected["class"], selected["week"],
                                         selected["form"], fresh_work, _score_rows)
+            if current.get("code") != "ready":
+                return respond("409 Conflict", {"error": "The current source list is not ready; nothing was recorded.",
+                                                 **current})
             receipt = morning_entry.validate(payload, current)
+            whole = receipt["source_check_rows"] == 0
+            if whole:
+                forms = [form for lesson in captures[0]["lessons"] for form in lesson["forms"]
+                         if form["form_id"] == selected["form"]]
+                if len(forms) != 1:
+                    raise morning_entry.Refused()
+                form = forms[0]
+                ready = completion.submitted_readiness(token, form,
+                    require_complete_codes=completion.student_coding_required(
+                        agenda, selected["class"], selected["week"], selected["form"]),
+                    include_late=morning.closed_recheck(form, ledger.read(token, config, selected["form"])))
+                if ready["status"] != "READY":
+                    return respond("409 Conflict", {"error": ready["problem"], "action": ready.get("action"),
+                                                     "code": "coverage_incomplete", "readiness": ready})
+                # The extra whole-assignment checks cannot change which source
+                # list this destination receipt authorizes.
+                current = morning.make_list(token, config, agenda, selected["class"], selected["week"],
+                                            selected["form"], fresh_work, _score_rows)
+                receipt = morning_entry.validate(payload, current)
         source = current["list"]
         context = {"class": source["class_name"], "week": source["week"],
                    "assignment": source["assignment"], "form_id": source["form_id"]}
@@ -607,6 +609,9 @@ def morning_entry_post(environ, respond, config):
     except morning_entry.Refused as error:
         return respond("409 Conflict", {"error": "The mapped comparison could not be verified; nothing was recorded.",
                                          "code": error.code})
+    except combined_assessment.Held:
+        return respond("409 Conflict", {"error": "A combined-assignment source changed before its comparison receipt was recorded.",
+                                         "code": "source_changed"})
     except (ValueError, TypeError, KeyError, AttributeError, IndexError):
         return respond("400 Bad Request", {"error": "Invalid mapped comparison receipt."})
     except google.GoogleError:
