@@ -1000,8 +1000,20 @@ def _calendar_only(lesson):
     return all(calendar.fullmatch(p) for p in plans)
 
 
-def lesson_work(token, config, agenda, class_key, week_label, *, review_only=False):
-    by_class, problems = roster.load(token, config)
+def lesson_work(token, config, agenda, class_key, week_label, *, review_only=False, roster_snapshot=None):
+    if roster_snapshot is not None:
+        if not review_only or not isinstance(roster_snapshot, tuple) or len(roster_snapshot) != 2:
+            raise ValueError('review roster snapshot')
+        # Discovery may orient its local rows. Never mutate the shared overview
+        # snapshot or lend this hook to the normal grading path.
+        from copy import deepcopy
+        by_class, problems = deepcopy(roster_snapshot)
+    else:
+        by_class, problems = roster.load(token, config)
+    if review_only and (problems or not by_class.get(class_key)):
+        return {'class_key': class_key, 'week': week_label, 'lessons': [],
+                'review_unavailable': problems or ['The current class roster could not be verified.'],
+                'other_files': [], 'problems': problems}
     students = by_class.get(class_key, [])
     domains = {d.strip().lower() for d in config.get("HUB_SCHOOL_EMAIL_DOMAINS", "").split(",") if d.strip()}
     prefix = config.get("HUB_EMAIL_USERNAME_PREFIX", "s.")
@@ -1266,7 +1278,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                    for fid, name in roots.items() if (not _ancestors(fid, parents) or not
                    set(_ancestors(fid, parents)) & set(roots))
                    and not (str(name).startswith("_") and fid not in holding)]
-    check = roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
+    check = None if review_only else roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
     folder_reviews = shared_folder_reviews(forms, roots, parents)
     # Read-only grading context is separate from discovery/filing eligibility.
     # It also covers an empty Form, where no score_file call could block zeros.

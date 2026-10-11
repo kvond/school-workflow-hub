@@ -41,6 +41,11 @@ def assessment():
             'scoring_basis': 'found_codes', 'missing_code_warning': 'Missing codes are advisory.'}
 
 
+def complete_roster():
+    return ({cls: [{'first': 'Alex', 'last': 'Rivera', 'section': section, 'class_key': cls, 'order': 'header'}
+                   for section in sections] for cls, sections in work.roster.SECTIONS.items()}, [])
+
+
 class ReviewContextTests(unittest.TestCase):
     def test_exact_scope_rejects_foreign_week_class_form_and_duplicate_current_forms(self):
         self.assertEqual(scope()['lesson'], 'Reasoning')
@@ -213,14 +218,17 @@ class ReviewContextTests(unittest.TestCase):
         query = {'class': ['forensics'], 'week': ['Wk 04'], 'form': [FORM]}
         with patch.object(google, 'service_token', return_value='fictional'), \
                 patch.object(app, 'load_agenda', return_value=fixture()) as agenda_read, \
+                patch.object(work.roster, 'load', return_value=complete_roster()), \
                 patch.object(work, 'lesson_work', return_value=found()) as discovery, \
                 patch.object(completion, 'score_file', side_effect=AssertionError('no scoring')), \
                 patch.object(completion, 'assignment_readiness', side_effect=AssertionError('no byte readiness')), \
                 patch.dict(completion._results, {}, clear=True):
             result = app.api('api/review-context', query, {})
             self.assertEqual(result['schema'], rc.SCHEMA)
-            agenda_read.assert_called_once_with('fictional', {}, fresh=True)
-            discovery.assert_called_once_with('fictional', {}, agenda_read.return_value, 'forensics', 'Wk 04', review_only=True)
+            self.assertEqual(agenda_read.call_count, 2)
+            self.assertTrue(all(c.args == ('fictional', {}) and c.kwargs == {'fresh': True} for c in agenda_read.call_args_list))
+            discovery.assert_called_once_with('fictional', {}, agenda_read.return_value, 'forensics', 'Wk 04',
+                                              review_only=True, roster_snapshot=complete_roster())
             with self.assertRaises(ValueError):
                 app.api('api/review-context', {**query, 'file': [SOURCE]}, {})
             with self.assertRaises(ValueError):
@@ -254,6 +262,7 @@ class ReviewContextTests(unittest.TestCase):
         with patch.object(google, 'verify_teacher', return_value='teacher@fictional.example'), \
                 patch.object(google, 'service_token', return_value='fictional') as token, \
                 patch.object(app, 'load_agenda', return_value=fixture()), \
+                patch.object(work.roster, 'load', return_value=complete_roster()), \
                 patch.object(work, 'lesson_work', return_value=found([row(selection_problem='Current original history is unordered')])), \
                 patch.object(completion, 'score_file', side_effect=AssertionError('no scoring')) as score, \
                 patch.object(completion, 'assess', side_effect=AssertionError('no assessment')) as assess, \
@@ -268,6 +277,130 @@ class ReviewContextTests(unittest.TestCase):
         token.assert_called_once_with({})
         for prohibited in (score, assess, record, model, append, update):
             prohibited.assert_not_called()
+
+    def test_18_scope_overview_uses_two_roster_agenda_reads_nine_discoveries_and_queue_two(self):
+        agenda = fixture()
+        catalog = {'assignments': [{'class': cls, 'class_name': agenda.classes[cls]['name'], 'week': week,
+                    'form': 'FICTIONAL_FORM_%s_%s_%d' % (cls, week.replace(' ', ''), n), 'assignment': 'Actual lesson ' + str(n)}
+                   for cls in agenda.classes for week in ('Wk 04', 'Wk 05', 'Wk 06') for n in (1, 2)],
+                   'problems': [], 'exclusions': []}
+        def lessons(cls, week):
+            return [{'topic': 'Actual lesson', 'materials': [], 'forms': [{'form_id': a['form'], 'label': a['assignment']}
+                     for a in catalog['assignments'] if a['class'] == cls and a['week'] == week]}]
+        def discover(token, config, actual_agenda, cls, week, **kwargs):
+            self.assertIs(actual_agenda, agenda)
+            self.assertEqual(kwargs, {'review_only': True, 'roster_snapshot': complete_roster()})
+            return {'class_key': cls, 'week': week, 'problems': [], 'other_files': [], 'folder_note': None,
+                    'lessons': [{'topic': 'Actual lesson', 'forms': [{'form_id': a['form'], 'students': [], 'late': [],
+                    'missing': [], 'elsewhere': [], 'excused': [], 'problem': None}
+                    for a in catalog['assignments'] if a['class'] == cls and a['week'] == week]}]}
+        with patch.object(google, 'service_token', return_value='fictional'), \
+                patch.object(app, 'load_agenda', return_value=agenda) as agenda_load, \
+                patch.object(agenda, 'lessons', side_effect=lessons), \
+                patch.object(rc.morning, 'catalog', return_value=catalog), \
+                patch.object(work.roster, 'load', return_value=complete_roster()) as roster_load, \
+                patch.object(work, 'lesson_work', side_effect=discover) as discovery, \
+                patch.object(rc, 'ThreadPoolExecutor', wraps=rc.ThreadPoolExecutor) as queue, \
+                patch.object(completion, 'score_file', side_effect=AssertionError('no scoring')), \
+                patch.object(completion, 'assess', side_effect=AssertionError('no assessment')), \
+                patch.object(google, 'deck_bytes', side_effect=AssertionError('no bytes')), \
+                patch.object(google, 'append_rows', side_effect=AssertionError('no writes')):
+            result = app.api('api/review-context', {}, {})
+        self.assertEqual((result['schema'], result['status'], len(result['reviews'])), (rc.OVERVIEW_SCHEMA, 'current', 18))
+        self.assertEqual((roster_load.call_count, agenda_load.call_count, discovery.call_count), (2, 2, 9))
+        queue.assert_called_once_with(max_workers=2)
+        self.assertTrue(all(r['status'] == 'waiting' and not r['notices'] for r in result['reviews']))
+
+    def test_initial_failed_roster_never_discovers_or_asks_to_identify_known_students(self):
+        for snapshot in [({}, ['Google is rate-limiting requests. Wait a minute and try again.']), ({}, [])]:
+            with patch.object(work.roster, 'load', return_value=snapshot), patch.object(work, 'lesson_work') as discovery:
+                result = rc.overview('fictional', {}, fixture(), reload_agenda=fixture)
+            discovery.assert_not_called()
+            self.assertEqual(result['status'], 'unavailable')
+            self.assertTrue(all(r['status'] == 'unavailable' and all(not n['student']['verified'] and
+                                'identity decision' in n['next_action'] for n in r['notices']) for r in result['reviews']))
+            self.assertNotIn('Confirm the student', str(result))
+
+    def test_final_roster_failure_or_agenda_change_discards_all_named_details(self):
+        original = fixture()
+        def discover(token, config, agenda, cls, week, **kwargs):
+            result = found([row(selection_problem='Current original history needs revision review')])
+            result.update(class_key=cls, week=week)
+            result['lessons'][0]['forms'] = [{**result['lessons'][0]['forms'][0], 'form_id': f['form_id']}
+                                           for lesson in agenda.lessons(cls, week) for f in lesson['forms']]
+            return result
+        changed = fixture()
+        changed.title += ' changed'
+        cases = [(fixture(), ({}, ['Google is rate-limiting requests.'])),
+                 (changed, complete_roster()),
+                 (fixture(), ({**complete_roster()[0], 'forensics': []}, []))]
+        for after_agenda, after_roster in cases:
+            with patch.object(work.roster, 'load', side_effect=[complete_roster(), after_roster]), \
+                    patch.object(work, 'lesson_work', side_effect=discover), patch.dict(completion._results, {}, clear=True):
+                result = rc.overview('fictional', {}, original, reload_agenda=lambda: after_agenda)
+            self.assertEqual(result['status'], 'unavailable')
+            self.assertTrue(all(not n['student']['verified'] and not n['student']['first']
+                                for r in result['reviews'] for n in r['notices']))
+            self.assertNotIn('Current original history needs revision review', str(result))
+
+    def test_elsewhere_uses_current_late_missing_excused_identity_and_never_name_only_collapse(self):
+        item = {'who': 'Rivera, Alex', 'section': 'A2 Fictional', 'accepted_intake': False,
+                'source_form_id': FORM, 'assignment_form_id': 'DIFFERENT_FORM_123', 'to': 'Another lesson',
+                'url': 'https://drive.google.com/open?id=' + SOURCE}
+        for location in ('students', 'late', 'missing', 'excused'):
+            source = found([])
+            form = source['lessons'][0]['forms'][0]
+            form[location] = [row(files=[])]
+            form['elsewhere'] = [item]
+            detail = rc.build(scope(), source)['notices'][0]
+            self.assertTrue(detail['student']['verified'], location)
+            self.assertEqual(detail['affected_scope'], 'student')
+        source = found([])
+        form = source['lessons'][0]['forms'][0]
+        form['elsewhere'] = [item]
+        form['students'] = [row(files=[], email='same@fictional.example')]
+        form['missing'] = [row(files=[], email='same@fictional.example')]
+        self.assertTrue(rc.build(scope(), source)['notices'][0]['student']['verified'])
+        for other in ['different@fictional.example', '']:
+            form['missing'][0]['email'] = other
+            detail = rc.build(scope(), source)['notices'][0]
+            self.assertFalse(detail['student']['verified'])
+            self.assertEqual(detail['affected_scope'], 'student')
+
+    def test_scoped_provider_429_never_requests_source_repair_or_identity_decision(self):
+        source = found([row(selection_problem='A source revision needs review')])
+        source['lessons'][0]['forms'][0]['students'][0]['files'][0]['problem'] = 'Google is rate-limiting requests.'
+        result = rc._read_found('fictional', {}, fixture(), scope(), source)
+        self.assertEqual(result['status'], 'unavailable')
+        detail = result['notices'][0]
+        self.assertEqual(detail['affected_scope'], 'lesson')
+        self.assertFalse(detail['student']['verified'])
+        self.assertIn('Read again after Google allows', detail['next_action'])
+        self.assertIn('No source repair or student identity decision', detail['next_action'])
+
+    def test_shared_roster_snapshot_is_review_only_copied_and_never_reloaded_per_discovery(self):
+        snapshot = complete_roster()
+        before = deepcopy(snapshot)
+        with patch.object(work.roster, 'load', side_effect=AssertionError('no repeated roster read')), self.assertRaises(ValueError):
+            work.lesson_work('fictional', {}, fixture(), 'forensics', 'Wk 04', roster_snapshot=snapshot)
+        with patch.object(work.roster, 'load', side_effect=AssertionError('no repeated roster read')), \
+                patch.object(google, 'form_responses', return_value=[]), \
+                patch.object(google, 'drive_file', return_value={'id': TEACHER, 'name': 'Deck', 'trashed': False, 'mimeType': completion.SLIDES}), \
+                patch.object(work.roster, 'orient', side_effect=lambda rows, names: rows[0].update(first='Local copy only')), \
+                patch.object(work, 'roster_check', side_effect=AssertionError('no repeated roster metadata')), \
+                patch.object(completion, 'assignment_readiness', side_effect=AssertionError('no readiness bytes')):
+            work.lesson_work('fictional', {'HUB_READER_SERVICE_ACCOUNT': 'reader@fictional.example'}, fixture(),
+                             'forensics', 'Wk 04', review_only=True, roster_snapshot=snapshot)
+        self.assertEqual(snapshot, before)
+
+    def test_default_fresh_agenda_callback_uses_configured_spreadsheet_id(self):
+        with patch.object(work.roster, 'load', return_value=complete_roster()), \
+                patch.object(work, 'lesson_work', return_value=found()), \
+                patch.object(rc.agenda_module, 'load', return_value=fixture()) as reload, \
+                patch.dict(completion._results, {}, clear=True):
+            result = rc.read('fictional', {'HUB_AGENDA_SPREADSHEET_ID': 'EXACT_SHEET_123'}, fixture(), 'forensics', 'Wk 04', FORM)
+        reload.assert_called_once_with('fictional', 'EXACT_SHEET_123')
+        self.assertNotEqual(result['status'], 'unavailable')
 
 
 if __name__ == '__main__':

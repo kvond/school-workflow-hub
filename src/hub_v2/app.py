@@ -135,6 +135,10 @@ def api(sub, query, config):
             raise ValueError('class')
         return student_archive.archive_listing(token, config, _class_key(_one(query, 'class')))
     if sub == 'api/review-context':
+        if not query:
+            current_agenda = load_agenda(token, config, fresh=True)
+            return review_context.overview(token, config, current_agenda,
+                reload_agenda=lambda: load_agenda(token, config, fresh=True))
         if set(query) != {'class', 'week', 'form'}:
             raise ValueError('review scope')
         class_key = _class_key(_one(query, 'class'))
@@ -142,7 +146,8 @@ def api(sub, query, config):
         if not 1 <= len(week) <= 100 or not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', form_id):
             raise ValueError('review scope')
         current_agenda = load_agenda(token, config, fresh=True)
-        return review_context.read(token, config, current_agenda, class_key, week, form_id)
+        return review_context.read(token, config, current_agenda, class_key, week, form_id,
+            reload_agenda=lambda: load_agenda(token, config, fresh=True))
     fresh = _one(query, "fresh", False) == "1"
     agenda = load_agenda(token, config, fresh)
     sheet = {"title": agenda.title,

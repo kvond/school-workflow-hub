@@ -46,6 +46,8 @@ const sourceNotice = overrides => ({affected_scope: 'student', student: {first: 
 const sourceContext = (scope = sourceScope, notices = [sourceNotice()], overrides = {}) => ({schema: 'hub-source-review-context/v1',
   checked_at: '2032-01-20T15:00:00Z', scope: {...scope, class_name: 'Forensics', lesson: 'Observation'},
   notices, limitations: [], status: 'review', ...overrides});
+const sourceSummary = (reviews, overrides = {}) => ({schema: 'hub-source-review-context-summary/v1',
+  checked_at: '2032-01-20T15:00:00Z', reviews, limitations: [], status: 'current', ...overrides});
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('source context renders full current identity/reason/action and verified source slides as literal text', () => {
@@ -125,59 +127,76 @@ test('failed context GET preserves saved receipt counts and writes no student da
   assert.equal(writes.length, 0);
 });
 
-test('automatic current reviews use every exact catalog ID with at most two GETs and no title/count join', async () => {
+test('automatic current reviews use one aggregate GET for eighteen server scopes without title/count joins', async () => {
   const {ui, context} = boot([row({assignment: 'Same label', reasons: {...baseReasons, check: 99}})]);
-  const entries = Array.from({length: 5}, (_, index) => ({class: 'forensics', class_name: 'Forensics', week: 'Wk 03', form: `EXACTFORMID${index}`, assignment: 'Same label'}));
-  const pending = [], requests = []; let active = 0, max = 0;
-  context.fetch = async url => {
-    requests.push(url);
-    if (url === 'api/morning/catalog') return {ok: true, json: async () => ({assignments: entries, problems: []})};
-    active++; max = Math.max(max, active);
-    return new Promise(resolve => pending.push(() => {
-      const parsed = new URL(url, 'https://hub.example.test/');
-      const scope = {...sourceScope, form_id: parsed.searchParams.get('form')}; active--;
-      resolve({ok: true, json: async () => sourceContext(scope, [sourceNotice({reason: `Original for ${scope.form_id}`} )])});
-    }));
+  const reviews = Array.from({length: 18}, (_, index) => sourceContext({...sourceScope, form_id: `EXACTFORMID${index}`},
+    [sourceNotice({student: {first: `Ann ${index}`, last: 'Avery', section: 'A2 Forensic', verified: true}, reason: `Original for EXACTFORMID${index}`})]));
+  const requests = [];
+  context.fetch = async (url, options) => {
+    requests.push({url, options});
+    return {ok: true, json: async () => sourceSummary(reviews)};
   };
   const panel = ui.currentSourceReviewPanel(); await tick();
-  assert.equal(pending.length, 2); assert.equal(max, 2);
-  while (pending.length) { pending.shift()(); await tick(); }
-  assert.equal(requests.length, 6); assert.equal(max, 2);
-  for (const entry of entries) assert.ok(panel.textContent.includes(`Original for ${entry.form}`));
-  assert.match(panel.textContent, /5 of 5 exact lesson scopes read/);
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, 'api/review-context');
+  assert.equal(requests[0].options.method, undefined); assert.equal(requests[0].options.body, undefined);
+  for (let index = 0; index < 18; index++) assert.ok(panel.textContent.includes(`Original for EXACTFORMID${index}`));
+  assert.match(panel.textContent, /18 exact lesson scopes read/);
+  assert.match(panel.textContent, /Avery, Ann 17/); assert.doesNotMatch(panel.textContent, /identity unverified|99/);
   assert.equal(allNodes(panel).some(node => ['select', 'input', 'button'].includes(node.tagName)), false);
-  assert.ok(requests.every(url => url === 'api/morning/catalog' || url.startsWith('api/review-context?')));
 });
 
-test('refresh cancels pending named reviews and stops the remaining old catalog queue', async () => {
-  const {ui, context} = boot([]), pending = [], requests = [];
-  context.fetch = async url => {
+test('refresh cancels the pending aggregate and rejects all old named details', async () => {
+  const {ui, context} = boot([]), requests = []; let answer;
+  context.fetch = url => {
     requests.push(url);
-    if (url === 'api/morning/catalog') return {ok: true, json: async () => ({assignments: [0,1,2].map(i => ({class: 'forensics', week: 'Wk 03', form: `EXACTFORMID${i}`, assignment: 'Observation'}))})};
-    return new Promise(resolve => pending.push(() => resolve({ok: true, json: async () => sourceContext({...sourceScope, form_id: new URL(url, 'https://hub.example.test').searchParams.get('form')})})));
+    return new Promise(resolve => { answer = resolve; });
   };
-  const panel = ui.currentSourceReviewPanel(); await tick(); assert.equal(pending.length, 2);
-  ui.invalidateReviewPanel(panel); pending.forEach(reply => reply()); await tick();
-  assert.equal(requests.length, 3); assert.match(panel.textContent, /Refreshing current source context/);
+  const panel = ui.currentSourceReviewPanel();
+  ui.invalidateReviewPanel(panel); answer({ok: true, json: async () => sourceSummary([sourceContext()])}); await tick();
+  assert.equal(requests.length, 1); assert.match(panel.textContent, /Refreshing current source context/);
   assert.doesNotMatch(panel.textContent, /Avery, Ann|Slide 19/);
 });
 
 test('automatic review hides empty unassessed groups, keeps waiting and failures scoped, and states the limitation once', async () => {
   const {ui, context} = boot([]);
-  const entries = [0,1,2,3].map(index => ({class: 'forensics', class_name: 'Forensics', week: 'Wk 03', form: `EXACTFORMID${index}`, assignment: `Exact lesson ${index}`}));
+  const reviews = [0,1,2,3].map(index => sourceContext({...sourceScope, form_id: `EXACTFORMID${index}`}, [],
+    {scope: {...sourceScope, form_id: `EXACTFORMID${index}`, class_name: 'Forensics', lesson: `Exact lesson ${index}`},
+      status: index === 3 ? 'unavailable' : index === 2 ? 'waiting' : 'not_assessed',
+      limitations: index === 3 ? ['Exact provider read failed. Read again when Google allows.'] : []}));
   context.fetch = async url => {
-    if (url === 'api/morning/catalog') return {ok: true, json: async () => ({assignments: entries})};
-    const id = new URL(url, 'https://hub.example.test').searchParams.get('form');
-    if (id.endsWith('3')) return {ok: false, status: 503, json: async () => ({error: 'Exact provider read failed'})};
-    return {ok: true, json: async () => sourceContext({...sourceScope, form_id: id}, [], {status: id.endsWith('2') ? 'waiting' : 'not_assessed'})};
+    assert.equal(url, 'api/review-context'); return {ok: true, json: async () => sourceSummary(reviews)};
   };
   const panel = ui.currentSourceReviewPanel(); await tick();
-  assert.equal(allNodes(panel).filter(node => node.tagName === 'section' && node.hidden === true).length, 2);
+  assert.doesNotMatch(panel.textContent, /Exact lesson 0|Exact lesson 1/);
   assert.equal(panel.textContent.match(/Some original submissions have no current verified assessment details/g).length, 1);
   assert.match(panel.textContent, /Exact lesson 2: Waiting for original submissions; no student-copy repair/);
   assert.match(panel.textContent, /Exact lesson 3.*Exact provider read failed/);
-  assert.match(panel.textContent, /4 of 4 exact lesson scopes read; 1 unavailable/);
+  assert.match(panel.textContent, /4 exact lesson scopes read; 1 unavailable/);
   assert.doesNotMatch(panel.textContent, /all caught up|No grade rows need attention/);
+});
+
+test('an unavailable aggregate or per-scope provider read never creates a student identity question', async () => {
+  const {ui, context} = boot([]), calls = [];
+  const failed = sourceContext(sourceScope, [sourceNotice()], {status: 'unavailable',
+    limitations: ['Google temporarily refused the roster read; read again when allowed.']});
+  context.fetch = async url => { calls.push(url); return {ok: true, json: async () => sourceSummary([failed], {status: 'unavailable'})}; };
+  const global = ui.currentSourceReviewPanel(); await tick();
+  assert.match(global.textContent, /no named review is issued.*No student identity decision is requested/);
+  assert.match(global.textContent, /Google temporarily refused/);
+  assert.doesNotMatch(global.textContent, /Avery, Ann|Slide 19|Next action:|confirm.*revision/i);
+  context.fetch = async () => ({ok: true, json: async () => sourceSummary([failed])});
+  const scoped = ui.currentSourceReviewPanel(); await tick();
+  assert.match(scoped.textContent, /Forensics · Wk 03 · Observation.*Current source context is unavailable/);
+  assert.doesNotMatch(scoped.textContent, /Avery, Ann|Student identity not verified|Next action:/);
+  assert.equal(calls.length, 1); assert.equal(calls[0], 'api/review-context');
+});
+
+test('duplicate exact aggregate scopes are refused without joining repeated lesson labels or retaining names', async () => {
+  const {ui, context} = boot([]);
+  context.fetch = async () => ({ok: true, json: async () => sourceSummary([sourceContext(), sourceContext()])});
+  const panel = ui.currentSourceReviewPanel(); await tick();
+  assert.match(panel.textContent, /Exact lesson scopes could not be confirmed/);
+  assert.doesNotMatch(panel.textContent, /Avery, Ann|Slide 19/);
 });
 
 test('Student work exact review reads are cached only for that refresh and stop on a changed scope', async () => {
@@ -221,9 +240,12 @@ test('readiness review links name exact sources and missing codes stay advisory 
   assert.match(panel.textContent, /Lesson-wide source check.*Missing codes alone.*do not hold grading/);
   assert.match(panel.textContent, /Slides not verified/); assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 1);
   assert.doesNotMatch(panel.textContent, /Repair codes|unmarked copies are held/i);
-  const photo = context.lessonReviews.lessonReviewNotice({...base, topic: 'Photosynthesis'});
-  assert.match(photo.next_action, /Repair codes/);
-  assert.equal(context.lessonReviews.lessonReviewBadge({...base, topic: 'Photosynthesis'}).textContent, 'Needs embedded codes');
+  const photoRow = {...base, topic: 'Photosynthesis', release: {...release,
+    source_resolution: {decks: [{id: 'PHOTODECKFILE123', title: 'Wk 06 Photosynthesis'}]}}};
+  const photo = context.lessonReviews.lessonReviewNotice(photoRow);
+  assert.match(photo.next_action, /Wait for received Photosynthesis originals.*When an original is received, repair any missing embedded codes/);
+  assert.doesNotMatch(photo.next_action, /Repair codes\. Unmarked copies are held/);
+  assert.equal(context.lessonReviews.lessonReviewBadge(photoRow).textContent, 'Needs embedded codes');
   const trueHold = context.lessonReviews.lessonReviewNotice({...base, release: {...release, issues: ['duplicate_feedback_marker'], action: 'Review the duplicate marker.'}});
   assert.equal(trueHold.next_action, 'Review the duplicate marker.');
   const linkAudit = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
@@ -236,6 +258,60 @@ test('readiness review links name exact sources and missing codes stay advisory 
   const links = table.flatMap(allNodes).filter(node => node.tagName === 'a');
   assert.ok(links.some(node => node.href === 'https://docs.google.com/forms/d/FICTIONALFORM123/edit'));
   assert.ok(links.some(node => node.href === 'https://drive.google.com/drive/folders/EXACTFOLDER123'));
+});
+
+test('mixed Photosynthesis topic uses actual resolved deck and Form titles before the topic fallback', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  vm.runInContext(helpers + '\nglobalThis.lessonFix = {lessonPhotosynthesis, lessonReviewAction, lessonReviewBadge};', context);
+  const release = {status: 'NOT_READY', issues: ['marker_inventory_count_mismatch'],
+    action: 'Repair distributed copies now and confirm.',
+    source_resolution: {decks: [{id: 'CELLULARDECK123', metadata: {name: 'Wk 07_Cellular Respiration'}}]}};
+  const mixed = {classKey: 'biology', week: 'Wk 07', topic: 'Continue Photosynthesis and start Cellular Respiration', release,
+    forms: [{form_id: 'CELLULARFORM123', title: 'Cellular Respiration'}]};
+  const before = JSON.stringify(mixed);
+  assert.equal(context.lessonFix.lessonPhotosynthesis(mixed), false);
+  assert.equal(context.lessonFix.lessonReviewBadge(mixed).textContent, 'Code advisory');
+  assert.match(context.lessonFix.lessonReviewAction(mixed), /Missing codes alone do not hold grading/);
+  assert.doesNotMatch(context.lessonFix.lessonReviewAction(mixed), /Repair distributed copies now|Wait for received Photosynthesis/);
+  assert.equal(context.lessonFix.lessonPhotosynthesis({...mixed, release: {...release, source_resolution: {decks: []}}}), false,
+    'a known Cellular Respiration Form remains more specific than a mixed topic');
+  const photo = {...mixed, week: 'Wk 06', forms: [{form_id: 'PHOTOFORMID123', title: 'Photosynthesis'}],
+    release: {...release, source_resolution: {decks: [{id: 'PHOTODECKFILE123', title: 'Wk 06_Photosynthesis'}]}}};
+  assert.equal(context.lessonFix.lessonPhotosynthesis(photo), true);
+  const action = context.lessonFix.lessonReviewAction(photo);
+  assert.match(action, /Wait for received Photosynthesis originals.*When an original is received, repair any missing embedded codes/);
+  assert.match(action, /No student-copy verification is needed before an original arrives.*does not establish submission status/);
+  assert.doesNotMatch(action, /Repair distributed copies now|confirm copies now|no originals were received|0 submissions/i);
+  const unreadable = context.lessonFix.lessonReviewAction({...photo, release: {...photo.release,
+    readability: {stage: 'metadata'}, action: 'Check the exact linked source access.'}});
+  assert.match(unreadable, /Check the exact linked source access.*When an original is received/);
+  assert.equal(JSON.stringify(mixed), before, 'display classification does not change status or grading inputs');
+});
+
+test('readiness source links deduplicate exact resources and ready Next Agenda rows stay compact', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  const next = source.slice(source.indexOf('function renderNextLessons('), source.indexOf('async function printTodayFeedback('));
+  vm.runInContext(helpers + '\n' + next + '\nglobalThis.lessonCompact = {lessonReviewNotice, renderNextLessons};', context);
+  const row = {classKey: 'biology', className: 'Biology', week: 'Wk 07', topic: 'Cellular Respiration',
+    release: {status: 'READY', issues: [], source_resolution: {decks: [
+      {id: 'CELLULARDECK123', title: 'Cellular Respiration'}, {id: 'CELLULARDECK123', title: 'Same source again'}],
+      folders: [{id: 'CELLULARFOLDER123', name: 'Lesson folder'}, {id: 'CELLULARFOLDER123', name: 'Same folder'}]}},
+    forms: [{form_id: 'CELLULARFORM123', title: 'Cellular Respiration'}, {form_id: 'CELLULARFORM123', title: 'Same Form from second Agenda field'}]};
+  const notice = context.lessonCompact.lessonReviewNotice(row);
+  assert.equal(notice.sources.length, 3); assert.equal(notice.slides.length, 3);
+  assert.equal(new Set(notice.sources.map(source => source.url)).size, 3);
+  const audits = {biology: {data: {rows: [row]}}};
+  const ready = context.lessonCompact.renderNextLessons(audits);
+  assert.match(ready.textContent, /Linked lesson source is ready\. Student copies are checked separately/);
+  assert.doesNotMatch(ready.textContent, /Lesson-wide source check|Slides not verified|Next action:|Student identity not verified/);
+  const issue = {...row, release: {...row.release, status: 'NOT_READY', issues: ['duplicate_feedback_marker'],
+    problem: 'The exact source repeats a feedback marker.', action: 'Review the duplicate marker without changing answers.'}};
+  const held = context.lessonCompact.renderNextLessons({biology: {data: {rows: [issue]}}});
+  assert.match(held.textContent, /Lesson-wide source check.*The exact source repeats a feedback marker/);
+  assert.match(held.textContent, /Slides not verified.*Next action: Review the duplicate marker/);
+  assert.equal(allNodes(held).filter(node => node.tagName === 'a').length, 3);
 });
 
 test('readiness labels name embedded-code repairs while keeping access failures distinct', () => {

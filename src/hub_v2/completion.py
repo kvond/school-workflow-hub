@@ -826,9 +826,29 @@ def student_coding_required(agenda, class_key, week_label, form_id):
                    if any(form.get("form_id") == form_id for form in lesson["forms"])]
     except (TypeError, KeyError, AttributeError, ValueError):
         return True
-    if len(lessons) != 1:
+    if not isinstance(form_id, str) or not form_id.strip() or len(lessons) != 1:
         return True
-    return class_key == "biology" and bool(re.search(r"\bphotosynthesis\b", str(lessons[0].get("topic") or ""), re.I))
+    forms = [form for form in lessons[0]['forms'] if form.get('form_id') == form_id]
+    if len(forms) != 1:
+        return True
+    if class_key != 'biology':
+        return False
+    # A mixed Agenda row may continue Photosynthesis while handing out a
+    # different named lesson. Only this exact Form's teacher-controlled subject
+    # label can override the row topic; URLs and generic controls cannot.
+    label = str(forms[0].get('label') or '').strip()
+    bare = re.sub(r'\b(?:wk|week|cycle|c)\s*\d+\b', '', label, flags=re.I)
+    generic = {'turn', 'it', 'in', 'submit', 'submission', 'upload', 'your', 'the', 'a', 'an',
+               'first', 'second', 'form', 'google', 'student', 'copy', 'work', 'worksheet',
+               'assignment', 'lesson', 'notes', 'revision', 'optional', 'bonus', 'required',
+               'week', 'cycle', 'wk', 'term', 'part', 'response', 'responses', 'answer', 'answers',
+               'of', 'for', 'to', 'this', 'these', 'here', 'please', 'complete', 'completed',
+               'biology', 'bio', 'science', 'sciences', 'class', 'course', 'anatomy', 'physiology',
+               'forensics', 'ap', 'lab', 'laboratory', 'activity', 'exercise', 'quiz', 'assessment', 'module'}
+    meaningful = (not re.search(r'https?://|forms\.gle/', label, re.I)
+                  and bool(set(re.findall(r'[a-z]+', bare.lower())) - generic))
+    subject = label if meaningful else str(lessons[0].get('topic') or '')
+    return bool(re.search(r'\bphotosynthesis\b', subject, re.I))
 
 
 def student_readiness(deck, *, revision="", require_complete_codes=True):
