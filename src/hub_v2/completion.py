@@ -1441,7 +1441,12 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     form = next((f for lesson in work_result.get("lessons", []) for f in lesson["forms"]
                  if f["form_id"] == form_id), None)
     candidates = scoring_candidates(form or {}, include_late=include_late)
-    affected = next((r for r in candidates if r.get("selection_problem")), None)
+    # A held candidate also protects its recorded historical originals. This
+    # reports the exact uncertainty without authorizing an unselected old copy
+    # or suppressing an unrelated student's verified current source.
+    affected = next((r for r in candidates if r.get("selection_problem")
+                     and any(f["id"] == file_id for snapshot in [r] + r.get("earlier", [])
+                             for f in snapshot.get("files", []))), None)
     if affected:
         label = (form or {}).get("label") or next((lesson.get("topic") for lesson in work_result.get("lessons", [])
                                                   if form in lesson["forms"]), "this assignment")

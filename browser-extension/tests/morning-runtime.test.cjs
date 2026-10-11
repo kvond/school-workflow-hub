@@ -151,7 +151,7 @@ test('all-check source assignments remain held in the receipt without any IC ope
  assert.ok(!JSON.stringify(h.state).includes('Private Student'));assert.equal(s.execution_started,false);assert.equal(s.report_pending,false);
  assert.ok(!h.calls.includes('navigate'));assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
  await h.alarm();assert.equal(h.calls.filter(c=>c==='list').length,1);
- const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,false);
+ const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,true);
 });
 test('a true no-scores assignment remains visible and is not an IC comparison',async()=>{
  const form=fixture().list.form_id,h=background({listByForm:{[form]:{code:'no_scores'}}});await h.alarm();
@@ -181,7 +181,7 @@ test('a batch containing only retained readiness or mapping holds is not finishe
   assert.ok(s.report.items.every(i=>[i.filled,i.raised,i.kept,i.left].every(n=>n===0)));
   assert.equal(s.execution_started,false);assert.equal(s.blocked,false);assert.equal(s.report_pending,false);
   assert.ok(!h.calls.includes('navigate'));assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
-  const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,false);
+  const status=await h.invoke({type:'morning_status'});assert.equal(status.can_retry,false);assert.equal(status.can_run_now,true);
  }
 });
 test('a retained gate hold preserves independently saved readback counts without finishing the batch',async()=>{
@@ -797,5 +797,130 @@ test('finished no-execution and zero-count panels permit a fresh day but inconsi
   const report={day:'2026-10-09',run_id:uuid(),code:'finished',items:[{assignment:'No scores',code:'no_scores',filled,raised:0,kept:0,left:0}]};
   const h=background({stored:olderDeliveredNoWrite({report})});h.advance(Saturday);await settle();
   assert.equal((await h.invoke({type:'morning_status'})).can_run_now,filled===0);
+ }
+});
+
+function completedPartialState(code='coverage_incomplete',extra={}){
+ const day='2026-10-01';return {morning_enabled:true,morning_state:{day,manual_run_day:day,
+  execution_started:true,blocked:false,inflight:false,report_pending:false,
+  report:{day,run_id:uuid(),code,roster:'unavailable',items:[
+   {assignment:'Matter',code:'read_back',filled:1,raised:0,kept:0,left:0},
+   {assignment:'Unmapped lesson',code,filled:0,raised:0,kept:0,left:0}]},...extra}};
+}
+test('persisted completed partial batch offers one explicit same-day current-source pass',async()=>{
+ for(const code of ['coverage_incomplete','mapping_required','no_scores']){
+  const stored=completedPartialState(code),old=structuredClone(stored.morning_state.report),h=background({stored});
+  await settle();assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+  assert.deepEqual(h.state.morning_state.report,old);assert.ok(!h.calls.includes('execute'));
+  await h.invoke({type:'morning_run_now'});await settle();
+  assert.equal(h.calls.filter(c=>c==='execute').length,1);
+  assert.notEqual(h.state.morning_state.report.run_id,old.run_id);
+  assert.equal(h.state.morning_state.finished_recheck_day,old.day);
+  assert.equal(h.state.morning_state.updated_recheck_version,'0.5.14');
+  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+  await h.invoke({type:'morning_run_now'});await h.alarm();
+  assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ }
+});
+test('explicit partial recheck preserves actual remaining gaps and never labels them finished',async()=>{
+ const form='HELD_FORM',h=background({stored:completedPartialState(),catalogAssignments:[
+  {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'},
+  {class:'forensics',week:'Wk 04',form,assignment:'Unmapped lesson'}],listByForm:{[form]:{code:'mapping_required'}}});
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.state.morning_state.report.code,'mapping_required');
+ assert.deepEqual(h.state.morning_state.report.items.map(i=>i.code),['read_back','mapping_required']);
+ assert.equal(h.state.morning_state.report_pending,false);assert.equal(h.state.morning_state.blocked,false);
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+ await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+test('updated helper permits only one explicit version-bound completed-partial pass',async()=>{
+ const h=background({stored:completedPartialState('coverage_incomplete',{
+  finished_recheck_day:'2026-10-01',updated_recheck_version:'0.5.13'})});
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.state.morning_state.updated_recheck_version,'0.5.14');
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+ await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+test('partial recheck rejects uncertainty, unknown execution, invalid counts and pending delivery',async()=>{
+ for(const change of ['blocked','inflight','report_pending','outbox','unknown_execution','false_execution_with_counts',
+  'running','save_unconfirmed','source_scores_held','invalid_count','held_item_nonzero','wrong_day','bad_run','empty_executed','unknown_item']){
+  const stored=completedPartialState(),s=stored.morning_state;
+  if(['blocked','inflight','report_pending'].includes(change))s[change]=true;
+  if(change==='outbox')s.outbox=[structuredClone(s.report)];
+  if(change==='unknown_execution')delete s.execution_started;
+  if(change==='false_execution_with_counts')s.execution_started=false;
+  if(['running','save_unconfirmed','source_scores_held'].includes(change))s.report.items[0].code=change;
+  if(change==='invalid_count')s.report.items[0].filled=-1;
+  if(change==='held_item_nonzero')s.report.items[1].raised=1;
+  if(change==='wrong_day')s.report.day='2026-09-30';
+  if(change==='bad_run')s.report.run_id='not-a-run';
+  if(change==='empty_executed'){s.report.code='finished';s.report.items=[];}
+  if(change==='unknown_item')s.report.items[0]=null;
+  const h=background({stored});await settle();
+  assert.notEqual((await h.invoke({type:'morning_status'})).can_run_now,true,change);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
+ }
+});
+test('completed partial recheck remains popup-only and never becomes an automatic retry',async()=>{
+ const h=background({stored:completedPartialState()});await h.alarm();assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'},{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});
+ await settle();assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+
+function validSourceHeldState(extra={}){
+ const stored=completedPartialState('source_scores_held',extra);
+ stored.morning_state.report.items[1].source_holds={checks:11};return stored;
+}
+test('known source-held completed batch permits one explicit fresh pass and retains its held detail',async()=>{
+ const form='HELD_FORM',h=background({stored:validSourceHeldState(),catalogAssignments:[
+  {class:'biology',week:'Wk 05',form:fixture().list.form_id,assignment:'Matter'},
+  {class:'forensics',week:'Wk 06',form,assignment:'Searching and Photography'}],
+  listByForm:{[form]:{code:'source_scores_held',source_holds:{checks:11}}}});
+ const original=structuredClone(h.state.morning_state.report);
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+ assert.deepEqual(h.state.morning_state.report,original);await h.alarm();assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'},{id:'extension',tab:{id:1},url:C.HUB_ORIGIN+'/v2/'});
+ await settle();assert.ok(!h.calls.includes('execute'));
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.state.morning_state.report.code,'source_scores_held');
+ assert.deepEqual(h.state.morning_state.report.items.map(i=>i.code),['read_back','source_scores_held']);
+ assert.deepEqual(h.state.morning_state.report.items[1].source_holds,{checks:11});
+ assert.equal(h.state.morning_state.report.items[1].filled,0);assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.equal(h.state.morning_state.finished_recheck_day,'2026-10-01');
+ assert.equal(h.state.morning_state.updated_recheck_version,'0.5.14');
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+ await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+test('known no-execution source-held receipt can be explicitly rechecked after a helper update once',async()=>{
+ const stored=validSourceHeldState({execution_started:false,finished_recheck_day:'2026-10-01',updated_recheck_version:'0.5.13'});
+ stored.morning_state.report.items.shift();const h=background({stored});
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.updated_recheck_version,'0.5.14');
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+});
+test('source-held explicit recheck requires exact positive bounded detail, zero counts and known delivery',async()=>{
+ for(const change of ['missing_detail','zero','negative','too_large','string','boolean','extra_field','array','nonzero_count',
+  'unknown_execution','unacknowledged','blocked','inflight','uncertain_other_item','false_finished']){
+  const stored=validSourceHeldState(),s=stored.morning_state,item=s.report.items[1];
+  if(change==='missing_detail')delete item.source_holds;
+  if(change==='zero')item.source_holds.checks=0;
+  if(change==='negative')item.source_holds.checks=-1;
+  if(change==='too_large')item.source_holds.checks=3601;
+  if(change==='string')item.source_holds.checks='11';
+  if(change==='boolean')item.source_holds.checks=true;
+  if(change==='extra_field')item.source_holds.names=['Private Student'];
+  if(change==='array')item.source_holds=[];
+  if(change==='nonzero_count')item.left=1;
+  if(change==='unknown_execution')delete s.execution_started;
+  if(change==='unacknowledged')delete s.report_pending;
+  if(change==='blocked'||change==='inflight')s[change]=true;
+  if(change==='uncertain_other_item')s.report.items[0].code='save_unconfirmed';
+  if(change==='false_finished')s.report.code='finished';
+  const h=background({stored});await settle();
+  assert.notEqual((await h.invoke({type:'morning_status'})).can_run_now,true,change);
+  await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'),change);
  }
 });

@@ -286,12 +286,11 @@ def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include
         candidates = combined_assessment.feedback_rows(form)
     else:
         candidates = form['students'] if component_only else completion.scoring_candidates(form, include_late=include_late)
-    if any(r.get("selection_problem") for r in candidates):
-        return [(r, {"code": "coverage_incomplete", "problem": r["selection_problem"]})
-                for r in candidates if r.get("selection_problem")]
-    rows = [r for r in candidates if r["matched"] and r["files"]]
+    rows = [r for r in candidates if r["matched"] and (r["files"] or r.get("selection_problem"))]
 
     def one(row):
+        if row.get("selection_problem"):
+            return {"code": "coverage_incomplete", "problem": row["selection_problem"]}
         upload = next((f for f in row["files"] if f.get("mime") in (completion.SLIDES, google.PPTX)), row["files"][0])
         if component_only:
             return completion.score_file(token, agenda, class_key, week, form_id, upload['id'], found,

@@ -80,6 +80,23 @@
  const validDay=day=>typeof day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day)
   &&Number.isFinite(Date.parse(day+'T12:00:00Z'))&&new Date(day+'T12:00:00Z').toISOString().slice(0,10)===day;
  const validRun=id=>typeof id==='string'&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
+ function completedRecheckReport(s){
+  const report=s.report,items=report?.items;
+  // A persisted partial batch keeps its real source/mapping gaps. Only known
+  // completed items authorize a new explicit pass; this never retries a Save.
+  return validDay(s.day)&&report?.day===s.day&&validRun(report?.run_id)
+   &&['finished','mapping_required','coverage_incomplete','no_scores','source_scores_held'].includes(report.code)
+   &&s.report_pending===false&&typeof s.execution_started==='boolean'&&Array.isArray(items)
+   &&(items.length>0||s.execution_started===false)
+   &&(report.code==='source_scores_held'||!items.some(i=>i?.code==='source_scores_held'))
+   &&(report.code==='finished'||(items.length>0&&items.some(i=>i?.code===report.code)))
+   &&items.every(i=>i&&(completedRecheckCodes.has(i.code)||(i.code==='source_scores_held'
+    &&i.source_holds&&!Array.isArray(i.source_holds)&&Object.hasOwn(i.source_holds,'checks')&&Object.keys(i.source_holds).length===1
+    &&Number.isInteger(i.source_holds.checks)&&i.source_holds.checks>0&&i.source_holds.checks<=3600))
+    &&['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600)
+    &&(completedCodes.has(i.code)||zeroCounts(i)))
+   &&(s.execution_started||items.every(zeroCounts));
+ }
  const verifiedReport=s=>validRun(s.report?.run_id)&&s.verified?.run_id===s.report.run_id
   &&typeof s.verified.by==='string'&&!!s.verified.by&&Number.isFinite(Date.parse(s.verified.at));
  function freshManualDay(s,t){
@@ -112,15 +129,13 @@
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
   const verifiedRecovery=verifiedReport(s);
-  // A finished receipt can be explicitly rechecked once later that day.
+  // A completed receipt can be explicitly rechecked once later that day.
   // The new pass rereads every source and destination; uncertain writes remain blocked.
-  const completedRun=s.report?.code==='finished'&&s.finished_recheck_day!==t.day&&Array.isArray(s.report.items)
-   &&s.report.items.every(i=>completedRecheckCodes.has(i.code));
+  const completedRun=completedRecheckReport(s)&&s.finished_recheck_day!==t.day;
   // A shipped helper fix may need one fresh, full-source pass on the same day.
   // Keep it distinct from uncertain-write recovery; the pass still re-reads all
   // Hub and IC values and the keep-higher plan prevents duplicate/lower scores.
-  const updatedCodeRun=s.report?.code==='finished'&&Array.isArray(s.report.items)
-   &&s.report.items.every(i=>completedRecheckCodes.has(i.code))
+  const updatedCodeRun=completedRecheckReport(s)
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
   const repeat=safePreflightRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
@@ -136,6 +151,7 @@
    const requestedAt=M.clock();
    const preflightRepeat=manualNow&&safePreflightRepeat(s,requestedAt);
    if(manualNow&&!manualNowAllowed(s,requestedAt))return;
+   const completedRecheck=manualNow&&completedRecheckReport(s);
    const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
    s.outbox=s.outbox||[];
    for(const day of M.missed(s)){
@@ -156,8 +172,10 @@
    s.day=due.day;
    if(manualNow){
     s.manual_run_day=due.day;
-   if(s.report?.code==='finished'&&Array.isArray(s.report.items)&&s.report.items.every(i=>completedRecheckCodes.has(i.code)))s.finished_recheck_day=due.day;
-    if(s.report?.code==='finished'&&Array.isArray(s.report.items)&&s.report.items.every(i=>completedRecheckCodes.has(i.code)))s.updated_recheck_version=chrome.runtime.getManifest().version;
+    if(completedRecheck){
+     s.finished_recheck_day=due.day;
+     s.updated_recheck_version=chrome.runtime.getManifest().version;
+    }
     if(preflightRepeat)s.manual_run_retry_day=due.day;
    }
    s.report={day:due.day,run_id:crypto.randomUUID(),code:due.skip?'missed_noon':s.blocked?'uncertain_blocked':'running',roster:'unavailable',items:[]};

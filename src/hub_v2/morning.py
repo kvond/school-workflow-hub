@@ -76,7 +76,13 @@ def closed_recheck(form, mark, now=None):
 def rows(form, scored, now, *, recheck=False):
     scores = {person(row): score for row, score in scored}
     window = form.get("window")
-    started = bool(window and (not window.get("from") or work.when(window["from"]) <= now))
+    if not isinstance(window, dict):
+        window = None
+    start = work.when(window.get("from")) if window else None
+    cutoff = work.when(window.get("at")) if window else None
+    started = bool(window and (not window.get("from") or (start and start <= now)))
+    deadline_known = bool(cutoff and (not window.get("from") or (start and start <= cutoff)))
+    closed = bool(deadline_known and cutoff < now)
     elsewhere = set()
     accepted = set()
     for item in form.get("elsewhere", []):
@@ -122,13 +128,17 @@ def rows(form, scored, now, *, recheck=False):
         if form.get('combined_assessment'):
             add(row, 'none', reason='No eligible submitted component; no combined missing-work zero prepared')
         elif not started:
-            add(row, "none", reason="its two weeks haven't started")
+            add(row, "none", reason="its two weeks haven't started" if deadline_known else
+                "its two-week deadline is unconfirmed; no zero prepared")
         elif row.get("unsorted") or person(row) in elsewhere:
             add(row, "check", reason="submission needs review")
         elif person(row) in accepted:
             add(row, "none", reason="accepted through this Form for another assignment; no score inferred here")
         elif recheck:
             add(row, "none", reason="previously entered assignment; no missing-work zero in this recheck")
+        elif not closed:
+            add(row, "none", reason="its two-week deadline has not passed; no zero prepared" if deadline_known else
+                "its two-week deadline is unconfirmed; no zero prepared")
         else:
             add(row, "zero", 0, 0)
     for row in form.get("excused", []):
@@ -172,13 +182,8 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
         return {"code": "receipt_unconfirmed"}
     closed = bool(cutoff and cutoff < now)
     recheck = closed_recheck(form, mark, now)
-    if recheck:
-        affected = next((r for r in completion.recheck_candidates(form, now=now)
-                         if r.get("selection_problem")), None)
-        if affected:
-            return {"code": "coverage_incomplete", "problem": "%s · %s · %s · %s, %s (%s): %s" %
-                    (agenda.classes[cls]["name"], week, form.get("label") or lesson["topic"],
-                     affected["last"], affected.get("first", ""), affected["section"], affected["selection_problem"])}
+    # Current-source uncertainty belongs to that student's check row. The
+    # scorer and list preserve it while other verified candidates proceed.
     scored = (score_rows(token, agenda, cls, week, fid, form, found, include_late=True) if recheck
               else score_rows(token, agenda, cls, week, fid, form, found))
     blocked = next((score for _, score in scored if score.get("code") == "deck_not_ready"), None)

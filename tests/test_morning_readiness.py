@@ -127,11 +127,11 @@ class WholeAssignmentTests(unittest.TestCase):
         self.assertEqual(result['code'],'coverage_incomplete');self.assertNotIn('list',result)
         rows.assert_not_called();scorer.assert_called_once()
 
-    def test_valid_ready_assignment_retains_existing_missing_zero_rule(self):
+    def test_valid_ready_assignment_before_deadline_does_not_prepare_missing_zero(self):
         form=self.form()
         result,_,_=self.make(form,{'status':'READY'},[(form['students'][0],{'notes_score':8,'revision_score':None})])
         self.assertEqual(result['code'],'ready')
-        self.assertEqual([r['kind'] for r in result['list']['rows']],['score','zero'])
+        self.assertEqual([r['kind'] for r in result['list']['rows']],['score','none'])
 
     def test_work_serializes_guard_without_altering_original_form_provenance(self):
         hold={'status':'NOT_READY','problem':'Copies need embedded codes.','action':'Embed preserving answers then rerun.'}

@@ -102,8 +102,16 @@ def read_source(token, fid):
 
 
 def source_basis(capture):
+    # Native Slides exports may regenerate ZIP bytes without changing the
+    # original source. Bind their complete parsed deck plus exact metadata;
+    # retain capture['sha256'] as the raw export audit. Office bytes are source.
+    mime = capture['metadata']['mimeType']
+    if mime not in (completion.SLIDES, google.PPTX):
+        raise Held('An exact combined-assignment source has an unsupported source type.')
+    content_sha = digest(capture['deck']) if mime == completion.SLIDES else capture['sha256']
     return {'file_id': capture['metadata']['id'], 'version': str(capture['metadata']['version']),
-            'modified_at': capture['metadata'].get('modifiedTime', ''), 'sha256': capture['sha256'],
+            'modified_at': capture['metadata'].get('modifiedTime', ''), 'sha256': content_sha,
+            'hash_basis': 'parsed_completion_deck' if mime == completion.SLIDES else 'original_file_bytes',
             'metadata_sha256': digest(capture['metadata'])}
 
 
@@ -253,7 +261,7 @@ def feedback_rows(form):
 
 
 def verify_sources(token, form, row):
-    """Current full-byte/metadata bookends must match the source-bound selection."""
+    """Current source content and metadata must match the bound selection."""
     state = form['combined_assessment']
     if state.get('problem') or state.get('scope_digest') != digest(state['scope']) or row.get('selection_problem'):
         raise Held(state.get('problem') or row.get('selection_problem') or 'Combined-assignment scope changed.')

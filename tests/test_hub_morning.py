@@ -21,9 +21,9 @@ class MorningTests(unittest.TestCase):
         form["elsewhere"] = [{"who": "Cole, Ann", "section": ROW["section"]}]
         form["excused"] = [{**ROW, "last": "Eve"}]
         rows = {r["last"]: r for r in morning.rows(form, [(ROW, {"problem": "unreadable"})], NOW)}
-        self.assertEqual({k: v["kind"] for k, v in rows.items()}, {"Avery": "check", "Brook": "check", "Cole": "check", "Dale": "zero", "Eve": "excused"})
+        self.assertEqual({k: v["kind"] for k, v in rows.items()}, {"Avery": "check", "Brook": "check", "Cole": "check", "Dale": "none", "Eve": "excused"})
         self.assertIsNone(rows["Avery"]["notes"])
-        self.assertEqual(rows["Dale"]["notes"], 0)
+        self.assertIsNone(rows["Dale"]["notes"])
 
     def test_before_open_and_duplicate_roster_never_become_zeros(self):
         form = copy.deepcopy(FORM)
@@ -239,20 +239,28 @@ class ClosedAssignmentRecheckTests(unittest.TestCase):
         self.assertFalse(any(r["kind"] == "zero" for r in result["list"]["rows"]))
         self.assertEqual(self.found, before)
 
-    def test_ambiguous_replacement_dates_and_unverified_history_hold_before_scoring(self):
+    def test_ambiguous_replacement_dates_and_unverified_history_hold_only_that_student(self):
         replacement = self.replacement()
         row = self.form["students"][0]
         tied = copy.deepcopy(replacement)
         tied["files"][0].update(id="ANOTHER_REPLACEMENT_123", source_response_id="ANOTHER_RESPONSE_123")
         row["earlier"].append(tied)
-        scorer = Mock()
-        held = self.make(scorer)
-        self.assertEqual(held["code"], "coverage_incomplete")
-        self.assertIn("Biology · Wk 02 · Matter · Avery, Ann (A4 Fictional)", held["problem"])
-        scorer.assert_not_called()
+        def check():
+            before = copy.deepcopy(self.found)
+            with patch.object(morning.completion, "score_file", return_value={"notes_score": 8}) as score:
+                result = self.make(app._score_rows)
+            self.assertEqual(result["code"], "ready")
+            values = {r["last"]: r for r in result["list"]["rows"]}
+            self.assertEqual(values["Avery"]["kind"], "check")
+            self.assertIsNone(values["Avery"]["notes"])
+            self.assertEqual(values["Brook"]["kind"], "score")
+            self.assertEqual(values["Cole"]["kind"], "none")
+            score.assert_called_once()
+            self.assertEqual(score.call_args.args[5], "FICTIONAL_LATE_FILE_123")
+            self.assertEqual(self.found, before)
+        check()
         row["earlier"] = [{**replacement, "source": "folder", "matched_by": "file name"}]
-        self.assertEqual(self.make(scorer)["code"], "coverage_incomplete")
-        scorer.assert_not_called()
+        check()
 
     def test_absence_checks_excused_and_duplicate_identities_keep_their_holds(self):
         self.form["missing"] += [{**ROW, "last": "Dale", "unsorted": True}, {**ROW, "last": "Eve"}]
@@ -278,7 +286,7 @@ class ClosedAssignmentRecheckTests(unittest.TestCase):
         self.assertEqual(self.make(untouched)["code"], "coverage_incomplete")
         untouched.assert_not_called()
 
-    def test_closed_first_entry_and_open_assignments_keep_default_candidate_and_zero_rules(self):
+    def test_closed_first_entry_keeps_zero_rule_but_open_assignment_has_no_absence_zero(self):
         scorer = Mock(return_value=[(self.form["students"][0], {"notes_score": 8})])
         result = self.make(scorer, mark={"configured": True})
         self.assertEqual(scorer.call_args.kwargs, {})
@@ -286,7 +294,7 @@ class ClosedAssignmentRecheckTests(unittest.TestCase):
         self.form["window"]["at"] = "2026-10-14T03:59:59Z"
         result = self.make(scorer)
         self.assertEqual(scorer.call_args.kwargs, {})
-        self.assertEqual([r["kind"] for r in result["list"]["rows"]], ["score", "zero", "zero"])
+        self.assertEqual([r["kind"] for r in result["list"]["rows"]], ["score", "none", "none"])
 
     def test_predicate_requires_known_closed_window_and_valid_nonfuture_entry(self):
         self.assertTrue(morning.closed_recheck(self.form, self.mark, self.now))
