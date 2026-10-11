@@ -1,5 +1,22 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Saved-panel readback and student copy scoring (0.5.19)
+
+After native Save, the helper waits for the current IC workspace to finish
+reloading, including when IC replaces its iframe. It requires the same
+assignment context, the complete expected score-row labels and the saved
+indicator before checking scores. A timeout or changed destination remains
+unconfirmed and never restarts a grade write automatically.
+
+The teacher's October 10 rule is to score readable, correctly matched student
+copies using the meaningful work and usable embedded codes actually present.
+Missing student codes or stale inventory totals alone do not withhold a grade.
+Notes and Revision retain separate denominators; zero denominators are N/A.
+Student Photosynthesis copies are the explicit exception: their embedded codes
+must be repaired and verified before scoring. Identity, assignment, source
+access, response ambiguity and uncertain destination writes remain separate
+holds. This package update is not proof of live saved-grade acceptance.
+
 ## Weekday batch, current IC roster and missing-work zeros (0.5.18)
 
 Assignments whose submitted-work rows all need a score check stay in the receipt

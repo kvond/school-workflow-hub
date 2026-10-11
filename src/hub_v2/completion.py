@@ -6,11 +6,12 @@ review — it never judges how good an answer is:
     Notes    = 10 x (completed NOTES + completed BANK) / (required NOTES + BANK)
     Revision = 10 x completed DRAFT / required DRAFT
 
-The required items are the codes in the deck's own [[MARKER-INVENTORY:...]]
-header (or, without one, every code in the deck; a student's copy of another
-version of the lesson is held to its own header) that have a box to answer in:
-a code on the list that no box in the student's copy carries isn't counted,
-so a deck with only 3 answerable boxes is out of those 3 (the teacher's rule). Each code is a small text
+Student grading counts the actual parseable codes with answerable boxes in the
+submitted copy. A missing or stale student inventory does not add requirements
+or hold a grade. The registered Biology Photosynthesis lesson still requires
+complete student coding, and linked teacher decks retain their strict gate.
+A code with no answerable box isn't counted, so a deck with only 3 answerable
+boxes is out of those 3 (the teacher's rule). Each code is a small text
 box such as [[NOTES:C03:CA1-RULE]] placed on its answer box. A box counts as
 completed when the student wrote something in it that wasn't already in the
 copy they were given; a box whose new text is the printed slide text copied
@@ -527,6 +528,53 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
         if all(m.get("binding", {}).get("kind") in ("picture-slot", "picture-activity") for m in slide_markers):
             return response_binding.picture_answers(slide_markers, written, template_slide, student_slide, size)
         return response_binding.drag_answers(slide_markers, written, template_slide, student_slide, size, _plain)
+    original = markers({"slides": [template_slide]}) if template_slide else []
+    orphan_drafts = [m for m in slide_markers if m["category"] == "DRAFT"
+                     and any(n["category"] == "NOTES" and n["id"] == m["id"] for n in original)
+                     and not any(n["category"] == "NOTES" and n["id"] == m["id"] for n in slide_markers)]
+    if orphan_drafts:
+        if not all(sum(m["category"] == "DRAFT" and m["code"] == draft["code"] and m["id"] == draft["id"]
+                       and response_binding.same_box(m["box"], draft["box"], size) for m in original) == 1
+                   for draft in orphan_drafts):
+            return result, list(written), response_binding.REVIEW
+        labels = (template_slide or {}).get("units", [])
+        fields = [u for u in labels if u.get("box") and not u["text"].strip()]
+        if (response_binding.tiny_points(slide_markers, size) and all(any(
+                _inside(_center(draft["box"]), field["box"]) for field in fields) for draft in orphan_drafts)):
+            responses, context = [], []
+            for item in written:
+                unit, _ = item
+                target = context if any(u.get("box") and u["text"].strip()
+                                        and response_binding.same_box(unit.get("box"), u["box"], size) for u in labels) else responses
+                target.append(item)
+            assigned, loose, basis = response_binding.point_answers(slide_markers, responses, template_slide, size, marker_pattern=MARKER)
+            return assigned, context + loose, basis
+        first = [u for u in labels if u.get("box") and re.match(r"\s*(?:your\s+)?first\s+answer\b", u["text"], re.I)]
+        revised = [u for u in labels if u.get("box") and re.match(r"\s*(?:your\s+)?revised\s+answer\b", u["text"], re.I)]
+        if len(slide_markers) != 1 or len(first) != 1 or len(revised) != 1:
+            return result, list(written), response_binding.REVIEW
+        if not any(_distance(_center(field["box"]), revised[0]["box"]) <
+                   _distance(_center(field["box"]), first[0]["box"]) for field in fields):
+            return result, list(written), response_binding.REVIEW
+        loose = []
+        for item in written:
+            unit, words = item
+            box, margin = unit.get("box"), .001 * max(size)
+            anchored = [field for field in fields if box and (
+                response_binding.same_box(box, field["box"], size)
+                or (box[0] >= field["box"][0] - margin and box[1] >= field["box"][1] - margin
+                    and box[0] + box[2] <= field["box"][0] + field["box"][2] + margin
+                    and box[1] + box[3] <= field["box"][1] + field["box"][3] + margin))]
+            if not anchored:
+                loose.append(item)
+                continue  # printed labels, prompts and other context are not answers
+            if len(anchored) != 1:
+                return result, list(written), response_binding.REVIEW
+            a, b = _distance(_center(anchored[0]["box"]), first[0]["box"]), _distance(_center(anchored[0]["box"]), revised[0]["box"])
+            if a == b:
+                return result, list(written), response_binding.REVIEW
+            (result[("DRAFT", orphan_drafts[0]["id"])] if b < a else loose).append(item)
+        return result, loose, "original revision box labels"
     if response_binding.tiny_points(slide_markers, size):
         return response_binding.point_answers(slide_markers, written, template_slide, size, marker_pattern=MARKER)
     template_units = [u for u in (template_slide or {}).get("units", [])
@@ -736,7 +784,46 @@ def score(done, required):
     return None if not required else round(10 * done / required, 1)
 
 
-def assess(student, template):
+def student_coding_required(agenda, class_key, week_label, form_id):
+    """The exception is the exact registered Biology Photosynthesis lesson.
+
+    Student file names never establish this policy. An unresolved Agenda scope
+    stays strict; the existing private exact-assignment holds remain independent.
+    """
+    try:
+        lessons = [lesson for lesson in agenda.lessons(class_key, week_label)
+                   if any(form.get("form_id") == form_id for form in lesson["forms"])]
+    except (TypeError, KeyError, AttributeError, ValueError):
+        return True
+    if len(lessons) != 1:
+        return True
+    return class_key == "biology" and bool(re.search(r"\bphotosynthesis\b", str(lessons[0].get("topic") or ""), re.I))
+
+
+def student_readiness(deck, *, revision="", require_complete_codes=True):
+    """Missing student coding is advisory; source/response ambiguity still holds."""
+    check = readiness(deck, revision=revision)
+    if require_complete_codes or check["status"] == "READY":
+        return check
+    coverage_issues = {"marker_inventory_missing_or_duplicated", "marker_inventory_not_on_first_slide",
+                       "marker_inventory_counts_unparsed", "marker_inventory_count_mismatch", "marker_inventory_id_mismatch",
+                       "draft_without_matching_notes"}
+    headers = [match for slide in deck["slides"] for unit in slide["units"]
+               for match in INVENTORY.finditer(unit["text"])]
+    codes = markers(deck)
+    if (not set(check["issues"]) <= coverage_issues or len({header.group(1) for header in headers}) > 1
+            or len({marker["code"] for marker in codes}) > 1):
+        return check
+    countable = sum(marker["category"] != "OPTIONAL" for marker in codes)
+    warning = ("Student coding is incomplete. Completion uses only the coded boxes found in this copy; "
+               "missing codes do not block its grade.") if countable else (
+               "No countable codes were found in this copy. Completion is N/A; no zero is prepared.")
+    return {**check, "status": "READY", "label": "Ready to count found codes" if countable else "N/A",
+            "coding_status": check["status"], "student_coding_policy": "found_codes",
+            "warnings": [warning], "problem": None, "action": None}
+
+
+def assess(student, template, *, found_codes_only=False):
     """The completion counts for one student deck against the distributed copy."""
     code, required, basis, note = inventory(template or student)
     if template:
@@ -745,6 +832,13 @@ def assess(student, template):
         own = inventory(student)
         if own[2] == "header" and own[0] == code and own[1] != required:
             code, required, basis, note = own
+    codes = markers(student)
+    if found_codes_only:
+        # A stale/missing inventory cannot add requirements or erase actual
+        # markers. Never lend absent student markers from a newer teacher deck.
+        required = {category: list(dict.fromkeys(marker["id"] for marker in codes
+                                                if marker["category"] == category)) for category in CATEGORIES}
+        basis = "found_codes"
     pairs = _align(student, template) if template else {}
     template_text = {s["number"]: " ".join(t for u in s["units"] for t in _tokens(u["text"]))
                      for s in (template or {"slides": []})["slides"]}
@@ -754,7 +848,7 @@ def assess(student, template):
     response_unbound = False
     numeric_unbound = False
     choice_unbound = False
-    codes = markers(student)
+    draft_unbound = False
     handed_out = markers(template) if template else []
     current = {(c, qid) for c in CATEGORIES for qid in required[c]}
     for slide in student["slides"]:
@@ -766,7 +860,7 @@ def assess(student, template):
                 numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
                 choice_unbound |= any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in mine)
             continue  # nothing to compare this slide with
-        if template and not any((m["category"], m["id"]) in current for m in mine):
+        if template and not found_codes_only and not any((m["category"], m["id"]) in current for m in mine):
             # A copy of an older version of the deck: this slide lacks today's
             # codes, so use the handed-out deck's codes for its matching slide.
             mine = [m for m in handed_out if m["slide"] == match["number"]]
@@ -780,6 +874,8 @@ def assess(student, template):
             bank_unbound = True
         if basis_here == response_binding.REVIEW:
             response_unbound = True
+            draft_unbound |= any(m["category"] == "DRAFT" and not any(
+                n["category"] == "NOTES" and n["id"] == m["id"] for n in mine) for m in mine)
             numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
             choice_unbound |= any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in mine)
         if mine and written:
@@ -833,20 +929,27 @@ def assess(student, template):
     scored_items = [i for i in items if i["category"] != "OPTIONAL"]
     missing_codes = sum(1 for i in scored_items if i["status"] == "not found")
     student_note = None
+    missing_code_warning = None
     if scored_items and missing_codes * 10 >= len(scored_items) * 3:
-        student_note = ("This copy is missing %d of its %d codes, so it may have been copied from an older version "
-                        "of the deck. Check it by hand." % (missing_codes, len(scored_items)))
+        # Missing boxes are already excluded from the denominator. Their warning
+        # must not turn an otherwise usable completion score into a review hold.
+        missing_code_warning = ("This copy is missing %d of its %d codes. Its completion score uses only the coded "
+                                "boxes found in this copy; missing codes are not counted as unfinished work."
+                                % (missing_codes, len(scored_items)))
     if bank_unbound:
         student_note = ("These BANK responses do not have a unique printed term label. "
                         "Check the term-to-response match by hand before scoring or entering grades.")
     if response_unbound:
-        student_note = ("This YES/NO activity needs its original question, visible choice mark and separate revision box checked "
+        student_note = ("This revision response needs its original labeled answer box checked before scoring or entering grades.") if draft_unbound else (
+                       "This YES/NO activity needs its original question, visible choice mark and separate revision box checked "
                         "before scoring or entering grades.") if choice_unbound else (
                        "This numeric activity needs its original printed instructions and response blanks checked "
                         "before scoring or entering grades.") if numeric_unbound else (
                        "This activity needs its original cards or pictures and response regions checked "
                        "before scoring or entering grades.")
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
+            "missing_code_warning": missing_code_warning,
+            "scoring_basis": "found_codes" if found_codes_only else "inventory",
             "coding": coding_issues(template or student),
             "notes_score": None if bank_unbound or response_unbound else score(counts["NOTES"]["done"] + counts["BANK"]["done"],
                                  counts["NOTES"]["required"] + counts["BANK"]["required"]),
@@ -1047,7 +1150,7 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
                       "Linked completion codes are ready; every submitted student copy must also pass before entry."}
 
 
-def submitted_readiness(token, form):
+def submitted_readiness(token, form, *, require_complete_codes=True):
     """Fresh copy revisions/codes only, without completion arithmetic or writes."""
     from . import google
     checked, seen = [], set()
@@ -1060,7 +1163,8 @@ def submitted_readiness(token, form):
             seen.add(upload["id"])
             try:
                 meta, deck = _template(token, upload["id"])
-                result = readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""))
+                result = student_readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""),
+                                           require_complete_codes=require_complete_codes)
             except (google.GoogleError, Unreadable) as error:
                 result = {"status": "NOT_READY", "label": "Cannot read lesson", "problem": str(error)}
             result.update(file_id=upload["id"], name=upload.get("name", ""))
@@ -1236,11 +1340,20 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         return {**out, "code": "deck_not_ready", "label": "Cannot read lesson",
                 "problem": "Couldn't read this exact submitted deck (%s)." % error,
                 "action": "Check this file's access or readability, then recheck before rerunning grading."}
-    check = readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""))
+    complete_codes = student_coding_required(agenda, class_key, week_label, form_id)
+    check = student_readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""),
+                              require_complete_codes=complete_codes)
+    student_check = check
     if check["status"] != "READY":
         return not_ready(check, upload.get("name") or meta.get("name", ""), "student copy")
     best = pick_template(deck, [t[2] for t in templates])
-    if coverage(deck, best) < 0.8:
+    # A correctly selected copy with no codes has no grade denominator. Keep
+    # the exact linked teacher/source checks; do not borrow its requirements.
+    has_codes = bool(markers(deck))
+    if (not complete_codes and not has_codes and len(templates) == 1
+            and (not inventory(deck)[0] or inventory(deck)[0] == inventory(templates[0][2])[0])):
+        best = templates[0][2]
+    if has_codes and coverage(deck, best) < 0.8:
         # Look only in the actual linked lesson/source folders. A same-title
         # file elsewhere, including an obsolete lesson, is not a replacement.
         title = original_title(upload.get("name") or meta.get("name", ""))
@@ -1268,9 +1381,13 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     source_key = (file_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
     template_key = (chosen[0], chosen[1].get("modifiedTime", ""), str(chosen[1].get("version") or ""))
     cached = _results.get(source_key)
-    if cached and cached["template"] == template_key:
+    if cached and cached["template"] == template_key and cached.get("student_coding_required") == complete_codes:
         return {**out, **cached["result"]}
-    result = {**assess(deck, chosen[2]), "template": chosen[1].get("name", ""),
+    assessed = assess(deck, chosen[2], found_codes_only=not complete_codes)
+    result = {**assessed,
+              "missing_code_warning": " ".join(student_check.get("warnings") or []) or assessed.get("missing_code_warning"),
+              "template": chosen[1].get("name", ""),
               "template_id": chosen[0], "template_updated": chosen[1].get("modifiedTime", "")}
-    _remember(_results, source_key, {"template": template_key, "result": result}, MAX_CACHED_RESULTS)
+    _remember(_results, source_key, {"template": template_key, "student_coding_required": complete_codes,
+                                   "result": result}, MAX_CACHED_RESULTS)
     return {**out, **result}

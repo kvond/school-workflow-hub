@@ -1116,7 +1116,8 @@ function scoreCells(row, scores) {
       ? el('ul', {class: 'files'}, todo.map(i => el('li', {}, `${i.category} ${i.id}${i.slide ? ` (slide ${i.slide})` : ''} — ${STATUS[i.status] || i.status}`)))
       : el('p', {class: 'muted', text: 'Every coded box has writing.'}));
   return [el('td', {}, cell(notesShown, c.NOTES.done + c.BANK.done, c.NOTES.required + c.BANK.required, 'notes boxes and Concept Bank terms'),
-    detail, result.note ? el('small', {class: 'note warn', text: result.note}) : null),
+    detail, result.missing_code_warning ? el('small', {class: 'muted', text: result.missing_code_warning}) : null,
+    result.note ? el('small', {class: 'note warn', text: result.note}) : null),
     el('td', {}, cell(revisionShown, c.DRAFT.done, c.DRAFT.required, 'revised answers'))];
 }
 
@@ -1471,6 +1472,9 @@ function helperRows(form) {
     else if (!s) add(r, 'check', null, null, 'not scored yet');
     else if (s.problem) add(r, 'check', null, null, 'deck couldn’t be scored');
     else if (s.note) add(r, 'check', null, null, 'the Hub isn’t sure of this score');
+    else if (s.notes_score == null && s.revision_score == null && s.scoring_basis === 'found_codes'
+      && ['NOTES', 'BANK', 'DRAFT'].every(category => s.counts?.[category]?.required === 0))
+      add(r, 'none', null, null, 'N/A: no countable coded boxes; no zero prepared');
     else if (s.notes_score == null && s.revision_score == null) add(r, 'check', null, null, 'no codes to count');
     else add(r, 'score', s.notes_score ?? null, s.revision_score ?? null);
   }

@@ -5,11 +5,12 @@ const readScript=name=>fs.readFileSync(path.join(__dirname,'..',name),'utf8');
 
 // Exercise the content script's native score setter, Save and frame reload,
 // together with the real morning planner/executor. All data is fictional.
-function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,changedFlags=null,manual=false}={}){
+function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,changedFlags=null,manual=false,
+ replaceFrame=false,reloadSavedPolls=0,reloadRows=null,reloadContext=null,reloadFlags=null,reloadPanelPolls=0}={}){
  const origin='https://school.example.test',label='F MP: Marking Period Score input for Avery, Ann';
  const target={section:'A4 Fictional',column:'notes',section_id:'42',term_id:'5',year:'2027',school_id:'7',calendar_id:'8',structure_id:'9',assignment_id:'123',score_group:'3',task_id:'1',label_code:'F',url:origin+'/campus/sis/control-center/classroom/curriculum/resource/123/view(secondaryRouteOutlet:multiscore/assignmentEditor/sectionID/42/objectSectionID/123/calendarID/8/structureID/9)?classroomSectionID=42&classroomTermID=5&year=2027&schoolID=7&calendarID=8&structureID=9'};
  const list={schema:E.SCHEMA,list_id:crypto.randomUUID(),class_key:'biology',class_name:'Biology',week:'Wk 05',form_id:'FICTIONAL_FORM_1234',assignment:'Matter',form_label:'Matter',status:'open',status_text:'Open',sent_at:new Date().toISOString(),rows:[{last:'Avery',first:'Ann',section:target.section,kind,notes:value,revision:kind==='zero'?0:null,reason:''}]};
- const state={calls:[],flags:[...flags],saved:true,authorizations:0,results:[]};
+ const state={calls:[],flags:[...flags],saved:true,authorizations:0,results:[],afterReload:false,reloadPolls:0};
  const row={};
  class NativeInput {
   constructor(){this.raw='';}
@@ -23,10 +24,21 @@ function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,cha
  }
  const input=new NativeInput(),view={HTMLInputElement:NativeInput,Event:class {constructor(type){this.type=type;}}};
  let doc={defaultView:view,readyState:'complete'};
- const frame={get contentDocument(){return doc;},contentWindow:{location:{reload(){state.calls.push('reload');doc={defaultView:view,readyState:'complete'};}}}};
+ let frame;
+ const reload=()=>{
+  state.calls.push('reload');const previous=doc;doc={defaultView:view,readyState:'complete'};state.afterReload=true;
+  if(replaceFrame){Object.defineProperty(frame,'contentDocument',{get:()=>previous});frame={contentDocument:doc,contentWindow:{location:{reload}}};}
+  if(reloadSavedPolls)state.saved=false;
+  if(reloadFlags)state.flags=[...reloadFlags];
+ };
+ frame={get contentDocument(){return doc;},contentWindow:{location:{reload}}};
  const context={section_id:'42',term_id:'5',year:'2027',school_id:'7',calendar_id:'8',assignment_id:'123',title:'Matter (F)',points:10};
  const save={getAttribute:()=>state.saved?'All scores have been saved.':'Unsaved scores',click(){state.calls.push('save');state.saved=true;}};
- const surface=()=>({inputs:[input],context:{...context},save,frame,doc,group:'3',path:target.url,score:{querySelectorAll:()=>[{getAttribute:()=> 'progressScore_5_1_42'}]}});
+ const surface=()=>{
+  if(state.afterReload&&state.reloadPolls<reloadPanelPolls)throw Error('school_sign_in_required');
+  if(state.afterReload&&reloadRows==='missing')throw Error('unsupported_gradebook');
+  return {inputs:state.afterReload&&reloadRows==='duplicate'?[input,input]:[input],context:{...context,...(state.afterReload?reloadContext:null)},save,frame,doc,group:'3',path:target.url,score:{querySelectorAll:()=>[{getAttribute:()=> 'progressScore_5_1_42'}]}};
+ };
  const engine=forcePlan?{...E,buildPlan(...args){
   // Defense in depth: a malformed planner decision must still be rejected by
   // the native port, without touching a flagged nonzero or other flag.
@@ -50,7 +62,13 @@ function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,cha
  const body=new DomNode('body'),walk=node=>[node,...node.children.filter(child=>child instanceof DomNode).flatMap(walk)];
  const window={};window.top=window;
  const sandbox={HubIcEntry:engine,HubPostingProtocol:P,HubPostingConfig:{HUB_ORIGIN:'https://hub.example.test',IC_ORIGIN:origin},
-  HubIcAdapter:{panel:{surface,waitSurface:async()=>surface(),renderedFlags:()=>[...state.flags],norm:value=>String(value||'').replace(/\s+/g,' ').trim(),until:async check=>{if(!check())throw Error('not_ready');}}},
+  HubIcAdapter:{panel:{surface,waitSurface:async()=>surface(),renderedFlags:()=>[...state.flags],norm:value=>String(value||'').replace(/\s+/g,' ').trim(),until:async check=>{
+   for(let i=0;i<5;i++){
+    const result=check();if(result)return result;
+    if(state.afterReload){state.reloadPolls++;if(state.reloadPolls>=reloadSavedPolls)state.saved=true;}
+   }
+   throw Error('not_ready');
+  }}},
   chrome:{runtime:{id:'fictional-extension',onMessage:{addListener:fn=>{listener=fn;}},sendMessage:async message=>{
    if(message.type==='entry_ic'){
     if(message.op==='result'){state.results.push(message.result);return {ok:true};}
@@ -85,6 +103,56 @@ test('native IC executor enters a planned missing-work zero, saves and reloads w
  assert.deepEqual(h.state.flags,['Missing']);
  assert.deepEqual(h.state.calls,['focus','set:0','input','change','blur','save','reload']);
  assert.equal(reply.data.reasons.flag,0);
+});
+
+test('readback finds a new workspace iframe instead of waiting on the detached frame',async()=>{
+ const h=contentPanel({replaceFrame:true}),reply=await h.run();
+ assert.equal(reply.data.code,'read_back');assert.equal(reply.data.result.outcome,'entered');
+ assert.deepEqual(h.state.calls,['focus','set:0','input','change','blur','save','reload']);
+ assert.deepEqual(h.state.flags,['Missing']);
+});
+
+test('readback waits for the Saved indicator after the new document and rows are ready',async()=>{
+ const h=contentPanel({replaceFrame:true,reloadSavedPolls:2}),reply=await h.run();
+ assert.equal(reply.data.code,'read_back');assert.equal(reply.data.result.outcome,'entered');
+ assert.equal(h.state.reloadPolls,2);assert.equal(h.state.calls.filter(call=>call==='save').length,1);
+});
+
+test('a temporarily unreadable navigating frame can finish, but a continuing sign-in panel stays uncertain',async()=>{
+ for(const [reloadPanelPolls,outcome] of [[2,'entered'],[99,'uncertain']]){
+  const h=contentPanel({replaceFrame:true,reloadPanelPolls}),reply=await h.run();
+  assert.equal(reply.data.result.outcome,outcome);
+  assert.equal(h.state.calls.filter(call=>call==='save').length,1);
+  assert.equal(h.state.calls.filter(call=>call==='reload').length,1);
+ }
+});
+
+test('incomplete or duplicate reloaded rows remain uncertain without another Save or reload',async()=>{
+ for(const reloadRows of ['missing','duplicate']){
+  const h=contentPanel({replaceFrame:true,reloadRows}),reply=await h.run();
+  assert.equal(reply.data.result.outcome,'uncertain');assert.equal(reply.data.result.certain,false);
+  assert.equal(h.state.calls.filter(call=>call==='save').length,1);
+  assert.equal(h.state.calls.filter(call=>call==='reload').length,1);
+ }
+});
+
+test('changed assignment context or grade flags after reload are never accepted as verified',async()=>{
+ for(const options of [{reloadContext:{assignment_id:'999'}},{reloadFlags:['Exempt']}]){
+  const h=contentPanel({replaceFrame:true,...options}),reply=await h.run();
+  assert.equal(reply.data.result.outcome,'uncertain');assert.equal(reply.data.result.certain,false);
+  assert.equal(h.state.calls.filter(call=>call==='save').length,1);
+  assert.equal(h.state.calls.filter(call=>call==='reload').length,1);
+ }
+});
+
+test('manual uncertain result explains a missing Saved indicator without adding private receipt fields',async()=>{
+ const h=contentPanel({manual:true,replaceFrame:true,reloadSavedPolls:99}),review=await h.review();
+ await review.enter();
+ assert.match(review.dialog.textContent,/score rows returned, but IC did not confirm their saved state in time/);
+ assert.equal(h.state.results[0].outcome,'uncertain');assert.equal(h.state.results[0].certain,false);
+ assert.deepEqual(Object.keys(h.state.results[0]).sort(),['list_id','form_id','class_key','week','column','section','ic_title','outcome','certain','counts','at'].sort());
+ assert.equal(h.state.calls.filter(call=>call==='save').length,1);
+ assert.equal(h.state.calls.filter(call=>call==='reload').length,1);
 });
 
 test('real IC planner leaves positive scores and other flags untouched',async()=>{

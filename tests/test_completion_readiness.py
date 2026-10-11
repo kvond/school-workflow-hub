@@ -105,11 +105,12 @@ class ScoringGateTests(unittest.TestCase):
     def setUp(self):
         completion._results.clear(); completion._templates.clear()
 
-    def score(self, student, teacher=None, source_version='1'):
+    def score(self, student, teacher=None, source_version='1', strict_student=True):
         teacher = teacher or source()
         metadata = {'id': TEMPLATE, 'name': 'Scene photography', 'mimeType': google.PPTX,
                     'modifiedTime': 'same-modified-time', 'version': 'teacher-1'}
-        with patch.object(completion, '_template', return_value=(metadata, teacher)), \
+        with patch.object(completion, 'student_coding_required', return_value=strict_student), \
+             patch.object(completion, '_template', return_value=(metadata, teacher)), \
              patch.object(google, 'drive_file', return_value={'id': STUDENT, 'name': 'Student copy',
                  'mimeType': google.PPTX, 'modifiedTime': 'same-modified-time', 'version': source_version}), \
              patch.object(completion, '_read', return_value=student):

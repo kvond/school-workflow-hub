@@ -406,7 +406,8 @@ def record_post(environ, respond, config):
         if kind == "ic":
             ready = completion.assignment_readiness(token, config, agenda, class_key, week, form_id)
             if ready["status"] == "READY":
-                ready = completion.submitted_readiness(token, form)
+                ready = completion.submitted_readiness(token, form,
+                    require_complete_codes=completion.student_coding_required(agenda, class_key, week, form_id))
             if ready["status"] != "READY":
                 return respond("409 Conflict", {"error": ready["problem"], "action": ready.get("action"),
                                                 "code": "coverage_incomplete", "readiness": ready})

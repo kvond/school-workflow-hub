@@ -80,6 +80,17 @@ class TeacherHoldTests(unittest.TestCase):
         self.port.rows[self.ident].value['clearance']['copies'][0]['status']='NOT_READY'
         self.assertEqual(self.check()['status'],'NOT_READY')
 
+    def test_explicit_count_found_codes_decision_can_clear_only_non_exception_scope(self):
+        self.port.rows[self.ident].value.update(status='cleared',clearance={
+            'basis':'teacher_confirmed_count_found_codes','teacher_confirmed_at':'2026-10-10T10:00:00Z',
+            'verified_at':'2026-10-10T10:01:00Z','copies':[{'file_id':'FICTIONAL_READABLE_COPY_1234','version':'4','status':'READY'}]})
+        result=self.check()
+        self.assertEqual(result['status'],'READY');self.assertTrue(result['clearance_verified'])
+        with patch.object(completion,'student_coding_required',return_value=True):
+            self.assertEqual(self.check()['status'],'NOT_READY')
+        self.port.rows[self.ident].value['clearance']['copies'][0]['version']=''
+        self.assertEqual(self.check()['status'],'NOT_READY')
+
     def test_malformed_or_duplicate_active_registration_fails_closed(self):
         for config in ({holds.CONFIG:'{broken'}, {holds.CONFIG:json.dumps(json.loads(settings()[holds.CONFIG])*2)},
                        settings(week='Cycle 04')):

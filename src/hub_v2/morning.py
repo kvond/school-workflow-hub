@@ -103,7 +103,12 @@ def rows(form, scored, now, *, recheck=False):
         if row.get("selection_problem"):
             add(row, "check", reason=row["selection_problem"])
             continue
-        if not score or score.get("problem") or score.get("note") or all(score.get(k) is None for k in ("notes_score", "revision_score")):
+        if (score and not score.get("problem") and not score.get("note")
+                and score.get("scoring_basis") == "found_codes"
+                and all(score.get(k) is None for k in ("notes_score", "revision_score"))
+                and all(score.get("counts", {}).get(category, {}).get("required") == 0 for category in ("NOTES", "BANK", "DRAFT"))):
+            add(row, "none", reason="N/A: no countable coded boxes; no zero prepared")
+        elif not score or score.get("problem") or score.get("note") or all(score.get(k) is None for k in ("notes_score", "revision_score")):
             add(row, "check", reason="deck needs scoring by hand")
         else:
             add(row, "score", score.get("notes_score"), score.get("revision_score"))

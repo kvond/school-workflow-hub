@@ -32,7 +32,10 @@
  }
  const sameContext=(s,plan)=>JSON.stringify(s.context)===JSON.stringify(plan.context);
  function ports(plan){
+  let diagnostic='';
+  const expectedLabels=(plan.snapshot?.rows||plan.rows).map(row=>row.label).sort();
   return {
+   diagnostic:()=>diagnostic,
    snapshot:async requireSaved=>read(requireSaved).snapshot,
    fill:async change=>{
     const {s,snapshot}=read(false);if(!sameContext(s,plan))fail('ic_changed');
@@ -50,15 +53,35 @@
    },
    save:async()=>{
     const {s}=read(false);if(!sameContext(s,plan))fail('ic_changed');
+    diagnostic='save_confirmation_pending';
     s.save.click();
     await until(()=>{try{return norm(surface().save.getAttribute('title'))===SAVED;}catch{return false;}},20000);
+    diagnostic='';
    },
    reload:async()=>{
     const current=surface(),old=current.doc;
+    diagnostic='reload_document_pending';
     current.frame.contentWindow.location.reload();
-    await until(()=>{try{return current.frame.contentDocument!==old&&current.frame.contentDocument.readyState==='complete';}catch{return false;}},20000);
-    await until(()=>{try{return surface().inputs.length;}catch{return false;}},20000);
-    return read(false).snapshot;
+    // IC may replace its workspace iframe during reload. Find the current
+    // surface each time; the detached original frame cannot prove readback.
+    const after=await until(()=>{
+     let s;
+     try{s=surface();}catch(error){
+      // A frame can have no readable Document while it navigates. A login
+      // or inaccessible frame never passes the exact ready-surface checks.
+      if(['assignment_frame_required','score_panel_required','unsupported_gradebook','school_sign_in_required'].includes(error?.message))return false;
+      diagnostic='reload_panel_unusable';throw error;
+     }
+     if(s.doc===old||s.doc.readyState!=='complete')return false;
+     if(!sameContext(s,plan)){diagnostic='reload_context_changed';fail('ic_changed');}
+     const {snapshot}=read(false),labels=snapshot.rows.map(row=>row.label).sort();
+     diagnostic='reload_rows_incomplete';
+     if(new Set(labels).size!==labels.length||JSON.stringify(labels)!==JSON.stringify(expectedLabels))return false;
+     diagnostic='reload_saved_marker_pending';
+     if(!snapshot.saved)return false;
+     diagnostic='';return snapshot;
+    },20000);
+    return after;
    },
   };
  }
@@ -70,6 +93,14 @@
   column_required:'Choose Notes or Revision for this IC assignment.',
   list_expired:'This Hub list is more than 3 hours old. Send it again from the Hub.',
   unsupported_points_scale:'This assignment isn’t scored out of 10 points, so the helper won’t enter Hub scores in it.',
+ };
+ const READBACK_MESSAGES={
+  save_confirmation_pending:'IC did not show its saved-state confirmation in time.',
+  reload_document_pending:'The reloaded assignment did not finish opening in time.',
+  reload_panel_unusable:'The reloaded score panel could not be read safely.',
+  reload_context_changed:'The assignment context changed after reload.',
+  reload_rows_incomplete:'The complete, unique student score rows did not return in time.',
+  reload_saved_marker_pending:'The score rows returned, but IC did not confirm their saved state in time.',
  };
  const say=error=>MESSAGES[error?.message]||'Open one assignment’s score panel in Infinite Campus (the one where scores are typed), then review again.';
  function node(tag,props={},...children){
@@ -216,9 +247,9 @@
    if(!event.isTrusted||!confirm.checked||!plan||working)return;
    working=true;setGo(true);confirm.disabled=true;again.disabled=true;close.disabled=true;select.disabled=true;radios.forEach(r=>{r.disabled=true;});
    status.textContent=plan.changes.length?'Typing, saving and reloading to check… keep this tab open.':'Checking…';
-   const current=plan;
+   const current=plan,io=ports(current);
    let run;
-   try{run=await E.execute(current,ports(current));}
+   try{run=await E.execute(current,io);}
    catch{run={outcome:'uncertain',code:'save_unconfirmed',certain:false,counts:{filled:0,raised:0,kept:current.counts.keep,left:current.counts.leave,not_saved:0},failed:[],unexpected:[]};}
    const n=run.counts;
    status.textContent={
@@ -229,6 +260,8 @@
    }[run.outcome]||(run.code==='ic_changed'?'IC changed since this review, so nothing was typed. Click Review again.'
     :run.code==='ic_unreadable'?'The assignment couldn’t be read, so nothing was typed. Click Review again.'
     :'Stopped before saving: nothing was saved. Reload this assignment in IC to clear what the helper typed, then review again.');
+   if(run.outcome==='uncertain')status.textContent+=' '+(READBACK_MESSAGES[io.diagnostic()]||
+    (run.code==='readback_incomplete'?'The reloaded rows or grade flags did not match the reviewed assignment.':'The save or reload check could not finish safely.'));
    if(['entered','checked','partial','uncertain'].includes(run.outcome)){
     // Manual receipts report rows needing attention. Morning receipts retain
     // their separate Exempt reason count for the scheduled summary.

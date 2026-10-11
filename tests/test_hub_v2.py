@@ -1262,6 +1262,35 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(result["notes_score"], 2.5)  # 10 x 1 / (2 NOTES + 2 BANK), not 1 / 5
         self.assertIn("NOTES Q-COUNT", result["coding"]["missing"])
 
+    def test_missing_code_warning_does_not_hold_scores_over_the_existing_boxes(self):
+        template = completion.read_deck(handout())
+        student = completion.read_deck(handout(RULE="Energy enters through plants", B1="An incorrect but independent answer",
+                                              B2="I revised my explanation"))
+        student["slides"] = [slide for slide in student["slides"] if slide["number"] != 4]
+        result = completion.assess(student, template)
+        self.assertEqual(result["counts"]["NOTES"], {"done": 2, "required": 3})
+        self.assertEqual(result["counts"]["BANK"], {"done": 0, "required": 0})
+        self.assertEqual((result["notes_score"], result["revision_score"]), (6.7, 10.0))
+        self.assertIsNone(result["note"])
+        self.assertIn("missing 2 of its 6 codes", result["missing_code_warning"])
+        self.assertIn("only the coded boxes found", result["missing_code_warning"])
+        self.assertNotIn("by hand", result["missing_code_warning"])
+        # This pure arithmetic policy never overrides the separate source gate.
+        self.assertEqual(completion.readiness(student)["status"], "NOT_READY")
+
+    def test_missing_codes_do_not_credit_blank_or_copied_answers_or_create_a_zero_denominator(self):
+        template = completion.read_deck(handout())
+        for changes in ({}, {"RULE": "Finish this sentence as a rule: energy enters through"}):
+            student = completion.read_deck(handout(**changes))
+            student["slides"] = [slide for slide in student["slides"] if slide["number"] != 4]
+            result = completion.assess(student, template)
+            self.assertEqual((result["notes_score"], result["revision_score"]), (0.0, 0.0))
+            self.assertIsNone(result["note"])
+            self.assertIsNotNone(result["missing_code_warning"])
+        empty = {"slides": [], "size": template["size"]}
+        result = completion.assess(empty, template)
+        self.assertEqual((result["notes_score"], result["revision_score"]), (None, None))
+
     def test_a_copy_of_an_older_deck_without_codes_is_scored_by_the_handed_out_decks_codes(self):
         # No code boxes on its answer slides and an extra slide in front: slides are matched
         # by their printed text and scored with the handed-out deck's codes.

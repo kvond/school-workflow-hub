@@ -473,6 +473,42 @@ function recheckClient() {
   return {context, document, client, form, mark, now};
 }
 
+test('missing-code advisory keeps actual numeric scores eligible while other notes remain held', () => {
+  const {context, client, form} = recheckClient();
+  const warning = 'This copy is missing 10 of its 32 codes. Its score uses only the coded boxes found.';
+  const score = {notes_score: 5.3, revision_score: 10, note: null, missing_code_warning: warning,
+    counts: {NOTES: {done: 10, required: 19}, BANK: {done: 0, required: 0}, DRAFT: {done: 3, required: 3}}, items: []};
+  client.work.scores[form.form_id] = {SAMEFILE123: score, LATEFILE123: {notes_score: 8, revision_score: 9}};
+  const find = () => client.helperRows(form).find(row => row.first === 'Ann');
+  assert.equal(find().kind, 'score');
+  assert.equal(find().notes, 5.3);
+  assert.equal(find().revision, 10);
+  vm.runInContext('globalThis.scoreCellsForTest = scoreCells;', context);
+  const text = context.scoreCellsForTest(form.students[0], client.work.scores[form.form_id]).map(cell => cell.textContent).join(' ');
+  assert.match(text, /5\.3.*10 of 19/);
+  assert.match(text, /3 of 3/);
+  assert.ok(text.includes(warning));
+  for (const change of [{note: 'The activity response match needs review.'}, {problem: 'Source access failed.'},
+    {notes_score: null, revision_score: null}]) {
+    client.work.scores[form.form_id].SAMEFILE123 = {...score, ...change};
+    assert.equal(find().kind, 'check');
+    assert.equal(find().notes, null);
+    assert.equal(find().revision, null);
+  }
+});
+
+test('an explicit found-code N/A copy stays visible without a coding hold or fabricated zero', () => {
+  const {client, form} = recheckClient();
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: null, revision_score: null,
+    scoring_basis: 'found_codes', counts: {NOTES: {required: 0}, BANK: {required: 0}, DRAFT: {required: 0}}}};
+  const row = client.helperRows(form).find(row => row.first === 'Ann');
+  assert.equal(row.kind, 'none');
+  assert.equal(row.notes, null);
+  assert.equal(row.revision, null);
+  assert.match(row.reason, /N\/A.*no zero/);
+  assert.equal(client.helperNeed([row]).length, 0);
+});
+
 test('a closed recorded assignment queues current on-time and matched late files regardless of old event dates', async () => {
   const {context, client, form} = recheckClient(), requests = [];
   const before = JSON.stringify(form);

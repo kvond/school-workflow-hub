@@ -95,6 +95,17 @@ class MorningTests(unittest.TestCase):
         self.assertEqual(value["code"], "ready")
         self.assertEqual([r["kind"] for r in value["list"]["rows"]], ["score", "check"])
 
+    def test_missing_code_advisory_routes_numeric_scores_but_other_notes_still_hold(self):
+        warning = "This copy is missing 10 of its 32 codes. Its score uses only the coded boxes found."
+        score = {"notes_score": 5.3, "revision_score": 10, "note": None, "missing_code_warning": warning}
+        routed = morning.rows(FORM, [(ROW, score)], NOW)
+        self.assertEqual([(r["kind"], r["notes"], r["revision"]) for r in routed], [("score", 5.3, 10)])
+        for held in ({**score, "note": "The response match is ambiguous."},
+                     {**score, "problem": "This source is unreadable."},
+                     {**score, "notes_score": None, "revision_score": None}):
+            row = morning.rows(FORM, [(ROW, held)], NOW)[0]
+            self.assertEqual((row["kind"], row["notes"], row["revision"]), ("check", None, None))
+
     def test_source_hold_receipt_is_counts_only_and_never_claims_ic_results(self):
         item = {**report()["items"][0], "class_name": "Biology", "week": "Wk 05", "code": "source_scores_held",
                 "filled": 0, "raised": 0, "kept": 0, "left": 0,

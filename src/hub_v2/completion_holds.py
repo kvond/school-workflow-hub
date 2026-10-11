@@ -21,10 +21,13 @@ def _text(value, limit):
     return isinstance(value, str) and bool(value.strip()) and len(value) <= limit and all(ord(c) >= 32 for c in value)
 
 
-def _cleared(value):
+def _cleared(value, *, allow_found_codes=False):
     proof = value.get('clearance')
+    bases = {'teacher_confirmed_distributed_copies_coded'}
+    if allow_found_codes:
+        bases.add('teacher_confirmed_count_found_codes')
     if (not isinstance(proof, dict) or set(proof) != {'basis', 'teacher_confirmed_at', 'verified_at', 'copies'}
-            or proof['basis'] != 'teacher_confirmed_distributed_copies_coded'
+            or proof['basis'] not in bases
             or not isinstance(proof['copies'], list) or not 1 <= len(proof['copies']) <= 500):
         return False
     instant(proof['teacher_confirmed_at']); instant(proof['verified_at'])
@@ -76,7 +79,9 @@ def check(config, agenda, class_key, week, form_id):
             raise ValueError()
         instant(value['updated_at'])
         if value['status'] == 'cleared':
-            if not _cleared(value):
+            from . import completion
+            if not _cleared(value, allow_found_codes=not completion.student_coding_required(
+                    agenda, class_key, week, form_id)):
                 raise ValueError()
             return {**out, 'clearance_verified': True}
         reason = value['reason'] if value['reason'].startswith('Needs embedded codes') else 'Needs embedded codes. ' + value['reason']
