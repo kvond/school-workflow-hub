@@ -351,10 +351,11 @@ function reviewSourceURL(source) {
   return null;
 }
 
-function renderSourceReviewNotice(notice, scope, includeContext = true, retained = false, matchedOther = false) {
+function renderSourceReviewNotice(notice, scope, includeContext = true, retained = false, matchedOther = false, formerWork = false) {
   const student = notice.student || {};
   const name = [student.last, student.first].filter(value => typeof value === 'string' && value.trim()).join(', ');
   const identity = notice.kind === 'lesson' || notice.affected_scope === 'lesson' ? 'Lesson-wide source check · no individual student'
+    : formerWork ? `${name} · Former student`
     : student.verified === true && student.last && student.first
     ? name : name ? `${name} (identity unverified)` : 'Student identity not verified';
   const context = [scope.class_name || scope.class_key, student.section, scope.week, scope.lesson].filter(Boolean).join(' · ');
@@ -372,34 +373,43 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
     return el('li', {}, url ? link(source.label || 'Open exact source', url) : el('span', {text: 'Source link unavailable'}),
       ' · ', where);
   });
-  return el('div', {class: retained ? 'source-history-entry' : matchedOther ? 'matched-source-entry' : 'source-review'},
+  return el('div', {class: retained ? 'source-history-entry' : formerWork ? 'former-source-entry' : matchedOther ? 'matched-source-entry' : 'source-review'},
     includeContext ? el('strong', {text: `${context} · ${identity}`}) : el('strong', {text: identity}),
     retained ? el('p', {}, 'Saved verification as of ', el('time', {datetime: notice.verified_at,
       text: new Date(notice.verified_at).toLocaleString('en-US', {timeZone: TZ, year: 'numeric', month: 'short',
         day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short'})})) : null,
-    el('p', {text: `${retained || matchedOther ? '' : 'Reason: '}${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
+    el('p', {text: `${retained || matchedOther || formerWork ? '' : 'Reason: '}${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
     sourceLines.length ? el('ul', {class: 'files'}, ...sourceLines)
       : el('p', {class: 'muted', text: 'Source link unavailable · Slides not verified'}),
-    retained || matchedOther ? null : el('p', {}, el('strong', {text: 'Next action: '}),
+    retained || matchedOther || formerWork ? null : el('p', {}, el('strong', {text: 'Next action: '}),
       typeof notice.next_action === 'string' && notice.next_action ? notice.next_action : 'No exact next action was returned.'));
 }
 
 function renderSourceReviewContext(data, expected, options = {}) {
   const retained = data?.retained_history ?? [];
   const matchedOther = data?.matched_other_lessons ?? [];
+  const former = data?.former_student_work ?? [];
   if (data?.schema !== 'hub-source-review-context/v1' || !sameReviewScope(data.scope, expected)
       || typeof data.scope.class_name !== 'string' || !data.scope.class_name
       || typeof data.scope.lesson !== 'string' || !data.scope.lesson
       || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
-      || !Array.isArray(data.notices) || !Array.isArray(data.limitations) || !Array.isArray(retained) || !Array.isArray(matchedOther)
+      || !Array.isArray(data.notices) || !Array.isArray(data.limitations) || !Array.isArray(retained) || !Array.isArray(matchedOther) || !Array.isArray(former)
       || matchedOther.some(entry => !entry || entry.kind !== 'matched_other_lesson' || entry.affected_scope !== 'student'
         || typeof entry.reason !== 'string' || !entry.reason || entry.student?.verified !== true
         || !['first', 'last', 'section'].every(key => typeof entry.student[key] === 'string' && entry.student[key])
         || !Array.isArray(entry.sources) || !entry.sources.length || !entry.sources.some(reviewSourceURL)
-        || !reviewScope(entry.target) || entry.target.class_key !== data.scope.class_key || entry.target.week !== data.scope.week
+        || !reviewScope(entry.target) || entry.target.class_key !== data.scope.class_key
+        || (entry.target.week !== data.scope.week && !(entry.matching_kind === 'canonical_nearby_full_title'
+          && /^\d{4}-\d{2}$/.test(data.scope.school_year || '') && entry.target.school_year === data.scope.school_year))
         || entry.target.form_id === data.scope.form_id || typeof entry.target.lesson !== 'string' || !entry.target.lesson
         || entry.target.url !== `https://docs.google.com/forms/d/${entry.target.form_id}/edit`
         || !reviewSourceURL({file_id: entry.target.form_id, url: entry.target.url}))
+      || former.some(entry => !entry || entry.kind !== 'former_student_work' || entry.affected_scope !== 'student'
+        || typeof entry.reason !== 'string' || !entry.reason || entry.student?.verified !== false
+        || entry.student?.former !== true || entry.student?.history_verified !== true
+        || !['first', 'last', 'section'].every(key => typeof entry.student[key] === 'string' && entry.student[key])
+        || !Array.isArray(entry.sources) || entry.sources.length !== 2 || !entry.sources.every(reviewSourceURL)
+        || entry.sources[0].file_id === entry.sources[1].file_id || 'next_action' in entry)
       || retained.some(entry => !entry || typeof entry !== 'object' || typeof entry.reason !== 'string'
         || !entry.student || typeof entry.student !== 'object' || !Array.isArray(entry.sources)
         || !['manual_saved_history', 'maximum_saved_as_of'].includes(entry.basis)
@@ -420,7 +430,7 @@ function renderSourceReviewContext(data, expected, options = {}) {
     el('p', {class: 'muted', text: `Current source context · checked ${when(data.checked_at)}. Read separately from the saved helper receipt.`}),
     data.notices.length ? el('ul', {class: 'attention-list'}, ...data.notices.map(notice =>
       el('li', {}, renderSourceReviewNotice(notice, data.scope))))
-      : retained.length || matchedOther.length ? null : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
+      : retained.length || matchedOther.length || former.length ? null : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
     retained.length ? el('section', {class: 'source-history'},
       el('h4', {text: 'Verified entry · source history retained'}),
       ...retained.map(entry => renderSourceReviewNotice(entry, data.scope, true, true))) : null,
@@ -429,6 +439,9 @@ function renderSourceReviewContext(data, expected, options = {}) {
       ...matchedOther.map(entry => el('div', {}, renderSourceReviewNotice(entry, data.scope, true, false, true),
         el('p', {}, 'Current lesson: ', link([entry.target.class_name || entry.target.class_key, entry.target.week,
           entry.target.lesson].join(' · '), entry.target.url))))) : null,
+    former.length ? el('section', {class: 'former-source-history'},
+      el('h4', {text: 'Former student work · history retained'}),
+      ...former.map(entry => renderSourceReviewNotice(entry, data.scope, true, false, false, true))) : null,
     ...limitations.map(value => note(value, 'info')));
 }
 
@@ -494,8 +507,8 @@ function currentSourceReviewPanel(active = true) {
     let unassessed = false, unavailable = 0;
     for (const {review, detail} of rendered) {
       const label = [review.scope.class_name, review.scope.week, review.scope.lesson].join(' · ');
-      if (!review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length && review.status === 'not_assessed') { unassessed = true; continue; }
-      if (!review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length && ['waiting', 'excluded'].includes(review.status)) {
+      if (!review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length && !review.former_student_work?.length && review.status === 'not_assessed') { unassessed = true; continue; }
+      if (!review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length && !review.former_student_work?.length && ['waiting', 'excluded'].includes(review.status)) {
         body.append(el('p', {class: 'muted', text: `${label}: ${review.status === 'waiting'
           ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
       } else {

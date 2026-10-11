@@ -530,6 +530,7 @@ def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
     for form in forms:
         if not form.get("form_id"):
             continue
+        form.pop("_teacher_source_verified", None)
         form["grade_policy"] = assignment_policy(config, agenda, class_key, week_label, form["form_id"])
         try:
             binding = form_teacher_sources(config, agenda, class_key, week_label, form["form_id"])
@@ -544,6 +545,8 @@ def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
                 continue
             form["teacher_signature"] = {deck_stem(d["title"]) for d in source["decks"] if len(deck_stem(d["title"])) >= 8}
             form["signature"] = set(form["teacher_signature"])
+            if not form.get("problem"):
+                form["_teacher_source_verified"] = True
         except (ValueError, TypeError, KeyError, StopIteration) as error:
             form["problem"] = str(error) or "The exact Form's teacher sources could not be verified."
 
@@ -654,6 +657,20 @@ def wrong_form_moves(entries, held=None):
             continue
         for submission in entry["found"]:
             words = {w for f in submission["files"] for w in deck_words(f.get("name"))}
+            # Fresh exact Form teachers outrank nearby heuristic deck pairings.
+            # Every attachment must agree; conflicting or partial claims stay put.
+            claims = [[j for j, other in enumerate(entries)
+                       if not other.get('form', {}).get('_combined_scope')
+                       and other.get("teacher_source_verified") and other.get("teacher_source_binding")
+                       and any(len(known) >= 16 and known in deck_stem(file.get("name", ""))
+                               for known in other.get("teacher_signature", ()))]
+                      for file in submission.get("files", [])]
+            if any(claims):
+                if all(len(claim) == 1 for claim in claims) and len({claim[0] for claim in claims}) == 1:
+                    target = claims[0][0]
+                    if target != i and (entry["current"] or entries[target]["current"]):
+                        moves.append((i, submission, target))
+                continue
             if not words or confirms(submission, entry):
                 continue
             hits = [j for j, other in enumerate(entries) if j != i
@@ -714,10 +731,16 @@ def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None):
                     continue
                 skip = skip | {form["form_id"]}
                 out.append({"week": label, "label": form["label"],
+                            "class_key": class_key, "school_year": _school_year(agenda, label),
+                            "problem": next((f.get("problem") for f in paired if f["form_id"] == form["form_id"]), None),
                             "topic": lesson["topic"] if len(lesson["forms"]) == 1 else "",
                             "form_id": form["form_id"], "found": found,
                             "teacher_signature": next((f.get("teacher_signature", set()) for f in paired
-                                                       if f["form_id"] == form["form_id"]), set())})
+                                                       if f["form_id"] == form["form_id"]), set()),
+                            "teacher_source_binding": next((f.get("teacher_source_binding") for f in paired
+                                                             if f["form_id"] == form["form_id"]), None),
+                            "teacher_source_verified": any(f.get("_teacher_source_verified") for f in paired
+                                                           if f["form_id"] == form["form_id"])})
     return out
 
 
@@ -811,6 +834,34 @@ def assignment_for_submission(submission, forms):
             return None
         winner = matches[0]
     return winner
+
+
+
+def _nearby_match_context(agenda, class_key, week, entries, target_index, submission):
+    """Describe an existing unique move; never accept intake or choose a grade."""
+    target = entries[target_index]
+    year = _school_year(agenda, week)
+    fid = target.get("form_id")
+    files = submission.get("files") or []
+    if (target.get("current") or target.get("problem") or not year
+            or target.get("class_key") != class_key or target.get("school_year") != year
+            or not isinstance(fid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", fid)
+            or sum((e.get("form", {}).get("form_id") or e.get("form_id")) == fid for e in entries) != 1
+            or not files or any(not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", str(f.get("id") or "")) for f in files)
+            or len({f["id"] for f in files}) != len(files)):
+        return None
+    actual = [f for lesson in agenda.lessons(class_key, target["week"]) for f in lesson["forms"]
+              if f.get("form_id") == fid]
+    if (_school_year(agenda, target["week"]) != year or len(actual) != 1
+            or actual[0].get("label") != target["label"]):
+        return None
+    if not all(any(len(known) >= 16 and known in deck_stem(f.get("name", ""))
+                   for known in target.get("teacher_signature", ()))
+               or _corroborates_assignment_title(f, target) for f in files):
+        return None
+    return {"schema": "hub-nearby-lesson-match/v1", "matching_kind": "canonical_nearby_full_title",
+            "class_key": class_key, "school_year": year, "week": target["week"],
+            "form_id": fid, "lesson": target["label"], "source_file_ids": [f["id"] for f in files]}
 
 
 def shared_folder_reviews(forms, roots, parents):
@@ -1285,13 +1336,19 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                                        form["found"])
             entries.append({"current": True, "form": form, "week": week_label, "label": form["label"],
                             "found": form["found"], "base": base, "words": words,
-                            "teacher_signature": form.get("teacher_signature", set())})
+                            "teacher_signature": form.get("teacher_signature", set()),
+                            "teacher_source_binding": form.get("teacher_source_binding"),
+                            "teacher_source_verified": bool(form.get("_teacher_source_verified"))})
         index += len(lesson["forms"])
     for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}, config=config):
         base, words = lesson_words(near["topic"], near["label"], [], near["found"])
         entries.append({"current": False, "week": near["week"], "label": near["label"], "found": near["found"],
                         "base": base, "words": words,
-                        "teacher_signature": near.get("teacher_signature", set())})
+                        "teacher_signature": near.get("teacher_signature", set()),
+                        "teacher_source_binding": near.get("teacher_source_binding"),
+                        "teacher_source_verified": bool(near.get("teacher_source_verified")),
+                        "form_id": near["form_id"], "class_key": near["class_key"],
+                        "school_year": near["school_year"], "problem": near.get("problem")})
     held_imports = []
     for i, submission, j in wrong_form_moves(entries, held_imports):
         source, target = entries[i], entries[j]
@@ -1303,7 +1360,8 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
             source["form"].setdefault("moved_out", []).append(
                 {"submission": submission, "to": "%s · %s" % (target["week"], target["label"]),
                  "accepted_intake": accepted, "source_form_id": source["form"]["form_id"],
-                 "assignment_form_id": target.get("form", {}).get("form_id")})
+                 "assignment_form_id": target.get("form", {}).get("form_id") or target.get("form_id"),
+                 "matched_other_lesson": _nearby_match_context(agenda, class_key, week_label, entries, j, submission)})
         if target["current"]:
             via = source["label"] if source["current"] else "%s · %s" % (source["week"], source["label"])
             target["found"].append(dict(submission, files=[dict(f, via=via, accepted_intake=accepted,
@@ -1353,7 +1411,10 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                                   "url": first.get("url", ""), "submitted_at": m["submission"]["submitted_at"],
                                   "accepted_intake": bool(m.get("accepted_intake")),
                                   "source_form_id": m.get("source_form_id"),
-                                  "assignment_form_id": m.get("assignment_form_id")})
+                                  "assignment_form_id": m.get("assignment_form_id"),
+                                  **({"matched_other_lesson": m["matched_other_lesson"],
+                                      "matched_source_files": [{k: f.get(k) for k in ("id", "name", "url")} for f in m["submission"]["files"]]}
+                                     if m.get("matched_other_lesson") else {})})
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
                               "grade_policy": form.get("grade_policy", {}),

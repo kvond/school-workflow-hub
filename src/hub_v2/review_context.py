@@ -138,7 +138,7 @@ def scope(agenda, config, class_key, week, form_id, *, catalog=None):
         if link:
             sources.append({**link, 'label': material.get('label') or 'Linked lesson source'})
     form_link = source_link('https://docs.google.com/forms/d/' + form_id + '/edit', form_id)
-    return {'class_key': class_key, 'class_name': item['class_name'], 'week': week,
+    return {'class_key': class_key, 'class_name': item['class_name'], 'week': week, 'school_year': work._school_year(agenda, week),
             'form_id': form_id, 'lesson': item['assignment'], 'topic': lesson.get('topic') or item['assignment'],
             'sources': sources + [{**form_link, 'label': 'Original turn-in Form'}], 'grade_policy': policy}
 
@@ -275,6 +275,28 @@ def build(current_scope, found, cached=None, *, checked_at=None):
                   if verified_route and item.get('to') else 'This original’s lesson and turn-in route could not be confirmed.')
         link = source_link(item.get('url'))
         files = [{**link, 'label': item.get('file') or 'Original source'}] if link else []
+        adjacent = item.get('matched_other_lesson') or {}
+        adjacent_files = _sources(item.get('matched_source_files') or [])
+        if verified_route and _student(row)['verified']:
+            if (adjacent.get('schema') == 'hub-nearby-lesson-match/v1'
+                    and adjacent.get('matching_kind') == 'canonical_nearby_full_title'
+                    and current_scope.get('school_year') and adjacent.get('school_year') == current_scope['school_year']
+                    and adjacent.get('class_key') == current_scope['class_key']
+                    and adjacent.get('week') != current_scope['week']
+                    and adjacent.get('form_id') == item.get('assignment_form_id')
+                    and adjacent.get('source_file_ids') == [f['file_id'] for f in adjacent_files]
+                    and adjacent_files and isinstance(adjacent.get('lesson'), str) and adjacent['lesson']):
+                target_link = source_link('https://docs.google.com/forms/d/' + adjacent['form_id'] + '/edit', adjacent['form_id'])
+                if target_link:
+                    information = notice(current_scope, row,
+                        'This original is matched to %s in %s; it remains linked here as source context.' % (adjacent['lesson'], adjacent['week']),
+                        files=adjacent_files, affected_scope='student', issue_kind='source_route_resolved')
+                    information.pop('next_action', None)
+                    information.update(kind='matched_other_lesson', matching_kind=adjacent['matching_kind'],
+                        target={k: adjacent[k] for k in ('class_key', 'school_year', 'week', 'form_id', 'lesson')})
+                    information['target'].update(class_name=current_scope['class_name'], url=target_link['url'])
+                    matched_other_lessons.append(information)
+                    continue
         detail = notice(current_scope, row, reason, files=files,
             action='Review the original turn-in route shown here; preserve current grades.', affected_scope='student',
             issue_kind='source_route_resolved' if verified_route else 'source_route_unverified')
@@ -305,7 +327,8 @@ def build(current_scope, found, cached=None, *, checked_at=None):
         if not _exempt(row):
             notices.append(notice(current_scope, row,
                 'This source was found in this week’s collection, but its lesson match is unconfirmed; it is not assigned to the selected lesson.',
-                action='Confirm this original’s lesson from its actual content and turn-in route; preserve current grades.'))
+                action='Confirm this original’s lesson from its actual content and turn-in route; preserve current grades.',
+                issue_kind='source_issue' if _student(row)['verified'] else 'identity_unverified'))
     submitted = sum(len(row.get('files', [])) for row in form.get('students', []) + form.get('late', []))
     waiting = bool(not submitted and not form.get('elsewhere') and not form.get('problem')
                    and not found.get('other_files') and not found.get('problems') and not found.get('assessment_problem'))
@@ -364,6 +387,62 @@ def _bookend(token, config, agenda_basis, catalog, roster_snapshot, reload_agend
     return None
 
 
+
+def _former_context(token, config, current_scope, found, result, roster_snapshot):
+    """Present only exact verified withdrawn originals as retained history."""
+    from . import student_archive
+    from school_workflow_hub.core.cloud_state import StoreUnavailable
+    if result.get("status") == "unavailable":
+        return result
+    forms = [f for lesson in found.get("lessons", []) for f in lesson.get("forms", [])
+             if f.get("form_id") == current_scope["form_id"]]
+    rows = [r for f in forms for r in f.get("students", []) + f.get("late", [])] + found.get("other_files", [])
+    eligible = {upload.get("id") for row in rows if not row.get("matched")
+                for upload in row.get("files", []) if upload.get("id")}
+    def eligible_notice(detail):
+        return (detail.get("affected_scope") == "student" and not detail.get("student", {}).get("verified")
+                and detail.get("issue_kind") == "identity_unverified"
+                and detail.get("sources")
+                and all(source.get("file_id") in eligible and source_link(source.get("url"), source.get("file_id"))
+                        for source in detail["sources"]))
+    ids = {source["file_id"] for detail in result["notices"] if eligible_notice(detail)
+           for source in detail["sources"]}
+    try:
+        retained = student_archive.review_former_sources(
+            token, config, current_scope["class_key"], ids, roster_snapshot)
+    except (google.GoogleError, StoreUnavailable) as error:
+        return _unavailable(current_scope, "The private former-student source read is unavailable: " + str(error))
+    except student_archive.Held as error:
+        return _unavailable(current_scope, str(error))
+    if not retained:
+        return result
+    output = deepcopy(result)
+    notices, history, seen = [], [], set()
+    for detail in output["notices"]:
+        sources = detail.get("sources", [])
+        # Mixed unknown/current originals still need their existing exact review.
+        if not eligible_notice(detail) or any(source.get("file_id") not in retained for source in sources):
+            notices.append(detail)
+            continue
+        for source in sources:
+            fid = source["file_id"]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            record = retained[fid]
+            slides = [s for s in detail.get("slides", []) if s.get("file_id") == fid]
+            history.append({"kind": "former_student_work", "affected_scope": "student",
+                "student": {k: record[k] for k in ("first", "last", "section")} |
+                           {"verified": False, "former": True, "history_verified": True},
+                "reason": "Former-student work retained. The original and verified filed copy remain available; historical filing does not assign this source to the selected lesson.",
+                "sources": [source,
+                    {"file_id": record["copy_id"], "label": "Open filed work copy",
+                     "url": student_archive._url(record["copy_id"])}],
+                "slides": slides,
+                "history_basis": {k: record[k] for k in ("student_key", "copy_record_key")}})
+    output["notices"], output["former_student_work"] = notices, history
+    return output
+
 def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=None):
     if (current_scope.get('grade_policy') or {}).get('problem'):
         return _unavailable(current_scope, current_scope['grade_policy']['problem'])
@@ -388,7 +467,8 @@ def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=
     result = build(current_scope, found, cached)
     result['limitations'].extend(limitations)
     from . import source_history_dispositions
-    return source_history_dispositions.apply(token, config, agenda, current_scope, found, result, roster_snapshot)
+    result = source_history_dispositions.apply(token, config, agenda, current_scope, found, result, roster_snapshot)
+    return _former_context(token, config, current_scope, found, result, roster_snapshot)
 
 
 def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None):

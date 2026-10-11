@@ -612,7 +612,7 @@ def morning_entry_post(environ, respond, config):
                 return respond("409 Conflict", {"error": "The current source list is not ready; nothing was recorded.",
                                                  **current})
             receipt = morning_entry.validate(payload, current)
-            whole = receipt["source_check_rows"] == 0
+            whole = receipt["source_check_rows"] == 0 and current.get("partial_components") is not True
             if whole:
                 forms = [form for lesson in captures[0]["lessons"] for form in lesson["forms"]
                          if form["form_id"] == selected["form"]]

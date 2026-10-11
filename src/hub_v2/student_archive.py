@@ -2418,6 +2418,113 @@ def _confirmed_roster_status(student, cls):
     return {k: value.get(k) for k in ("status", "active", "end_date", "school_year", "checked_at", "basis", "verified")}
 
 
+
+def review_former_sources(token, config, class_key, source_ids, roster_snapshot):
+    """Read exact existing historical bindings; never construct an archive run.
+
+    The fresh, complete Hub roster is also bookended by the review endpoint.
+    A past teacher-confirmed withdrawal is not a fresh native IC identity scan.
+    """
+    from types import SimpleNamespace
+    if not enabled(config) or not source_ids:
+        return {}
+    if (not isinstance(roster_snapshot, tuple) or len(roster_snapshot) != 2
+            or not isinstance(roster_snapshot[0], dict) or roster_snapshot[1]
+            or not roster_snapshot[0].get(class_key)):
+        raise Held("The current complete class roster is unavailable for historical-source review.")
+    if (len(source_ids) > MAX_ITEMS or any(not isinstance(fid, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", fid) for fid in source_ids)):
+        raise Held("The historical-source review scope is incomplete or invalid.")
+    source_ids = sorted(set(source_ids))
+    actual_root, _ = _configuration(config)
+    root = _scope_root(config, actual_root)
+    port = configured_store(config)
+    index_key = key("archiveclass", [root, class_key])
+    before = _read(port, index_key)
+    if not before:
+        return {}
+    if before.value.get("schema") != SCHEMA:
+        raise Held("The private former-student source index could not be verified.")
+    historical = before.value.get("historical_sources", {})
+    if not isinstance(historical, dict):
+        raise Held("The private former-student source index could not be verified.")
+    requested = {fid: historical[fid] for fid in source_ids if fid in historical}
+    if not requested:
+        return {}
+    _, course = _location(token, config, class_key)
+    # This read-only context has no write token, lease, task, or run constructor.
+    reader = SimpleNamespace(token=token, port=port, root=root, cls=class_key,
+                             course=course, index_key=index_key)
+    active = roster_snapshot[0][class_key]
+    configured = _roster(config)
+    if configured is not None:
+        active = active + [p for p in configured if p["class_key"] == class_key and p.get("active", True)]
+    output, documents, source_metadata, copy_metadata = {}, {}, {}, {}
+    for fid, binding in requested.items():
+        if not isinstance(binding, dict):
+            continue
+        owner_doc = _read(port, binding.get("student_key", ""))
+        copy_doc = _read(port, binding.get("copy_record_key", ""))
+        if not owner_doc or not copy_doc:
+            continue
+        owner = owner_doc.value
+        if any(not isinstance(owner.get(k), str) or not owner[k].strip() for k in ("first", "last", "section")):
+            continue
+        email = str(owner.get("school_email") or "").strip().lower()
+        native = str(owner.get("student_id") or owner.get("ic_student_id") or "")
+        conflicts = any(
+            (work.roster.compact(p.get("first")) == work.roster.compact(owner.get("first"))
+             and work.roster.compact(p.get("last")) == work.roster.compact(owner.get("last")))
+            or (email and email == str(p.get("school_email") or p.get("email") or "").strip().lower())
+            or (native and native == str(p.get("student_id") or p.get("ic_student_id") or ""))
+            for p in active)
+        if conflicts:
+            continue
+        source = google.drive_file(token, fid, SOURCE_FIELDS)
+        if source.get("id") != fid:
+            continue
+        try:
+            copied = _Run.verify_historical_work(reader, source, binding, {})
+        except Held:
+            # A changed proof remains an actual source review, never history.
+            continue
+        copy_meta = google.drive_file(token, copied["drive_file_id"], FIELDS)
+        if (copy_meta.get("id") != copied["drive_file_id"] or not copied.get("drive_version")
+                or copy_meta.get("version") != copied["drive_version"]):
+            continue
+        selected = _confirmed_roster_status(owner, class_key)
+        if selected and selected["status"] != "withdrawn":
+            continue
+        documents[fid] = (owner_doc, copy_doc)
+        source_metadata[fid], copy_metadata[fid] = source, copy_meta
+        output[fid] = {"first": owner["first"], "last": owner["last"], "section": owner["section"],
+                       "student_key": owner["student_key"], "copy_record_key": copied["record_key"],
+                       "copy_id": copied["drive_file_id"], "student_folder_id": owner["drive_file_id"],
+                       "teacher_status": dict(binding["teacher_status"])}
+    # Complete verifier reads before taking the final record/metadata bookends.
+    for fid in list(output):
+        try:
+            _Run.verify_historical_work(reader, source_metadata[fid], requested[fid], {})
+        except Held:
+            del output[fid]
+            continue
+        owner_doc, copy_doc = documents[fid]
+        owner_after = _read(port, owner_doc.value["student_key"])
+        copy_after = _read(port, copy_doc.value["record_key"])
+        if (not owner_after or not copy_after or owner_after.version != owner_doc.version
+                or owner_after.value != owner_doc.value or copy_after.version != copy_doc.version
+                or copy_after.value != copy_doc.value):
+            del output[fid]
+            continue
+        source_after = google.drive_file(token, fid, SOURCE_FIELDS)
+        copy_after_meta = google.drive_file(token, output[fid]["copy_id"], FIELDS)
+        if source_after != source_metadata[fid] or copy_after_meta != copy_metadata[fid]:
+            del output[fid]
+    after = _read(port, index_key)
+    if not after or after.version != before.version or after.value != before.value:
+        return {}
+    return output
+
 def list_feedback(token, config):
     if not enabled(config):
         return []

@@ -1262,3 +1262,84 @@ test('aggregate displays non-action current lesson matches with one model-free G
   answer({ok: true, json: async () => sourceSummary([data])}); await tick();
   assert.doesNotMatch(stale.textContent, /Avery, Ann|Original matched|Exact current association/);
 });
+
+
+const formerWorkHistory = overrides => ({kind: 'former_student_work', affected_scope: 'student',
+  student: {first: 'Faye', last: 'Former', section: 'Former students', verified: false, former: true, history_verified: true},
+  reason: 'Former-student work retained. The original and verified filed copy remain available.',
+  sources: [{file_id: 'FICTIONALFORMER123', label: 'Original', url: 'https://drive.google.com/open?id=FICTIONALFORMER123'},
+    {file_id: 'FICTIONALCOPY1234', label: 'Open filed work copy', url: 'https://drive.google.com/open?id=FICTIONALCOPY1234'}],
+  slides: [{file_id: 'FICTIONALFORMER123', numbers: [], verified: false}], ...overrides});
+
+test('former student work is linked as history outside attention with no active identity or Saved grade claim', () => {
+  const {ui} = boot([]), entry = formerWorkHistory({reason: '<script>Former history is literal</script>'});
+  const data = sourceContext(sourceScope, [], {status: 'review', former_student_work: [entry]});
+  const before = JSON.stringify(data), panel = ui.renderSourceReviewContext(data, sourceScope);
+  assert.equal(attention(panel).length, 0);
+  assert.match(panel.textContent, /Former student work · history retained.*Former, Faye · Former student/);
+  assert.match(panel.textContent, /Slides not verified/);
+  assert.ok(panel.textContent.includes('<script>Former history is literal</script>'));
+  assert.deepEqual(allNodes(panel).filter(node => node.tagName === 'a').map(node => node.href),
+    ['https://drive.google.com/open?id=FICTIONALFORMER123', 'https://drive.google.com/open?id=FICTIONALCOPY1234']);
+  assert.equal(allNodes(panel).some(node => ['script', 'input', 'button', 'select', 'time'].includes(node.tagName)), false);
+  assert.doesNotMatch(panel.textContent, /identity unverified|Next action:|Saved verification|grade entry completed|all caught up/i);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test('former history preserves real unknown review and rejects active authority, missing proof and incorrect copy links', () => {
+  const {ui} = boot([]), entry = formerWorkHistory();
+  const unknown = sourceNotice({student: {verified: false}, reason: 'Unknown original', next_action: 'Check that source.'});
+  const panel = ui.renderSourceReviewContext(sourceContext(sourceScope, [unknown], {former_student_work: [entry]}), sourceScope);
+  assert.match(attention(panel)[0].textContent, /Unknown original.*Next action: Check that source/);
+  assert.doesNotMatch(attention(panel)[0].textContent, /Former, Faye/);
+  for (const altered of [formerWorkHistory({student: {...entry.student, verified: true}}),
+      formerWorkHistory({student: {...entry.student, history_verified: false}}),
+      formerWorkHistory({next_action: 'Invented action'}),
+      formerWorkHistory({sources: [entry.sources[0], {...entry.sources[1], url: 'https://drive.google.com/open?id=DIFFERENTCOPY123'}]})])
+    assert.throws(() => ui.renderSourceReviewContext(sourceContext(sourceScope, [], {former_student_work: [altered]}), sourceScope), /could not be confirmed/);
+});
+
+test('aggregate former work stays visible in empty scopes through one GET and discards stale or failed names', async () => {
+  const {ui, context} = boot([]), requests = [], writes = [];
+  context.localStorage = {getItem: () => null, setItem: (...args) => writes.push(args)};
+  const data = sourceContext(sourceScope, [], {status: 'not_assessed', former_student_work: [formerWorkHistory()]});
+  context.fetch = async (url, options) => { requests.push({url, options}); return {ok: true, json: async () => sourceSummary([data])}; };
+  const panel = ui.currentSourceReviewPanel(); await tick();
+  assert.match(panel.textContent, /Former student work.*Former, Faye/);
+  assert.equal(requests.length, 1); assert.equal(requests[0].url, 'api/review-context');
+  assert.equal(requests[0].options.method, undefined); assert.equal(requests[0].options.body, undefined);
+  assert.equal(writes.length, 0); assert.equal(attention(panel).length, 0);
+  let answer; context.fetch = () => new Promise(resolve => { answer = resolve; });
+  const stale = ui.currentSourceReviewPanel(); ui.invalidateReviewPanel(stale);
+  answer({ok: true, json: async () => sourceSummary([data])}); await tick();
+  assert.doesNotMatch(stale.textContent, /Former, Faye|Former student work/);
+  context.fetch = async () => ({ok: true, json: async () => sourceSummary([data], {status: 'unavailable'})});
+  const failed = ui.currentSourceReviewPanel(); await tick();
+  assert.doesNotMatch(failed.textContent, /Former, Faye|Former student work/);
+  assert.match(failed.textContent, /no named review is issued/);
+});
+
+
+test('verified adjacent same-year lesson information keeps exact links outside attention and makes no Saved claim', () => {
+  const {ui} = boot([]);
+  const scope = {...sourceScope, school_year: '2031-32'};
+  const entry = matchedOtherLesson({matching_kind: 'canonical_nearby_full_title',
+    reason: 'Original is matched to the exact nearby Eyewitness lesson.',
+    target: {...matchedOtherLesson().target, week: 'Wk 04', school_year: '2031-32', lesson: 'Eyewitness Accounts'}});
+  const panel = ui.renderSourceReviewContext(sourceContext(scope, [], {matched_other_lessons: [entry]}), scope);
+  assert.equal(attention(panel).length, 0);
+  assert.match(panel.textContent, /Wk 04.*Eyewitness Accounts/);
+  assert.ok(allNodes(panel).some(node => node.tagName === 'a' && node.href === entry.target.url));
+  assert.ok(allNodes(panel).some(node => node.tagName === 'a' && node.href === entry.sources[0].url));
+  assert.doesNotMatch(panel.textContent, /Next action:|Saved verification as of|Manual entry verified/);
+});
+
+test('adjacent informational entries require same canonical class/year and explicit producer match kind', () => {
+  const {ui} = boot([]), scope = {...sourceScope, school_year: '2031-32'};
+  const good = matchedOtherLesson({matching_kind: 'canonical_nearby_full_title',
+    target: {...matchedOtherLesson().target, week: 'Wk 04', school_year: '2031-32'}});
+  for (const entry of [{...good, matching_kind: 'weak_words'}, {...good, target: {...good.target, school_year: '2030-31'}},
+      {...good, target: {...good.target, class_key: 'biology'}}, {...good, student: {...good.student, verified: false}}])
+    assert.throws(() => ui.renderSourceReviewContext(sourceContext(scope, [], {matched_other_lessons: [entry]}), scope), /could not be confirmed/);
+  assert.throws(() => ui.renderSourceReviewContext(sourceContext(sourceScope, [], {matched_other_lessons: [good]}), sourceScope), /could not be confirmed/);
+});
