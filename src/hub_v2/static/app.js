@@ -1004,6 +1004,11 @@ async function loadWork(fresh = false) {
   if (!work.week) { setStatus('work-status', 'No weeks were found for this class in the Agenda.', true); return; }
   history.replaceState(null, '', `#work/${work.cls}/${encodeURIComponent(work.week)}`);
   const seq = ++work.seq;
+  // Background helper replies must not restore the previous week's cards.
+  work.data = null;
+  work.scores = {};
+  work.ui = {};
+  work.marks = {};
   setStatus('work-status', 'Finding student work from the Form responses…');
   $('work-body').replaceChildren();
   try {
@@ -1361,7 +1366,7 @@ function icPanel(form, scores, lesson) {
   if (!all.length) { panel.append(note('No scores to enter yet.', 'info')); return panel; }
   const canSend = helper.state === 'ready' && helperNeed(helperRows(form)).length;
   panel.append(el('p', {}, helper.state === 'ready'
-    ? 'The Chrome helper enters these in IC. Click “Send to the Chrome helper”, then in Infinite Campus open this assignment’s score panel ((F) for Notes, (S) for Revision, in each section) and click “Hub helper”. It shows what it will do and enters nothing until you tick its box. On Monday the Claude extension does these clicks after your OK.'
+    ? 'To check all mapped assignments, keep Infinite Campus signed in in School Chrome, open the School Workflow Hub extension, and choose “Run all mapped assignments now”. The helper keeps the higher score, saves eligible changes and checks them after reloading. The weekday morning routine uses the same mappings. For this assignment alone, choose “Send to the Chrome helper”, open its IC score panel ((F) for Notes or (S) for Revision), then choose “Hub helper” and review its list.'
     : 'The Chrome helper isn’t installed in this browser, so it can’t enter these (see Routine). To enter them yourself, open this assignment in Infinite Campus and type them in.',
     entered ? ` Entry was recorded on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “submitted since” turned in after that. ` : ''}Submission dates do not show later edits to the same file. Compare current scores in IC before confirming any entry.` : ''));
   if (ui.helper) panel.append(note(ui.helper, 'info'));

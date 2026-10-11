@@ -132,6 +132,9 @@ def printed_prompts(student, template, markers, size):
 
 def original_slide_matches(markers, template, size, plain):
     """A new activity ID can match only its explicit authentic source objects."""
+    if len(markers) == 1 and markers[0].get("binding", {}).get("kind") == "prefilled-writing-workspace":
+        from . import workspace_binding
+        return workspace_binding.source(markers[0], template, size, plain) is not None
     if markers and all(m.get("binding", {}).get("kind") == "conditional-response-row" for m in markers):
         return all(m.get("standalone") and m["category"] == "NOTES"
                    and row_source(m, template, size, plain) is not None for m in markers)

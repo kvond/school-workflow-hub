@@ -28,7 +28,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from . import graphical_choice, response_binding
+from . import graphical_choice, response_binding, workspace_binding
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -212,6 +212,7 @@ def read_deck(raw):
         except (KeyError, ET.ParseError, ValueError):
             pass
         slides = []
+        workspace_trees = {}
         media_hashes = {}
         for number, name in enumerate(_slide_names(archive)[:MAX_SLIDES], 1):
             if archive.getinfo(name).file_size > MAX_SLIDE_BYTES:
@@ -243,6 +244,7 @@ def read_deck(raw):
                     pictures[relationship.get("Id")] = media_hashes[target]
             tree = root.find(P + "cSld/" + P + "spTree")
             if tree is not None:
+                workspace_trees[number] = (tree, root, pictures)
                 explicit_highlights = False
                 for properties in tree.iter(P + "cNvPr"):
                     binding = response_binding.description(properties.get("descr", "") or "")
@@ -273,6 +275,7 @@ def read_deck(raw):
                             "effects": [ET.tostring(e, encoding="unicode") for e in blip
                                         if e.tag != A + "extLst"] if blip is not None else []}}
             slides.append(slide)
+        workspace_binding.attach(slides, workspace_trees, archive, box=_box, affine=_affine, name=_name)
     if not slides:
         raise Unreadable("This file has no slides.")
     return {"slides": slides, "size": size}
@@ -424,7 +427,8 @@ def _align(student, template):
                 pairs[s["number"]] = best[1]
         bound = [m for m in markers({"slides": [s]}) if "binding" in m]
         if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity", "raster-card-activity", "numeric-record-group",
-                                                     "conditional-response-row", "raster-highlight-activity", graphical_choice.KIND) for m in bound):
+                                                     "conditional-response-row", "raster-highlight-activity", graphical_choice.KIND,
+                                                     workspace_binding.KIND) for m in bound):
             source_bound.add(s["number"])
             originals = [t for t in template["slides"]
                          if (graphical_choice.source(bound[0]["binding"], t, student["size"], _plain) is not None
@@ -503,6 +507,8 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
     if not slide_markers:
         return result, list(written), "no code"
     if any("binding" in m for m in slide_markers):
+        if all(m.get("binding", {}).get("kind") == workspace_binding.KIND for m in slide_markers):
+            return workspace_binding.answers(slide_markers, written, template_slide, student_slide, size, _plain)
         if all(m.get("binding", {}).get("kind") == "conditional-response-row" for m in slide_markers):
             return response_binding.row_answers(slide_markers, written, template_slide, student_slide, size, _plain)
         if all(m.get("binding", {}).get("kind") == "raster-highlight-activity" for m in slide_markers):
@@ -922,13 +928,13 @@ def assess(student, template, *, found_codes_only=False):
             words = " ".join(w for _, w in items)
             if not items:
                 status = "blank"
-            elif len(words.split()) >= COPY_WORDS and " " + words.lower() + " " in " " + printed + " ":
+            elif any(u.get("workspace_supplied_copy") for u, _ in items) or (len(words.split()) >= COPY_WORDS and " " + words.lower() + " " in " " + printed + " "):
                 status = "copied"
             else:
                 status = "done"
             prior = found.get(key)
             if not prior or (prior["status"] != "done" and status == "done"):
-                answer = " ".join(exact.get(u["key"], w) for u, w in items if not u.get("picture") and not u.get("completion_only"))
+                answer = " ".join(u.get("verified_workspace_answer", exact.get(u["key"], w)) for u, w in items if not u.get("picture") and not u.get("completion_only"))
                 where = match or slide  # named and ordered by the handed-out deck's slide
                 found[key] = {"category": key[0], "id": key[1], "slide": slide["number"], "status": status,
                               "excerpt": words[:80], "answer": answer[:MAX_ANSWER],

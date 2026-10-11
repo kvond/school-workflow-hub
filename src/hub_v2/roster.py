@@ -61,14 +61,27 @@ def parse_tab(cells, class_key, section, layouts=None):
     was known: a header row, a 'Last, First' cell, the configured layout, or
     only assumed (Last | First), which orient() can correct."""
     layouts = layouts or {}
+    names = {plain(s): s for tabs in SECTIONS.values() for s in tabs}
 
-    def start(name):
+    def start(name, first_row=1):
         configured = LAYOUTS.get(layouts.get(name, ""))
-        return (configured, "config") if configured else ("last_first", "assumed")
+        if configured:
+            return configured, "config"
+        # A sort can move the name header below student rows. Use it for the
+        # whole section block only when every header in that block agrees.
+        # Never borrow a later section's layout or resolve conflicting headers.
+        headers = set()
+        for row in range(first_row, 201):
+            a = plain(cells.get((row, 1), {}).get("formattedValue", ""))
+            b = plain(cells.get((row, 2), {}).get("formattedValue", ""))
+            if a in names and not b:
+                break
+            if {a, b} == {"last name", "first name"}:
+                headers.add("last_first" if a == "last name" else "first_last")
+        return (headers.pop(), "header") if len(headers) == 1 else ("last_first", "assumed")
 
     students, skipped = [], 0
     order, basis = start(section)
-    names = {plain(s): s for tabs in SECTIONS.values() for s in tabs}
     added_col = next((c for r in range(1, 201) for c in range(3, 11)
                       if plain(cells.get((r, c), {}).get("formattedValue", "")) in ADDED), None)
     for r in range(1, 201):
@@ -78,7 +91,7 @@ def parse_tab(cells, class_key, section, layouts=None):
             continue
         if plain(a) in names and not b:
             section = names[plain(a)]
-            order, basis = start(section)
+            order, basis = start(section, r + 1)
             continue
         if {plain(a), plain(b)} == {"last name", "first name"}:
             order, basis = ("last_first" if plain(a) == "last name" else "first_last"), "header"
