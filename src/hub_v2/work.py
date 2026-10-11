@@ -449,6 +449,105 @@ def week_policy(config, agenda, class_key, week_label):
     return out
 
 
+
+def _form_setting(config, name, extra, agenda, class_key, week_label, form_id):
+    """One private declaration bound to a unique current Agenda Form."""
+    fields = {"school_year", "agenda_id", "class_key", "week", "form_id"} | extra
+    entries = _scoped_config(config, name, fields)
+    keys = set()
+    for entry in entries:
+        if (entry["class_key"] not in agenda.classes
+                or not isinstance(entry["week"], str) or not 1 <= len(entry["week"]) <= 100
+                or any(not isinstance(entry[k], str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", entry[k])
+                       for k in ("agenda_id", "form_id"))):
+            raise ValueError("Exact Form settings need checking before grading.")
+        key = tuple(entry[k] for k in ("school_year", "agenda_id", "class_key", "week", "form_id"))
+        if key in keys:
+            raise ValueError("Duplicate exact Form settings need checking before grading.")
+        keys.add(key)
+    matches = [e for e in entries if (e["agenda_id"], e["class_key"], e["week"], e["form_id"])
+               == (agenda.spreadsheet_id, class_key, week_label, form_id)]
+    if not matches:
+        return None
+    year = _school_year(agenda, week_label)
+    if year is None:
+        raise ValueError("The exact Form's school year could not be verified.")
+    matches = [e for e in matches if e["school_year"] == year]
+    if not matches:
+        return None
+    forms = [(lesson, f) for lesson in agenda.lessons(class_key, week_label)
+             for f in lesson["forms"] if f.get("form_id") == form_id]
+    if len(matches) != 1 or len(forms) != 1:
+        raise ValueError("The exact Form's current Agenda scope is not unique.")
+    return dict(matches[0])
+
+
+def form_teacher_sources(config, agenda, class_key, week_label, form_id):
+    """Exact registered teacher IDs, not a student's filename or row title."""
+    entry = _form_setting(config, "HUB_FORM_TEACHER_SOURCES", {"source_folder_id", "teacher_ids"},
+                          agenda, class_key, week_label, form_id)
+    if entry and (not isinstance(entry["source_folder_id"], str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", entry["source_folder_id"])
+            or not isinstance(entry["teacher_ids"], list) or not 1 <= len(entry["teacher_ids"]) <= 4
+            or any(not isinstance(fid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", fid)
+                   for fid in entry["teacher_ids"])
+            or len(entry["teacher_ids"]) != len(set(entry["teacher_ids"]))):
+        raise ValueError("The exact Form's teacher-source declaration is invalid.")
+    return entry
+
+
+def assignment_policy(config, agenda, class_key, week_label, form_id):
+    """A case-only exclusion leaves Lab Safety and all original history intact."""
+    out = week_policy(config, agenda, class_key, week_label)
+    if out.get("problem") or out.get("excluded"):
+        return out
+    try:
+        entry = _form_setting(config, "HUB_ASSIGNMENT_EXCLUSIONS", {"purpose", "reason"},
+                              agenda, class_key, week_label, form_id)
+        if not entry:
+            return out
+        if (entry["purpose"] != "week01_cases" or class_key != "forensics" or week_number(week_label) != 1
+                or not isinstance(entry["reason"], str) or not entry["reason"].strip()
+                or len(entry["reason"]) > 300 or any(ord(c) < 32 for c in entry["reason"])):
+            raise ValueError()
+        lesson, form = next((l, f) for l in agenda.lessons(class_key, week_label)
+                            for f in l["forms"] if f.get("form_id") == form_id)
+        title = assignment_title(form.get("label", ""))
+        if title.lower() == "turn in" or re.match(r"https?://", title, re.I):
+            title = str(lesson.get("topic") or "").strip()
+        if (re.search(r"\blab\s+safety\b", title, re.I)
+                or not re.fullmatch(r"(?:work\s+a\s+case|(?:.*\b)?sheppard(?:\b.*)?)", title, re.I)):
+            raise ValueError()
+        return {**out, "excluded": True, "school_year": entry["school_year"],
+                "reason": entry["reason"].strip(), "purpose": entry["purpose"], "form_id": form_id}
+    except (ValueError, TypeError, KeyError, StopIteration):
+        return {**out, "problem": "The teacher's exact case-only exclusion needs checking before grading."}
+
+
+def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
+    """Resolve configured teachers for discovery; never guess a replacement."""
+    from . import completion
+    for form in forms:
+        if not form.get("form_id"):
+            continue
+        form["grade_policy"] = assignment_policy(config, agenda, class_key, week_label, form["form_id"])
+        try:
+            binding = form_teacher_sources(config, agenda, class_key, week_label, form["form_id"])
+            if not binding:
+                continue
+            form["teacher_source_binding"] = binding
+            lesson = next(l for l in agenda.lessons(class_key, week_label)
+                          if any(f.get("form_id") == form["form_id"] for f in l["forms"]))
+            source = completion.lesson_sources(token, lesson, binding=binding)
+            if source["problem"]:
+                form["problem"] = source["problem"]
+                continue
+            form["teacher_signature"] = {deck_stem(d["title"]) for d in source["decks"] if len(deck_stem(d["title"])) >= 8}
+            form["signature"] = set(form["teacher_signature"])
+        except (ValueError, TypeError, KeyError, StopIteration) as error:
+            form["problem"] = str(error) or "The exact Form's teacher sources could not be verified."
+
+
 def accepted_form_routes(config, agenda, class_key, week_label, forms):
     """Exact approved alternate intake Forms, separate from assignment identity."""
     try:
@@ -585,7 +684,7 @@ def recent_submissions(token, form_id):
     return list(found)
 
 
-def nearby_forms(token, agenda, class_key, week_label, skip):
+def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None):
     """[{week, label, topic, form_id, found}] for the Forms of the lessons up to
     NEARBY_LESSONS teaching weeks before and after this one."""
     layout = agenda.classes[class_key]["layout"] or {"rows": []}
@@ -603,6 +702,8 @@ def nearby_forms(token, agenda, class_key, week_label, skip):
                         for m in [re.search(r"/presentation/d/([A-Za-z0-9_-]{20,})", material["url"])] if m}
             names = [info.get("name", "") for info in _metadata(token, deck_ids).values()
                      if not info.get("trashed") and not info.get("problem")]
+            if config is not None:
+                _bind_form_teachers(token, config, agenda, class_key, label, paired)
             pair_decks(paired, [deck_stem(name) for name in names], names)
             for form in lesson["forms"]:
                 if not form["form_id"] or form["form_id"] in skip:
@@ -850,7 +951,7 @@ def pair_decks(forms, decks, names=None):
 
     names = list(names) if names is not None else list(decks)
     words = {d: _words(n.replace("_", " ")) for d, n in zip(decks, names)}
-    readable = [f for f in forms if f["form_id"]]
+    readable = [f for f in forms if f["form_id"] and not f.get("teacher_source_binding")]
     if len(readable) == 1:
         for deck in decks:
             paired(readable[0], deck)
@@ -869,7 +970,7 @@ def pair_decks(forms, decks, names=None):
         owners = [f for f in readable if _corroborates_assignment_title({"name": name}, f)]
         if len(owners) == 1:
             paired(owners[0], deck)
-    empty = [f for f in forms if f["form_id"] and not f["signature"]]
+    empty = [f for f in readable if not f["signature"]]
     unclaimed = [d for d in decks if not any(_matches(d, f["signature"]) for f in forms)]
     if not empty or not unclaimed:
         return
@@ -1033,6 +1134,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                 "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students), "problems": problems}
 
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
+    _bind_form_teachers(token, config, agenda, class_key, week_label, forms)
     accepted_routes, route_problem = accepted_form_routes(config, agenda, class_key, week_label, forms)
     from . import combined_assessment
     try:
@@ -1141,9 +1243,10 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
         # Several Forms and files in shared folders: sort by the deck each file
         # was copied from, learned from each Form's own files and the lesson's deck links.
         for form in forms:
-            form["signature"] = {stem for s in form["found"] for f in s["files"]
-                                 for stem in [deck_stem(known.get(f["id"], {}).get("name") or f["name"])]
-                                 if len(stem) >= 8}
+            form["signature"] = (set(form.get("teacher_signature", ())) if form.get("teacher_source_binding") else
+                                 {stem for s in form["found"] for f in s["files"]
+                                  for stem in [deck_stem(known.get(f["id"], {}).get("name") or f["name"])]
+                                  if len(stem) >= 8})
         index = 0
         for lesson in lessons:
             lesson_forms = forms[index:index + len(lesson["forms"])]
@@ -1184,7 +1287,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                             "found": form["found"], "base": base, "words": words,
                             "teacher_signature": form.get("teacher_signature", set())})
         index += len(lesson["forms"])
-    for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}):
+    for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}, config=config):
         base, words = lesson_words(near["topic"], near["label"], [], near["found"])
         entries.append({"current": False, "week": near["week"], "label": near["label"], "found": near["found"],
                         "base": base, "words": words,
@@ -1253,6 +1356,8 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                                   "assignment_form_id": m.get("assignment_form_id")})
             out_forms.append({"label": form["label"], "url": form["url"], "form_id": form["form_id"],
                               "problem": form["problem"], "responses": form["responses"],
+                              "grade_policy": form.get("grade_policy", {}),
+                              **({"teacher_source_binding": form["teacher_source_binding"]} if form.get("teacher_source_binding") else {}),
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
                               "shared_files": sum(1 for s in form["found"] if s.get("shared")),
                               "students": [r for r in rows if not r["late"]],

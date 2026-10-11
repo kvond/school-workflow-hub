@@ -126,14 +126,21 @@ def scope(agenda, config, class_key, week, form_id, *, catalog=None):
         raise ValueError('review scope')
     item, lesson = matches[0], lessons[0]
     sources = []
-    for material in lesson.get('materials', []):
+    binding = work.form_teacher_sources(config, agenda, class_key, week, form_id)
+    policy = work.assignment_policy(config, agenda, class_key, week, form_id)
+    materials = lesson.get('materials', [])
+    if binding:
+        materials = [{'label': 'Registered teacher source', 'url': 'https://docs.google.com/presentation/d/' + fid + '/edit'}
+                     for fid in binding['teacher_ids']] + [{'label': 'Registered source folder',
+                     'url': 'https://drive.google.com/drive/folders/' + binding['source_folder_id']}]
+    for material in materials:
         link = source_link(material.get('url'))
         if link:
             sources.append({**link, 'label': material.get('label') or 'Linked lesson source'})
     form_link = source_link('https://docs.google.com/forms/d/' + form_id + '/edit', form_id)
     return {'class_key': class_key, 'class_name': item['class_name'], 'week': week,
             'form_id': form_id, 'lesson': item['assignment'], 'topic': lesson.get('topic') or item['assignment'],
-            'sources': sources + [{**form_link, 'label': 'Original turn-in Form'}]}
+            'sources': sources + [{**form_link, 'label': 'Original turn-in Form'}], 'grade_policy': policy}
 
 
 def _fingerprint(meta, ident):
@@ -144,11 +151,12 @@ def _fingerprint(meta, ident):
     return ident, meta['modifiedTime'], str(meta['version'])
 
 
-def cached_reviews(token, agenda, class_key, week, form_id, rows):
+def cached_reviews(token, agenda, class_key, week, form_id, rows, *, config=None):
     """Read existing assessments, fresh-checking both operands without bytes."""
     results, limitations, metadata = {}, [], {}
     cache = dict(completion._results)
-    linked = set(completion.lesson_decks(agenda, class_key, week, form_id))
+    binding = work.form_teacher_sources(config or {}, agenda, class_key, week, form_id)
+    linked = set(binding['teacher_ids'] if binding else completion.lesson_decks(agenda, class_key, week, form_id))
     required = completion.student_coding_required(agenda, class_key, week, form_id)
     lesson = next(lesson for lesson in agenda.lessons(class_key, week)
                   if any(f.get('form_id') == form_id for f in lesson['forms']))
@@ -171,7 +179,7 @@ def cached_reviews(token, agenda, class_key, week, form_id, rows):
         if not candidates:
             continue
         if resolution is None:
-            resolution = completion.lesson_sources(token, lesson)
+            resolution = completion.lesson_sources(token, lesson, binding=binding) if binding else completion.lesson_sources(token, lesson)
             if resolution.get('problem'):
                 limitations.append('Earlier response checks were not reused: ' + resolution['problem'])
                 return {}, limitations
@@ -190,7 +198,7 @@ def cached_reviews(token, agenda, class_key, week, form_id, rows):
     # Any source or template drift discards every cached note from this read.
     try:
         stable = all(google.drive_file(token, ident, _META) == before for ident, before in metadata.items())
-        if results and completion.lesson_sources(token, lesson) != resolution:
+        if results and (completion.lesson_sources(token, lesson, binding=binding) if binding else completion.lesson_sources(token, lesson)) != resolution:
             stable = False
     except google.GoogleError:
         stable = False
@@ -209,13 +217,14 @@ def build(current_scope, found, cached=None, *, checked_at=None):
     form = forms[0]
     rows = completion.recheck_candidates(form)
     notices, limitations = [], []
+    policy = current_scope.get('grade_policy') or {}
     case_skip = (current_scope['class_key'] == 'forensics' and work.week_number(current_scope['week']) == 1
                  and bool(re.fullmatch(r'(?:work\s+a\s+case|(?:.*\b)?sheppard(?:\b.*)?)',
                                        str(current_scope['lesson']).strip(), re.I)))
-    if case_skip:
+    if policy.get('excluded') or case_skip:
         return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
                 'scope': current_scope, 'notices': [], 'status': 'excluded',
-                'limitations': ['The teacher asked to skip Week 01 cases for grading. No case review or grade is requested here. This display does not certify a deployed grading exclusion; Lab Safety and existing grade history are unchanged.'],
+                'limitations': [policy['reason'] + ' No assessment is requested; Lab Safety and original grade history are unchanged.' if policy.get('excluded') else 'The teacher asked to skip Week 01 cases for grading. No case review or grade is requested here. This display does not certify a deployed grading exclusion; Lab Safety and existing grade history are unchanged.'],
                 'source_selection': {'submitted_originals': sum(len(r.get('files', [])) for r in form.get('students', []) + form.get('late', [])),
                                      'assessment_performed': False}}
     for row in rows + [r for r in form.get('students', []) + form.get('late', []) if not r.get('matched')]:
@@ -333,6 +342,8 @@ def _bookend(token, config, agenda_basis, catalog, roster_snapshot, reload_agend
 
 
 def _read_found(token, config, agenda, current_scope, found):
+    if (current_scope.get('grade_policy') or {}).get('problem'):
+        return _unavailable(current_scope, current_scope['grade_policy']['problem'])
     if found.get('review_unavailable'):
         return _unavailable(current_scope, ' '.join(found['review_unavailable']))
     form_id = current_scope['form_id']
@@ -347,7 +358,7 @@ def _read_found(token, config, agenda, current_scope, found):
     if rate_problem:
         return _unavailable(current_scope, rate_problem)
     cached, limitations = cached_reviews(token, agenda, current_scope['class_key'], current_scope['week'], form_id,
-                                         completion.recheck_candidates(forms[0]))
+                                         completion.recheck_candidates(forms[0]), config=config)
     rate_problem = next((p for p in limitations if _rate_limited(p)), None)
     if rate_problem:
         return _unavailable(current_scope, rate_problem)

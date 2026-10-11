@@ -1173,13 +1173,103 @@ def lesson_decks(agenda, class_key, week_label, form_id):
     return []
 
 
-def lesson_sources(token, lesson):
+def _registered_teacher_membership(token, parent, meta, fields):
+    """A missing parent field needs one exact-name, MIME, parent-filtered read.
+
+    Drive does not offer an ID equality query. Select the declared ID from a
+    complete bounded result, rejecting any response outside the exact filter.
+    Never enumerate a Shared Drive root or accept a filename as source identity.
+    """
+    from . import google
+    if "parents" in meta:
+        if not isinstance(meta["parents"], list) or parent not in meta["parents"]:
+            raise Unreadable("The registered teacher is outside its declared source folder.")
+        return None
+    name = meta.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise Unreadable("The registered teacher's parent membership cannot be verified.")
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    page = google.get_json("https://www.googleapis.com/drive/v3/files", token, {
+        "q": "name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false"
+             % (escaped, meta["mimeType"], parent),
+        "fields": "nextPageToken,incompleteSearch,files(%s)" % fields, "pageSize": 20,
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
+    items = page.get("files")
+    if (page.get("nextPageToken") or page.get("incompleteSearch")
+            or not isinstance(items, list) or len(items) > 20):
+        raise Unreadable("The registered teacher's bounded parent lookup is incomplete.")
+    ids = [item.get("id") for item in items]
+    if (len(set(ids)) != len(ids) or ids.count(meta["id"]) != 1
+            or any(item.get("name") != name or item.get("mimeType") != meta["mimeType"]
+                   or item.get("trashed") is not False or parent not in (item.get("parents") or [])
+                   for item in items)):
+        raise Unreadable("The exact registered teacher is not verified in its declared source folder.")
+    item = next(item for item in items if item["id"] == meta["id"])
+    if any(item.get(k) != meta.get(k) for k in ("id", "name", "mimeType", "trashed", "version", "modifiedTime")):
+        raise Unreadable("The registered teacher metadata and parent lookup do not agree.")
+    return sorted(items, key=lambda item: item["id"])
+
+
+def _registered_teacher_sources(token, binding):
+    """Exact existing parent/teacher metadata bookends; no root search or move."""
+    from . import google
+    result = {"decks": [], "stale_links": [], "folders": [], "problem": None}
+    fields = google.FILE_FIELDS + ",version,md5Checksum,size"
+    parent = binding["source_folder_id"]
+    try:
+        folder = google.drive_file(token, parent, fields)
+        if (folder.get("id") != parent or folder.get("mimeType") != google.FOLDER
+                or folder.get("trashed") is not False):
+            raise Unreadable("The registered teacher source folder is not a verified current folder.")
+        memberships = {}
+        for fid in binding["teacher_ids"]:
+            meta = google.drive_file(token, fid, fields)
+            if (meta.get("id") != fid or meta.get("mimeType") not in (SLIDES, google.PPTX)
+                    or meta.get("trashed") is not False
+                    or not meta.get("version") or not meta.get("modifiedTime")):
+                raise Unreadable("An exact registered teacher is retired or unreadable.")
+            memberships[fid] = _registered_teacher_membership(token, parent, meta, fields)
+            result["decks"].append({"id": fid, "label": "Registered teacher source",
+                                    "title": meta.get("name", ""), "metadata": meta})
+        for deck in result["decks"]:
+            after = google.drive_file(token, deck["id"], fields)
+            if (after != deck["metadata"] or
+                    _registered_teacher_membership(token, parent, after, fields) != memberships[deck["id"]]):
+                raise Unreadable("The exact registered teacher source collection changed during this read.")
+        if google.drive_file(token, parent, fields) != folder:
+            raise Unreadable("The exact registered teacher source folder changed during this read.")
+        result["folders"] = [{"id": parent, "name": folder.get("name", ""), "deck_ids": list(binding["teacher_ids"])}]
+        result["binding"] = binding
+        result["source_folder_metadata"] = folder
+        result["membership_evidence"] = memberships
+    except (google.GoogleError, Unreadable) as error:
+        result["problem"] = "Cannot verify the exact Form's registered teacher sources: %s" % error
+    return result
+
+
+def _registered_teacher_bookend(token, binding, before, templates):
+    """The templates actually consumed must match the fresh source resolution."""
+    after = _registered_teacher_sources(token, binding)
+    if after.get("problem") or after != before:
+        raise Unreadable(after.get("problem") or "The registered teacher sources changed while their contents were read.")
+    expected = {deck["id"]: deck["metadata"] for deck in before["decks"]}
+    if {fid for fid, _, _ in templates} != set(binding["teacher_ids"]):
+        raise Unreadable("Every exact registered teacher must be readable before scoring.")
+    for fid, meta, _ in templates:
+        if any(meta.get(k) != expected[fid].get(k)
+               for k in ("id", "name", "mimeType", "trashed", "version", "modifiedTime", "parents")):
+            raise Unreadable("A consumed teacher template differs from its verified source metadata.")
+
+
+def lesson_sources(token, lesson, *, binding=None):
     """Fresh actual-folder/current-link evidence, never a lesson-name search.
 
     Stale/trash links are reported separately. An inaccessible or empty named
     folder is a hold; a listing alone cannot prove its folder was readable.
     """
     from . import google
+    if binding:
+        return _registered_teacher_sources(token, binding)
     materials = lesson.get("materials", [])
     folders = list(dict.fromkeys(m.group(1) for item in materials
                  if item.get("label") == "Lesson folder"
@@ -1228,7 +1318,17 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
     All assignment entry paths must call this before creating absence zeros.
     Submitted copies still need their own gate in score_file.
     """
-    from . import google, completion_holds
+    from . import google, completion_holds, work
+    policy = work.assignment_policy(config, agenda, class_key, week_label, form_id)
+    if policy.get("problem") or policy.get("excluded"):
+        return {"status": "NOT_READY" if policy.get("problem") else "EXCLUDED",
+                "code": "coverage_incomplete" if policy.get("problem") else "excluded_week",
+                "problem": policy.get("problem") or policy["reason"], "scope": "assignment",
+                "action": "Preserve this activity's original files and grade history; no assessment is requested."}
+    try:
+        binding = work.form_teacher_sources(config, agenda, class_key, week_label, form_id)
+    except (ValueError, TypeError, KeyError) as error:
+        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Needs check", "problem": str(error)}
     lessons = [lesson for lesson in agenda.lessons(class_key, week_label)
                if any(f.get("form_id") == form_id for f in lesson["forms"])]
     if len(lessons) != 1:
@@ -1240,22 +1340,31 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
     if hold["held"]:
         return {**hold, "context": context, "problem": context + ": " + hold["problem"],
                 "student_copies_checked": False, "scope": "assignment"}
-    sources = lesson_sources(token, lesson)
+    sources = lesson_sources(token, lesson, binding=binding) if binding else lesson_sources(token, lesson)
     if sources["problem"]:
         return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson", "context": context,
                 "source_resolution": sources, "problem": context + ": " + sources["problem"],
                 "action": "Check this exact Agenda lesson folder and current deck links, then recheck; no title-based replacement was selected."}
     ids = [item["id"] for item in sources["decks"]]
     results = []
+    bound_templates = []
     for deck_id in ids:
         try:
             meta, deck = _teacher_template(token, deck_id)
+            if binding:
+                bound_templates.append((deck_id, meta, deck))
             checked = teacher_readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""),
                 require_complete_codes=student_coding_required(agenda, class_key, week_label, form_id))
             checked.update(deck_id=deck_id, title=meta.get("name", ""))
         except (google.GoogleError, Unreadable) as error:
             checked = {"status": "NOT_READY", "deck_id": deck_id, "code": "deck_not_ready", "label": "Cannot read lesson", "problem": str(error)}
         results.append(checked)
+    if binding:
+        try:
+            _registered_teacher_bookend(token, binding, sources, bound_templates)
+        except (google.GoogleError, Unreadable) as error:
+            results.append({"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson",
+                            "problem": str(error)})
     failed = next((r for r in results if r["status"] != "READY"), None)
     return {"status": "NOT_READY" if failed else "READY", "code": "deck_not_ready" if failed else None,
             "label": failed.get("label", "Needs check") if failed else "Ready",
@@ -1490,6 +1599,10 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     from . import google
     form = next((f for lesson in work_result.get("lessons", []) for f in lesson["forms"]
                  if f["form_id"] == form_id), None)
+    policy = (form or {}).get("grade_policy") or work_result.get("week_policy") or {}
+    if policy.get("problem") or policy.get("excluded"):
+        return {"file_id": file_id, "code": "coverage_incomplete" if policy.get("problem") else "excluded_week",
+                "problem": policy.get("problem") or policy.get("reason")}
     candidates = scoring_candidates(form or {}, include_late=include_late)
     # A held candidate also protects its recorded historical originals. This
     # reports the exact uncertainty without authorizing an unselected old copy
@@ -1553,6 +1666,11 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []
     eligible = (assignment_check or {}).get("source_resolution")
+    if form.get("teacher_source_binding"):
+        lesson = next(l for l in agenda.lessons(class_key, week_label) if any(f.get("form_id") == form_id for f in l["forms"]))
+        eligible = lesson_sources(token, lesson, binding=form["teacher_source_binding"])
+        if eligible.get("problem"):
+            return {**out, "code": "deck_not_ready", "label": "Needs check", "problem": eligible["problem"]}
     deck_ids = [d["id"] for d in eligible["decks"]] if eligible else lesson_decks(agenda, class_key, week_label, form_id)
     for deck_id in deck_ids:
         try:
@@ -1580,7 +1698,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if (not complete_codes and not has_codes and len(templates) == 1
             and (not inventory(deck)[0] or inventory(deck)[0] == inventory(templates[0][2])[0])):
         best = templates[0][2]
-    if has_codes and coverage(deck, best) < 0.8:
+    if has_codes and coverage(deck, best) < 0.8 and not form.get("teacher_source_binding"):
         # Look only in the actual linked lesson/source folders. A same-title
         # file elsewhere, including an obsolete lesson, is not a replacement.
         title = original_title(upload.get("name") or meta.get("name", ""))
@@ -1598,6 +1716,15 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
                 except (google.GoogleError, Unreadable):
                     continue
         best = pick_template(deck, [t[2] for t in templates])
+    if form.get("teacher_source_binding") and has_codes and coverage(deck, best) < 0.8:
+        return {**out, "code": "deck_not_ready", "label": "Needs check",
+                "problem": "This submitted copy's own coded questions do not match the exact registered teacher sources."}
+    if form.get("teacher_source_binding") and best is not None:
+        share = coverage(deck, best)
+        same = [t for t in templates if inventory(t[2])[0] == inventory(best)[0] and coverage(deck, t[2]) == share]
+        if len(same) != 1:
+            return {**out, "code": "deck_not_ready", "label": "Needs check",
+                    "problem": "This submitted copy does not uniquely match one exact registered teacher source."}
     chosen = next((t for t in templates if t[2] is best), None)
     if chosen is None:
         return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
@@ -1606,6 +1733,12 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
                              require_complete_codes=complete_codes)
     if check["status"] != "READY":
         return not_ready(check, chosen[1].get("name", ""), "handed-out deck")
+    if form.get("teacher_source_binding"):
+        try:
+            _registered_teacher_bookend(token, form["teacher_source_binding"], eligible, templates)
+        except (google.GoogleError, Unreadable) as error:
+            return {**out, "code": "deck_not_ready", "label": "Cannot read lesson", "problem": str(error),
+                    "action": "Recheck the exact registered teacher sources; no scores were calculated."}
     source_key = (file_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
     template_key = (chosen[0], chosen[1].get("modifiedTime", ""), str(chosen[1].get("version") or ""))
     cached = _results.get(source_key)
