@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from time import monotonic
 
-from . import google, work
+from . import google, work, named_archival_work
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import CloudState, Conflict, StoreUnavailable, key
 from school_workflow_hub.core.runs import content_hash
@@ -37,6 +37,7 @@ SHORTCUT = "application/vnd.google-apps.shortcut"
 PDF = "application/pdf"
 TAG = "hubArchiveKey"
 IMPORTED_ORIGINAL = "authenticated_schoology_original"
+NAMED_ARCHIVE = named_archival_work.KIND
 FIELDS = "id,name,mimeType,parents,driveId,trashed,permissions,capabilities,properties,shortcutDetails,createdTime,modifiedTime,version,md5Checksum,size"
 # Original uploads need read access, not authority to list their private ACL.
 # Keep full access checks on every archive destination and saved artifact.
@@ -2088,8 +2089,8 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
                     "assignment": artifact["assignment"], "lesson_status": artifact["lesson_status"],
                     "source_context": artifact["source_context"], "import_provenance": artifact["import_provenance"]}
                 continue
-            owned = [a for a in artifacts if a.get("status") == "verified" and a.get("source_file_id") == ident
-                     and a.get("source_version") == revision]
+            owned = [a for a in artifacts if a.get("status") == "verified" and a.get("source_kind") != NAMED_ARCHIVE
+                     and a.get("source_file_id") == ident and a.get("source_version") == revision]
             if not owned:
                 raise Held("This science-writing source is not yet filed for the report's verified student.")
             meta = google.drive_file(token, ident, SOURCE_FIELDS)
@@ -2262,7 +2263,7 @@ def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
                 continue
             meta = (_feedback_file(token, root, course, student, artifact, metadata) if artifact["kind"] == "feedback"
                     else _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"]))
-            if artifact.get("source_kind") != IMPORTED_ORIGINAL and (meta.get("properties") or {}).get(TAG) != item_id:
+            if artifact.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE} and (meta.get("properties") or {}).get(TAG) != item_id:
                 raise Held("An archived record no longer matches its private index.")
             if artifact["kind"] == "feedback":
                 if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
@@ -2291,6 +2292,8 @@ def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
                 _verify_work_export(meta, artifact)
             elif artifact.get("source_kind") == IMPORTED_ORIGINAL:
                 _verify_imported_original(meta, artifact)
+            elif artifact.get("source_kind") == NAMED_ARCHIVE:
+                named_archival_work.verify(meta, artifact, scope=root)
             elif (meta.get("mimeType") != SHORTCUT
                   or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
                 raise Held("An archived work shortcut no longer points to its verified source.")
@@ -2350,8 +2353,11 @@ def archive_listing(token, config, class_key, section=None):
                         "drive_file_id": a["drive_file_id"], "source_file_id": a.get("source_file_id"),
                         "feedback_id": a.get("feedback_id"), "identity_status": a.get("identity_status", "verified"),
                         "date_basis": a.get("date_basis"), "lesson_status": a.get("lesson_status", "verified"),
-                        "original_filename": a.get("original_filename"), "source_context": a.get("source_context")} for a in artifacts]
-            records.sort(key=lambda a: (a["date"], a["name"]), reverse=True)
+                        "original_filename": a.get("original_filename"), "source_context": a.get("source_context"),
+                        **({"source_created_at": a["source_created_at"], "grade_eligible": False,
+                            "date_label": "Original file created " + a["source_created_at"][:10]}
+                           if a.get("source_kind") == NAMED_ARCHIVE else {})} for a in artifacts]
+            records.sort(key=lambda a: (a["date"] or "", a["name"]), reverse=True)
             roster_status = _confirmed_roster_status(student, class_key)
             base["students"].append({"student_key": student["student_key"], "name": student["name"],
                 "section": student["section"], "status": "withdrawn" if roster_status and roster_status["status"] == "withdrawn"
@@ -2475,14 +2481,15 @@ def _index_row(class_name, student, submitted, report, status, ident):
     submitted, report = submitted or {}, report or {}
     context = submitted.get("source_context") or report.get("source_context") or {}
     imported = submitted.get("source_kind") == IMPORTED_ORIGINAL
+    named_archive = submitted.get("source_kind") == NAMED_ARCHIVE
     original_url = ((submitted.get("import_provenance") or {}).get("original_url") if imported
                     else _url(submitted["source_file_id"]) if submitted.get("source_file_id") else None)
     return [class_name, student.get("section", ""), student["name"], submitted.get("assignment") or report.get("assignment", ""),
-            context.get("week", ""), _sheet_date(submitted.get("date")), _sheet_date(report.get("date")),
+            context.get("week", ""), "" if named_archive else _sheet_date(submitted.get("date")), _sheet_date(report.get("date")),
             _link(submitted.get("url") if submitted.get("mime") != SHORTCUT else None, "Open work copy"),
             _link(original_url, "Open original"),
             _link(report.get("url"), "Open feedback"), _link(_url(student["drive_file_id"], True), "Open student folder"),
-            status, submitted.get("filing_note", "") if imported else "", ident]
+            status, submitted.get("filing_note", "") if imported or named_archive else "", ident]
 
 
 def work_index_rows(token, config):
@@ -2516,7 +2523,7 @@ def work_index_rows(token, config):
                                     and a.get("date") == source_record.get("date")
                                     and a.get("import_provenance") == source_record.get("import_provenance")]
                             else:
-                                candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
+                                candidates = [a for a in works if a.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE}
                                     and a.get("source_file_id") == source_record.get("source_file_id")
                                     and a.get("source_version") == source_record.get("source_version")]
                             linked = next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
@@ -2532,7 +2539,7 @@ def work_index_rows(token, config):
                                 else key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")]))
                             rows.append(_index_row(class_name, student, linked, report, status, row_key))
                         continue
-                    candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
+                    candidates = [a for a in works if a.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE}
                         and a.get("source_file_id") == report.get("source_file_id")
                         and a.get("assignment_form_id") and a.get("assignment_form_id") == report.get("assignment_form_id")
                         and a.get("lesson_status") == "verified"
@@ -2562,7 +2569,9 @@ def work_index_rows(token, config):
                     status = "Work saved; feedback not located" if submitted.get("mime") != SHORTCUT else "Original link only; work copy pending"
                     if submitted.get("source_kind") == IMPORTED_ORIGINAL:
                         status = "Original filed; worksheet feedback pending"
-                    if submitted.get("lesson_status") != "verified":
+                    if submitted.get("source_kind") == NAMED_ARCHIVE:
+                        status = named_archival_work.STATUS
+                    elif submitted.get("lesson_status") != "verified":
                         status += "; lesson not confirmed"
                     rows.append(_index_row(class_name, student, submitted, None, status,
                         key("workindexrow", [student["student_key"], submitted["record_key"]])))
@@ -2677,7 +2686,7 @@ def refresh_work_index(token, write_token, config):
         for number, row in enumerate(matrix):
             cells_out = [_index_cell(value, link=number > 0 and col in {7, 8, 9, 10} and bool(value)) for col, value in enumerate(row)]
             if number:
-                cells_out[12] = _index_cell(notes.get(row[13], {}))
+                cells_out[12] = _index_cell(notes.get(row[13], row[12] if row[11] == named_archival_work.STATUS else {}))
             prepared.append({"values": cells_out})
         fresh_keys = {r[13] for r in data["rows"]}
         if any(value and record_key not in fresh_keys for record_key, value in notes.items()):
