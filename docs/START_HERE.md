@@ -24,6 +24,15 @@ it must not create student-identity questions from a provider failure. The exact
 teacher-controlled Form title determines the Photosynthesis exception when a
 weekly Agenda row contains several lesson topics; student filenames never do.
 
+Current/upcoming Agenda readiness checks each registered Turn-in Form against
+its own exact teacher-source collection and current folder metadata. Separate
+Forms do not borrow decks, native-read access or a teacher hold from one another.
+After reading teacher contents, the existing metadata/folder bookend must still
+match. The display lists each Form's readiness separately and identifies verified
+sources omitted from the Hub's current Agenda lesson links as a separate link
+discrepancy. This read-only check does not change scoring, assignment selection,
+embedded codes or distributed student copies.
+
 ## October 8 student records
 
 The teacher-facing Drive layout uses private class/section/student folders

@@ -393,6 +393,83 @@ test('readiness source links deduplicate exact resources and ready Next Agenda r
   assert.equal(allNodes(held).filter(node => node.tagName === 'a').length, 3);
 });
 
+test('two exact Form collections render separate ready sources and informational Agenda omissions', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  const next = source.slice(source.indexOf('function renderNextLessons('), source.indexOf('async function printTodayFeedback('));
+  const auditUI = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
+  vm.runInContext(helpers + '\n' + next + '\n' + auditUI + '\nglobalThis.formReadiness = {lessonReadinessRows, renderNextLessons, linkCheckResult};', context);
+  const form = (id, title, deck, folder) => ({class_key: 'forensics', week: 'Wk 06', form_id: id, form_title: title,
+    status: 'READY', issues: [], scope: 'form_collection', source_resolution: {
+      decks: [{id: deck, title: '<script>' + title + '</script>'}], folders: [{id: folder, name: title + ' folder'}]},
+    agenda_link_discrepancy: {source_ids: [deck], folder_ids: [folder]}});
+  const first = form('FIRSTFORM123', 'Searching and Photography', 'PHOTOTEACHER123', 'FIRSTFOLDER123');
+  const second = form('SECONDFORM123', 'Sketching and Evidence', 'SKETCHTEACHER123', 'SECONDFOLDER123');
+  const row = {classKey: 'forensics', className: 'Forensics', week: 'Wk 06', topic: 'Searching',
+    forms: [{form_id: first.form_id, title: first.form_title}, {form_id: second.form_id, title: second.form_title}],
+    decks: [], release: {scope: 'form_collections', status: 'READY', form_releases: [first, second]}};
+  const original = JSON.stringify(row);
+  const checks = context.formReadiness.lessonReadinessRows(row);
+  assert.equal(checks.length, 2);
+  assert.deepEqual(Array.from(checks[0].forms, form => form.form_id), [first.form_id]);
+  assert.deepEqual(Array.from(checks[1].forms, form => form.form_id), [second.form_id]);
+  const panel = context.formReadiness.renderNextLessons({forensics: {data: {rows: [row]}}});
+  assert.match(panel.textContent, /Searching and Photography.*Ready.*Agenda links:.*<script>Searching and Photography<\/script>/);
+  assert.match(panel.textContent, /Sketching and Evidence.*Ready.*Agenda links:.*separate from this Form’s source readiness/);
+  assert.doesNotMatch(panel.textContent, /Next action:|Lesson-wide source check|Slides not verified/);
+  assert.equal(allNodes(panel).filter(node => node.tagName === 'script').length, 0);
+  const links = allNodes(panel).filter(node => node.tagName === 'a');
+  assert.deepEqual(links.map(node => node.href), [
+    'https://docs.google.com/presentation/d/PHOTOTEACHER123/edit', 'https://drive.google.com/drive/folders/FIRSTFOLDER123',
+    'https://docs.google.com/presentation/d/SKETCHTEACHER123/edit', 'https://drive.google.com/drive/folders/SECONDFOLDER123']);
+  const table = context.formReadiness.linkCheckResult('Forensics', {flags: [], rows: [row]}).filter(Boolean);
+  const text = table.map(node => node.textContent).join(' ');
+  assert.match(text, /Searching and Photography.*Sketching and Evidence/);
+  assert.match(text, /Agenda links:.*separate from this Form’s source readiness/);
+  assert.equal(JSON.stringify(row), original, 'rendering does not mutate source or readiness data');
+});
+
+test('one failed Form source retains its own context without borrowing ready sibling links', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  const next = source.slice(source.indexOf('function renderNextLessons('), source.indexOf('async function printTodayFeedback('));
+  vm.runInContext(helpers + '\n' + next + '\nglobalThis.formReadiness = {lessonReadinessRows, renderNextLessons};', context);
+  const first = {class_key: 'forensics', week: 'Wk 06', form_id: 'FIRSTFORM123', form_title: 'Searching and Photography',
+    status: 'READY', issues: [], source_resolution: {decks: [{id: 'SEARCHTEACHER123', title: 'Searching'}], folders: []}};
+  const second = {class_key: 'forensics', week: 'Wk 06', form_id: 'SECONDFORM123', form_title: 'Sketching and Evidence',
+    status: 'NOT_READY', issues: ['lesson_folder_unverified'], problem: 'The exact second source folder changed.',
+    readability: {stage: 'folder'}, action: 'Recheck the exact second source folder.', source_resolution: {decks: [], folders: []}};
+  const row = {week: 'Wk 06', topic: 'Searching', forms: [{form_id: first.form_id}, {form_id: second.form_id}], decks: [],
+    release: {scope: 'form_collections', status: 'NOT_READY', form_releases: [first, second]}};
+  const panel = context.formReadiness.renderNextLessons({forensics: {data: {rows: [row]}}});
+  assert.match(panel.textContent, /Searching and Photography.*Ready.*Linked lesson source is ready/);
+  assert.match(panel.textContent, /Sketching and Evidence.*exact second source folder changed/);
+  const links = allNodes(panel).filter(node => node.tagName === 'a');
+  assert.deepEqual(links.map(node => node.href), ['https://docs.google.com/forms/d/SECONDFORM123/edit']);
+  assert.doesNotMatch(panel.textContent, /Searching.*Next action:.*Searching/s);
+});
+
+test('wrong or missing exact Form readiness scope cannot display a borrowed ready result', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  vm.runInContext(helpers + '\nglobalThis.formReadiness = {lessonReadinessRows, renderAgendaSourceDiscrepancy};', context);
+  const valid = {class_key: 'forensics', week: 'Wk 06', form_id: 'FIRSTFORM123', form_title: 'Known lesson', status: 'READY', issues: []};
+  const row = {classKey: 'forensics', week: 'Wk 06', forms: [{form_id: 'FIRSTFORM123'}], release: {scope: 'form_collections', form_releases: [valid]}};
+  for (const checks of [[], [{...valid, week: 'Wk 07'}], [{...valid, class_key: 'biology'}], [{...valid, form_id: 'FOREIGNFORM123'}], [valid, valid]]) {
+    const result = context.formReadiness.lessonReadinessRows({...row, release: {...row.release, form_releases: checks}});
+    assert.equal(result.length, 1); assert.equal(result[0].release.status, 'NOT_READY');
+    assert.match(result[0].release.problem, /exact Form readiness scopes could not be verified/);
+    assert.equal(result[0].release.source_resolution, undefined);
+  }
+  const missing = context.formReadiness.lessonReadinessRows({...row, forms: [...row.forms, {form_id: 'SECONDFORM123'}]});
+  assert.equal(missing[0].release.status, 'NOT_READY');
+  const unsafe = context.formReadiness.renderAgendaSourceDiscrepancy({...row, release: {...valid,
+    agenda_link_discrepancy: {source_ids: ['../unsafe'], folder_ids: []},
+    source_resolution: {decks: [{id: '../unsafe', title: '<b>Literal title</b>'}], folders: []}}});
+  assert.equal(allNodes(unsafe).filter(node => node.tagName === 'a').length, 0);
+  assert.match(unsafe.textContent, /Source link not verified/);
+});
+
 test('readiness labels name embedded-code repairs while keeping access failures distinct', () => {
   const {context} = boot([]);
   vm.runInContext('globalThis.readinessBadge = releaseBadge;', context);

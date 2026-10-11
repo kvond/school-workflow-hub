@@ -50,10 +50,11 @@ class BoundNativeAuditTests(TestCase):
   changed=deepcopy(bound)
   if folder_changed:changed['folders'][0]['name']='Changed folder'
   def resolution(_token,_lesson,**kw):
-   if kw.get('binding'):return deepcopy(bound)
-   value=deepcopy(source)
-   if foreign:value['decks'][0]['id']='FICTIONALOTHERDECK123'
-   return value
+   if kw.get('binding'):
+    value=deepcopy(bound)
+    if foreign:value['problem']='The registered teacher sources do not match their current declared parent.'
+    return value
+   return deepcopy(source)
   with patch.object(audit,'_titles',return_value={}),patch.object(audit,'_published',return_value={}),patch.object(audit,'date') as clock, \
        patch.object(work,'form_teacher_sources',side_effect=lambda _c,_a,_k,week,_f:binding if week=='Wk 04' else None), \
        patch.object(completion,'lesson_sources',side_effect=resolution),patch.object(completion,'_registered_teacher_sources',return_value=changed), \
