@@ -351,7 +351,7 @@ function reviewSourceURL(source) {
   return null;
 }
 
-function renderSourceReviewNotice(notice, scope, includeContext = true) {
+function renderSourceReviewNotice(notice, scope, includeContext = true, retained = false) {
   const student = notice.student || {};
   const name = [student.last, student.first].filter(value => typeof value === 'string' && value.trim()).join(', ');
   const identity = notice.kind === 'lesson' || notice.affected_scope === 'lesson' ? 'Lesson-wide source check · no individual student'
@@ -372,21 +372,29 @@ function renderSourceReviewNotice(notice, scope, includeContext = true) {
     return el('li', {}, url ? link(source.label || 'Open exact source', url) : el('span', {text: 'Source link unavailable'}),
       ' · ', where);
   });
-  return el('div', {class: 'source-review'},
+  return el('div', {class: retained ? 'source-history-entry' : 'source-review'},
     includeContext ? el('strong', {text: `${context} · ${identity}`}) : el('strong', {text: identity}),
-    el('p', {text: `Reason: ${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
+    retained ? el('p', {}, 'Saved verification as of ', el('time', {datetime: notice.verified_at,
+      text: new Date(notice.verified_at).toLocaleString('en-US', {timeZone: TZ, year: 'numeric', month: 'short',
+        day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short'})})) : null,
+    el('p', {text: `${retained ? '' : 'Reason: '}${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
     sourceLines.length ? el('ul', {class: 'files'}, ...sourceLines)
       : el('p', {class: 'muted', text: 'Source link unavailable · Slides not verified'}),
-    el('p', {}, el('strong', {text: 'Next action: '}),
+    retained ? null : el('p', {}, el('strong', {text: 'Next action: '}),
       typeof notice.next_action === 'string' && notice.next_action ? notice.next_action : 'No exact next action was returned.'));
 }
 
 function renderSourceReviewContext(data, expected, options = {}) {
+  const retained = data?.retained_history ?? [];
   if (data?.schema !== 'hub-source-review-context/v1' || !sameReviewScope(data.scope, expected)
       || typeof data.scope.class_name !== 'string' || !data.scope.class_name
       || typeof data.scope.lesson !== 'string' || !data.scope.lesson
       || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
-      || !Array.isArray(data.notices) || !Array.isArray(data.limitations)
+      || !Array.isArray(data.notices) || !Array.isArray(data.limitations) || !Array.isArray(retained)
+      || retained.some(entry => !entry || typeof entry !== 'object' || typeof entry.reason !== 'string'
+        || !entry.student || typeof entry.student !== 'object' || !Array.isArray(entry.sources)
+        || !['manual_saved_history', 'maximum_saved_as_of'].includes(entry.basis)
+        || typeof entry.verified_at !== 'string' || !Number.isFinite(Date.parse(entry.verified_at)))
       || data.notices.some(notice => !notice || typeof notice !== 'object' || typeof notice.reason !== 'string'
         || !notice.student || typeof notice.student !== 'object' || typeof notice.next_action !== 'string'))
     throw new Error('Current source context could not be confirmed for this exact class and lesson.');
@@ -403,7 +411,10 @@ function renderSourceReviewContext(data, expected, options = {}) {
     el('p', {class: 'muted', text: `Current source context · checked ${when(data.checked_at)}. Read separately from the saved helper receipt.`}),
     data.notices.length ? el('ul', {class: 'attention-list'}, ...data.notices.map(notice =>
       el('li', {}, renderSourceReviewNotice(notice, data.scope))))
-      : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
+      : retained.length ? null : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
+    retained.length ? el('section', {class: 'source-history'},
+      el('h4', {text: 'Verified entry · source history retained'}),
+      ...retained.map(entry => renderSourceReviewNotice(entry, data.scope, true, true))) : null,
     ...limitations.map(value => note(value, 'info')));
 }
 
@@ -469,8 +480,8 @@ function currentSourceReviewPanel(active = true) {
     let unassessed = false, unavailable = 0;
     for (const {review, detail} of rendered) {
       const label = [review.scope.class_name, review.scope.week, review.scope.lesson].join(' · ');
-      if (!review.notices.length && review.status === 'not_assessed') { unassessed = true; continue; }
-      if (!review.notices.length && ['waiting', 'excluded'].includes(review.status)) {
+      if (!review.notices.length && !review.retained_history?.length && review.status === 'not_assessed') { unassessed = true; continue; }
+      if (!review.notices.length && !review.retained_history?.length && ['waiting', 'excluded'].includes(review.status)) {
         body.append(el('p', {class: 'muted', text: `${label}: ${review.status === 'waiting'
           ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
       } else {
