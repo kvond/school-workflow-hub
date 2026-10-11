@@ -117,7 +117,40 @@ function releaseFor(audits, classKey, lesson) {
 function allReleaseRows(audits) {
   return CLASSES.flatMap(([key, name]) => (audits?.[key]?.data?.rows || [])
     .filter(row => row.release)
-    .map(row => ({classKey: key, className: name, ...row})));
+    .flatMap(row => lessonReadinessRows({classKey: key, className: name, ...row})));
+}
+
+function lessonReadinessRows(row) {
+  if (row.release?.scope !== 'form_collections') return [row];
+  const checks = row.release.form_releases;
+  const forms = row.forms || [], seen = new Set();
+  if (!Array.isArray(checks) || !checks.length || checks.some(check => {
+    const valid = check.class_key === row.classKey && check.week === row.week && typeof check.form_id === 'string'
+      && forms.some(form => form.form_id === check.form_id) && !seen.has(check.form_id);
+    seen.add(check.form_id); return !valid;
+  }) || seen.size !== new Set(forms.filter(form => form.form_id).map(form => form.form_id)).size)
+    return [{...row, release: {status: 'NOT_READY', label: 'Cannot read lesson', issues: ['lesson_folder_unverified'],
+      readability: {stage: 'scope'}, problem: 'The exact Form readiness scopes could not be verified.',
+      action: 'Recheck this exact Agenda lesson; no Form borrowed another Form’s source readiness.'}}];
+  return checks.map(check => ({...row, topic: check.form_title || 'Turn-in Form', release: check,
+    forms: forms.filter(form => form.form_id === check.form_id)}));
+}
+function renderAgendaSourceDiscrepancy(row) {
+  const discrepancy = row.release?.agenda_link_discrepancy;
+  if (!discrepancy) return null;
+  const source = row.release.source_resolution || {}, missing = new Set(discrepancy.source_ids || []),
+    folders = new Set(discrepancy.folder_ids || []);
+  const resources = lessonReviewNotice({...row, release: {...row.release,
+    source_resolution: {...source, decks: (source.decks || []).filter(deck => missing.has(deck.id)),
+      folders: (source.folders || []).filter(folder => folders.has(folder.id))}}, forms: []}).sources;
+  return el('p', {class: 'muted agenda-source-discrepancy'},
+    el('span', {text: 'Agenda links: these verified sources are absent from this lesson’s current Hub links. '}),
+    ...resources.map(resource => {
+      const url = reviewSourceURL(resource);
+      return url ? el('a', {href: url, target: '_blank', rel: 'noopener', text: resource.label + ' '})
+        : el('span', {text: 'Source link not verified. '});
+    }),
+    el('span', {text: 'This is separate from this Form’s source readiness.'}));
 }
 
 function morningTotals(report) {
@@ -664,6 +697,7 @@ function renderNextLessons(audits) {
       el('td', {}, lessonReviewBadge(row)),
       el('td', {}, ready ? el('p', {text: 'Linked lesson source is ready. Student copies are checked separately.'})
         : renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
+        renderAgendaSourceDiscrepancy(row),
         el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
   });
   const table = el('table', {class: 'cockpit-table'},
@@ -865,7 +899,8 @@ async function loadLessonReadiness(force = false) {
         el('div', {class: 'release-item'},
           el('span', {text: `${row.className} · ${row.week}`}),
           lessonReviewBadge(row),
-          renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic})))));
+          renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
+          renderAgendaSourceDiscrepancy(row)))));
   } catch (error) {
     box.replaceChildren(note('Deck readiness could not be checked: ' + error.message));
   }
@@ -2496,7 +2531,8 @@ function linkCheckResult(name, data) {
   const shared = data.flags.filter(f => f.kind === 'shared-form');
   const decks = data.flags.filter(f => f.kind === 'deck-unreadable');
   const noAgendaForm = data.flags.filter(f => f.kind === 'no-form');
-  const releases = data.rows.filter(r => r.release);
+  const scopedRows = row => lessonReadinessRows({...row, className: name, classKey: CLASSES.find(([, label]) => label === name)?.[0]});
+  const releases = data.rows.filter(r => r.release).flatMap(scopedRows);
   const notReady = releases.filter(r => r.release.status !== 'READY');
   const releaseText = row => {
     const release = row.release;
@@ -2526,9 +2562,11 @@ function linkCheckResult(name, data) {
           el('td', {text: r.forms.filter(f => f.where !== '_turnInURL').map(f => f.student_title || f.title || f.label).join(' · ')
             || (r.week_policy?.excluded === true && !r.week_policy.problem ? 'Not assigned this school year' : '—')}),
           el('td', {text: r.decks.map(d => d.title || d.label).join(' · ') || '—'}),
-          el('td', {}, el('p', {text: releaseText(r)}), r.release ? renderSourceReviewNotice(
-            lessonReviewNotice({...r, className: name, classKey: CLASSES.find(([, label]) => label === name)?.[0]}),
-            {class_name: name, week: r.week, lesson: r.topic}) : null)))))))];
+          el('td', {}, ...scopedRows(r).map(check => el('div', {},
+            r.release?.scope === 'form_collections' ? el('strong', {text: check.topic}) : null,
+            el('p', {text: releaseText(check)}), check.release ? renderSourceReviewNotice(lessonReviewNotice(check),
+              {class_name: name, week: check.week, lesson: check.topic}) : null,
+            renderAgendaSourceDiscrepancy(check))))))))))];
 }
 
 async function runLinkCheck() {

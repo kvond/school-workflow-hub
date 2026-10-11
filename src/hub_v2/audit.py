@@ -160,92 +160,133 @@ def check(token, agenda, class_key, config=None):
             active_rows = rows[start:start + 3]
         except ValueError:
             active_rows = []
-    native_teacher_ids = set()
     for r in active_rows:
-        source = completion.lesson_sources(token, r["lesson"])
-        r["source_resolution"] = source
-        selected = source["decks"]
-        r["release_deck"] = selected[0]["id"] if selected else ""
-        r["registered_teacher_sources"] = []
-        if source["problem"]:
-            continue
-        for form_id in dict.fromkeys(f.get("form_id") for f in r["lesson"]["forms"] if f.get("form_id")):
+        units = []
+        ordinary = None
+        has_binding = False
+        for form in r["lesson"]["forms"]:
+            fid = form.get("form_id")
+            if not fid or any(u["form_id"] == fid for u in units):
+                continue
+            binding = None
             try:
-                binding = work.form_teacher_sources(config or {}, agenda, class_key, r["week"], form_id)
-                if not binding:
-                    continue
-                bound = completion.lesson_sources(token, r["lesson"], binding=binding)
-                if bound["problem"]:
-                    raise completion.Unreadable(bound["problem"])
-                if not set(binding["teacher_ids"]).issubset({d["id"] for d in selected}):
-                    raise completion.Unreadable("The registered teacher sources do not match this current Agenda source collection.")
-                r["registered_teacher_sources"].append((binding, bound))
-                native_teacher_ids.update(binding["teacher_ids"])
+                binding = work.form_teacher_sources(config or {}, agenda, class_key, r["week"], fid)
+                source = completion.lesson_sources(token, r["lesson"], binding=binding) if binding else None
             except (ValueError, TypeError, KeyError, completion.Unreadable) as error:
-                source["problem"] = str(error)
-                break
-    release_ids = list(dict.fromkeys(d["id"] for r in active_rows
-                    if not r["source_resolution"]["problem"] for d in r["source_resolution"]["decks"]))
+                source = {"decks": [], "stale_links": [], "folders": [], "problem": str(error)}
+            has_binding = has_binding or binding is not None or source is not None
+            units.append({"form_id": fid, "form": form, "binding": binding, "source": source})
+        if not has_binding:
+            # Keep the ordinary, unregistered Agenda audit contract unchanged.
+            ordinary = completion.lesson_sources(token, r["lesson"])
+            units = [{"form_id": None, "binding": None, "source": ordinary}]
+        else:
+            for unit in units:
+                if unit["source"] is None:
+                    if ordinary is None:
+                        ordinary = completion.lesson_sources(token, r["lesson"])
+                    unit["source"] = ordinary
+        r["release_units"] = units
+        r["form_collections"] = has_binding
+        # This union is only for literal Agenda-link diagnostics. Readiness is
+        # calculated and bookended for each exact Form below, never from a union.
+        verified = [u["source"] for u in units if not u["source"]["problem"]]
+        ids = {d["id"] for source in verified for d in source["decks"]}
+        r["source_resolution"] = ordinary if not has_binding else {
+            "decks": list({d["id"]: d for source in verified for d in source["decks"]}.values()),
+            "folders": list({f["id"]: f for source in verified for f in source["folders"]}.values()),
+            "stale_links": [d for d in (ordinary or {}).get("stale_links", []) if d["id"] not in ids],
+            "problem": None}
+    # A bound teacher's native fallback cannot be borrowed by an unbound Form
+    # which happens to link the same deck. Each read mode is a separate operand.
+    release_keys = list(dict.fromkeys((d["id"], bool(u["binding"])) for r in active_rows
+                    for u in r["release_units"] if not u["source"]["problem"] for d in u["source"]["decks"]))
     releases = {}
-    if release_ids:
+    if release_keys:
         with ThreadPoolExecutor(max_workers=3) as pool:
-            results = pool.map(
-                lambda deck_id: _release_deck(token, deck_id, native_teacher=True)
-                                if deck_id in native_teacher_ids else _release_deck(token, deck_id),
-                release_ids,
-            )
-            releases = dict(zip(release_ids, results))
+            results = pool.map(lambda key: _release_deck(token, key[0], native_teacher=True)
+                                          if key[1] else _release_deck(token, key[0]), release_keys)
+            releases = dict(zip(release_keys, results))
 
     for r in active_rows:
-        if r["source_resolution"]["problem"]:
-            continue
-        for binding, bound in r["registered_teacher_sources"]:
-            templates = [(fid, releases[fid]["_teacher_source_metadata"], None)
-                         for fid in binding["teacher_ids"]
-                         if fid in releases and "_teacher_source_metadata" in releases[fid]]
-            if len(templates) != len(binding["teacher_ids"]):
-                continue  # The real failed read is retained below; no READY claim.
-            try:
-                completion._registered_teacher_bookend(token, binding, bound, templates)
-            except (google.GoogleError, completion.Unreadable) as error:
-                r["source_resolution"]["problem"] = str(error)
-                break
-    # Consumed metadata is only an internal freshness operand, not UI output.
-    releases = {fid: {k: v for k, v in result.items() if k != "_teacher_source_metadata"}
-                for fid, result in releases.items()}
-    for r in active_rows:
-        source = r["source_resolution"]
-        checks = [releases[d["id"]] for d in source["decks"] if d["id"] in releases]
-        if source["problem"]:
-            result = {"status": "NOT_READY", "label": "Cannot read lesson", "issues": ["lesson_folder_unverified"],
-                      "problem": source["problem"], "counts": {}, "readability": {"stage": "folder"}}
-        else:
-            result = dict(next((v for v in checks if v["status"] != "READY"), checks[0] if checks else {}))
-        r["release_result"] = result or None
-        if result:
+        form_results = []
+        for unit in r["release_units"]:
+            binding, source, fid = unit["binding"], unit["source"], unit["form_id"]
+            checks = [releases[(d["id"], bool(binding))] for d in source["decks"]
+                      if (d["id"], bool(binding)) in releases] if not source["problem"] else []
+            if binding and not source["problem"]:
+                templates = [(v["deck_id"], v["_teacher_source_metadata"], None)
+                             for v in checks if "_teacher_source_metadata" in v]
+                if len(templates) == len(binding["teacher_ids"]):
+                    try:
+                        completion._registered_teacher_bookend(token, binding, source, templates)
+                    except (google.GoogleError, completion.Unreadable) as error:
+                        source = {**source, "problem": str(error)}
+                elif not any(v["status"] != "READY" for v in checks):
+                    source = {**source, "problem": "Not every exact registered teacher's consumed metadata could be verified."}
+            # Internal consumed metadata never appears in the UI response.
+            checks = [{k: v for k, v in result.items() if k != "_teacher_source_metadata"} for result in checks]
+            if source["problem"]:
+                result = {"status": "NOT_READY", "label": "Cannot read lesson", "issues": ["lesson_folder_unverified"],
+                          "problem": source["problem"], "counts": {}, "readability": {"stage": "folder"}}
+            else:
+                result = dict(next((v for v in checks if v["status"] != "READY"), checks[0] if checks else {}))
+            if not result:
+                result = {"status": "NOT_READY", "label": "Cannot read lesson", "issues": ["deck_release_unreadable"],
+                          "problem": "No readable teacher source was verified for this exact collection.",
+                          "counts": {}, "readability": {"stage": "source"}}
             result.update(source_resolution=source, linked_decks=checks)
-            context = "%s · %s · %s" % (entry["name"], r["week"], r["topic"])
+            form = unit.get("form", {})
+            title = published.get(fid, ("", ""))[0] or titles.get(fid) or form.get("label") or r["topic"]
+            title = title if isinstance(title, str) else form.get("label") or r["topic"]
+            if re.match(r"https?://", title):
+                title = "Turn-in Form"
+            context = "%s · %s · %s" % (entry["name"], r["week"], title if fid else r["topic"])
             result["context"] = context
-            holds = [completion_holds.check(config or {}, agenda, class_key, r["week"], fid)
-                     for fid in dict.fromkeys(f["form_id"] for f in r["visible"] + r["second"] + r["hidden"] if f["form_id"])]
-            active_holds = [h for h in holds if h["held"]]
+            if fid:
+                result.update(form_id=fid, form_title=title, class_key=class_key, week=r["week"], scope="form_collection")
+            hold_ids = [fid] if fid else list(dict.fromkeys(f["form_id"] for f in
+                r["visible"] + r["second"] + r["hidden"] if f["form_id"]))
+            active_holds = [h for h in (completion_holds.check(config or {}, agenda, class_key, r["week"], ident)
+                            for ident in hold_ids) if h["held"]]
             if active_holds:
                 result.update(linked_source_status=result["status"], status="NOT_READY", scope="assignment",
                               label=active_holds[0].get("label", "Needs check"),
                               teacher_holds=active_holds, problem=context + ": " + active_holds[0]["problem"],
                               action=context + ": " + active_holds[0]["action"])
                 result["issues"] = ["teacher_readiness_hold"] + result["issues"]
-                continue
-            if result["status"] == "READY":
+            elif result["status"] == "READY":
                 result["action"] = ("The linked deck's completion codes are ready; this does not verify distributed student copies. "
                                     "If their copies lack codes, run the embed-coding program on those copies, preserving answers, then rerun grading.")
             elif result.get("readability"):
-                result["action"] = "%s: check the exact Agenda deck link and access, then recheck. %s" % (context, result["problem"])
+                result["action"] = "%s: check the exact source link and access, then recheck. %s" % (context, result["problem"])
             elif result.get("action"):
                 result["action"] = context + ": " + result["action"]
             else:
                 result["action"] = ("%s: %s Run the embed-coding program on this existing deck, preserving content; "
                                     "then recheck and rerun grading. Unmarked copies are held without scores." % (context, result["problem"]))
+            if binding and not source["problem"]:
+                linked = {d["id"] for d in r["decks"]}
+                folders = {m.group(1) for item in r["lesson"]["materials"] if item.get("label") == "Lesson folder"
+                           if (m := re.search(r"/folders/([A-Za-z0-9_-]+)", item.get("url", "")))}
+                absent = [d["id"] for d in source["decks"] if d["id"] not in linked]
+                absent_folders = [f["id"] for f in source["folders"] if f["id"] not in folders]
+                if absent or absent_folders:
+                    result["agenda_link_discrepancy"] = {
+                        "source_ids": absent, "folder_ids": absent_folders,
+                        "reason": "Some verified registered sources are absent from the Hub's current Agenda lesson links. "
+                                  "This link-display discrepancy is separate from this Form's source readiness."}
+            form_results.append(result)
+        if r["form_collections"]:
+            failed = [v for v in form_results if v["status"] != "READY"]
+            r["release_result"] = {
+                "status": "NOT_READY" if failed else "READY", "label": "Needs check" if failed else "Ready",
+                "scope": "form_collections", "student_copies_checked": False,
+                "form_releases": form_results,
+                "issues": list(dict.fromkeys(issue for v in failed for issue in v.get("issues", []))),
+                "problem": " ".join(v["context"] + ": " + (v.get("problem") or v["label"]) for v in failed) or None}
+        else:
+            r["release_result"] = form_results[0] if form_results else None
 
     flags = []
 

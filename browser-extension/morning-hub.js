@@ -7,7 +7,9 @@
  const scope=p=>p&&['biology','forensics','anatomy'].includes(p.class)&&typeof p.week==='string'&&p.week.length<=100&&/^[A-Za-z0-9_-]{10,100}$/.test(p.form);
  const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
  async function call(path,payload){
-  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),90000);
+  // Receipt validation rechecks exact sources after IC readback; its wait never repeats IC.
+  const wait=path==='morning/entry'&&payload?200000:90000;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),wait);
   try{
    let r;try{r=await fetch('/v2/api/'+path,{method:payload?'POST':'GET',credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal,
     ...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});}catch(e){throw failure('hub_unavailable',e?.name==='AbortError'?'hub_request_timeout':'hub_network_error');}

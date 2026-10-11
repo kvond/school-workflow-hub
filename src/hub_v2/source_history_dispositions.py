@@ -10,6 +10,7 @@ import json
 import math
 import re
 from zoneinfo import ZoneInfo
+from urllib.parse import quote
 
 from . import completion, google, work
 from school_workflow_hub.adapters.firestore_state import configured_store
@@ -253,6 +254,14 @@ def import_verified(port, value, basis, detail, metadata, *, now=None):
     return ident
 
 
+def _source_metadata(token, file_id, fields=META):
+    """Read the provider shape used by immutable source fingerprints."""
+    if fields != META or not ID.fullmatch(str(file_id)):
+        raise ValueError('source history exact metadata read')
+    return google.get_json('https://www.googleapis.com/drive/v3/files/' + quote(file_id, safe=''),
+                           token, {'fields': META, 'supportsAllDrives': 'true'}, timeout=10)
+
+
 def apply(token, config, agenda, current_scope, found, result, roster_snapshot):
     """Read exact configured acknowledgements; never clear a grading hold."""
     raw = config.get(CONFIG)
@@ -295,8 +304,8 @@ def apply(token, config, agenda, current_scope, found, result, roster_snapshot):
                     ids = [s['file_id'] for s in detail['sources']]
                     for fid in ids:
                         if fid not in reads:
-                            before = google.drive_file(token, fid, META)
-                            after = google.drive_file(token, fid, META)
+                            before = _source_metadata(token, fid, META)
+                            after = _source_metadata(token, fid, META)
                             if before != after:
                                 raise ValueError('source history metadata changed during review')
                             reads[fid] = before
@@ -316,7 +325,7 @@ def apply(token, config, agenda, current_scope, found, result, roster_snapshot):
                 source_basis={'kind': 'private_source_history_disposition', 'record_key': verified['record_key'],
                               'receipt_sha256': content_hash(verified)})
             out['retained_history'].append(retained)
-        if out['retained_history'] and any(google.drive_file(token, fid, META) != before for fid, before in reads.items()):
+        if out['retained_history'] and any(_source_metadata(token, fid, META) != before for fid, before in reads.items()):
             raise ValueError('source history final source bookend changed')
         out['notices'] = remaining
         if out['retained_history'] and not remaining:

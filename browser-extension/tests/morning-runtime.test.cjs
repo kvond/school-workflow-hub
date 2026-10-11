@@ -30,7 +30,7 @@ function background(options={}){
  const tabs={1:{id:1,url:C.HUB_ORIGIN+'/v2/',status:'complete'},2:{id:2,url:C.IC_ORIGIN+'/campus/',status:'complete'}};
  const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,getManifest:()=>({version:options.version||'0.5.14'}),onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
  const invoke=(m,sender={id:'extension',url:runtime.getURL('popup.html')})=>new Promise(resolve=>{if(listeners.message(m,sender,resolve)!==true)resolve(undefined);});
- const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout,clearTimeout,pending:options.pending||new Map(),chrome:{runtime,
+ const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout:options.timers?.setTimeout||setTimeout,clearTimeout:options.timers?.clearTimeout||clearTimeout,pending:options.pending||new Map(),chrome:{runtime,
  storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>{if(data.morning_state)writes.push(structuredClone(data.morning_state));Object.assign(state,structuredClone(data));},setAccessLevel:async v=>{state.access=v.accessLevel;}}},
  alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
  tabs:{query:async({url})=>{if(options.checkQuery)options.checkQuery(state,url);return Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1)));},get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{calls.push('navigate');if(options.failSecondNavigation&&calls.filter(c=>c==='navigate').length===2)throw Error('panel_unusable');Object.assign(tabs[id],v);return tabs[id];},sendMessage:async(id,m)=>{
@@ -42,6 +42,7 @@ function background(options={}){
   }
    if(m.type==='morning_hub'){
    calls.push(m.action);
+   if(options.hubReply){const reply=options.hubReply(m);if(reply)return reply;}
    if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
    if(m.action==='list'&&options.listReply)return {ok:true,data:options.listReply(m)};
@@ -1190,7 +1191,7 @@ test('source-change popup explains the source stop and sends its own flag only f
  assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
 });
 test('source-change helper package has the next version without broad automatic retry expansion',()=>{
- assert.equal(JSON.parse(source('manifest.json')).version,'0.5.27');
+ assert.equal(JSON.parse(source('manifest.json')).version,'0.5.28');
  assert.match(source('morning-background.js'),/const completedRecheckCodes=new Set\(\['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores'\]\)/);
 });
 
@@ -1201,4 +1202,35 @@ test('source-change new explicit pass still stops at a freshly changed source be
  assert.equal(reads,2);assert.equal(h.state.morning_state.report.code,'source_changed');assert.ok(!h.calls.includes('navigate'));assert.ok(!h.calls.includes('execute'));assert.ok(!h.calls.includes('record'));
  const s=h.state.morning_state;assert.equal(s.source_recheck_version,'0.5.23');assert.deepEqual([s.report.items[0].filled,s.report.items[0].raised,s.report.items[0].kept,s.report.items[0].left],[0,0,0,0]);
  assert.equal((await h.invoke({type:'morning_status'})).can_verify_current_source_change,false);await h.alarm();assert.equal(reads,2);
+});
+
+const {virtualClock}=require('./virtual-deadline-clock.cjs');
+test('record bridge accepts a 113-second acknowledgement without replaying IC or changing recovery state',async()=>{
+ const clock=virtualClock(),h=background({version:'0.5.28',timers:clock,hubReply:m=>m.action==='record'?new Promise(resolve=>clock.setTimeout(()=>resolve({ok:true,data:{recorded:true}}),113274)):null});
+ await h.alarm();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ await clock.advance(100001);assert.equal(h.state.morning_state.report.code,'running');
+ await clock.advance(13274);await settle();
+ assert.equal(h.state.morning_state.report.code,'finished');
+ assert.equal(h.calls.filter(c=>c==='record').length,1);assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.equal(h.state.morning_state.verified,undefined);assert.equal(h.state.morning_state.receipt_recheck_version,undefined);
+ await h.alarm();assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.ok(clock.scheduled.includes(210000));assert.ok(clock.scheduled.includes(120000));
+});
+test('finite record bridge timeout preserves incomplete state and a late acknowledgement cannot restart IC',async()=>{
+ const clock=virtualClock(),h=background({version:'0.5.28',timers:clock,hubReply:m=>m.action==='record'?new Promise(resolve=>clock.setTimeout(()=>resolve({ok:true,data:{recorded:true}}),250000)):null});
+ await h.alarm();await clock.advance(210001);await settle();
+ assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');
+ assert.equal(h.state.morning_state.report.items.at(-1).code,'receipt_unconfirmed');
+ assert.equal(h.state.morning_state.execution_started,true);
+ const terminal=structuredClone(h.state.morning_state);
+ await clock.advance(50000);await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='record').length,1);assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.deepEqual(h.state.morning_state,terminal);assert.equal(h.state.morning_state.verified,undefined);
+});
+test('non-record worker operation retains the 100-second bridge timeout and never reaches IC',async()=>{
+ const clock=virtualClock(),h=background({version:'0.5.28',timers:clock,hubReply:m=>m.action==='catalog'?new Promise(resolve=>clock.setTimeout(()=>resolve({ok:true,data:{assignments:[]}}),113274)):null});
+ await h.alarm();await clock.advance(100001);await settle();
+ assert.equal(h.state.morning_state.report.code,'hub_unavailable');
+ assert.equal(h.calls.filter(c=>c==='execute').length,0);
+ assert.ok(clock.scheduled.includes(100000));assert.ok(!clock.scheduled.includes(210000));
 });

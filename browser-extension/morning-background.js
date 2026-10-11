@@ -27,7 +27,7 @@
  async function hub(tab,action,payload){
   let current;try{current=await chrome.tabs.get(tab);}catch{throw failure('hub_unavailable','hub_tab_closed');}
   try{if(new URL(current.url).origin!==C.HUB_ORIGIN)throw Error();}catch{throw failure('signed_out','hub_origin_changed');}
-  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}));}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
+  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}),action==='record'?210000:100000);}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
   if(!r?.ok)throw failure(safe.has(r?.code)?r.code:'hub_unavailable',r?.cause||'hub_bridge_unavailable',r?.status);return r.data;
  }
  async function publish(state,tab){

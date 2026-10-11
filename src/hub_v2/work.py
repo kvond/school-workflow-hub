@@ -497,7 +497,7 @@ def form_teacher_sources(config, agenda, class_key, week_label, form_id):
 
 
 def assignment_policy(config, agenda, class_key, week_label, form_id):
-    """A case-only exclusion leaves Lab Safety and all original history intact."""
+    """Named exact-Form exclusions leave other lessons and original history intact."""
     out = week_policy(config, agenda, class_key, week_label)
     if out.get("problem") or out.get("excluded"):
         return out
@@ -506,6 +506,18 @@ def assignment_policy(config, agenda, class_key, week_label, form_id):
                               agenda, class_key, week_label, form_id)
         if not entry:
             return out
+        if entry["purpose"] == "reasoning_dealt_with":
+            if (entry["school_year"] != "2026-27" or class_key != "forensics" or week_number(week_label) != 3
+                    or not isinstance(entry["reason"], str) or not entry["reason"].strip()
+                    or len(entry["reason"]) > 300 or any(ord(c) < 32 for c in entry["reason"])):
+                raise ValueError()
+            _, form = next((l, f) for l in agenda.lessons(class_key, week_label)
+                           for f in l["forms"] if f.get("form_id") == form_id)
+            if (form.get("problem") or not re.fullmatch(r"inductive\s+and\s+deductive\s+reasoning",
+                    assignment_title(form.get("label", "")), re.I)):
+                raise ValueError()
+            return {**out, "excluded": True, "school_year": entry["school_year"],
+                    "reason": entry["reason"].strip(), "purpose": entry["purpose"], "form_id": form_id}
         if (entry["purpose"] != "week01_cases" or class_key != "forensics" or week_number(week_label) != 1
                 or not isinstance(entry["reason"], str) or not entry["reason"].strip()
                 or len(entry["reason"]) > 300 or any(ord(c) < 32 for c in entry["reason"])):
@@ -521,7 +533,7 @@ def assignment_policy(config, agenda, class_key, week_label, form_id):
         return {**out, "excluded": True, "school_year": entry["school_year"],
                 "reason": entry["reason"].strip(), "purpose": entry["purpose"], "form_id": form_id}
     except (ValueError, TypeError, KeyError, StopIteration):
-        return {**out, "problem": "The teacher's exact case-only exclusion needs checking before grading."}
+        return {**out, "problem": "The teacher's exact assignment exclusion needs checking before grading."}
 
 
 def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
