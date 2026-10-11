@@ -549,15 +549,21 @@ def wrong_form_moves(entries, held=None):
 
     moves = []
     for i, entry in enumerate(entries):
+        # An explicit multi-deck Form is selected later from authenticated
+        # cycles and exact teachers. Titles cannot move its events elsewhere.
+        if entry.get('form', {}).get('_combined_scope'):
+            continue
         for submission in entry["found"]:
             words = {w for f in submission["files"] for w in deck_words(f.get("name"))}
             if not words or confirms(submission, entry):
                 continue
-            hits = [j for j, other in enumerate(entries) if j != i and confirms(submission, other)]
+            hits = [j for j, other in enumerate(entries) if j != i
+                    and not other.get('form', {}).get('_combined_scope') and confirms(submission, other)]
             if len(hits) == 1 and (entry["current"] or entries[hits[0]]["current"]):
                 moves.append((i, submission, hits[0]))
             elif held is not None and not entry["current"]:
-                weak = [j for j, other in enumerate(telling) if j != i and words & other]
+                weak = [j for j, other in enumerate(telling) if j != i
+                        and not entries[j].get('form', {}).get('_combined_scope') and words & other]
                 if len(weak) == 1 and entries[weak[0]]["current"]:
                     held.append((i, submission, weak[0]))
     return moves
@@ -1016,6 +1022,14 @@ def lesson_work(token, config, agenda, class_key, week_label):
 
     forms = [read_form(token, form, account) for lesson in lessons for form in lesson["forms"]]
     accepted_routes, route_problem = accepted_form_routes(config, agenda, class_key, week_label, forms)
+    from . import combined_assessment
+    try:
+        for form in forms:
+            scope = combined_assessment.definition(config, agenda, class_key, week_label, form['form_id'])
+            if scope:
+                form['_combined_scope'] = scope
+    except combined_assessment.Held as error:
+        route_problem = str(error)
     if route_problem:
         problems.append(route_problem)
     # A lesson moved to another week keeps its deck's name ("… Week 04 …"), so
@@ -1260,6 +1274,9 @@ def lesson_work(token, config, agenda, class_key, week_label):
     for lesson in result:
         for form in lesson["forms"]:
             form["grade_readiness"] = completion.assignment_readiness(token, config, agenda, class_key, week_label, form["form_id"])
+            original = next((f for f in forms if f['form_id'] == form['form_id']), {})
+            if original.get('_combined_scope'):
+                combined_assessment.bind_form(token, form, original['_combined_scope'])
     return {"class_key": class_key, "week": week_label, "week_policy": policy, "assessment_problem": route_problem,
             "lessons": result, "other_files": other_rows,
             "roster_check": check,

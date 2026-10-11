@@ -144,7 +144,10 @@ def _row(found, form_id, file_id):
     forms = [f for lesson in found.get('lessons', []) for f in lesson['forms'] if f['form_id'] == form_id]
     if len(forms) != 1 or found.get('problems') or forms[0].get('problem'):
         raise Held('The current lesson sources need review before feedback can be generated.')
-    rows = [r for r in forms[0]['students'] if any(f['id'] == file_id for f in r['files'])]
+    students = _feedback_students(forms[0])
+    if any(row.get('selection_problem') for row in students):
+        raise Held('This combined assignment’s original submission selection needs review before feedback.')
+    rows = [r for r in students if any(f['id'] == file_id for f in r['files'])]
     if len(rows) != 1:
         raise Held('This file is not the current submission for exactly one student. Reload student work.')
     row = rows[0]
@@ -155,6 +158,27 @@ def _row(found, form_id, file_id):
     if len(files) != 1 or files[0]['id'] != file_id:
         raise Held('This student has multiple or unavailable files in the latest submission. Review the source first.')
     return row, forms[0]
+
+
+def _feedback_students(form):
+    if form.get('combined_assessment'):
+        from . import combined_assessment
+        return combined_assessment.feedback_rows(form)
+    return form['students']
+
+
+def _feedback_name(form, row):
+    if not form.get('combined_assessment'):
+        return feedback.short_names([r for r in form['students'] if r.get('matched')])[id(row)]
+    # One name anchor per real student, rather than one per component/report.
+    # The component row is a derived copy and must not use object identity to
+    # borrow a different student's short name.
+    students = completion.scoring_candidates(form)
+    identity = lambda r: (r.get('section'), r.get('email'), r.get('first'), r.get('last'))
+    owners = [student for student in students if identity(student) == identity(row)]
+    if len(owners) != 1:
+        raise Held('The selected report source needs one verified student name and section.')
+    return feedback.short_names(students)[id(owners[0])]
 
 
 def _submission_receipt(row, scope):
@@ -216,7 +240,8 @@ def _aspects(reference, score):
 def evidence(assertion, token, config, agenda, scope, found):
     row, form = _row(found, scope['form'], scope['file'])
     receipt = _submission_receipt(row, scope)
-    score = completion.score_file(token, agenda, scope['class'], scope['week'], scope['form'], scope['file'], found)
+    score = completion.score_file(token, agenda, scope['class'], scope['week'], scope['form'], scope['file'], found,
+                **({'component_only': True} if form.get('combined_assessment') else {}))
     if score.get('problem') or not score.get('compared'):
         raise Held(score.get('problem') or 'The submitted deck could not be matched to its lesson.')
     records = grading_records.read_records(assertion, config)
@@ -234,8 +259,7 @@ def evidence(assertion, token, config, agenda, scope, found):
     prompt, where = feedback.load_prompt(token, agenda)
     if not prompt:
         raise Held(where)
-    names = feedback.short_names([r for r in form['students'] if r.get('matched')])
-    person = {'name': names[id(row)], 'section': row['section'],
+    person = {'name': _feedback_name(form, row), 'section': row['section'],
               'identity_hash': content_hash([scope['class'], row['section'], row['email'], row['first'], row['last']])}
     archive_identity = {'school_email': row['email'], 'first': row['first'], 'last': row['last'],
                         'section': row['section'], 'matched_by': 'email', 'source': 'form'}
@@ -613,8 +637,7 @@ def listing(config, scope, found):
     if len(forms) != 1:
         raise Held('Choose one current lesson Form.')
     form = forms[0]
-    matched = [r for r in form['students'] if r.get('matched')]
-    names = feedback.short_names(matched)
+    matched = [r for r in _feedback_students(form) if r.get('matched')]
     port = configured_store(config)
     students = []
     for row in matched:
@@ -629,9 +652,9 @@ def listing(config, scope, found):
                 hold = str(error)
             ref = _read(port, _ref(current))
             stored = _read(port, ref.value['id']) if ref else None
-            students.append({'name': names[id(row)], 'section': row['section'], 'file_id': file['id'],
+            students.append({'name': _feedback_name(form, row), 'section': row['section'], 'file_id': file['id'],
                              'hold': hold, 'draft': reply(stored.value) if stored else None})
-    return {'students': students, 'problem': form.get('problem') or None}
+    return {'students': students, 'problem': form.get('problem') or (form.get('combined_assessment') or {}).get('problem') or None}
 
 
 def _student_print_name(name):

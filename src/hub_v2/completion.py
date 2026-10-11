@@ -9,7 +9,8 @@ review — it never judges how good an answer is:
 Student grading counts the actual parseable codes with answerable boxes in the
 submitted copy. A missing or stale student inventory does not add requirements
 or hold a grade. The registered Biology Photosynthesis lesson still requires
-complete student coding, and linked teacher decks retain their strict gate.
+complete coding. Exact linked teacher sources must remain readable and
+unambiguous; their stale inventory is advisory outside that exception.
 A code with no answerable box isn't counted, so a deck with only 3 answerable
 boxes is out of those 3 (the teacher's rule). Each code is a small text
 box such as [[NOTES:C03:CA1-RULE]] placed on its answer box. A box counts as
@@ -856,6 +857,22 @@ def student_readiness(deck, *, revision="", require_complete_codes=True):
             "warnings": [warning], "problem": None, "action": None}
 
 
+def teacher_readiness(deck, *, revision="", require_complete_codes=True):
+    """A stale teacher inventory cannot add requirements to found-code copies."""
+    checked = student_readiness(deck, revision=revision, require_complete_codes=require_complete_codes)
+    if require_complete_codes or checked["status"] != "READY":
+        return checked
+    if not any(marker["category"] != "OPTIONAL" for marker in markers(deck)):
+        return {**checked, "status": "NOT_READY", "label": "Needs check",
+                "problem": "No countable response codes are verified in this teacher source; no score or missing-work zero is prepared.",
+                "action": "Confirm the exact coded handed-out source before preparing scores."}
+    if checked.get("coding_status") != "NOT_READY":
+        return checked
+    return {**checked, "label": "Ready to count found codes", "teacher_coding_policy": "found_codes",
+            "warnings": ["Teacher inventory is stale or incomplete. Completion uses only the actual codes in each submitted copy."],
+            "problem": None, "action": None}
+
+
 def assess(student, template, *, found_codes_only=False):
     """The completion counts for one student deck against the distributed copy."""
     code, required, basis, note = inventory(template or student)
@@ -1027,7 +1044,7 @@ def pick_template(student, templates):
 # ---------- reading the decks from Drive ----------
 
 SLIDES = "application/vnd.google-apps.presentation"
-_templates, _results = {}, {}
+_templates, _results, _native_teacher_templates = {}, {}, {}
 MAX_CACHED_TEMPLATES, MAX_CACHED_RESULTS = 24, 600
 
 
@@ -1055,6 +1072,33 @@ def _template(token, deck_id):
     if key not in _templates:
         _remember(_templates, key, _read(token, deck_id, meta), MAX_CACHED_TEMPLATES)
     return meta, _templates[key]
+
+
+def _teacher_template(token, deck_id):
+    """Only exact teacher references may use native GET after an export 403."""
+    from . import google, native_teacher_source
+    try:
+        return _template(token, deck_id)
+    except google.GoogleError as error:
+        if error.status != 403:
+            raise
+    before = google.drive_file(token, deck_id, google.FILE_FIELDS + ",version")
+    if before.get("id") != deck_id or before.get("mimeType") != SLIDES or before.get("trashed"):
+        raise Unreadable("The exact teacher source is unavailable for a native read.")
+    key = (deck_id, before.get("modifiedTime", ""), str(before.get("version") or ""))
+    if key not in _native_teacher_templates:
+        try:
+            deck = native_teacher_source.read(google.native_presentation(token, deck_id),
+                presentation_id=deck_id, revision=before.get("version"), max_slides=MAX_SLIDES,
+                max_slide_bytes=MAX_SLIDE_BYTES)
+        except native_teacher_source.Unreadable as error:
+            raise Unreadable(str(error)) from None
+        after = google.drive_file(token, deck_id, google.FILE_FIELDS + ",version")
+        fields = ("id", "mimeType", "trashed", "version", "modifiedTime")
+        if any(before.get(field) != after.get(field) for field in fields):
+            raise Unreadable("The exact teacher source changed during its native read; recheck it.")
+        _remember(_native_teacher_templates, key, deck, MAX_CACHED_TEMPLATES)
+    return before, _native_teacher_templates[key]
 
 
 _folders = {}
@@ -1175,8 +1219,9 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
     results = []
     for deck_id in ids:
         try:
-            meta, deck = _template(token, deck_id)
-            checked = readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""))
+            meta, deck = _teacher_template(token, deck_id)
+            checked = teacher_readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""),
+                require_complete_codes=student_coding_required(agenda, class_key, week_label, form_id))
             checked.update(deck_id=deck_id, title=meta.get("name", ""))
         except (google.GoogleError, Unreadable) as error:
             checked = {"status": "NOT_READY", "deck_id": deck_id, "code": "deck_not_ready", "label": "Cannot read lesson", "problem": str(error)}
@@ -1204,7 +1249,12 @@ def submitted_readiness(token, form, *, require_complete_codes=True, include_lat
     """
     from . import google
     checked, seen = [], set()
-    candidates = recheck_candidates(form) if include_late else form.get("students", []) + form.get("late", [])
+    if (form.get('combined_assessment') or {}).get('problem'):
+        return {'status': 'NOT_READY', 'code': 'coverage_incomplete', 'copies': [],
+                'problem': form['combined_assessment']['problem'],
+                'action': 'Reload this combined assignment and confirm its original source components.'}
+    candidates = (scoring_candidates(form, include_late=include_late) if form.get('combined_assessment') else
+                  recheck_candidates(form) if include_late else form.get("students", []) + form.get("late", []))
     affected = next((row for row in candidates if row.get("selection_problem")), None)
     if affected:
         who = "%s, %s (%s)" % (affected.get("last", ""), affected.get("first", ""), affected.get("section", ""))
@@ -1213,6 +1263,16 @@ def submitted_readiness(token, form, *, require_complete_codes=True, include_lat
                 "action": "Confirm this student's current original Form submission before recording IC entry."}
     for row in candidates:
         if not row.get("matched"):
+            continue
+        if form.get('combined_assessment'):
+            from . import combined_assessment
+            try:
+                _, captures = combined_assessment.verify_sources(token, form, row)
+                checked.extend({'status': 'READY', 'file_id': capture['metadata']['id'],
+                                'revision': capture['metadata']['version']} for capture in captures.values())
+            except (combined_assessment.Held, google.GoogleError, Unreadable) as error:
+                return {'status': 'NOT_READY', 'code': 'coverage_incomplete', 'copies': checked,
+                        'problem': str(error), 'action': 'Reload this combined assignment and confirm its current components.'}
             continue
         for upload in row.get("files", []):
             if upload["id"] in seen:
@@ -1235,6 +1295,13 @@ def submitted_readiness(token, form, *, require_complete_codes=True, include_lat
     return {"status": "READY", "label": "Ready", "copies": checked, "student_copies_checked": len(checked)}
 
 
+def scoring_candidates(form, *, include_late=False):
+    if form.get('combined_assessment'):
+        from . import combined_assessment
+        return combined_assessment.candidates(form, include_late=include_late)
+    return recheck_candidates(form) if include_late else form.get('students', [])
+
+
 def recheck_candidates(form, *, now=None):
     """Derive one submitted candidate per matched student without changing history.
 
@@ -1244,6 +1311,9 @@ def recheck_candidates(form, *, now=None):
     """
     from . import google, work
     from datetime import datetime, timezone
+    if form.get('combined_assessment'):
+        from . import combined_assessment
+        return combined_assessment.candidates(form, include_late=True)
     now = now or datetime.now(timezone.utc)
 
     def file_ids(snapshot):
@@ -1365,12 +1435,12 @@ def recheck_candidates(form, *, now=None):
     return derived
 
 
-def score_file(token, agenda, class_key, week_label, form_id, file_id, work_result, *, include_late=False):
+def score_file(token, agenda, class_key, week_label, form_id, file_id, work_result, *, include_late=False, component_only=False):
     """Score a current file; late candidates require an explicit entry recheck."""
     from . import google
     form = next((f for lesson in work_result.get("lessons", []) for f in lesson["forms"]
                  if f["form_id"] == form_id), None)
-    candidates = recheck_candidates(form or {}) if include_late else (form or {}).get("students", [])
+    candidates = scoring_candidates(form or {}, include_late=include_late)
     affected = next((r for r in candidates if r.get("selection_problem")), None)
     if affected:
         label = (form or {}).get("label") or next((lesson.get("topic") for lesson in work_result.get("lessons", [])
@@ -1420,6 +1490,10 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         return {**out, "code": "deck_not_ready", "label": assignment_check.get("label", "Needs check"), "problem": assignment_check.get("problem") or
                 "This assignment's completion readiness is held.", "readiness": assignment_check,
                 "action": assignment_check.get("action")}
+    if form.get('combined_assessment'):
+        from . import combined_assessment
+        return {**out, **combined_assessment.score_row(token, form, row,
+                            component_file_id=file_id if component_only else None)}
     if upload.get("mime") not in (SLIDES, google.PPTX):
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []
@@ -1427,7 +1501,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     deck_ids = [d["id"] for d in eligible["decks"]] if eligible else lesson_decks(agenda, class_key, week_label, form_id)
     for deck_id in deck_ids:
         try:
-            templates.append((deck_id,) + _template(token, deck_id))
+            templates.append((deck_id,) + _teacher_template(token, deck_id))
         except (google.GoogleError, Unreadable):
             continue
     try:
@@ -1465,7 +1539,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         for item in found:
             if item["id"] != file_id and not any(t[0] == item["id"] for t in templates):
                 try:
-                    templates.append((item["id"],) + _template(token, item["id"]))
+                    templates.append((item["id"],) + _teacher_template(token, item["id"]))
                 except (google.GoogleError, Unreadable):
                     continue
         best = pick_template(deck, [t[2] for t in templates])
@@ -1473,7 +1547,8 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if chosen is None:
         return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
                                   "(Student copy or Teacher deck), so its boxes can't be checked."}
-    check = readiness(chosen[2], revision=chosen[1].get("version") or chosen[1].get("modifiedTime", ""))
+    check = teacher_readiness(chosen[2], revision=chosen[1].get("version") or chosen[1].get("modifiedTime", ""),
+                             require_complete_codes=complete_codes)
     if check["status"] != "READY":
         return not_ready(check, chosen[1].get("name", ""), "handed-out deck")
     source_key = (file_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))

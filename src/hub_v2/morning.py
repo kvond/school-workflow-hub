@@ -95,7 +95,8 @@ def rows(form, scored, now, *, recheck=False):
         result[key] = {"last": row["last"], "first": row.get("first", ""), "section": row["section"],
                        "kind": kind, "notes": notes, "revision": revision, "reason": reason}
 
-    candidates = completion.recheck_candidates(form, now=now) if recheck else form["students"]
+    candidates = (completion.scoring_candidates(form, include_late=recheck) if form.get('combined_assessment') else
+                  completion.recheck_candidates(form, now=now) if recheck else form["students"])
     for row in candidates:
         if not row.get("matched"):
             continue
@@ -111,10 +112,16 @@ def rows(form, scored, now, *, recheck=False):
         elif not score or score.get("problem") or score.get("note") or all(score.get(k) is None for k in ("notes_score", "revision_score")):
             add(row, "check", reason="deck needs scoring by hand")
         else:
-            add(row, "score", score.get("notes_score"), score.get("revision_score"))
+            add(row, "score", score.get("notes_score"), score.get("revision_score"),
+                reason=(score.get('component_coverage') or {}).get('text', '')[:200])
     absent = form.get("missing", []) + ([] if recheck else [r for r in form.get("late", []) if r.get("matched")])
+    if form.get('combined_assessment'):
+        represented = {person(row) for row in candidates if row.get('combined_components') and not row.get('selection_problem')}
+        absent = [row for row in absent if person(row) not in represented]
     for row in absent:
-        if not started:
+        if form.get('combined_assessment'):
+            add(row, 'none', reason='No eligible submitted component; no combined missing-work zero prepared')
+        elif not started:
             add(row, "none", reason="its two weeks haven't started")
         elif row.get("unsorted") or person(row) in elsewhere:
             add(row, "check", reason="submission needs review")
@@ -147,6 +154,8 @@ def make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     if found.get("other_files"):
         return {"code": "coverage_incomplete"}
     ready = completion.assignment_readiness(token, config, agenda, cls, week, fid)
+    if (form.get('combined_assessment') or {}).get('problem'):
+        return {'code': 'coverage_incomplete', 'problem': form['combined_assessment']['problem']}
     form["grade_readiness"] = ready
     if ready["status"] != "READY":
         return {"code": "coverage_incomplete", "readiness": ready, "problem": ready["problem"], "action": ready.get("action")}

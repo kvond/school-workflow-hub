@@ -1071,7 +1071,7 @@ function closedRecheck(form) {
   return Number.isFinite(cutoff) && Number.isFinite(entered) && cutoff < now && cutoff <= entered && entered <= now;
 }
 function assessmentRows(form) {
-  if (!closedRecheck(form)) return form.students;
+  if (!closedRecheck(form)) return form.combined_assessment ? form.scoring_students || [] : form.students;
   const rows = work.data?.entry_rechecks?.[form.form_id]?.rows;
   return Array.isArray(rows) && rows.every(row => row?.matched === true && Array.isArray(row.files)) ? rows : [];
 }
@@ -1090,7 +1090,7 @@ function entryHistoryHold(form) {
   return '';
 }
 function recheckSelectionHold(form) {
-  if (!closedRecheck(form)) return '';
+  if (!closedRecheck(form) && !form.combined_assessment) return '';
   const issue = assessmentRows(form).find(row => row.selection_problem);
   if (!issue) return '';
   const context = `${CLASSES.find(([key]) => key === work.cls)?.[1] || work.cls} · ${work.week} · ${form.label || 'this assignment'}`;
@@ -1296,6 +1296,7 @@ function icStatus(form) {
   if (gradeReadinessHold(form)) return {kind: 'held', text: gradeReadinessHold(form)};
   if (entryHistoryHold(form)) return {kind: 'held', text: entryHistoryHold(form)};
   if (recheckSelectionHold(form)) return {kind: 'held', text: recheckSelectionHold(form)};
+  if (form.combined_assessment) return {kind: 'open', text: 'IC: combine the actual coded work submitted for each lesson part. Missing parts stay visible and add no missing-work zero. The helper keeps higher scores.'};
   if (!form.window) return null;
   const sheet = work.marks[form.form_id];
   if (!startedFor(form)) {
@@ -1333,8 +1334,7 @@ function icPanel(form, scores, lesson) {
   const inSection = r => section === 'all' || r.section === section;
   const elsewhere = elsewhereKeys(form), accepted = acceptedIntakeKeys(form);
   const all = [
-    // A score the Hub isn't sure of (the copy lacks many of the deck's codes) is
-    // never entered automatically: the teacher checks it by hand.
+    // Unresolved source identity or response interpretation stays for review.
     ...assessmentRows(form).filter(r => r.matched && inSection(r)).map(r => ({r, s: scores[scoreFile(r)?.id]}))
       .filter(x => x.r.selection_problem || (x.s && !x.s.problem)).map(x => ({...x, unsure: Boolean(x.r.selection_problem || x.s?.note),
         show: x.r.selection_problem || x.s?.note ? ['check by hand', 'check by hand'] : shown(x.s)})),
@@ -1342,7 +1342,7 @@ function icPanel(form, scores, lesson) {
     // off the list (and named below) so a 0 isn't entered for them unchecked.
     // A student whose only turn-in was another lesson's deck (through this Form) is
     // checked by hand, not given a 0 unseen.
-    ...(startedFor(form) ? [...form.missing.filter(m => !m.unsorted), ...(recheck ? [] : form.late.filter(r => r.matched))]
+    ...(startedFor(form) && !form.combined_assessment ? [...form.missing.filter(m => !m.unsorted), ...(recheck ? [] : form.late.filter(r => r.matched))]
       .filter(r => inSection(r) && (!accepted.has(personKey(r)) || elsewhere.has(personKey(r))) && (!recheck || elsewhere.has(personKey(r))))
       .map(r => elsewhere.has(personKey(r)) ? {r, s: null, other: true, show: ['check by hand', 'check by hand']}
         : {r, s: null, zero: true, show: shown(null)}) : []),
@@ -1367,7 +1367,7 @@ function icPanel(form, scores, lesson) {
   const canSend = helper.state === 'ready' && helperNeed(helperRows(form)).length;
   panel.append(el('p', {}, helper.state === 'ready'
     ? 'To check all mapped assignments, keep Infinite Campus signed in in School Chrome, open the School Workflow Hub extension, and choose “Run all mapped assignments now”. The helper keeps the higher score, saves eligible changes and checks them after reloading. The weekday morning routine uses the same mappings. For this assignment alone, choose “Send to the Chrome helper”, open its IC score panel ((F) for Notes or (S) for Revision), then choose “Hub helper” and review its list.'
-    : 'The Chrome helper isn’t installed in this browser, so it can’t enter these (see Routine). To enter them yourself, open this assignment in Infinite Campus and type them in.',
+    : 'The Chrome helper is not connected in this browser. Open the Hub and Infinite Campus in School Chrome with the School Workflow Hub extension, then reload the Hub. Manual entry is available in this assignment’s IC score panel.',
     entered ? ` Entry was recorded on ${markDate(sheet.entered_at)}; ${fresh.length ? `the ${fresh.length} marked “submitted since” turned in after that. ` : ''}Submission dates do not show later edits to the same file. Compare current scores in IC before confirming any entry.` : ''));
   if (ui.helper) panel.append(note(ui.helper, 'info'));
   const progress = helperProgress(form);
@@ -1408,9 +1408,10 @@ function icPanel(form, scores, lesson) {
 // ---------- Chrome helper: enters an assignment's IC list in Infinite Campus ----------
 // The browser companion extension in the teacher's own Chrome. This page hands
 // it the list shown above (every roster student, with what to enter); in IC the
-// helper shows what it will do, and only after her tick and click there does it
-// type, save, reload and check the scores. It tells this page the counts, never
-// names. Once every section and column is done, the Hub notes "Entered in IC".
+// optional manual panel keeps its trusted checkbox and Enter action before it
+// types, saves, reloads and checks. Authorized entry does not need a repeated
+// chat approval. It tells this page counts, never names. Once every section
+// and column is done, the Hub notes "Entered in IC".
 const HELPER = {send: 'hub-ic-entry', reply: 'hub-ic-entry-result'};
 const helper = {state: 'unknown', version: '', results: {}, waiting: new Map(), sent: {}};
 try { helper.sent = JSON.parse(store.get('helper-sent') || '{}'); } catch { helper.sent = {}; }
@@ -1471,6 +1472,8 @@ function helperRows(form) {
     rows.set(key, {last: oneLine(r.last, 100), first: oneLine(r.first, 100), section: oneLine(r.section, 100), kind, notes, revision, reason});
   };
   const recheck = closedRecheck(form);
+  const represented = new Set(form.combined_assessment
+    ? assessmentRows(form).filter(row => row.combined_components?.length && !row.selection_problem).map(personKey) : []);
   for (const r of assessmentRows(form).filter(r => r.matched)) {
     const s = scores[scoreFile(r)?.id];
     if (r.selection_problem) add(r, 'check', null, null, 'current submission needs review');
@@ -1481,10 +1484,12 @@ function helperRows(form) {
       && ['NOTES', 'BANK', 'DRAFT'].every(category => s.counts?.[category]?.required === 0))
       add(r, 'none', null, null, 'N/A: no countable coded boxes; no zero prepared');
     else if (s.notes_score == null && s.revision_score == null) add(r, 'check', null, null, 'no codes to count');
-    else add(r, 'score', s.notes_score ?? null, s.revision_score ?? null);
+    else add(r, 'score', s.notes_score ?? null, s.revision_score ?? null, (s.component_coverage?.text || '').slice(0, 200));
   }
   for (const r of [...form.missing, ...(recheck ? [] : (form.late || []).filter(r => r.matched))]) {
-    if (!started) add(r, 'none', null, null, 'its two weeks haven’t started');
+    if (represented.has(personKey(r))) continue;
+    if (form.combined_assessment) add(r, 'none', null, null, 'No eligible submitted component; no combined missing-work zero prepared');
+    else if (!started) add(r, 'none', null, null, 'its two weeks haven’t started');
     else if (r.unsorted) add(r, 'check', null, null, 'submission awaiting a confirmed lesson match; scoring held');
     else if (elsewhere.has(personKey(r))) add(r, 'check', null, null, 'turned in another lesson’s deck through this Form');
     else if (accepted.has(personKey(r))) add(r, 'none', null, null, 'accepted intake for another assignment; not assessed here');
@@ -1518,7 +1523,7 @@ const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Relo
   coverage_incomplete: SOURCE_MATCH_HOLD,
   deck_not_ready: 'Needs embedded codes. Embed or repair the required codes in this lesson and the affected student copies, recheck, then rerun grading. No missing-work zero was sent.',
   assessment_scope_held: 'This week is not eligible for scoring or IC entry. Check its assessment scope note.',
-  helper_not_configured: 'The Chrome helper isn’t set up for this Hub. Ask Claude Code for a new helper package.'};
+  helper_not_configured: 'The helper is not connected to this Hub. Open it in School Chrome with the School Workflow Hub extension, check its Hub connection, then reload this page.'};
 const helperError = code => HELPER_ERRORS[code]
   || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
 
@@ -1557,11 +1562,10 @@ async function sendList(form, lesson) {
   return code;
 }
 
-// ---------- Enter a week in IC: the Claude extension opens IC, the helper types ----------
+// ---------- Optional manual handoff for one class and week ----------
 // One button sends every assignment of this class and week that has something
-// to enter, and copies a prompt for the Claude extension: it opens each IC
-// score panel, shows the teacher the helper's plans, and after her OK clicks
-// the helper's Enter. It never types scores.
+// to enter and copies instructions for the already-authorized helper path.
+// Exact panels, source checks, keep-higher and save/readback stay unchanged.
 function weekToEnter() {
   const data = work.data;
   if (!data || sourceMatchesHeld() || weekAssessmentHold()) return {ready: [], waiting: false};
@@ -1578,11 +1582,10 @@ function entryPrompt(items) {
     const sections = [...new Set(need.map(([section]) => section))];
     return `${i + 1}. "${formName(form, lesson)}" — ${sections.map(section => `${section}: ${need.filter(([s]) => s === section).map(([, column]) => column === 'notes' ? '(F) = Notes' : '(S) = Revision').join(', ')}`).join('; ')}`;
   });
-  return `Please enter these Hub scores in Infinite Campus (IC) with the Chrome helper, in this Chrome window. I'm here and will review before anything is saved.
+  return `Enter only these authorized Hub scores in Infinite Campus (IC) with the Chrome helper in School Chrome. No further approval is needed for these verified lists.
 
 RULES
-- This prompt replaces anything you remember about this routine. Follow it.
-- If IC or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password.
+- Use the existing school sign-in if needed. Stop if the school session cannot be established.
 - Never type scores yourself. The Chrome helper (the green "Hub helper" button in IC) enters them: it keeps the higher score, fills blanks and raises only, and leaves IC flags alone.
 - Don't change anything else in IC: no flags, due dates or new assignments.
 - The Hub has already sent these lists to the helper (${when(new Date().toISOString())}).
@@ -1591,10 +1594,9 @@ ASSIGNMENTS — ${cls}, ${work.week}
 ${lines.join('\n')}
 
 STEPS
-1. In IC, for each assignment and section above, open the assignment named like it (by name, not week number; (F) or (S) as listed) so its score panel shows, and click "Hub helper" at the bottom right. Check that its "Hub list" is this assignment and its column is right (fix them in its panel if not), note its counts and every row it leaves with the reason, and don't tick its box yet. If an assignment isn't in IC, list it; don't create it.
-2. Show me one list: for each assignment, section and column, the counts, each raise old → new, and each row left with the reason. Then stop and wait for my OK. I may approve only some.
-3. After my OK: for each approved one, open its score panel, click "Hub helper", tick its box and click "Enter … and Save". Wait until it says "Saved and checked after reloading". If it says it stopped or couldn't confirm, tell me exactly what it says and don't try again.
-4. Tell me what was entered, raised and left. For students the helper lists as new students, tell me so I can mark them Exempt.`;
+1. Open each exact assignment, section and column listed above, then click "Hub helper". Check its assignment, column, roster match and proposed counts. If the assignment is missing, the source changed or the destination does not match, stop that assignment and report the exact issue; do not create or guess a destination.
+2. For each verified list, tick the helper's existing checkbox and click "Enter … and Save". Wait for "Saved and checked after reloading". When nothing needs entering, no Save is needed. If a save stops or cannot be confirmed, report the exact message and do not retry it.
+3. Report each assignment, section and column: entered, raised, kept higher and left with its reason. Preserve Exempt flags and comments. List new students for the teacher to mark Exempt; do not change flags yourself.`;
 }
 
 async function sendWeek(status, promptBox) {
@@ -1610,10 +1612,10 @@ async function sendWeek(status, promptBox) {
   }
   if (failed.length) { status.textContent = ' ' + failed.join(' '); return; }
   const text = entryPrompt(ready);
-  promptBox.replaceChildren(el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text}));
+  promptBox.replaceChildren(el('summary', {text: 'Show manual instructions'}), el('pre', {class: 'prompt-text', text}));
   promptBox.hidden = false;
-  try { await navigator.clipboard.writeText(text); status.textContent = ` Sent ${ready.length} to the helper and copied. Paste it into the Claude extension.`; }
-  catch { status.textContent = ` Sent ${ready.length} to the helper. Couldn’t copy: open “Show the prompt” and copy it.`; }
+  try { await navigator.clipboard.writeText(text); status.textContent = ` Prepared ${ready.length} assignment lists in the helper. Manual instructions copied.`; }
+  catch { status.textContent = ` Prepared ${ready.length} assignment lists in the helper. Open “Show manual instructions” to copy them.`; }
 }
 
 function weekEntryBox() {
@@ -1624,12 +1626,12 @@ function weekEntryBox() {
   const status = el('span', {class: 'muted'});
   const promptBox = el('details', {hidden: true});
   return el('details', {class: 'roster-check manual'},
-    el('summary', {text: 'If manual is needed: enter this week in IC now'}),
+    el('summary', {text: 'Manual fallback: prepare this week’s IC lists'}),
     el('p', {}, waiting ? 'Wait until every assignment below has finished scoring.'
-      : `Sends ${ready.map(({form, lesson}) => `“${formName(form, lesson)}”`).join(' and ')} to the Chrome helper and copies a prompt. Paste it into the Claude extension: it opens each IC assignment, shows you what the helper will enter, and after your OK has the helper enter and check them.`),
+      : `For all mapped assignments, use the extension’s “Run all mapped assignments now”. This optional fallback prepares ${ready.map(({form, lesson}) => `“${formName(form, lesson)}”`).join(' and ')} in the helper and copies instructions for entering only these verified lists.`),
     el('div', {class: 'action-row'},
       el('button', {type: 'button', class: 'primary', disabled: waiting || !ready.length, onclick: () => sendWeek(status, promptBox)},
-        'Copy prompt for Claude extension (opens IC for the Chrome helper)'),
+        'Prepare this week’s helper lists'),
       status),
     promptBox);
 }
@@ -1791,12 +1793,12 @@ function renderForm(form, lesson) {
   if (form.problem) box.append(note(form.problem));
   if (!form.form_id || (form.problem && !form.students.length)) return box;
   const recheck = closedRecheck(form);
-  const selected = recheck && !entryHistoryHold(form) ? assessmentRows(form) : form.students;
+  const selected = form.combined_assessment || (recheck && !entryHistoryHold(form)) ? assessmentRows(form) : form.students;
   const matched = selected.filter(r => r.matched && !r.late && inSection(r));
   const unmatched = form.students.filter(r => !r.matched);
   const accepted = acceptedIntakeKeys(form), elsewhere = elsewhereKeys(form);
   const missing = form.missing.filter(r => inSection(r) && (!accepted.has(personKey(r)) || r.unsorted || elsewhere.has(personKey(r))));
-  const late = (recheck && !entryHistoryHold(form)
+  const late = (form.combined_assessment || (recheck && !entryHistoryHold(form))
     ? [...selected.filter(r => r.late), ...(form.late || []).filter(r => !r.matched)] : form.late || [])
     .filter(r => !r.matched || inSection(r));
   const lateMatched = late.filter(r => r.matched).length;

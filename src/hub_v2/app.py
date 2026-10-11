@@ -178,6 +178,17 @@ def api(sub, query, config):
         form = next((f for lesson in found.get("lessons", []) for f in lesson["forms"]
                      if f["form_id"] == form_id), None)
         original_rows = (form or {}).get("students", []) + (form or {}).get("late", [])
+        if (form or {}).get('combined_assessment'):
+            # An aggregate's anchor may be the earlier other-cycle upload.
+            # Rebuild both component selections from fresh original Form data.
+            found = lesson_work(token, config, agenda, class_key, week, fresh=True)
+            form = next(f for lesson in found['lessons'] for f in lesson['forms'] if f['form_id'] == form_id)
+            mark = ledger.read(token, config, form_id)
+            cutoff = work.when((form.get('window') or {}).get('at'))
+            if cutoff and cutoff < datetime.now(timezone.utc) and (not mark.get('configured') or mark.get('problem')):
+                return {'code': 'receipt_unconfirmed', 'problem': 'This combined assignment’s entry history could not be verified.'}
+            return completion.score_file(token, agenda, class_key, week, form_id, file_id, found,
+                                         include_late=morning.closed_recheck(form, mark))
         extended_file = any(r.get("matched") and any(f["id"] == file_id for snapshot in
                             [r] + r.get("earlier", []) for f in snapshot.get("files", []))
                             and (r in (form or {}).get("late", []) or r.get("earlier")) for r in original_rows)
@@ -265,11 +276,16 @@ def _form_context(token, config, agenda, class_key, week, form_id, *, fresh=Fals
 def _form_rows(token, config, agenda, class_key, week, form_id):
     """(context, [(row, score)]) for the roster-matched, on-time students of one Form."""
     context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
-    return context, _score_rows(token, agenda, class_key, week, form_id, form, found)
+    return context, _score_rows(token, agenda, class_key, week, form_id, form, found,
+                               component_only=bool(form.get('combined_assessment')))
 
 
-def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include_late=False):
-    candidates = completion.recheck_candidates(form) if include_late else form["students"]
+def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include_late=False, component_only=False):
+    if component_only and form.get('combined_assessment'):
+        from . import combined_assessment
+        candidates = combined_assessment.feedback_rows(form)
+    else:
+        candidates = form['students'] if component_only else completion.scoring_candidates(form, include_late=include_late)
     if any(r.get("selection_problem") for r in candidates):
         return [(r, {"code": "coverage_incomplete", "problem": r["selection_problem"]})
                 for r in candidates if r.get("selection_problem")]
@@ -277,6 +293,9 @@ def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include
 
     def one(row):
         upload = next((f for f in row["files"] if f.get("mime") in (completion.SLIDES, google.PPTX)), row["files"][0])
+        if component_only:
+            return completion.score_file(token, agenda, class_key, week, form_id, upload['id'], found,
+                                         include_late=include_late, component_only=True)
         if include_late:
             return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found, include_late=True)
         return completion.score_file(token, agenda, class_key, week, form_id, upload["id"], found)

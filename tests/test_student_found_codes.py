@@ -49,15 +49,19 @@ class StudentFoundCodesTests(unittest.TestCase):
         routed = morning.rows(form, [(row, result)], datetime(2026, 10, 10, tzinfo=timezone.utc))
         self.assertEqual((routed[0]['kind'], routed[0]['notes'], routed[0]['revision']), ('none', None, None))
 
-    def test_source_teacher_readiness_and_photosynthesis_strict_copy_gate_remain(self):
+    def test_photosynthesis_keeps_strict_source_and_copy_gates_while_other_stale_inventory_is_advisory(self):
         incomplete = source('My own observation.', header=HEADER.replace('NOTES=1', 'NOTES=19'))
         strict = self.port.score(incomplete)
         self.assertEqual(strict['code'], 'deck_not_ready')
         self.assertNotIn('notes_score', strict)
         malformed_teacher = source(header=HEADER.replace('DRAFT=1', 'DRAFT=19'))
-        result = self.score(source('My own observation.'), malformed_teacher)
-        self.assertEqual(result['code'], 'deck_not_ready')
-        self.assertIn('handed-out deck', result['problem'])
+        strict_teacher = self.port.score(source('My own observation.'), malformed_teacher)
+        self.assertEqual(strict_teacher['code'], 'deck_not_ready')
+        self.assertIn('handed-out deck', strict_teacher['problem'])
+        found = self.score(source('My own observation.'), malformed_teacher)
+        self.assertIsNone(found['problem'])
+        self.assertEqual((found['notes_score'], found['revision_score']), (10.0, 0.0))
+        self.assertEqual(found['counts']['DRAFT']['required'], 1)
 
     def test_conflicting_or_ambiguous_actual_markers_are_not_coverage_waivers(self):
         duplicate = source()

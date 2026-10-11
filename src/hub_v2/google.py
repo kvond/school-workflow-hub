@@ -270,6 +270,12 @@ def drive_file(token, file_id, fields=FILE_FIELDS):
     return as_read(item)
 
 
+def native_presentation(token, presentation_id):
+    """Official read-only Slides source using the existing drive.readonly scope."""
+    return get_json("https://slides.googleapis.com/v1/presentations/" + quote(presentation_id, safe=""),
+                    token, timeout=30)
+
+
 def prefix_name(token, file_id, prefix, original):
     """Rename a student's file to prefix + its original name, tagged so the Hub
     still reads the original. Returns the file as Drive has it afterwards."""

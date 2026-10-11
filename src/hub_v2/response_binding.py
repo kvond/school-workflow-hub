@@ -4,6 +4,8 @@ import math
 import re
 from collections import Counter
 
+from . import received_rows
+
 
 PREFIX = "HUB_COMPLETION_BINDING_V1\n"
 HEADER = PREFIX.rstrip("\n")
@@ -195,7 +197,8 @@ def _text_region(source, units, size, plain):
 def row_source(marker, template, size, plain):
     """One printed evidence item with its two conditionally related cells."""
     data = marker.get("binding", {})
-    if (not _trusted(marker, template) or data.get("kind") != "conditional-response-row"
+    trusted_marker = received_rows.base(marker)
+    if (trusted_marker is None or not _trusted(trusted_marker, template) or data.get("kind") != "conditional-response-row"
             or data.get("page_size") != list(size)):
         return None
     item, headers, fields = data.get("item"), data.get("headers"), data.get("fields")
@@ -229,20 +232,31 @@ def row_answers(markers, written, template, student, size, plain):
         if marker["category"] != "NOTES" or not marker.get("standalone") or source is None:
             return bad
         item, headers, fields = source
+        item, headers, fields = received_rows.regions(marker, source)
+        variant = marker.get("binding", {}).get("received_variant")
+        if marker.get("binding", {}).get("received_variant") == "original-primary-only-row14":
+            missing = source[2][1]["box"]
+            if any(u.get("box") and (same_box(u["box"], missing, size) or inside(center(u["box"]), missing))
+                   for u in student.get("units", [])):
+                return bad
         supplied[(marker["category"], marker["id"])] = {
             tuple(re.findall(r"\w+", v["text"].lower())) for v in [item] + headers}
         # A parenthetical condition is source context, not part of the two
         # choices. Copying just those printed alternatives is still not a choice.
         supplied[(marker["category"], marker["id"])].update(
             tuple(re.findall(r"\w+", re.sub(r"\([^)]*\)", "", h["text"]).lower())) for h in headers)
-        if any(_text_region(v, student.get("units", []), size, plain) is None for v in [item] + headers):
+        if any((_text_region(v, student.get("units", []), size, plain) is None if not variant else
+                len([u for u in student.get("units", []) if not u.get("picture")
+                     and list(u.get("box") or []) == list(v["box"]) and plain(u.get("text", "")) == v["text"]]) != 1)
+               for v in [item] + headers):
             return bad
         for field in fields:
             box = field["box"]
             if tuple(box) in used:
                 return bad
             used.add(tuple(box))
-            actual = [u for u in student.get("units", []) if not u.get("picture") and same_box(u.get("box"), box, size)]
+            actual = [u for u in student.get("units", []) if not u.get("picture")
+                      and (list(u.get("box") or []) == list(box) if variant else same_box(u.get("box"), box, size))]
             if len(actual) != 1:
                 return bad
             regions.append((marker, actual[0], box))
