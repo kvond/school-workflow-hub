@@ -249,9 +249,9 @@ def _form_args(values):
     return class_key, week, form_id
 
 
-def _form_context(token, config, agenda, class_key, week, form_id):
+def _form_context(token, config, agenda, class_key, week, form_id, *, fresh=False):
     """(context, form, found) for one Form on the page."""
-    found = lesson_work(token, config, agenda, class_key, week, fresh=False)
+    found = lesson_work(token, config, agenda, class_key, week, fresh=fresh)
     form = next((f for lesson in found["lessons"] for f in lesson["forms"] if f["form_id"] == form_id), None)
     if not form:
         raise ValueError("form")
@@ -400,14 +400,20 @@ def record_post(environ, respond, config):
             if policy.get("problem") or policy.get("excluded"):
                 return respond("409 Conflict", {"error": policy.get("problem") or policy["reason"],
                                                 "code": "coverage_incomplete" if policy.get("problem") else "excluded_week"})
-        context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
+        context, form, found = _form_context(token, config, agenda, class_key, week, form_id, fresh=kind == "ic")
         if kind == "ic" and found.get("assessment_problem"):
             return respond("409 Conflict", {"error": found["assessment_problem"], "code": "coverage_incomplete"})
         if kind == "ic":
             ready = completion.assignment_readiness(token, config, agenda, class_key, week, form_id)
             if ready["status"] == "READY":
+                cutoff = work.when((form.get("window") or {}).get("at"))
+                # The same final-entry rule used by the helper selects current
+                # verified late/revised work, instead of obsolete raw uploads.
+                recheck = bool(cutoff and cutoff < datetime.now(timezone.utc)
+                               and morning.closed_recheck(form, ledger.read(token, config, form_id)))
                 ready = completion.submitted_readiness(token, form,
-                    require_complete_codes=completion.student_coding_required(agenda, class_key, week, form_id))
+                    require_complete_codes=completion.student_coding_required(agenda, class_key, week, form_id),
+                    include_late=recheck)
             if ready["status"] != "READY":
                 return respond("409 Conflict", {"error": ready["problem"], "action": ready.get("action"),
                                                 "code": "coverage_incomplete", "readiness": ready})

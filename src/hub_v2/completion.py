@@ -616,12 +616,28 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
     # Codes listed together rather than placed on their boxes: match by the
     # box labels ("first"/"revised" answer, Concept Bank terms), then by order.
     remaining = [item for item in written if not item[1].startswith("moved: ")]
+
+    def printed_bank_label(marker):
+        # A genuine whole-term label may carry its own BANK code. General
+        # response geometry still excludes code boxes; only this label lookup
+        # admits one exactly matching code, without overlooking duplicate labels.
+        term = _squash(marker["id"])
+        matches = [u for u in (template_slide or {}).get("units", [])
+                   if not u.get("picture") and u["box"]
+                   and u["box"][2] * u["box"][3] < 0.6 * size[0] * size[1]
+                   and term and _squash(u["text"]) == term]
+        if len(matches) != 1:
+            return None
+        embedded = list(MARKER.finditer(matches[0]["text"]))
+        if embedded and (len(embedded) != 1 or embedded[0].groups() !=
+                         ("BANK", marker["code"], marker["id"])):
+            return None
+        return matches[0]
+
     for m in [m for m in slide_markers if m["category"] == "BANK"]:
-        term = _squash(m["id"])
+        label = printed_bank_label(m)
         for item in list(remaining):
-            before = next((u for u in template_units if u["key"] == item[0]["key"]), None)
-            if term and _squash((before or item[0])["text"]) == term \
-                    and sum(_squash(u["text"]) == term for u in template_units) == 1:
+            if label and label["key"] == item[0]["key"]:
                 result[("BANK", m["id"])].append(item)
                 remaining.remove(item)
     bank = [m for m in slide_markers if m["category"] == "BANK"]
@@ -630,11 +646,7 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
         # A term label is the whole printed term, not a prefix of a section
         # heading such as "Symbiosis & Relationships". Repeated labels do
         # not establish a unique response binding.
-        labels = {}
-        for m in bank:
-            term = _squash(m["id"])
-            matches = [u for u in template_units if term and _squash(u["text"]) == term]
-            labels[m["id"]] = matches[0] if len(matches) == 1 else None
+        labels = {m["id"]: printed_bank_label(m) for m in bank}
         placed_labels = [(m, labels[m["id"]]) for m in bank if labels[m["id"]]]
         only_bank = len(bank) == len(slide_markers)
         if len(placed_labels) != len(bank):
@@ -762,8 +774,12 @@ def readiness(deck, *, revision=""):
             extra.extend("%s %s" % (category, ident) for ident in set(actual) - set(listed))
             if Counter(listed) != Counter(actual):
                 issue("marker_inventory_id_mismatch", "The inventory's question IDs do not match the embedded markers.")
-    if any(count > 1 for count in Counter((m["category"], m["code"], m["id"]) for m in codes).values()):
-        issue("duplicate_feedback_marker", "A response marker is repeated; each category/question ID must appear once.")
+    repeated = [key for key, count in Counter((m["category"], m["code"], m["id"]) for m in codes).items() if count > 1]
+    if repeated:
+        locations = ["%s %s on slides %s" % (category, ident, ", ".join(str(n) for n in sorted({
+            m["slide"] for m in codes if (m["category"], m["code"], m["id"]) == (category, code, ident)})))
+                     for category, code, ident in repeated]
+        issue("duplicate_feedback_marker", "A response code appears more than once (%s); check which question each code belongs to." % "; ".join(locations))
     if cycle and any(m["code"] != cycle for m in codes):
         issue("feedback_marker_cycle_mismatch", "A response marker names a different cycle than the inventory.")
     if not {m["id"] for m in codes if m["category"] == "DRAFT"} <= {m["id"] for m in codes if m["category"] == "NOTES"}:
@@ -813,6 +829,13 @@ def student_readiness(deck, *, revision="", require_complete_codes=True):
     codes = markers(deck)
     if (not set(check["issues"]) <= coverage_issues or len({header.group(1) for header in headers}) > 1
             or len({marker["code"] for marker in codes}) > 1):
+        # Show the actual retained ambiguity, not a coding-only warning this
+        # student's policy has already waived. Keep the full census intact.
+        blocking = [i for i in check["issues"] if i not in coverage_issues]
+        if blocking:
+            diagnostic = check["diagnostics"][check["issues"].index(blocking[0])]
+            return {**check, "problem": check["label"] + ". " + diagnostic,
+                    "action": "Check the response codes against the original questions, preserving the student's answers; then rerun grading."}
         return check
     countable = sum(marker["category"] != "OPTIONAL" for marker in codes)
     warning = ("Student coding is incomplete. Completion uses only the coded boxes found in this copy; "
@@ -1150,11 +1173,23 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
                       "Linked completion codes are ready; every submitted student copy must also pass before entry."}
 
 
-def submitted_readiness(token, form, *, require_complete_codes=True):
-    """Fresh copy revisions/codes only, without completion arithmetic or writes."""
+def submitted_readiness(token, form, *, require_complete_codes=True, include_late=False):
+    """Fresh current copy checks; a final-entry recheck uses scored candidates.
+
+    Original submission history remains intact. A historical file cannot replace
+    the selected current file, and uncertain identity/history prevents recording.
+    No completion arithmetic, source repairs or grading writes happen here.
+    """
     from . import google
     checked, seen = [], set()
-    for row in form.get("students", []) + form.get("late", []):
+    candidates = recheck_candidates(form) if include_late else form.get("students", []) + form.get("late", [])
+    affected = next((row for row in candidates if row.get("selection_problem")), None)
+    if affected:
+        who = "%s, %s (%s)" % (affected.get("last", ""), affected.get("first", ""), affected.get("section", ""))
+        return {"status": "NOT_READY", "code": "coverage_incomplete", "copies": [], "label": "Needs check",
+                "problem": "%s · %s: %s" % (form.get("label") or "This assignment", who, affected["selection_problem"]),
+                "action": "Confirm this student's current original Form submission before recording IC entry."}
+    for row in candidates:
         if not row.get("matched"):
             continue
         for upload in row.get("files", []):
@@ -1290,7 +1325,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     def not_ready(check, name, kind):
         lesson = next((l for l in work_result.get("lessons", []) if form in l["forms"]), {})
         class_name = agenda.classes.get(class_key, {}).get("name", class_key)
-        context = "%s · %s · %s" % (class_name, week_label, lesson.get("topic") or form.get("label") or "this assignment")
+        context = "%s · %s · %s" % (class_name, week_label, form.get("label") or lesson.get("topic") or "this assignment")
         action = check.get("action") or ("Run the embed-coding program on this existing %s, preserving its answers and lesson content; "
                   "then rerun grading. No scores were calculated." % kind)
         return {**out, "code": "deck_not_ready", "label": check["label"], "readiness": check, "action": action,

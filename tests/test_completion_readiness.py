@@ -126,7 +126,7 @@ class ScoringGateTests(unittest.TestCase):
         self.assertEqual(result['label'], 'Needs embedded codes')
         self.assertNotIn('notes_score', result)
         self.assertNotIn('revision_score', result)
-        self.assertIn('Forensics · Wk 04 · Scene photography', result['problem'])
+        self.assertIn('Forensics · Wk 04 · Photography — Turn in', result['problem'])
         self.assertIn('student copy', result['problem'])
         self.assertIn('preserving its answers', result['action'])
         self.assertIn('rerun grading', result['action'])

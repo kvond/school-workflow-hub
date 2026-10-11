@@ -73,6 +73,18 @@ class StudentFoundCodesTests(unittest.TestCase):
                 self.assertEqual(result['code'], 'deck_not_ready')
                 self.assertNotIn('notes_score', result)
 
+    def test_later_inventory_warning_does_not_hide_a_retained_duplicate_response_code(self):
+        deck = source('My own observation.')
+        deck['slides'][0]['number'] = 4
+        deck['slides'][1]['units'].append(deepcopy(deck['slides'][1]['units'][-1]))
+        check = completion.student_readiness(deck, require_complete_codes=False)
+        self.assertEqual(check['status'], 'NOT_READY')
+        self.assertIn('marker_inventory_not_on_first_slide', check['issues'])
+        self.assertIn('duplicate_feedback_marker', check['issues'])
+        self.assertIn('DRAFT Q-MASTERY on slides 2', check['problem'])
+        self.assertNotIn('rather than slide 1', check['problem'])
+        self.assertIn("preserving the student's answers", check['action'])
+
     def test_missing_notes_marker_keeps_source_bound_revision_and_not_first_answer_credit(self):
         for first, revised, expected in [('My first answer.', '', 0.0), ('', 'My revised answer.', 10.0)]:
             deck = source(first)
