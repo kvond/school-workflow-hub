@@ -1,5 +1,22 @@
 # School Workflow Hub — start here
 
+## Teacher review context
+
+Every request to review submitted work must identify the class/section,
+lesson and week/cycle, affected student or lesson-level scope, concrete reason,
+verified source links, exact verified slide numbers and the smallest next action.
+State plainly when identity, links or slide numbers cannot be verified. A count
+or a generic "check by hand" label is not enough; the teacher should not have
+to search folders to understand the request.
+
+The authenticated review-context read uses the exact current Agenda class,
+week and Form binding. Named details are current source evidence, not a join
+to historical receipt counts or lesson-title similarity. Reading this context
+must not score work, invoke a model, save a grade or persist student details in
+extension storage. Keep morning receipts counts-only and the IC list contract
+unchanged. Exempt flags and zero-denominator N/A components do not create a
+teacher review. Not-yet-submitted work is waiting for submissions.
+
 ## October 8 student records
 
 The teacher-facing Drive layout uses private class/section/student folders

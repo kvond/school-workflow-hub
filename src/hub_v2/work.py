@@ -1000,7 +1000,7 @@ def _calendar_only(lesson):
     return all(calendar.fullmatch(p) for p in plans)
 
 
-def lesson_work(token, config, agenda, class_key, week_label):
+def lesson_work(token, config, agenda, class_key, week_label, *, review_only=False):
     by_class, problems = roster.load(token, config)
     students = by_class.get(class_key, [])
     domains = {d.strip().lower() for d in config.get("HUB_SCHOOL_EMAIL_DOMAINS", "").split(",") if d.strip()}
@@ -1271,12 +1271,13 @@ def lesson_work(token, config, agenda, class_key, week_label):
     # Read-only grading context is separate from discovery/filing eligibility.
     # It also covers an empty Form, where no score_file call could block zeros.
     from . import completion
-    for lesson in result:
-        for form in lesson["forms"]:
-            form["grade_readiness"] = completion.assignment_readiness(token, config, agenda, class_key, week_label, form["form_id"])
-            original = next((f for f in forms if f['form_id'] == form['form_id']), {})
-            if original.get('_combined_scope'):
-                combined_assessment.bind_form(token, form, original['_combined_scope'])
+    if not review_only:
+        for lesson in result:
+            for form in lesson["forms"]:
+                form["grade_readiness"] = completion.assignment_readiness(token, config, agenda, class_key, week_label, form["form_id"])
+                original = next((f for f in forms if f['form_id'] == form['form_id']), {})
+                if original.get('_combined_scope'):
+                    combined_assessment.bind_form(token, form, original['_combined_scope'])
     return {"class_key": class_key, "week": week_label, "week_policy": policy, "assessment_problem": route_problem,
             "lessons": result, "other_files": other_rows,
             "roster_check": check,

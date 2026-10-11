@@ -288,7 +288,7 @@ function renderNeedsYou(report) {
       continue;
     }
     if (row.code === 'no_scores') {
-      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. Open this assignment in Student work to see the source issue.'));
+      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. This receipt does not identify a student source issue. Current source checks are shown separately.'));
       continue;
     }
     const review = morningRowReview(row);
@@ -311,6 +311,209 @@ function renderNeedsYou(report) {
       : unavailable.length ? null : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
     ...unavailable,
     el('p', {class: 'muted', text: 'IC’s assignment roster determines which students belong in this run. Exempt rows do not require follow-up. The receipt contains counts; Student work gives the source details for the named class and assignment.'}));
+}
+
+// Named source checks are a separate authenticated, current view. They never
+// become morning receipt fields, helper-list fields or persisted browser state.
+const reviewRequests = new WeakMap();
+const reviewPanels = new WeakMap();
+const visibleReviewPanels = {today: null, routine: null};
+let morningSummarySeq = 0;
+
+function reviewScope(value) {
+  const classKey = value?.class_key || value?.class;
+  const form = value?.form_id || value?.form;
+  if (!CLASSES.some(([key]) => key === classKey) || typeof value?.week !== 'string'
+      || !value.week.trim() || typeof form !== 'string' || !/^[A-Za-z0-9_-]{10,200}$/.test(form)) return null;
+  return {class_key: classKey, week: value.week, form_id: form};
+}
+
+function sameReviewScope(a, b) {
+  return a && b && ['class_key', 'week', 'form_id'].every(key => a[key] === b[key]);
+}
+
+function reviewSourceURL(source) {
+  if (typeof source?.file_id !== 'string' || !/^[A-Za-z0-9_-]{10,200}$/.test(source.file_id)
+      || typeof source.url !== 'string' || /[\u0000-\u0020\u007f]/.test(source.url)) return null;
+  try {
+    const url = new URL(source.url);
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash || url.href !== source.url) return null;
+    const id = source.file_id;
+    if (url.origin === 'https://docs.google.com' && !url.search
+        && ['presentation', 'document', 'spreadsheets', 'forms'].some(kind => url.pathname === `/${kind}/d/${id}/edit`)) return url.href;
+    if (url.origin === 'https://drive.google.com') {
+      if (!url.search && url.pathname === `/file/d/${id}/view`) return url.href;
+      if (!url.search && url.pathname === `/drive/folders/${id}`) return url.href;
+      if (url.pathname === '/open' && [...url.searchParams.keys()].length === 1
+          && url.searchParams.getAll('id').length === 1 && url.searchParams.get('id') === id) return url.href;
+    }
+  } catch { /* an unavailable link is displayed as a limitation */ }
+  return null;
+}
+
+function renderSourceReviewNotice(notice, scope, includeContext = true) {
+  const student = notice.student || {};
+  const name = [student.last, student.first].filter(value => typeof value === 'string' && value.trim()).join(', ');
+  const identity = notice.kind === 'lesson' || notice.affected_scope === 'lesson' ? 'Lesson-wide source check · no individual student'
+    : student.verified === true && student.last && student.first
+    ? name : name ? `${name} (identity unverified)` : 'Student identity not verified';
+  const context = [scope.class_name || scope.class_key, student.section, scope.week, scope.lesson].filter(Boolean).join(' · ');
+  const sources = Array.isArray(notice.sources) ? notice.sources : [];
+  const locations = Array.isArray(notice.slides) ? notice.slides : [];
+  const sourceLines = sources.map(source => {
+    const url = reviewSourceURL(source);
+    const matching = locations.filter(slide => slide?.file_id === source.file_id);
+    const slide = matching.length === 1 ? matching[0] : null;
+    const numbers = slide?.numbers;
+    const verified = slide?.verified === true && Array.isArray(numbers) && numbers.length > 0
+      && numbers.every(number => Number.isInteger(number) && number > 0 && number <= 1000)
+      && new Set(numbers).size === numbers.length;
+    const where = verified ? `${numbers.length === 1 ? 'Slide' : 'Slides'} ${numbers.join(', ')}` : 'Slides not verified';
+    return el('li', {}, url ? link(source.label || 'Open exact source', url) : el('span', {text: 'Source link unavailable'}),
+      ' · ', where);
+  });
+  return el('div', {class: 'source-review'},
+    includeContext ? el('strong', {text: `${context} · ${identity}`}) : el('strong', {text: identity}),
+    el('p', {text: `Reason: ${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
+    sourceLines.length ? el('ul', {class: 'files'}, ...sourceLines)
+      : el('p', {class: 'muted', text: 'Source link unavailable · Slides not verified'}),
+    el('p', {}, el('strong', {text: 'Next action: '}),
+      typeof notice.next_action === 'string' && notice.next_action ? notice.next_action : 'No exact next action was returned.'));
+}
+
+function renderSourceReviewContext(data, expected, options = {}) {
+  if (data?.schema !== 'hub-source-review-context/v1' || !sameReviewScope(data.scope, expected)
+      || typeof data.scope.class_name !== 'string' || !data.scope.class_name
+      || typeof data.scope.lesson !== 'string' || !data.scope.lesson
+      || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
+      || !Array.isArray(data.notices) || !Array.isArray(data.limitations)
+      || data.notices.some(notice => !notice || typeof notice !== 'object' || typeof notice.reason !== 'string'
+        || !notice.student || typeof notice.student !== 'object' || typeof notice.next_action !== 'string'))
+    throw new Error('Current source context could not be confirmed for this exact class and lesson.');
+  const limitations = data.limitations.filter(value => typeof value === 'string' && value
+    && (!options.limitationsSeen || !options.limitationsSeen.has(value)));
+  if (options.limitationsSeen) limitations.forEach(value => options.limitationsSeen.add(value));
+  const empty = data.status === 'waiting' ? 'Waiting for original submissions; no student-copy repair is requested.'
+    : data.status === 'excluded' ? 'This scope is excluded from current grading review.'
+    : 'No current selection issue was returned; assessment is not established by this view.';
+  return el('div', {},
+    el('p', {class: 'muted', text: `Current source context · checked ${when(data.checked_at)}. Read separately from the saved helper receipt.`}),
+    data.notices.length ? el('ul', {class: 'attention-list'}, ...data.notices.map(notice =>
+      el('li', {}, renderSourceReviewNotice(notice, data.scope))))
+      : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
+    ...limitations.map(value => note(value, 'info')));
+}
+
+function nextReviewRequest(body) {
+  const seq = (reviewRequests.get(body) || 0) + 1;
+  reviewRequests.set(body, seq);
+  return seq;
+}
+
+async function loadSourceReviewContext(body, scope, options = {}) {
+  const seq = nextReviewRequest(body);
+  body.replaceChildren(el('p', {class: 'muted', text: 'Reading current source context…'}));
+  const active = () => reviewRequests.get(body) === seq && (!options.current || options.current());
+  try {
+    const key = JSON.stringify(scope);
+    const read = () => getJSON(`api/review-context?class=${encodeURIComponent(scope.class_key)}&week=${encodeURIComponent(scope.week)}&form=${encodeURIComponent(scope.form_id)}`);
+    if (options.cache && !options.cache.has(key)) options.cache.set(key, read());
+    const data = await (options.cache ? options.cache.get(key) : read());
+    if (!active()) return;
+    const rendered = renderSourceReviewContext(data, scope, options);
+    if (options.group && !data.notices.length && data.status === 'not_assessed') {
+      options.group.hidden = true;
+      if (!options.limitationsSeen.has('unassessed-summary')) {
+        options.limitationsSeen.add('unassessed-summary');
+        options.sharedLimitations.append(note('Some original submissions have no current verified assessment details. This view did not score them; complete coverage or IC completion is not established.', 'info'));
+      }
+    } else if (options.group && !data.notices.length && ['waiting', 'excluded'].includes(data.status)) {
+      options.group.replaceChildren(el('p', {class: 'muted', text: `${options.scopeLabel}: ${data.status === 'waiting'
+        ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
+    } else body.replaceChildren(rendered);
+    return true;
+  } catch (error) {
+    if (active()) body.replaceChildren(note('Current source context is unavailable: ' + error.message + ' The saved helper receipt is unchanged.', 'info'));
+    return false;
+  }
+}
+
+function invalidateReviewPanel(panel) {
+  if (!panel) return;
+  const parts = reviewPanels.get(panel);
+  nextReviewRequest(panel);
+  if (parts) { nextReviewRequest(parts.body); parts.body.replaceChildren(); }
+  panel.replaceChildren(el('p', {class: 'muted', text: 'Refreshing current source context…'}));
+}
+
+function currentSourceReviewPanel(active = true) {
+  const progress = el('p', {class: 'muted', role: 'status', text: 'Reading exact current lesson scopes…'});
+  const body = el('div', {'aria-live': 'polite'});
+  const panel = cockpitPanel('Current source checks',
+    el('p', {class: 'muted', text: 'Current source details are read separately from historical helper counts. This view does not score work; an empty review is not completed assessment or complete coverage.'}), progress, body);
+  reviewPanels.set(panel, {body});
+  if (!active) { progress.textContent = 'Current source checks are read when this page is opened.'; return panel; }
+  const seq = nextReviewRequest(panel);
+  getJSON('api/morning/catalog').then(async data => {
+    if (reviewRequests.get(panel) !== seq) return;
+    if (!Array.isArray(data.assignments)) throw new Error('Exact lesson scopes are unavailable.');
+    const scopes = data.assignments.map(entry => ({entry, scope: reviewScope(entry)}));
+    if (scopes.some(item => !item.scope) || new Set(scopes.map(item => JSON.stringify(item.scope))).size !== scopes.length)
+      throw new Error('Exact lesson scopes could not be confirmed.');
+    const sharedLimitations = el('div'); body.append(sharedLimitations);
+    const groups = scopes.map(({entry}) => {
+      const detail = el('div');
+      const label = [entry.class_name || entry.class, entry.week, entry.assignment].join(' · ');
+      const group = el('section', {}, el('h3', {text: label}), detail);
+      body.append(group);
+      return {group, detail, label};
+    });
+    if (data.problems?.length) body.append(note('Some lesson scopes could not be confirmed. No scope was inferred from receipt titles.', 'info'));
+    let cursor = 0, complete = 0, unavailable = 0;
+    const limitationsSeen = new Set();
+    const current = () => reviewRequests.get(panel) === seq;
+    const update = () => { if (current()) progress.textContent = scopes.length
+      ? `Current source checks · ${complete} of ${scopes.length} exact lesson scopes read${unavailable ? `; ${unavailable} unavailable` : ''}.`
+      : 'No exact current lesson scopes were returned; coverage is not established.'; };
+    update();
+    const worker = async () => {
+      while (current() && cursor < scopes.length) {
+        const index = cursor++;
+        const ok = await loadSourceReviewContext(groups[index].detail, scopes[index].scope,
+          {current, compactEmpty: true, limitationsSeen, group: groups[index].group,
+            scopeLabel: groups[index].label, sharedLimitations});
+        if (!current()) return;
+        complete++; if (!ok) unavailable++;
+        update();
+      }
+    };
+    // Two independent exact-scope GETs at a time; never infer scopes from titles
+    // or receipt counts, and never invoke Student work's automatic scoring path.
+    await Promise.all([worker(), worker()]);
+  }).catch(error => {
+    if (reviewRequests.get(panel) === seq) { progress.textContent = ''; body.replaceChildren(note('Current source checks are unavailable: ' + error.message, 'info')); }
+  });
+  return panel;
+}
+
+function studentWorkReviewPanel(form, open) {
+  const scope = reviewScope({class_key: work.cls, week: work.week, form_id: form.form_id});
+  if (!scope) return null;
+  const seq = work.seq, cache = work.reviewContexts;
+  const body = el('div', {'aria-live': 'polite'});
+  const panel = el('details', {class: 'earlier', open}, el('summary', {text: 'Current source checks · exact class and lesson'}), body);
+  loadSourceReviewContext(body, scope, {cache, current: () => work.seq === seq && work.cls === scope.class_key && work.week === scope.week});
+  return panel;
+}
+
+function scoreReviewNotice(result, formId) {
+  const detail = result?.review_context;
+  const expected = reviewScope({class_key: work.cls, week: work.week, form_id: formId});
+  if (detail?.schema !== 'hub-source-review-context/v1' || !expected || !sameReviewScope(detail.scope, expected)
+      || typeof detail.scope.class_name !== 'string' || typeof detail.scope.lesson !== 'string'
+      || !detail.notice || typeof detail.notice.reason !== 'string' || !detail.notice.student
+      || typeof detail.notice.next_action !== 'string') return null;
+  return renderSourceReviewNotice(detail.notice, detail.scope);
 }
 
 function issueAction(release) {
@@ -340,6 +543,37 @@ function issueAction(release) {
   return `${releaseIssue(issue)}. Open this exact lesson in Lessons / VT, follow the issue shown there, then recheck readiness.`;
 }
 
+const MISSING_CODE_ADVISORIES = new Set(['marker_inventory_missing_or_duplicated', 'marker_inventory_counts_unparsed',
+  'marker_inventory_count_mismatch', 'marker_inventory_id_mismatch', 'student_copies_uncoded', 'teacher_distributed_uncoded_copies']);
+function lessonCodeAdvisory(row) {
+  const release = row.release;
+  return !(row.classKey === 'biology' && /photosynthesis/i.test(row.topic || '')) && !release?.readability
+    && !release?.teacher_holds?.length && release?.issues?.length > 0
+    && release.issues.every(issue => MISSING_CODE_ADVISORIES.has(issue));
+}
+function lessonReviewAction(row) {
+  const photo = row.classKey === 'biology' && /photosynthesis/i.test(row.topic || '');
+  if (!photo && !row.release?.teacher_holds?.length && (lessonCodeAdvisory(row) || row.release?.status === 'READY'))
+    return 'Count the usable coded boxes actually present in readable, correctly matched student copies. Keep Notes and Revision separate. Missing codes alone do not hold grading; this linked-source check does not verify student copies.';
+  return issueAction(row.release);
+}
+function lessonReviewNotice(row) {
+  const release = row.release || {};
+  const decks = release.source_resolution?.decks || row.decks || [];
+  const sources = decks.filter(deck => typeof deck.id === 'string').map(deck => ({file_id: deck.id,
+    label: deck.title || deck.name || deck.label || 'Open linked lesson source',
+    url: `https://docs.google.com/presentation/d/${deck.id}/edit`}));
+  return {kind: 'lesson', student: {verified: false}, reason: lessonCodeAdvisory(row)
+    ? 'The linked source’s code inventory needs checking. Missing codes alone are advisory for this lesson; only usable coded items in correctly matched copies count.'
+    : release.problem || (release.status === 'READY' ? 'The linked source passed its code check; student copies are checked separately.'
+      : (release.issues || []).map(releaseIssue).join(' ') || 'The exact linked-source issue was not returned.'),
+    sources, slides: sources.map(source => ({file_id: source.file_id, numbers: [], verified: false})),
+    next_action: lessonReviewAction(row)};
+}
+function lessonReviewBadge(row) {
+  return lessonCodeAdvisory(row) ? el('span', {class: 'release-badge neutral', text: 'Code advisory'}) : releaseBadge(row.release);
+}
+
 async function openAgendaLesson(classKey, week, row) {
   try {
     const data = await getJSON(`api/weeks?class=${encodeURIComponent(classKey)}&today=${todayISO()}`);
@@ -364,8 +598,9 @@ function renderNextLessons(audits) {
       el('td', {text: row.className}),
       el('td', {text: row.week}),
       el('td', {text: row.topic}),
-      el('td', {}, releaseBadge(row.release)),
-      el('td', {}, el('p', {text: issueAction(row.release)}),
+      el('td', {}, lessonReviewBadge(row)),
+      el('td', {}, renderSourceReviewNotice(lessonReviewNotice(row),
+        {class_name: row.className, week: row.week, lesson: row.topic}),
         el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
   });
   const table = el('table', {class: 'cockpit-table'},
@@ -510,6 +745,8 @@ async function loadTodayFeedback(seq) {
 
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
+  invalidateReviewPanel(visibleReviewPanels.today);
+  invalidateReviewPanel(visibleReviewPanels.routine);
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
     const packet = cockpit.feedbackData.daily_packet;
@@ -533,10 +770,12 @@ async function loadToday(force = false) {
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
     const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
+    visibleReviewPanels.today = currentSourceReviewPanel();
     $('today-body').replaceChildren(
       el('div', {class: 'cockpit-grid'},
         renderMorningCockpit(report, routineData),
         renderNeedsYou(report)),
+      visibleReviewPanels.today,
       renderNextLessons(audits));
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
@@ -562,8 +801,8 @@ async function loadLessonReadiness(force = false) {
       el('div', {class: 'release-row'}, ...rows.map(row =>
         el('div', {class: 'release-item'},
           el('span', {text: `${row.className} · ${row.week}`}),
-          releaseBadge(row.release),
-          el('small', {text: row.release.status === 'READY' ? row.topic : `${row.topic}: ${issueAction(row.release)}`})))));
+          lessonReviewBadge(row),
+          renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic})))));
   } catch (error) {
     box.replaceChildren(note('Deck readiness could not be checked: ' + error.message));
   }
@@ -841,7 +1080,7 @@ function renderPlans(data) {
 }
 
 // ---------- Student work ----------
-const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}};
+const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}, reviewContexts: new Map()};
 const sourceMatchesHeld = () => !!work.data?.other_files?.length;
 function weekAssessmentHold(data = work.data) {
   if (data?.assessment_problem) return 'This week’s submission route needs confirmation before scoring or IC entry.';
@@ -1009,6 +1248,7 @@ async function loadWork(fresh = false) {
   work.scores = {};
   work.ui = {};
   work.marks = {};
+  work.reviewContexts = new Map();
   setStatus('work-status', 'Finding student work from the Form responses…');
   $('work-body').replaceChildren();
   try {
@@ -1103,12 +1343,12 @@ const shown = (score, started = true) => !score ? (started ? ['0', '0'] : ['', '
   : [score.notes_score, score.revision_score].map(fmt);
 const STATUS = {blank: 'blank', copied: 'looks copied from the slide', 'not found': 'its code isn’t in this copy'};
 
-function scoreCells(row, scores) {
+function scoreCells(row, scores, formId) {
   if (!scores) return [];
   const result = scores[scoreFile(row)?.id];
   if (!row.files.length) return [el('td', {text: '—'}), el('td', {text: '—'})];
   if (!result) return [el('td', {class: 'muted', text: '…'}), el('td', {class: 'muted', text: '…'})];
-  if (result.problem) return [el('td', {colspan: 2}, el('small', {class: 'muted', text: result.problem}))];
+  if (result.problem) return [el('td', {colspan: 2}, scoreReviewNotice(result, formId) || el('small', {class: 'muted', text: result.problem}))];
   const [notesShown, revisionShown] = shown(result);
   const c = result.counts;
   // Each score is the share of this deck's own coded boxes that were done, on a 10-point scale.
@@ -1122,7 +1362,7 @@ function scoreCells(row, scores) {
       : el('p', {class: 'muted', text: 'Every coded box has writing.'}));
   return [el('td', {}, cell(notesShown, c.NOTES.done + c.BANK.done, c.NOTES.required + c.BANK.required, 'notes boxes and Concept Bank terms'),
     detail, result.missing_code_warning ? el('small', {class: 'muted', text: result.missing_code_warning}) : null,
-    result.note ? el('small', {class: 'note warn', text: result.note}) : null),
+    result.note ? scoreReviewNotice(result, formId) || el('small', {class: 'note warn', text: result.note}) : null),
     el('td', {}, cell(revisionShown, c.DRAFT.done, c.DRAFT.required, 'revised answers'))];
 }
 
@@ -1770,7 +2010,7 @@ function feedbackPanel(form) {
   return panel;
 }
 
-function studentRow(row, scores) {
+function studentRow(row, scores, formId) {
   const who = row.matched
     ? el('td', {}, el('strong', {text: `${row.last}, ${row.first}`}),
       row.matched_by && row.matched_by !== 'email' ? el('small', {class: 'muted', text: ` matched by ${row.matched_by}`}) : null)
@@ -1782,7 +2022,7 @@ function studentRow(row, scores) {
     : null;
   return el('tr', {class: row.matched ? '' : 'unmatched'}, who, el('td', {text: row.section || '—'}),
     el('td', {text: when(row.submitted_at)}),
-    el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores));
+    el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores, formId));
 }
 
 function renderForm(form, lesson) {
@@ -1851,7 +2091,9 @@ function renderForm(form, lesson) {
     box.append(el('p', {class: 'muted', text: 'Scores are out of 10: the share of this deck’s own coded boxes each student completed, so a deck can have any number of boxes. Notes counts the notes boxes and Concept Bank terms; Revision counts the revised answers.'}));
   }
   const selectionHolds = assessmentRows(form).filter(row => row.selection_problem && inSection(row));
-  if (selectionHolds.length) box.append(note(`Current submissions need review: ${selectionHolds.map(row => `${row.last}, ${row.first}: ${row.selection_problem}`).join('; ')}. No scores are prepared for this assignment.`, 'info'));
+  if (selectionHolds.length) box.append(note(`Current submissions need review: ${selectionHolds.map(row => `${row.last}, ${row.first}: ${row.selection_problem}`).join('; ')}. These students remain unscored until their source checks are resolved.`, 'info'));
+  const sourceReview = studentWorkReviewPanel(form, selectionHolds.length > 0 || Boolean(scores && Object.values(scores).some(score => score?.problem || score?.note)));
+  if (sourceReview) box.append(sourceReview);
   if (scores && !ui.progress) {
     const failedRows = assessmentRows(form).filter(row => row.files.length && scores[scoreFile(row)?.id]?.problem)
       .map(row => `${row.last}, ${row.first}${work.section === 'all' ? ` (${row.section})` : ''}: ${scores[scoreFile(row)?.id].problem}`);
@@ -1873,7 +2115,7 @@ function renderForm(form, lesson) {
   if (listed.length) {
     box.append(el('div', {class: 'table-wrap'}, el('table', {},
       el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work', ...(scores ? ['Notes /10', 'Revision /10'] : [])].map(h => el('th', {text: h})))),
-      el('tbody', {}, listed.map(r => studentRow(r, scores))))));
+      el('tbody', {}, listed.map(r => studentRow(r, scores, form.form_id))))));
   } else {
     box.append(note(recheck && late.length ? 'Current selected submissions are listed below; their original response history is retained.'
       : late.length ? 'No on-time responses.' : 'No responses yet.', 'info'));
@@ -1884,7 +2126,7 @@ function renderForm(form, lesson) {
       el('div', {class: 'table-wrap'}, el('table', {},
         el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work', ...(recheck && scores ? ['Notes /10', 'Revision /10'] : [])].map(h => el('th', {text: h})))),
         el('tbody', {}, late.map(r => {
-          const row = studentRow(r, recheck && r.matched ? scores : null);
+          const row = studentRow(r, recheck && r.matched ? scores : null, form.form_id);
           if (recheck && scores && !r.matched) row.append(el('td', {colspan: 2, text: 'Not matched to the roster'}));
           return row;
         }))))));
@@ -2311,11 +2553,17 @@ function renderMorningAlert() {
 async function loadMorningSummary() {
   const box = $('morning-summary');
   if (!box) return;
+  const seq = ++morningSummarySeq;
+  invalidateReviewPanel(visibleReviewPanels.routine);
+  invalidateReviewPanel(visibleReviewPanels.today);
   try {
     const data = await getJSON('api/morning/reports');
+    if (seq !== morningSummarySeq) return;
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
     box.replaceChildren(el('h2', {text: 'Morning helper review'}));
+    visibleReviewPanels.routine = currentSourceReviewPanel($('page-routine')?.hidden !== true);
+    box.append(visibleReviewPanels.routine);
     if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The weekday helper runs at 7:00 when enabled. An enabled schedule is not proof of entry; Today shows the saved-and-reloaded results when a receipt arrives.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
     box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
@@ -2336,6 +2584,6 @@ async function loadMorningSummary() {
       const emptyResult = report.items.length ? null : el('p', {text: morningProblem(report)});
       box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), emptyResult, lines, ...details));
     });
-  } catch { box.replaceChildren(el('h2', {text: 'Morning helper review'}), note('The morning summary could not be read. No successful IC save is confirmed.')); }
+  } catch { if (seq === morningSummarySeq) box.replaceChildren(el('h2', {text: 'Morning helper review'}), note('The morning summary could not be read. No successful IC save is confirmed.')); }
 }
 loadMorningSummary();

@@ -19,7 +19,7 @@ from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, morning_entry, native_feedback, recovery, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, morning_entry, native_feedback, recovery, review_context, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -134,6 +134,15 @@ def api(sub, query, config):
         if set(query) != {'class'}:
             raise ValueError('class')
         return student_archive.archive_listing(token, config, _class_key(_one(query, 'class')))
+    if sub == 'api/review-context':
+        if set(query) != {'class', 'week', 'form'}:
+            raise ValueError('review scope')
+        class_key = _class_key(_one(query, 'class'))
+        week, form_id = _one(query, 'week'), _one(query, 'form')
+        if not 1 <= len(week) <= 100 or not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', form_id):
+            raise ValueError('review scope')
+        current_agenda = load_agenda(token, config, fresh=True)
+        return review_context.read(token, config, current_agenda, class_key, week, form_id)
     fresh = _one(query, "fresh", False) == "1"
     agenda = load_agenda(token, config, fresh)
     sheet = {"title": agenda.title,
@@ -187,8 +196,9 @@ def api(sub, query, config):
             mark = ledger.read(token, config, form_id)
             cutoff = work.when((form.get('window') or {}).get('at'))
             if cutoff and cutoff < datetime.now(timezone.utc) and (not mark.get('configured') or mark.get('problem')):
-                return {'code': 'receipt_unconfirmed', 'problem': 'This combined assignment’s entry history could not be verified.'}
-            return completion.score_file(token, agenda, class_key, week, form_id, file_id, found,
+                return review_context.for_score(agenda, class_key, week, form_id, file_id, found,
+                    {'code': 'receipt_unconfirmed', 'problem': 'This combined assignment’s entry history could not be verified.'})
+            return _score_with_context(token, agenda, class_key, week, form_id, file_id, found,
                                          include_late=morning.closed_recheck(form, mark))
         extended_file = any(r.get("matched") and any(f["id"] == file_id for snapshot in
                             [r] + r.get("earlier", []) for f in snapshot.get("files", []))
@@ -205,8 +215,9 @@ def api(sub, query, config):
                                          form.get("label") or "this assignment")
             if (found.get("problem") or found.get("problems") or found.get("assessment_problem")
                     or found.get("other_files") or form.get("problem")):
-                return {"code": "coverage_incomplete", "problem":
-                        context + ": current submission coverage or lesson matches need review before this late-work recheck."}
+                return review_context.for_score(agenda, class_key, week, form_id, file_id, found,
+                    {"code": "coverage_incomplete", "problem":
+                     context + ": current submission coverage or lesson matches need review before this late-work recheck."})
             if not any(r.get("matched") and any(f["id"] == file_id for snapshot in
                        [r] + r.get("earlier", []) for f in snapshot.get("files", []))
                        for r in form.get("students", []) + form.get("late", [])):
@@ -214,20 +225,22 @@ def api(sub, query, config):
             current_file = any(any(f["id"] == file_id for f in r["files"]) for r in form.get("students", []))
             cutoff = work.when((form.get("window") or {}).get("at"))
             if current_file and (not cutoff or cutoff >= datetime.now(timezone.utc)):
-                return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+                return _score_with_context(token, agenda, class_key, week, form_id, file_id, found)
             mark = ledger.read(token, config, form_id)
             if not mark.get("configured") or mark.get("problem"):
-                return {"code": "receipt_unconfirmed", "problem": context + ": entry history could not be verified."}
+                return review_context.for_score(agenda, class_key, week, form_id, file_id, found,
+                    {"code": "receipt_unconfirmed", "problem": context + ": entry history could not be verified."})
             if not morning.closed_recheck(form, mark):
                 if not current_file:
                     raise ValueError("file")
-                return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+                return _score_with_context(token, agenda, class_key, week, form_id, file_id, found)
             ready = completion.assignment_readiness(token, config, agenda, class_key, week, form_id)
             if ready["status"] != "READY":
-                return {"code": "deck_not_ready", "label": ready.get("label"), "readiness": ready,
-                        "problem": ready["problem"], "action": ready.get("action")}
-            return completion.score_file(token, agenda, class_key, week, form_id, file_id, found, include_late=True)
-        return completion.score_file(token, agenda, class_key, week, form_id, file_id, found)
+                return review_context.for_score(agenda, class_key, week, form_id, file_id, found,
+                    {"code": "deck_not_ready", "label": ready.get("label"), "readiness": ready,
+                     "problem": ready["problem"], "action": ready.get("action")})
+            return _score_with_context(token, agenda, class_key, week, form_id, file_id, found, include_late=True)
+        return _score_with_context(token, agenda, class_key, week, form_id, file_id, found)
     if sub == "api/routine":
         prompt, where = feedback.load_embed_prompt(token, agenda)
         return {**routine.status(token, config),
@@ -279,6 +292,11 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
     context, form, found = _form_context(token, config, agenda, class_key, week, form_id)
     return context, _score_rows(token, agenda, class_key, week, form_id, form, found,
                                component_only=bool(form.get('combined_assessment')))
+
+
+def _score_with_context(token, agenda, class_key, week, form_id, file_id, found, **kwargs):
+    result = completion.score_file(token, agenda, class_key, week, form_id, file_id, found, **kwargs)
+    return review_context.for_score(agenda, class_key, week, form_id, file_id, found, result)
 
 
 def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include_late=False, component_only=False):
