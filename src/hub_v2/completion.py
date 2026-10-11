@@ -1242,6 +1242,46 @@ def recheck_candidates(form, *, now=None):
             return None
         return at
 
+    def older_routed_folder(current, snapshot):
+        """Keep an older routed folder copy as history beside a verified Form.
+
+        Its filename time is archive-routing evidence, not an authenticated Form
+        event. It never selects or scores that copy. A current canonical upload
+        can supersede it only with the same exact student username and a strictly
+        earlier explicit routing stamp. Unstamped/newer/conflicting work holds.
+        """
+        at, prior = event(current), work.when(snapshot.get("submitted_at"))
+        email = current.get("email", "")
+        uploads, old_files = current.get("files", []), snapshot.get("files", [])
+        if (current.get("matched") is not True or current.get("matched_by") != "email"
+                or not isinstance(email, str) or email.count("@") != 1
+                or not at or not prior or not prior < at <= now
+                or len(uploads) != 1 or len(old_files) != 1
+                or not form.get("form_id")
+                or uploads[0].get("source_form_id") != form["form_id"]
+                or not uploads[0].get("id")
+                or uploads[0].get("mime") not in (SLIDES, google.PPTX)
+                or uploads[0].get("from_folder") is not False or uploads[0].get("from_shared") is not False
+                or uploads[0].get("trashed") is not False or uploads[0].get("other_week")
+                or uploads[0].get("problem")
+                or snapshot.get("source") != "folder"
+                or snapshot.get("matched_by") != "file name" or snapshot.get("email")):
+            return False
+        old = old_files[0]
+        if (not old.get("id") or old["id"] == uploads[0]["id"]
+                or old.get("mime") not in (SLIDES, google.PPTX)
+                or old.get("from_folder") is not True or old.get("from_shared") is not False
+                or old.get("trashed") is not False or old.get("other_week") or old.get("problem")
+                or any(old.get(key) for key in ("source_form_id", "source_response_id", "source_submitted_at"))):
+            return False
+        from . import roster
+        name = old.get("name", "")
+        username = roster.file_username(name)
+        return bool(username and username.lower() == email.partition("@")[0].lower()
+                    and re.match(r"\s*%s\s+[—-]\s*\d{2}-\d{2}\s+\d{2}\.\d{2}\s*[—-]\s*\S"
+                                 % re.escape(username), name, re.I)
+                    and work.when(work.name_time(name, snapshot["submitted_at"])) == prior)
+
     derived = []
     for row in form.get("students", []) + form.get("late", []):
         if row.get("matched") is not True:
@@ -1254,7 +1294,8 @@ def recheck_candidates(form, *, now=None):
             at = event(earlier)
             if not at:
                 if file_ids(earlier) and file_ids(earlier) != current_ids:
-                    problem = "Submission history has files without a verified original Form event; confirm the current revision."
+                    if not older_routed_folder(row, earlier):
+                        problem = "Submission history has files without a verified original Form event; confirm the current revision."
                 continue
             if (earlier.get("matched_by") == "email" and row.get("matched_by") == "email"
                     and earlier.get("email", "").lower() != row.get("email", "").lower()):
