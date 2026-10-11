@@ -29,13 +29,214 @@ function boot(items) {
     if (!ids.has(id)) ids.set(id, new Element('div'));
     return ids.get(id);
   }};
-  const context = vm.createContext({document, Node: Element, fetch: async () => ({ok: true, json: async () => ({reports: [report(items)]})})});
+  const context = vm.createContext({document, Node: Element, URL, fetch: async () => ({ok: true, json: async () => ({reports: [report(items)]})})});
   vm.runInContext(declarations + '\nlet morningReports = [], morningRecovery = []; function renderMorningAlert() {}\n' + summary +
-    '\nglobalThis.ui = {morningRowReview, morningTotals, renderNeedsYou, renderMorningCockpit, loadMorningSummary};', context);
+    '\nglobalThis.ui = {morningRowReview, morningTotals, renderNeedsYou, renderMorningCockpit, loadMorningSummary, reviewSourceURL, renderSourceReviewNotice, renderSourceReviewContext, loadSourceReviewContext, currentSourceReviewPanel, invalidateReviewPanel, studentWorkReviewPanel, scoreReviewNotice};', context);
   return {ui: context.ui, document, context};
 }
 const allNodes = element => [element, ...element.children.filter(child => child instanceof Element).flatMap(allNodes)];
 const attention = element => allNodes(element).filter(node => node.className === 'attention-list');
+
+const sourceScope = {class_key: 'forensics', week: 'Wk 03', form_id: 'FICTIONALFORM123'};
+const sourceNotice = overrides => ({affected_scope: 'student', student: {first: 'Ann', last: 'Avery', section: 'A2 Forensic', verified: true},
+  reason: 'Slide 19: The original response needs its labeled answer box checked.',
+  sources: [{file_id: 'FICTIONALFILE123', label: 'Exact received original', url: 'https://drive.google.com/open?id=FICTIONALFILE123'}],
+  slides: [{file_id: 'FICTIONALFILE123', numbers: [19], verified: true}],
+  next_action: 'Compare the original answer box on slide 19; preserve answers and existing grades.', ...overrides});
+const sourceContext = (scope = sourceScope, notices = [sourceNotice()], overrides = {}) => ({schema: 'hub-source-review-context/v1',
+  checked_at: '2032-01-20T15:00:00Z', scope: {...scope, class_name: 'Forensics', lesson: 'Observation'},
+  notices, limitations: [], status: 'review', ...overrides});
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('source context renders full current identity/reason/action and verified source slides as literal text', () => {
+  const {ui} = boot([]);
+  const reason = '<script>private literal</script> ' + 'A full source-specific reason. '.repeat(15);
+  const panel = ui.renderSourceReviewContext(sourceContext(sourceScope, [sourceNotice({reason})]), sourceScope);
+  assert.match(panel.textContent, /Forensics · A2 Forensic · Wk 03 · Observation · Avery, Ann/);
+  assert.ok(panel.textContent.includes(reason));
+  assert.match(panel.textContent, /Current source context.*Read separately from the saved helper receipt/);
+  assert.match(panel.textContent, /Slide 19.*Next action: Compare the original answer box/);
+  const links = allNodes(panel).filter(node => node.tagName === 'a');
+  assert.equal(links.length, 1); assert.equal(links[0].href, 'https://drive.google.com/open?id=FICTIONALFILE123');
+  assert.equal(links[0].rel, 'noopener noreferrer');
+  assert.equal(allNodes(panel).some(node => node.tagName === 'script'), false);
+});
+
+test('source context URL guard accepts only canonical exact Google resources and rejects unsafe/mismatched URLs', () => {
+  const {ui} = boot([]), id = 'FICTIONALFILE123';
+  for (const url of ['presentation', 'document', 'spreadsheets', 'forms'].map(kind => `https://docs.google.com/${kind}/d/${id}/edit`)
+    .concat([`https://drive.google.com/open?id=${id}`, `https://drive.google.com/file/d/${id}/view`, `https://drive.google.com/drive/folders/${id}`]))
+    assert.equal(ui.reviewSourceURL({file_id: id, url}), url);
+  for (const url of ['javascript:alert(1)', 'data:text/html,private', `https://docs.google.com.evil.test/presentation/d/${id}/edit`,
+    `https://user@docs.google.com/presentation/d/${id}/edit`, `https://docs.google.com:443/presentation/d/${id}/edit`,
+    `http://docs.google.com/presentation/d/${id}/edit`, `https://docs.google.com/presentation/d/ANOTHERFILE123/edit`,
+    `https://docs.google.com/presentation/d/${id}/edit#slide=id.guessed`, `https://docs.google.com/presentation/d/${id}/edit?extra=1`,
+    `https://drive.google.com/open?id=${id}&id=${id}`, `https://drive.google.com/open?id=${id}&token=secret`,
+    `https://drive.google.com/drive/folders/${id}?extra=1`, `https://drive.google.com/open?id=${id}\n`])
+    assert.equal(ui.reviewSourceURL({file_id: id, url}), null, url);
+});
+
+test('lesson-wide checks and genuine unknown identities/slides remain distinct without invented repair requests', () => {
+  const {ui} = boot([]);
+  const lesson = ui.renderSourceReviewContext(sourceContext(sourceScope, [sourceNotice({affected_scope: 'lesson',
+    student: {verified: false}, slides: [], reason: 'The exact lesson folder is unavailable.'})]), sourceScope);
+  assert.match(lesson.textContent, /Lesson-wide source check · no individual student/);
+  assert.doesNotMatch(lesson.textContent, /Student identity not verified/);
+  assert.match(lesson.textContent, /Slides not verified/);
+  const unknown = ui.renderSourceReviewContext(sourceContext(sourceScope, [sourceNotice({student: {verified: false},
+    slides: [{file_id: 'ANOTHERFILE123', numbers: [19], verified: true}]})]), sourceScope);
+  assert.match(unknown.textContent, /Student identity not verified/); assert.match(unknown.textContent, /Slides not verified/);
+  assert.doesNotMatch(unknown.textContent, /· Slide 19/);
+  const waiting = ui.renderSourceReviewContext(sourceContext(sourceScope, [], {status: 'waiting',
+    limitations: ['Waiting for original submissions; no student-copy repair is requested.']}), sourceScope, {compactEmpty: true});
+  assert.match(waiting.textContent, /Waiting for original submissions; no student-copy repair/);
+  assert.doesNotMatch(waiting.textContent, /Next action:|all caught up/);
+});
+
+test('source context clears named details immediately and rejects old or mismatched scope responses', async () => {
+  const {ui, context} = boot([]), body = new Element('div'), replies = [];
+  context.fetch = () => new Promise(resolve => replies.push(resolve));
+  body.textContent = 'Previous named student';
+  const old = ui.loadSourceReviewContext(body, sourceScope);
+  assert.doesNotMatch(body.textContent, /Previous named student/);
+  const newer = {...sourceScope, form_id: 'SECONDARYFORM123'};
+  const fresh = ui.loadSourceReviewContext(body, newer);
+  replies[1]({ok: true, json: async () => sourceContext(newer, [sourceNotice({student: {first: 'Ben', last: 'Brook', section: 'A2 Forensic', verified: true}})])});
+  await fresh;
+  replies[0]({ok: true, json: async () => sourceContext()}); await old;
+  assert.match(body.textContent, /Brook, Ben/); assert.doesNotMatch(body.textContent, /Avery, Ann/);
+  context.fetch = async () => ({ok: true, json: async () => sourceContext()});
+  await ui.loadSourceReviewContext(body, newer);
+  assert.match(body.textContent, /could not be confirmed for this exact class and lesson/);
+  assert.doesNotMatch(body.textContent, /Brook, Ben|Avery, Ann/);
+});
+
+test('failed context GET preserves saved receipt counts and writes no student data or grade request', async () => {
+  const receipt = report([row({left: 1, reasons: {...baseReasons, check: 1}})]), before = JSON.stringify(receipt);
+  const {ui, context} = boot([]), requests = [], writes = [], body = new Element('div');
+  context.localStorage = {getItem: () => null, setItem: (...args) => writes.push(args)};
+  context.fetch = async (url, options) => { requests.push({url, options}); return {ok: false, status: 503, json: async () => ({error: 'Temporary source access failure'})}; };
+  await ui.loadSourceReviewContext(body, sourceScope);
+  assert.match(body.textContent, /Temporary source access failure.*saved helper receipt is unchanged/);
+  assert.equal(JSON.stringify(receipt), before); assert.equal(ui.morningTotals(receipt).filled, 1);
+  assert.equal(requests.length, 1); assert.match(requests[0].url, /^api\/review-context\?class=forensics&week=Wk%2003&form=FICTIONALFORM123$/);
+  assert.equal(requests[0].options.credentials, 'same-origin'); assert.equal(requests[0].options.cache, 'no-store');
+  assert.equal(requests[0].options.method, undefined); assert.equal(requests[0].options.body, undefined);
+  assert.equal(writes.length, 0);
+});
+
+test('automatic current reviews use every exact catalog ID with at most two GETs and no title/count join', async () => {
+  const {ui, context} = boot([row({assignment: 'Same label', reasons: {...baseReasons, check: 99}})]);
+  const entries = Array.from({length: 5}, (_, index) => ({class: 'forensics', class_name: 'Forensics', week: 'Wk 03', form: `EXACTFORMID${index}`, assignment: 'Same label'}));
+  const pending = [], requests = []; let active = 0, max = 0;
+  context.fetch = async url => {
+    requests.push(url);
+    if (url === 'api/morning/catalog') return {ok: true, json: async () => ({assignments: entries, problems: []})};
+    active++; max = Math.max(max, active);
+    return new Promise(resolve => pending.push(() => {
+      const parsed = new URL(url, 'https://hub.example.test/');
+      const scope = {...sourceScope, form_id: parsed.searchParams.get('form')}; active--;
+      resolve({ok: true, json: async () => sourceContext(scope, [sourceNotice({reason: `Original for ${scope.form_id}`} )])});
+    }));
+  };
+  const panel = ui.currentSourceReviewPanel(); await tick();
+  assert.equal(pending.length, 2); assert.equal(max, 2);
+  while (pending.length) { pending.shift()(); await tick(); }
+  assert.equal(requests.length, 6); assert.equal(max, 2);
+  for (const entry of entries) assert.ok(panel.textContent.includes(`Original for ${entry.form}`));
+  assert.match(panel.textContent, /5 of 5 exact lesson scopes read/);
+  assert.equal(allNodes(panel).some(node => ['select', 'input', 'button'].includes(node.tagName)), false);
+  assert.ok(requests.every(url => url === 'api/morning/catalog' || url.startsWith('api/review-context?')));
+});
+
+test('refresh cancels pending named reviews and stops the remaining old catalog queue', async () => {
+  const {ui, context} = boot([]), pending = [], requests = [];
+  context.fetch = async url => {
+    requests.push(url);
+    if (url === 'api/morning/catalog') return {ok: true, json: async () => ({assignments: [0,1,2].map(i => ({class: 'forensics', week: 'Wk 03', form: `EXACTFORMID${i}`, assignment: 'Observation'}))})};
+    return new Promise(resolve => pending.push(() => resolve({ok: true, json: async () => sourceContext({...sourceScope, form_id: new URL(url, 'https://hub.example.test').searchParams.get('form')})})));
+  };
+  const panel = ui.currentSourceReviewPanel(); await tick(); assert.equal(pending.length, 2);
+  ui.invalidateReviewPanel(panel); pending.forEach(reply => reply()); await tick();
+  assert.equal(requests.length, 3); assert.match(panel.textContent, /Refreshing current source context/);
+  assert.doesNotMatch(panel.textContent, /Avery, Ann|Slide 19/);
+});
+
+test('automatic review hides empty unassessed groups, keeps waiting and failures scoped, and states the limitation once', async () => {
+  const {ui, context} = boot([]);
+  const entries = [0,1,2,3].map(index => ({class: 'forensics', class_name: 'Forensics', week: 'Wk 03', form: `EXACTFORMID${index}`, assignment: `Exact lesson ${index}`}));
+  context.fetch = async url => {
+    if (url === 'api/morning/catalog') return {ok: true, json: async () => ({assignments: entries})};
+    const id = new URL(url, 'https://hub.example.test').searchParams.get('form');
+    if (id.endsWith('3')) return {ok: false, status: 503, json: async () => ({error: 'Exact provider read failed'})};
+    return {ok: true, json: async () => sourceContext({...sourceScope, form_id: id}, [], {status: id.endsWith('2') ? 'waiting' : 'not_assessed'})};
+  };
+  const panel = ui.currentSourceReviewPanel(); await tick();
+  assert.equal(allNodes(panel).filter(node => node.tagName === 'section' && node.hidden === true).length, 2);
+  assert.equal(panel.textContent.match(/Some original submissions have no current verified assessment details/g).length, 1);
+  assert.match(panel.textContent, /Exact lesson 2: Waiting for original submissions; no student-copy repair/);
+  assert.match(panel.textContent, /Exact lesson 3.*Exact provider read failed/);
+  assert.match(panel.textContent, /4 of 4 exact lesson scopes read; 1 unavailable/);
+  assert.doesNotMatch(panel.textContent, /all caught up|No grade rows need attention/);
+});
+
+test('Student work exact review reads are cached only for that refresh and stop on a changed scope', async () => {
+  const {context, client, form} = recheckClient(), requests = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => sourceContext({class_key: 'biology', week: 'Wk 03', form_id: form.form_id})}; };
+  const first = context.ui.studentWorkReviewPanel(form, true), second = context.ui.studentWorkReviewPanel(form, true);
+  await tick(); assert.equal(requests.length, 1);
+  assert.match(first.textContent, /Avery, Ann/); assert.match(second.textContent, /Avery, Ann/);
+  assert.ok(requests.every(url => url.startsWith('api/review-context?class=biology&week=Wk%2003&form=')));
+  let answer;
+  client.work.reviewContexts = new Map();
+  context.fetch = url => { requests.push(url); return new Promise(resolve => { answer = resolve; }); };
+  const pending = context.ui.studentWorkReviewPanel(form, true);
+  client.work.seq++; client.work.week = 'Wk 04';
+  answer({ok: true, json: async () => sourceContext({class_key: 'biology', week: 'Wk 03', form_id: form.form_id})});
+  await tick(); assert.doesNotMatch(pending.textContent, /Avery, Ann/);
+});
+
+test('direct scoring review notices require the caller exact Form and retain the original numeric scores', () => {
+  const {context, client, form} = recheckClient();
+  const score = {notes_score: null, revision_score: null, note: sourceNotice().reason,
+    review_context: {schema: 'hub-source-review-context/v1', scope: sourceContext({class_key: 'biology', week: 'Wk 03', form_id: form.form_id}).scope, notice: sourceNotice()}};
+  const before = JSON.stringify(score);
+  const notice = context.ui.scoreReviewNotice(score, form.form_id);
+  assert.match(notice.textContent, /Avery, Ann.*Slide 19/);
+  assert.equal(context.ui.scoreReviewNotice(score, 'ANOTHERFORM123'), null);
+  assert.equal(JSON.stringify(score), before); assert.equal(client.helperRows(form).find(row => row.first === 'Ann').kind, 'check');
+});
+
+test('readiness review links name exact sources and missing codes stay advisory outside Photosynthesis', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  vm.runInContext(helpers + '\nglobalThis.lessonReviews = {lessonReviewNotice, lessonReviewBadge};', context);
+  const release = {status: 'NOT_READY', issues: ['marker_inventory_count_mismatch'],
+    problem: 'Needs embedded codes.', action: 'Repair codes. Unmarked copies are held without scores.'};
+  const base = {classKey: 'biology', className: 'Biology', week: 'Wk 07', topic: 'Evolution', release,
+    decks: [{id: 'FICTIONALFILE123', title: 'Current linked original'}]};
+  const advisory = context.lessonReviews.lessonReviewNotice(base);
+  const panel = context.ui.renderSourceReviewNotice(advisory, {class_name: 'Biology', week: 'Wk 07', lesson: base.topic});
+  assert.equal(context.lessonReviews.lessonReviewBadge(base).textContent, 'Code advisory');
+  assert.match(panel.textContent, /Lesson-wide source check.*Missing codes alone.*do not hold grading/);
+  assert.match(panel.textContent, /Slides not verified/); assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 1);
+  assert.doesNotMatch(panel.textContent, /Repair codes|unmarked copies are held/i);
+  const photo = context.lessonReviews.lessonReviewNotice({...base, topic: 'Photosynthesis'});
+  assert.match(photo.next_action, /Repair codes/);
+  assert.equal(context.lessonReviews.lessonReviewBadge({...base, topic: 'Photosynthesis'}).textContent, 'Needs embedded codes');
+  const trueHold = context.lessonReviews.lessonReviewNotice({...base, release: {...release, issues: ['duplicate_feedback_marker'], action: 'Review the duplicate marker.'}});
+  assert.equal(trueHold.next_action, 'Review the duplicate marker.');
+  const linkAudit = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
+  vm.runInContext('function omittedFormProblem() { return false; }\n' + linkAudit + '\nglobalThis.linkReview = linkCheckResult;', context);
+  const table = context.linkReview('Biology', {flags: [], rows: [{...base, forms: [{form_id: 'FICTIONALFORM123'}],
+    release: {...release, source_resolution: {decks: base.decks, folders: [{id: 'EXACTFOLDER123', name: 'Verified lesson folder'}]}}}]}).filter(Boolean);
+  const text = table.map(node => node.textContent).join(' ');
+  assert.match(text, /Code advisory.*Missing codes alone do not hold grading/);
+  assert.doesNotMatch(text, /Unmarked copies are held without scores/);
+  const links = table.flatMap(allNodes).filter(node => node.tagName === 'a');
+  assert.ok(links.some(node => node.href === 'https://docs.google.com/forms/d/FICTIONALFORM123/edit'));
+  assert.ok(links.some(node => node.href === 'https://drive.google.com/drive/folders/EXACTFOLDER123'));
+});
 
 test('readiness labels name embedded-code repairs while keeping access failures distinct', () => {
   const {context} = boot([]);
@@ -563,7 +764,8 @@ test('a validated server view selects a replacement formerly in earlier history 
   client.work.data.entry_rechecks[form.form_id].rows[0].selection_problem = 'The replacement source needs confirmation.';
   const heldOriginal = JSON.stringify(form);
   const held = context.renderReplacementForTest(form, {});
-  assert.match(held.textContent, /The replacement source needs confirmation.*No scores are prepared/);
+  assert.match(held.textContent, /The replacement source needs confirmation.*These students remain unscored/);
+  assert.doesNotMatch(held.textContent, /No scores are prepared for this assignment/);
   assert.match(held.textContent, /Unconfirmed history file/);
   assert.equal(client.helperRows(form).length, 0);
   assert.equal(JSON.stringify(form), heldOriginal);
@@ -656,7 +858,10 @@ test('held code readiness never describes missing submissions as zeros or a prio
     assert.equal(client.helperRows(form).length, 0);
     assert.equal(await client.sendList(form, {}), 'deck_not_ready');
     if (hold !== 'copy') await client.scoreForm(form);
-    assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+    assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0], /^api\/review-context\?class=biology&week=Wk%2003&form=FICTIONALFORM123$/);
+    assert.equal(messages.length, 0);
     assert.equal(JSON.stringify({form, mark}), before, 'rendering preserves source rows and the original IC entry receipt');
   }
 });
@@ -806,10 +1011,11 @@ test('rechecking a closed assignment preserves source, assessment and student-co
 
 test('loading Student work waits for current entry history before scoring or offering an IC list', async () => {
   const {context, client, form, mark} = recheckClient(), requests = [];
+  const currentWorkReply = client.work.data;
   let ledgerAnswer;
   context.fetch = async url => {
     requests.push(url);
-    if (url.startsWith('api/work?')) return {ok: true, json: async () => client.work.data};
+    if (url.startsWith('api/work?')) return {ok: true, json: async () => currentWorkReply};
     if (url.startsWith('api/ledger?')) return new Promise(resolve => { ledgerAnswer = resolve; });
     return {ok: true, json: async () => ({notes_score: 8, revision_score: 9})};
   };
@@ -827,10 +1033,11 @@ test('loading Student work waits for current entry history before scoring or off
 test('a failed or superseded entry-history read cannot opt into late files or send absence zeros', async () => {
   for (const stale of [false, true]) {
     const {context, client, form, mark} = recheckClient(), requests = [];
+    const currentWorkReply = client.work.data;
     let ledgerAnswer;
     context.fetch = async url => {
       requests.push(url);
-      if (url.startsWith('api/work?')) return {ok: true, json: async () => client.work.data};
+      if (url.startsWith('api/work?')) return {ok: true, json: async () => currentWorkReply};
       if (url.startsWith('api/ledger?')) return new Promise(resolve => { ledgerAnswer = resolve; });
       return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})};
     };
