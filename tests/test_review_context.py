@@ -136,6 +136,87 @@ class ReviewContextTests(unittest.TestCase):
         self.assertNotIn('Different lesson', detail['reason'])
         self.assertFalse(detail['student']['verified'])
 
+
+    def other_current_lesson(self):
+        source = found([])
+        current = source['lessons'][0]['forms'][0]
+        current['missing'] = [row(files=[])]
+        current['elsewhere'] = [{'who': 'Rivera, Alex', 'section': 'A2 Fictional', 'accepted_intake': False,
+            'source_form_id': FORM, 'assignment_form_id': 'FICTIONAL_OTHER_CURRENT_FORM_123',
+            'to': 'An untrusted display title', 'file': 'Original retained answers',
+            'url': 'https://drive.google.com/open?id=' + SOURCE}]
+        source['lessons'][0]['forms'].append({'form_id': 'FICTIONAL_OTHER_CURRENT_FORM_123',
+            'label': 'Observation', 'students': [], 'late': [], 'missing': [], 'excused': [], 'elsewhere': []})
+        return source
+
+    def test_exact_known_other_current_form_is_information_with_links_and_no_action_or_grade_claim(self):
+        source = self.other_current_lesson(); before = deepcopy(source)
+        result = rc.build(scope(), source)
+        self.assertEqual(result['notices'], [])
+        item = result['matched_other_lessons'][0]
+        self.assertTrue(item['student']['verified'])
+        self.assertEqual(item['target'], {'class_key': 'forensics', 'class_name': 'Forensics', 'week': 'Wk 04',
+            'form_id': 'FICTIONAL_OTHER_CURRENT_FORM_123', 'lesson': 'Observation',
+            'url': 'https://docs.google.com/forms/d/FICTIONAL_OTHER_CURRENT_FORM_123/edit'})
+        self.assertEqual(item['sources'][0]['file_id'], SOURCE)
+        self.assertEqual(item['slides'][0]['numbers'], [])
+        self.assertNotIn('next_action', item)
+        self.assertNotIn('Saved', item['reason']); self.assertNotIn('graded', item['reason'])
+        self.assertNotIn('untrusted', item['reason'])
+        self.assertFalse(result['source_selection']['assessment_performed'])
+        self.assertEqual(source, before)
+
+    def test_unknown_duplicate_foreign_or_unavailable_other_target_remains_actionable(self):
+        for change in ('unknown', 'duplicate', 'foreign_class', 'foreign_week', 'unavailable', 'foreign_source'):
+            source = self.other_current_lesson()
+            current, target = source['lessons'][0]['forms']
+            if change == 'unknown': target['form_id'] = 'FICTIONAL_UNKNOWN_FORM_123'
+            elif change == 'duplicate': source['lessons'][0]['forms'].append(deepcopy(target))
+            elif change == 'foreign_class': source['class_key'] = 'biology'
+            elif change == 'foreign_week': source['week'] = 'Wk 05'
+            elif change == 'unavailable': target['problem'] = 'Target Form could not be read.'
+            else: current['elsewhere'][0]['source_form_id'] = 'FICTIONAL_FOREIGN_FORM_123'
+            if change.startswith('foreign_') and change != 'foreign_source':
+                with self.assertRaises(ValueError): rc.build(scope(), source)
+            else:
+                result = rc.build(scope(), source)
+                self.assertEqual(result['matched_other_lessons'], [])
+                self.assertIn('next_action', result['notices'][0])
+
+    def test_unverified_or_ambiguous_person_and_unsafe_source_keep_review_not_information(self):
+        for change in ('unknown', 'namesake', 'unsafe_link'):
+            source = self.other_current_lesson(); current = source['lessons'][0]['forms'][0]
+            if change == 'unknown': current['missing'] = []
+            elif change == 'namesake': current['students'] = [row(files=[], email='other@fictional.example')]
+            else: current['elsewhere'][0]['url'] = 'https://foreign.example/' + SOURCE
+            result = rc.build(scope(), source)
+            self.assertEqual(result['matched_other_lessons'], [])
+            self.assertIn('next_action', result['notices'][0])
+
+    def test_other_lesson_information_does_not_hide_real_history_assessment_or_grade_candidates(self):
+        source = self.other_current_lesson(); current = source['lessons'][0]['forms'][0]
+        current['students'] = [row(selection_problem='Original history still needs review')]
+        current['missing'] = []
+        before = completion.recheck_candidates(current)
+        result = rc.build(scope(), source)
+        self.assertEqual(len(result['matched_other_lessons']), 1)
+        self.assertEqual([n['reason'] for n in result['notices']], ['Original history still needs review'])
+        self.assertEqual(completion.recheck_candidates(current), before)
+        current['students'] = [row()]
+        result = rc.build(scope(), source, {SOURCE: assessment()})
+        self.assertEqual(len(result['matched_other_lessons']), 1)
+        self.assertEqual(result['notices'][0]['issue_kind'], 'assessment')
+        self.assertEqual(result['notices'][0]['slides'][0]['numbers'], [2, 19])
+
+    def test_known_other_lesson_preserves_exempt_and_accepted_intake_suppression(self):
+        for change in ('exempt', 'accepted'):
+            source = self.other_current_lesson(); current = source['lessons'][0]['forms'][0]
+            if change == 'exempt': current['missing'][0]['exempt'] = True
+            else: current['elsewhere'][0]['accepted_intake'] = True
+            result = rc.build(scope(), source)
+            self.assertEqual(result['notices'], [])
+            self.assertEqual(result['matched_other_lessons'], [])
+
     def test_week01_case_display_is_nonaction_without_excluding_lab_safety(self):
         current = {**scope(), 'week': 'Wk 01', 'lesson': 'Work a case'}
         source = {**found([row(selection_problem='Case source needs original match')]), 'week': 'Wk 01'}

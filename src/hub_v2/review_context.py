@@ -90,7 +90,7 @@ def _slides(reason):
     return sorted(set(values)) if values and max(values) <= completion.MAX_SLIDES else []
 
 
-def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis=None, affected_scope=None):
+def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis=None, affected_scope=None, issue_kind='source_issue'):
     """One shared notice shape for discovery and existing scoring routes."""
     files = files if files is not None else [f for snapshot in [row] + row.get('earlier', [])
                                             for f in snapshot.get('files', [])]
@@ -107,7 +107,7 @@ def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis
         else:
             action = ('Open the linked originals and confirm the current revision; preserve existing grades.'
                       if sources else 'Identify the exact original source for this lesson; preserve existing grades.')
-    return {'kind': 'review', 'affected_scope': affected_scope or ('student' if row else 'lesson'),
+    return {'kind': 'review', 'issue_kind': 'assessment' if assessed else issue_kind, 'affected_scope': affected_scope or ('student' if row else 'lesson'),
             'student': student, 'reason': str(reason),
             'sources': sources,
             'slides': [{'file_id': s['file_id'], 'numbers': numbers if assessed and len(sources) == 1 else [],
@@ -216,7 +216,7 @@ def build(current_scope, found, cached=None, *, checked_at=None):
         raise ValueError('review work scope')
     form = forms[0]
     rows = completion.recheck_candidates(form)
-    notices, limitations = [], []
+    notices, limitations, matched_other_lessons = [], [], []
     policy = current_scope.get('grade_policy') or {}
     case_skip = (current_scope['class_key'] == 'forensics' and work.week_number(current_scope['week']) == 1
                  and bool(re.fullmatch(r'(?:work\s+a\s+case|(?:.*\b)?sheppard(?:\b.*)?)',
@@ -235,7 +235,9 @@ def build(current_scope, found, cached=None, *, checked_at=None):
             reason = reason or 'This original source could not be matched to a verified student and class section.'
         files = row.get('files', [])
         if reason:
-            notices.append(notice(current_scope, row, reason))
+            from . import source_history_dispositions
+            notices.append(notice(current_scope, row, reason,
+                issue_kind=source_history_dispositions.issue_kind(reason) if _student(row)['verified'] else 'identity_unverified'))
             continue
         for upload in files:
             ident = upload.get('id')
@@ -247,7 +249,8 @@ def build(current_scope, found, cached=None, *, checked_at=None):
             score = (cached or {}).get(ident)
             if reason:
                 notices.append(notice(current_scope, row, reason, files=[upload],
-                    action='Open this exact original and check its availability or lesson match; preserve existing grades.'))
+                    action='Open this exact original and check its availability or lesson match; preserve existing grades.',
+                    issue_kind='source_week_mismatch' if upload.get('other_week') and not upload.get('trashed') and not upload.get('problem') else 'source_availability'))
             elif score and score.get('note'):
                 notices.append(notice(current_scope, row, score['note'], files=[upload], assessed=True,
                     action=score.get('action') or 'Review the marked response on the verified slide(s), preserving the student’s original answers and current grades.',
@@ -272,8 +275,28 @@ def build(current_scope, found, cached=None, *, checked_at=None):
                   if verified_route and item.get('to') else 'This original’s lesson and turn-in route could not be confirmed.')
         link = source_link(item.get('url'))
         files = [{**link, 'label': item.get('file') or 'Original source'}] if link else []
-        notices.append(notice(current_scope, row, reason, files=files,
-            action='Review the original turn-in route shown here; preserve current grades.', affected_scope='student'))
+        detail = notice(current_scope, row, reason, files=files,
+            action='Review the original turn-in route shown here; preserve current grades.', affected_scope='student',
+            issue_kind='source_route_resolved' if verified_route else 'source_route_unverified')
+        destinations = [(lesson, target) for lesson in found.get('lessons', [])
+                        for target in lesson.get('forms', [])
+                        if target.get('form_id') == item.get('assignment_form_id')]
+        if (verified_route and detail['student']['verified'] and files and len(destinations) == 1
+                and not destinations[0][1].get('problem')):
+            lesson, target = destinations[0]
+            target_link = source_link('https://docs.google.com/forms/d/' + target['form_id'] + '/edit', target['form_id'])
+            if target_link:
+                label = target.get('label') or lesson.get('topic') or 'Linked current lesson'
+                if source_link(label, target['form_id']):
+                    label = lesson.get('topic') or 'Linked current lesson'
+                information = {k: deepcopy(v) for k, v in detail.items() if k != 'next_action'}
+                information.update(kind='matched_other_lesson',
+                    reason='This original is matched to %s in %s; it remains linked here as source context.' % (label, current_scope['week']),
+                    target={'class_key': current_scope['class_key'], 'class_name': current_scope['class_name'],
+                            'week': current_scope['week'], 'form_id': target['form_id'], 'lesson': label, 'url': target_link['url']})
+                matched_other_lessons.append(information)
+                continue
+        notices.append(detail)
     for reason in [form.get('problem'), found.get('assessment_problem'), found.get('folder_note'), *found.get('problems', [])]:
         if reason:
             notices.append(notice(current_scope, {}, reason, files=current_scope['sources'],
@@ -292,7 +315,7 @@ def build(current_scope, found, cached=None, *, checked_at=None):
     elif submitted:
         limitations.append('This view shows current source issues, not a new grading pass. Earlier response checks appear only when the original and linked teacher copy still match. Other responses have not been checked here.')
     return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
-            'scope': current_scope, 'notices': notices, 'limitations': limitations,
+            'scope': current_scope, 'notices': notices, 'matched_other_lessons': matched_other_lessons, 'limitations': limitations,
             'status': 'review' if notices else 'waiting' if waiting else 'not_assessed',
             'source_selection': {'submitted_originals': submitted, 'assessment_performed': False}}
 
@@ -341,7 +364,7 @@ def _bookend(token, config, agenda_basis, catalog, roster_snapshot, reload_agend
     return None
 
 
-def _read_found(token, config, agenda, current_scope, found):
+def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=None):
     if (current_scope.get('grade_policy') or {}).get('problem'):
         return _unavailable(current_scope, current_scope['grade_policy']['problem'])
     if found.get('review_unavailable'):
@@ -364,7 +387,8 @@ def _read_found(token, config, agenda, current_scope, found):
         return _unavailable(current_scope, rate_problem)
     result = build(current_scope, found, cached)
     result['limitations'].extend(limitations)
-    return result
+    from . import source_history_dispositions
+    return source_history_dispositions.apply(token, config, agenda, current_scope, found, result, roster_snapshot)
 
 
 def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None):
@@ -376,7 +400,7 @@ def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None)
         return _unavailable(current_scope, problem)
     before_agenda, before_roster = _agenda_basis(agenda), deepcopy(roster_snapshot)
     found = work.lesson_work(token, config, agenda, class_key, week, review_only=True, roster_snapshot=roster_snapshot)
-    result = _read_found(token, config, agenda, current_scope, found)
+    result = _read_found(token, config, agenda, current_scope, found, roster_snapshot=roster_snapshot)
     problem = _bookend(token, config, before_agenda, catalog, before_roster,
                         reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])))
     return _unavailable(current_scope, problem) if problem else result
@@ -407,7 +431,7 @@ def overview(token, config, agenda, *, reload_agenda=None):
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         found_by_scope = dict(zip(groups, pool.map(discover, groups)))
-    reviews = [_read_found(token, config, agenda, s, found_by_scope[s['class_key'], s['week']]) for s in scopes]
+    reviews = [_read_found(token, config, agenda, s, found_by_scope[s['class_key'], s['week']], roster_snapshot=roster_snapshot) for s in scopes]
     problem = _bookend(token, config, before_agenda, catalog, before_roster,
                         reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])))
     if problem:
