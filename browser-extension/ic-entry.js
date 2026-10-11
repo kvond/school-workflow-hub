@@ -61,15 +61,23 @@
     const zeroWithMissing=change.value===0&&row?.flags.length&&row.flags.every(flag=>flag==='Missing');
     if(inputs.length!==1||!row||!planned||row.score!==change.before||row.other!==null||JSON.stringify(row.flags)!==JSON.stringify(planned.flags)||(row.flags.length&&!zeroWithMissing))fail('ic_changed');
     const input=inputs[0],view=s.doc.defaultView,setter=Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype,'value').set;
-    input.focus();setter.call(input,String(change.value));
+    const live=(beforeEdit=false)=>{
+     const current=read(false),actual=current.snapshot.rows.find(r=>r.label===change.label);
+     if(!sameContext(current.s,plan)||!current.s.inputs.includes(input)
+      ||current.s.inputs.filter(i=>norm(i.getAttribute('aria-label'))===change.label).length!==1
+      ||!actual||JSON.stringify(actual.flags)!==JSON.stringify(planned.flags)
+      ||(beforeEdit&&(actual.score!==change.before||actual.other!==null)))fail('ic_changed');
+    };
+    input.focus();
+    // IC's forms control registration/model writes and its own keyup listener
+    // are queued. Let focus/registration settle before the one planned edit.
+    await new Promise(resolve=>setTimeout(resolve,0));live(true);
+    setter.call(input,String(change.value));
     input.dispatchEvent(new view.Event('input',{bubbles:true}));input.dispatchEvent(new view.Event('change',{bubbles:true}));
-    // IC's original multiscore input validates its ngModel-backed displayScore
-    // on blur and on its own keyup subscription. Let the input model's event
-    // turn finish before blur, and notify that existing score-only listener.
+    // The actual text accessor reads input.target.value. Let that model turn
+    // finish before notifying IC's original keyup validation, then blur.
+    await new Promise(resolve=>setTimeout(resolve,0));live();
     input.dispatchEvent(new view.KeyboardEvent('keyup',{bubbles:true,key:String(change.value).slice(-1)}));
-    await new Promise(resolve=>setTimeout(resolve,0));
-    const current=read(false);
-    if(!sameContext(current.s,plan)||!current.s.inputs.includes(input))fail('ic_changed');
     input.blur();
     diagnostic='edited_score_validation_pending';
     const validationStarted=Date.now();

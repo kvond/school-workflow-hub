@@ -3,7 +3,9 @@ import copy
 import difflib
 import hashlib
 import json
+import posixpath
 import re
+from xml.etree import ElementTree as ET
 
 from . import response_binding as rb
 from . import workspace_binding as workspace
@@ -13,6 +15,81 @@ KIND = "original-writing-fields"
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 TOKEN = re.compile(r"\w+|[^\w\s]")
+STYLE_ROLES = "theme-relationship-roles-v1"
+REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+CT = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+
+
+def style_resource_roles(archive):
+    """Theme aliases may change; their bytes and every owning role may not."""
+    kinds = {"theme": "application/vnd.openxmlformats-officedocument.theme+xml",
+             "slideMasters": "application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml",
+             "slideLayouts": "application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"}
+    names = archive.namelist()
+    resources = [n for n in names if re.fullmatch(r"ppt/(?:theme|slideMasters|slideLayouts)/[^/]+\.xml", n)]
+    if not resources:
+        return {"resources": [], "theme_owners": []}
+    if len(names) != len(set(names)) or len(resources) > 250 or "[Content_Types].xml" not in names:
+        return None
+    try:
+        types = ET.fromstring(archive.read("[Content_Types].xml"))
+        if types.tag != CT + "Types":
+            return None
+        payloads, rows = {}, []
+        for name in resources:
+            if archive.getinfo(name).file_size > 2_000_000:
+                return None
+            overrides = [n.get("ContentType") for n in types if n.tag == CT + "Override" and n.get("PartName") == "/" + name]
+            defaults = [n.get("ContentType") for n in types if n.tag == CT + "Default" and n.get("Extension") == "xml"]
+            declared = overrides if overrides else defaults
+            kind = name.split("/")[1]
+            if len(declared) != 1 or declared[0] != kinds[kind]:
+                return None
+            raw = archive.read(name)
+            root = ET.fromstring(raw)
+            expected_root = {"theme": A + "theme", "slideMasters": P + "sldMaster",
+                             "slideLayouts": P + "sldLayout"}[kind]
+            if root.tag != expected_root:
+                return None
+            payloads[name] = hashlib.sha256(raw).hexdigest()
+            rows.append(["theme" if kind == "theme" else name, payloads[name], declared[0]])
+        owners, referenced = [], set()
+        for relname in (n for n in names if n.endswith(".rels")):
+            if archive.getinfo(relname).file_size > 2_000_000:
+                return None
+            rels = ET.fromstring(archive.read(relname))
+            if rels.tag != REL + "Relationships":
+                return None
+            if not any(n.get("Type", "").endswith("/theme") for n in rels):
+                continue
+            match = re.fullmatch(r"(.*/)?_rels/([^/]+)\.rels", relname)
+            if not match:
+                return None
+            owner = (match.group(1) or "") + match.group(2)
+            if owner not in names or archive.getinfo(owner).file_size > 2_000_000:
+                return None
+            ET.fromstring(archive.read(owner))
+            ids, roles = set(), []
+            for rel in rels:
+                if rel.tag != REL + "Relationship" or not rel.get("Id") or rel.get("Id") in ids:
+                    return None
+                ids.add(rel.get("Id"))
+                attrs = dict(rel.attrib)
+                if rel.get("Type", "").endswith("/theme"):
+                    if rel.get("TargetMode") or set(attrs) != {"Id", "Type", "Target"}:
+                        return None
+                    target = posixpath.normpath(posixpath.join(posixpath.dirname(owner), rel.get("Target", "")))
+                    if target not in payloads or not target.startswith("ppt/theme/"):
+                        return None
+                    referenced.add(target)
+                    attrs["Target"] = "theme-sha256:" + payloads[target]
+                roles.append(sorted(attrs.items()))
+            owners.append([owner, hashlib.sha256(archive.read(owner)).hexdigest(), sorted(roles)])
+        if {n for n in resources if n.startswith("ppt/theme/")} != referenced:
+            return None
+        return {"resources": sorted(rows), "theme_owners": sorted(owners)}
+    except (KeyError, ValueError, ET.ParseError):
+        return None
 
 
 def digest(value):
@@ -163,9 +240,12 @@ def attach(slide, tree, root, pictures, archive, box, name, *, part=None):
         wanted = dict(image_fields[0]["original_media"])
         media = {k: pictures.get(k) for k in wanted}
     media_binding, media_readable = graphics.original_media_binding(archive, part, media) if part else ([], not media)
+    resource_roles = style_resource_roles(archive)
     slide["writing_scene"] = {"shapes": page_scene(tree, keys, allow_picture=bool(image_fields)), "style": workspace.slide_style(tree, root),
                               "media": digest(media_binding), "media_readable": media_readable, "resources": digest(resources),
-                              "resources_readable": all(value != "UNREADABLE_STYLE" for _, value in resources)}
+                              "resources_readable": all(value != "UNREADABLE_STYLE" for _, value in resources),
+                              "style_resource_roles": digest(resource_roles) if resource_roles is not None else None,
+                              "style_resource_roles_readable": resource_roles is not None}
     if image_fields:
         slide["writing_all_media"] = pictures
         slide["writing_new_pictures"] = graphics.read_pictures(tree, archive, part, box) if part else [{"supported": False}]
@@ -239,9 +319,15 @@ def source(marker, template, size, plain):
 
 def same_scene(data, page):
     scene = page.get("writing_scene", {})
+    basis = data.get("resources_basis")
+    if basis not in (None, STYLE_ROLES):
+        return False
+    resources_match = (scene.get("resources") == data.get("resources") if basis is None else
+                       scene.get("style_resource_roles_readable") is True
+                       and scene.get("style_resource_roles") == data.get("resources"))
     return (scene.get("resources_readable") is True and scene.get("media_readable") is True
             and scene.get("shapes") == data.get("page_scene") and scene.get("style") == data.get("page_style")
-            and scene.get("media") == data.get("page_media") and scene.get("resources") == data.get("resources"))
+            and scene.get("media") == data.get("page_media") and resources_match)
 
 
 def answers(markers, written, template, student, size, plain):

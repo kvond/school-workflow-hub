@@ -52,9 +52,13 @@ def catalog(agenda, config=None):
                     fid = form.get("form_id")
                     if fid and (cls, fid) not in seen:
                         seen.add((cls, fid))
+                        label = form.get("label")
+                        if label and re.fullmatch(r"https://docs\.google\.com/forms/d/" + re.escape(str(fid))
+                                                  + r"(?:/(?:edit|viewform))?/?(?:[?#]\S*)?", str(label).strip()):
+                            label = lesson["topic"]
                         out.append({"class": cls, "class_name": agenda.classes[cls]["name"],
                                     "week": week["label"], "form": fid,
-                                    "assignment": str(form.get("label") or lesson["topic"])[:200]})
+                                    "assignment": str(label or lesson["topic"])[:200]})
     return {"assignments": out, "exclusions": exclusions, "problems": list(dict.fromkeys(problems)), "roster": "unavailable",
             "roster_note": "IC is the roster source of truth. Roster sync is not connected; normal additions and departures are not student-work exceptions."}
 

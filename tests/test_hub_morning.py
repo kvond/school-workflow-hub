@@ -350,4 +350,38 @@ class MorningEndpointTests(unittest.TestCase):
             self.assertEqual(self.request("POST", "/v2/api/morning/reports", "https://hub.example.test", value)[0], "400 Bad Request")
             record.assert_not_called()
 
+class MorningCatalogDisplayTests(unittest.TestCase):
+    def catalog(self, first_label):
+        first = "FICTIONAL_CURRENT_FIRST_FORM_1234"
+        second = "FICTIONAL_CURRENT_SECOND_FORM_5678"
+        agenda = Mock(classes={"forensics": {"name": "Forensics"}})
+        agenda.week_options.return_value = [{"monday": "2026-10-05", "label": "Wk 06"}]
+        agenda.lessons.return_value = [{"topic": "Searching and Photography", "forms": [
+            {"form_id": first, "label": first_label},
+            {"form_id": second, "label": "Evidence Collection"}]}]
+        with patch.object(morning.ledger, "eastern_now", return_value="2026-10-11T08:00:00-04:00"), \
+                patch.object(morning.work, "week_policy", return_value={"problem": None, "excluded": False}):
+            return morning.catalog(agenda, {"HUB_IC_ASSIGNMENT_MAP": "unchanged"})
+
+    def test_same_current_Form_URL_changes_only_first_display_assignment(self):
+        fid = "FICTIONAL_CURRENT_FIRST_FORM_1234"
+        expected = self.catalog("Searching and Photography")
+        for suffix in ("", "/", "/edit", "/viewform?usp=sharing#section"):
+            with self.subTest(suffix=suffix):
+                actual = self.catalog("https://docs.google.com/forms/d/" + fid + suffix)
+                self.assertEqual(actual, expected)
+        self.assertEqual([(r["form"], r["week"], r["assignment"]) for r in expected["assignments"]], [
+            (fid, "Wk 06", "Searching and Photography"),
+            ("FICTIONAL_CURRENT_SECOND_FORM_5678", "Wk 06", "Evidence Collection")])
+
+    def test_descriptive_foreign_published_or_nonGoogle_labels_remain_literal(self):
+        for label in ("Turn in Searching and Photography", "https://docs.google.com/forms/d/OTHER_FORM_1234/edit",
+                      "https://docs.google.com/forms/d/e/FICTIONAL_CURRENT_FIRST_FORM_1234/viewform",
+                      "https://docs.google.com.evil.invalid/forms/d/FICTIONAL_CURRENT_FIRST_FORM_1234/edit",
+                      "https://forms.gle/fictional", "https://docs.google.com/forms/d/FICTIONAL_CURRENT_FIRST_FORM_1234/edit extra"):
+            with self.subTest(label=label):
+                actual = self.catalog(label)
+                self.assertEqual(actual["assignments"][0]["assignment"], label)
+                self.assertEqual(actual["assignments"][1]["assignment"], "Evidence Collection")
+
 if __name__ == '__main__': unittest.main()

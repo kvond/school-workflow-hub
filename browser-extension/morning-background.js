@@ -276,11 +276,32 @@
   const shape=i=>Object.keys(i).sort().join('|')===(i.code==='source_scores_held'
    ?'assignment|class_name|code|filled|kept|left|raised|reasons|source_holds|week'
    :'assignment|class_name|code|filled|kept|left|raised|reasons|week');
-  const unused=!Object.hasOwn(s,'typing_recheck_version')&&!Object.hasOwn(s,'typing_recheck_run_id')&&!Object.hasOwn(s,'typing_recheck_day');
-  // This finite024-to025 path concerns a known executor stop before Save.
+  // A consumed025 grant stays bound to its older report, even after the026
+  // acknowledgement stores the new report. It cannot itself grant another run.
+  const previous=s.verified?.recovery==='checked_typing_after_helper_update'
+   &&s.verified.for_helper_version==='0.5.26'?s.verified.prior_typing_recovery:s.verified;
+  let prior=null;try{prior=JSON.parse(previous?.prior_report_signature);}catch{}
+  const priorMarker=s.typing_recheck_version==='0.5.25'&&validRun(s.typing_recheck_run_id)
+   &&s.typing_recheck_run_id!==report?.run_id&&s.typing_recheck_day===s.day
+   &&previous?.run_id===s.typing_recheck_run_id&&previous.recovery==='checked_typing_after_helper_update'
+   &&previous.scope==='current_mapped_assignments'&&previous.prior_day===s.day
+   &&previous.prior_helper_version==='0.5.24'&&previous.for_helper_version==='0.5.25'
+   &&validRun(previous.event_id)&&typeof previous.by==='string'&&!!previous.by.trim()
+   &&Number.isFinite(Date.parse(previous.at))&&prior?.run_id===s.typing_recheck_run_id
+   &&prior.day===s.day&&Object.keys(prior).sort().join('|')==='code|day|items|roster|run_id'
+   &&prior.code==='panel_unusable'&&prior.roster==='unavailable'&&Array.isArray(prior.items)
+   &&prior.items.length>0&&prior.items.length<=300&&prior.items.at(-1)?.code==='typing_stopped'
+   &&prior.items.every((i,n)=>i&&shape(i)&&typeof i.assignment==='string'&&i.assignment.trim()&&i.assignment.length<=200
+    &&typeof i.class_name==='string'&&i.class_name.trim()&&i.class_name.length<=100
+    &&typeof i.week==='string'&&i.week.trim()&&i.week.length<=100&&counts(i)&&reasons(i)
+    &&(n===prior.items.length-1?(i.filled===0&&i.raised===0&&i.left===0&&Object.values(i.reasons).every(v=>v===0)):
+     ((completedRecheckCodes.has(i.code)||['excluded_week','source_scores_held'].includes(i.code))
+      &&(completedCodes.has(i.code)||(zeroCounts(i)&&Object.values(i.reasons).every(v=>v===0)))&&held(i))));
+  const unused=(!Object.hasOwn(s,'typing_recheck_version')&&!Object.hasOwn(s,'typing_recheck_run_id')&&!Object.hasOwn(s,'typing_recheck_day'))||priorMarker;
+  // This finite025-to026 path concerns a known executor stop before Save.
   // Any visible typing still requires fresh teacher verification of all mapped
   // saved grades. Missing prior version or unknown Save outcomes are not evidence.
-  return version==='0.5.25'&&s.run_helper_version==='0.5.24'&&unused&&s.enabled&&[true,false].includes(s.blocked)
+  return version==='0.5.26'&&s.run_helper_version==='0.5.25'&&unused&&s.enabled&&[true,false].includes(s.blocked)
    &&s.blocked_run_id===report?.run_id&&Array.isArray(s.blocked_assignments)&&s.blocked_assignments.length===1
    &&typeof s.blocked_assignments[0]==='string'&&!!s.blocked_assignments[0].trim()
    &&s.inflight===false&&s.report_pending===false&&s.execution_started===true
@@ -305,7 +326,7 @@
   const v=s.verified;
   return currentTypingStoppedReport(s,t)&&s.blocked===false&&verifiedReport(s)
    &&v.scope==='current_mapped_assignments'&&v.recovery==='checked_typing_after_helper_update'
-   &&v.prior_day===s.day&&v.prior_helper_version==='0.5.24'
+   &&v.prior_day===s.day&&v.prior_helper_version==='0.5.25'
    &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
    &&v.prior_report_signature===JSON.stringify(s.report);
  }
@@ -542,7 +563,8 @@
      Object.assign(s,fresh,{blocked:false,inflight:false,verified:{run_id,at:saved.record.at,by:saved.record.by,
       ...(currentVerification?{scope:'current_mapped_assignments',prior_day:s.report.day}:{}),
       ...(typingVerification?{recovery:'checked_typing_after_helper_update',event_id,for_helper_version:receiptVersion,
-       prior_helper_version:'0.5.24',prior_report_signature:JSON.stringify(s.report)}:{}),
+       prior_helper_version:'0.5.25',prior_report_signature:JSON.stringify(s.report),
+       ...(s.typing_recheck_version==='0.5.25'?{prior_typing_recovery:s.verified}:{})}:{}),
       ...(readbackVerification?{recovery:'checked_readback_after_helper_update',event_id,for_helper_version:receiptVersion,
        prior_helper_version:'0.5.23',prior_report_signature:JSON.stringify(s.report),
        ...(!Object.hasOwn(s,'run_helper_version')?{prior_source_recovery:s.verified}:{})}:{}),

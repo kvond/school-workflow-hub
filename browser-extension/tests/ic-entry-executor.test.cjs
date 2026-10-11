@@ -7,12 +7,12 @@ const readScript=name=>fs.readFileSync(path.join(__dirname,'..',name),'utf8');
 // together with the real morning planner/executor. All data is fictional.
 function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,changedFlags=null,manual=false,
  replaceFrame=false,reloadSavedPolls=0,reloadRows=null,reloadContext=null,reloadFlags=null,reloadPanelPolls=0,
- dirtyMarkerPolls=0,saveCompletionPolls=0,loseDirtyBeforeSave=false,saveContext=null,dirtyTitle='(Alt + Enter)',changeDirtyBeforeSave=null,recognizedEvents=false,keyupOnlyValidation=false,disableKeyupHandler=false,postBlurValidationPolls=0,postBlurContext=null,postBlurFlags=null,replaceInputAfterBlur=false,postBlurElapsedMs=0}={}){
+ dirtyMarkerPolls=0,saveCompletionPolls=0,loseDirtyBeforeSave=false,saveContext=null,dirtyTitle='(Alt + Enter)',changeDirtyBeforeSave=null,recognizedEvents=false,keyupOnlyValidation=false,disableKeyupHandler=false,postBlurValidationPolls=0,postBlurContext=null,postBlurFlags=null,replaceInputAfterBlur=false,postBlurElapsedMs=0,deferredFocusBinding=false,changedValueAfterFocus=null,changedContextAfterFocus=false,replaceInputAfterFocus=false,focusFlags=null,modelNeverAccepts=false}={}){
  const origin='https://school.example.test',label='F MP: Marking Period Score input for Avery, Ann';
  const target={section:'A4 Fictional',column:'notes',section_id:'42',term_id:'5',year:'2027',school_id:'7',calendar_id:'8',structure_id:'9',assignment_id:'123',score_group:'3',task_id:'1',label_code:'F',url:origin+'/campus/sis/control-center/classroom/curriculum/resource/123/view(secondaryRouteOutlet:multiscore/assignmentEditor/sectionID/42/objectSectionID/123/calendarID/8/structureID/9)?classroomSectionID=42&classroomTermID=5&year=2027&schoolID=7&calendarID=8&structureID=9'};
  const list={schema:E.SCHEMA,list_id:crypto.randomUUID(),class_key:'biology',class_name:'Biology',week:'Wk 05',form_id:'FICTIONAL_FORM_1234',assignment:'Matter',form_label:'Matter',status:'open',status_text:'Open',sent_at:new Date().toISOString(),rows:[{last:'Avery',first:'Ann',section:target.section,kind,notes:value,revision:kind==='zero'?0:null,reason:''}]};
  const state={calls:[],flags:[...flags],saved:true,authorizations:0,results:[],afterReload:false,reloadPolls:0,
-  dirtyPending:false,dirtyPolls:0,savePending:false,savePolls:0,committed:'',dirtyTitle,modelScore:'',modelPending:'',draft:'',keyupPending:false,keyupPolls:0,blurred:false,validationPending:false,validationPolls:0,elapsedMs:0,delayRequests:[],waitBudgets:[]};
+  dirtyPending:false,dirtyPolls:0,savePending:false,savePolls:0,committed:'',dirtyTitle,modelScore:'',modelPending:'',draft:'',keyupPending:false,keyupPolls:0,blurred:false,validationPending:false,validationPolls:0,elapsedMs:0,delayRequests:[],waitBudgets:[],focusSettled:false,focusChangedContext:false};
  const row={};
  class NativeInput {
   constructor(){this.raw='';}
@@ -24,7 +24,7 @@ function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,cha
   dispatchEvent(event){
    state.calls.push(event.type);
    if(recognizedEvents){
-    if(event.type==='input')state.modelPending=this.raw;
+    if(event.type==='input'&&!modelNeverAccepts&&(!deferredFocusBinding||state.focusSettled))state.modelPending=this.raw;
     if(event.type==='keyup'&&!disableKeyupHandler)state.keyupPending=true;
    }else{state.dirtyPending=Boolean(dirtyMarkerPolls);state.saved=state.dirtyPending;}
   }
@@ -46,7 +46,7 @@ function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,cha
  const surface=()=>{
   if(state.afterReload&&state.reloadPolls<reloadPanelPolls)throw Error('school_sign_in_required');
   if(state.afterReload&&reloadRows==='missing')throw Error('unsupported_gradebook');
-  return {inputs:state.afterReload&&reloadRows==='duplicate'?[input,input]:state.blurred&&replaceInputAfterBlur?[replacementInput]:[input],context:{...context,...(state.savePending?saveContext:null),...(state.afterReload?reloadContext:null),...(state.blurred&&!state.afterReload?postBlurContext:null)},save,frame,doc,group:'3',path:target.url,score:{querySelectorAll:()=>[{getAttribute:()=> 'progressScore_5_1_42'}]}};
+  return {inputs:state.afterReload&&reloadRows==='duplicate'?[input,input]:(state.blurred&&replaceInputAfterBlur||state.focusSettled&&replaceInputAfterFocus)?[replacementInput]:[input],context:{...context,...(state.focusChangedContext?{assignment_id:'changed'}:null),...(state.savePending?saveContext:null),...(state.afterReload?reloadContext:null),...(state.blurred&&!state.afterReload?postBlurContext:null)},save,frame,doc,group:'3',path:target.url,score:{querySelectorAll:()=>[{getAttribute:()=> 'progressScore_5_1_42'}]}};
  };
  const engine=forcePlan?{...E,buildPlan(...args){
   // Defense in depth: a malformed planner decision must still be rejected by
@@ -76,7 +76,7 @@ function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,cha
    for(let i=0;i<5;i++){
     const result=check();if(result)return result;
     if(state.validationPending){state.validationPolls++;if(state.validationPolls>=postBlurValidationPolls){input.raw=state.modelScore;state.draft=state.modelScore;state.saved=false;state.validationPending=false;}}
-    if(state.keyupPending){state.keyupPolls++;if(state.keyupPolls>=2){state.draft=state.modelScore;state.saved=false;state.keyupPending=false;}}
+    if(state.keyupPending){state.keyupPolls++;if(state.keyupPolls>=2){if(state.modelScore!==state.draft){state.draft=state.modelScore;state.saved=false;}state.keyupPending=false;}}
     if(state.dirtyPending){state.dirtyPolls++;if(state.dirtyPolls>=dirtyMarkerPolls){state.saved=false;state.dirtyPending=false;}}
     if(state.savePending){state.savePolls++;if(state.savePolls>=saveCompletionPolls){state.saved=true;state.savePending=false;state.committed=recognizedEvents?state.draft:input.raw;}}
     if(state.afterReload){state.reloadPolls++;if(state.reloadPolls>=reloadSavedPolls)state.saved=true;}
@@ -96,7 +96,7 @@ function contentPanel({kind='zero',value=0,flags=['Missing'],forcePlan=false,cha
     return {ok:true};
    }
    throw Error('unexpected_message');
-  }}},window,document:{body,hidden:false,querySelectorAll:()=>[],createElement:tag=>new DomNode(tag)},Node:DomNode,location:{origin,href:target.url},URL,Date:ClockDate,console,setTimeout:(fn,ms)=>{state.calls.push('model-turn');state.delayRequests.push(ms);if(ms===1100)state.elapsedMs+=postBlurElapsedMs||1100;state.modelScore=state.modelPending;fn();},setInterval:()=>1,clearInterval(){}};
+  }}},window,document:{body,hidden:false,querySelectorAll:()=>[],createElement:tag=>new DomNode(tag)},Node:DomNode,location:{origin,href:target.url},URL,Date:ClockDate,console,setTimeout:(fn,ms)=>{state.calls.push('model-turn');state.delayRequests.push(ms);if(ms===1100)state.elapsedMs+=postBlurElapsedMs||1100;if(!state.focusSettled&&state.calls.includes('focus')){state.focusSettled=true;if(changedValueAfterFocus!==null)input.raw=changedValueAfterFocus;if(changedContextAfterFocus)state.focusChangedContext=true;if(focusFlags)state.flags=[...focusFlags];}state.modelScore=state.modelPending;fn();},setInterval:()=>1,clearInterval(){}};
  vm.runInNewContext(readScript('morning.js'),sandbox);
  vm.runInNewContext(readScript('ic-entry.js'),sandbox);
  const run=()=>new Promise(resolve=>{assert.equal(listener({type:'morning_execute',run_id:crypto.randomUUID(),nonce:crypto.randomUUID(),list,target},{id:'fictional-extension'},resolve),true);});
@@ -117,7 +117,7 @@ test('native IC executor enters a planned missing-work zero, saves and reloads w
  assert.equal(reply.ok,true);assert.equal(reply.data.code,'read_back');
  assert.equal(reply.data.result.counts.filled,1);assert.equal(h.input.value,'0');
  assert.deepEqual(h.state.flags,['Missing']);
- assert.deepEqual(h.state.calls,['focus','set:0','input','change','keyup','model-turn','blur','model-turn','save','reload']);
+ assert.deepEqual(h.state.calls,['focus','model-turn','set:0','input','change','model-turn','keyup','blur','model-turn','save','reload']);
  assert.equal(reply.data.reasons.flag,0);
 });
 
@@ -125,7 +125,7 @@ test('the real port event sequence lets a deferred ngModel score reach blur vali
  const h=contentPanel({kind:'score',value:10,flags:[],recognizedEvents:true}),reply=await h.run();
  assert.equal(reply.data.code,'read_back');assert.equal(reply.data.result.counts.filled,1);
  assert.equal(h.state.modelScore,'10');assert.equal(h.state.draft,'10');assert.equal(h.state.committed,'10');
- assert.deepEqual(h.state.calls,['focus','set:10','input','change','keyup','model-turn','blur','model-turn','save','reload']);
+ assert.deepEqual(h.state.calls,['focus','model-turn','set:10','input','change','model-turn','keyup','blur','model-turn','save','reload']);
 });
 
 test('the actual own keyup validation path can recognize the model when blur alone does not',async()=>{
@@ -193,7 +193,7 @@ test('changed assignment context during Save is uncertain without a second click
 test('readback finds a new workspace iframe instead of waiting on the detached frame',async()=>{
  const h=contentPanel({replaceFrame:true}),reply=await h.run();
  assert.equal(reply.data.code,'read_back');assert.equal(reply.data.result.outcome,'entered');
- assert.deepEqual(h.state.calls,['focus','set:0','input','change','keyup','model-turn','blur','model-turn','save','reload']);
+ assert.deepEqual(h.state.calls,['focus','model-turn','set:0','input','change','model-turn','keyup','blur','model-turn','save','reload']);
  assert.deepEqual(h.state.flags,['Missing']);
 });
 
@@ -309,4 +309,34 @@ test('delayed subscription turn beyond the total20s validation budget cannot rea
  const h=contentPanel({kind:'score',value:8.3,flags:[],recognizedEvents:true,postBlurElapsedMs:20001}),reply=await h.run();
  assert.equal(reply.data.code,'typing_stopped');assert.equal(h.state.calls.filter(c=>c==='save').length,0);
  assert.equal(h.state.calls.filter(c=>c==='set:8.3').length,1);
+});
+
+
+// Fictional queued binding follows the saved forms Promise-registration and
+// IC afterInit setTimeout contract. It does not establish a live failure cause.
+test('queued focus/control registration settles before the one original DOM input edit',async()=>{
+ const h=contentPanel({kind:'score',value:10,flags:[],recognizedEvents:true,deferredFocusBinding:true}),reply=await h.run();
+ assert.equal(reply.data.code,'read_back');assert.equal(h.state.committed,'10');assert.equal(h.state.calls.filter(c=>c==='set:10').length,1);
+ assert.ok(h.state.calls.indexOf('model-turn')<h.state.calls.indexOf('set:10'));
+ assert.ok(h.state.calls.indexOf('keyup')>h.state.calls.indexOf('change'));
+ assert.equal(h.state.calls.filter(c=>c==='save').length,1);assert.equal(h.state.calls.filter(c=>c==='reload').length,1);
+});
+test('original numeric or nonnumeric value changed during focus cannot be overwritten',async()=>{
+ for(const value of ['7','unexpected']){
+  const h=contentPanel({kind:'score',value:10,flags:[],recognizedEvents:true,changedValueAfterFocus:value}),reply=await h.run();
+  assert.equal(reply.data.code,'typing_stopped');assert.equal(h.input.value,value);assert.equal(h.state.calls.filter(c=>c.startsWith('set:')).length,0);
+  assert.equal(h.state.calls.filter(c=>c==='save').length,0);assert.equal(h.state.calls.filter(c=>c==='reload').length,0);
+ }
+});
+test('focus context, input identity or protected flags changing blocks the first edit',async()=>{
+ for(const option of [{changedContextAfterFocus:true},{replaceInputAfterFocus:true},{focusFlags:['Exempt']}]){
+  const h=contentPanel({kind:'score',value:10,flags:[],recognizedEvents:true,...option}),reply=await h.run();
+  assert.equal(reply.data.code,'typing_stopped');assert.equal(h.state.calls.filter(c=>c.startsWith('set:')).length,0);
+  assert.equal(h.state.calls.filter(c=>c==='save').length,0);assert.equal(h.state.committed,'');
+ }
+});
+test('an unaccepting model still stops before Save with no second setter or reload',async()=>{
+ const h=contentPanel({kind:'score',value:10,flags:[],recognizedEvents:true,modelNeverAccepts:true}),reply=await h.run();
+ assert.equal(reply.data.code,'typing_stopped');assert.equal(h.state.calls.filter(c=>c==='set:10').length,1);
+ assert.equal(h.state.calls.filter(c=>c==='save').length,0);assert.equal(h.state.calls.filter(c=>c==='reload').length,0);assert.equal(h.state.committed,'');
 });
