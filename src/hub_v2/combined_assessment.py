@@ -7,8 +7,9 @@ rounded component grades, are pooled. Missing components are disclosed and
 never supply a fabricated denominator or absence zero.
 """
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -22,6 +23,7 @@ FIELDS = {'school_year', 'agenda_id', 'class_key', 'week', 'form_id',
           'lesson_folder_id', 'components'}
 ID = re.compile(r'[A-Za-z0-9_-]{10,200}')
 MAX_SOURCES = 200
+SOURCE_WORKERS = 4
 
 
 class Held(ValueError):
@@ -30,6 +32,18 @@ class Held(ValueError):
 
 SOURCE_FIELDS = google.FILE_FIELDS + ',version,md5Checksum,size,headRevisionId'
 _request_captures = ContextVar('combined_request_captures', default=None)
+
+
+@contextmanager
+def _source_results(reader, file_ids):
+    """Ordered independent reads; join all workers before returning or refusing.
+
+    Each job owns its copied context while sharing only this request's guarded
+    captures. Google's transport remains thread-local, never a shared Session.
+    """
+    with ThreadPoolExecutor(max_workers=SOURCE_WORKERS) as pool:
+        jobs = [(copy_context(), fid) for fid in file_ids]
+        yield pool.map(lambda job: job[0].run(reader, job[1]), jobs)
 
 
 class _RequestCaptures:
@@ -67,9 +81,12 @@ class _RequestCaptures:
             return captured
 
     def verify_bookend(self):
-        for fid, captured in self.values.items():
-            if _source_metadata(self.token, fid) != captured['metadata']:
-                raise Held('A combined-assignment source changed before the request finished.')
+        captured = list(self.values.items())
+        with _source_results(lambda fid: _source_metadata(self.token, fid),
+                             [fid for fid, _ in captured]) as results:
+            for (_, value), metadata in zip(captured, results):
+                if metadata != value['metadata']:
+                    raise Held('A combined-assignment source changed before the request finished.')
 
 
 @contextmanager
@@ -300,9 +317,10 @@ def bind_form(token, form, scope):
                for upload in snapshot.get('files', []) if upload.get('id')}
         if len(ids) > MAX_SOURCES:
             raise Held('This combined assignment has too many source copies to verify in one read.')
-        for fid in sorted(ids):
-            capture = read_source(token, fid)
-            state['sources'][fid] = {'cycle': classify(capture, teachers), 'basis': source_basis(capture)}
+        ordered_ids = sorted(ids)
+        with _source_results(lambda fid: read_source(token, fid), ordered_ids) as results:
+            for fid, capture in zip(ordered_ids, results):
+                state['sources'][fid] = {'cycle': classify(capture, teachers), 'basis': source_basis(capture)}
         state['on_time'] = select_rows(form, scope, state['sources'])
         state['current'] = select_rows(form, scope, state['sources'], include_late=True)
     except (Held, google.GoogleError, completion.Unreadable) as error:

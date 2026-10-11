@@ -1190,7 +1190,7 @@ test('source-change popup explains the source stop and sends its own flag only f
  assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
 });
 test('source-change helper package has the next version without broad automatic retry expansion',()=>{
- assert.equal(JSON.parse(source('manifest.json')).version,'0.5.26');
+ assert.equal(JSON.parse(source('manifest.json')).version,'0.5.27');
  assert.match(source('morning-background.js'),/const completedRecheckCodes=new Set\(\['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores'\]\)/);
 });
 
