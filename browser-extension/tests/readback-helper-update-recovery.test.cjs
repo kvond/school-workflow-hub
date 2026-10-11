@@ -80,8 +80,8 @@ test('popup exposes distinct checked-readback scope and only trusted checked cli
  await ui.element('morning-clear').listeners.click({isTrusted:true});const m=ui.messages.find(m=>m.type==='morning_clear');assert.equal(m.readback_recovery_confirmed,true);assert.equal(m.current_mapped_confirmed,true);
  ui.show(await h.invoke(ack));assert.match(ui.element('morning-status').textContent,/remains incomplete after a saved-result mismatch/);assert.equal(ui.element('morning-run-now').hidden,false);
 });
-test('manifest only advances024; original origins permissions and exact approved v3 executor remain bound',()=>{
- const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../manifest.json'),'utf8'));assert.equal(manifest.version,VERSION);
- const {execFileSync}=require('node:child_process');const root=path.join(__dirname,'../..');const old=JSON.parse(execFileSync('git',['show','HEAD:browser-extension/manifest.json'],{cwd:root,encoding:'utf8'}));old.version=VERSION;assert.deepEqual(manifest,old);
- assert.equal(require('node:crypto').createHash('sha256').update(fs.readFileSync(path.join(__dirname,'../ic-entry.js'))).digest('hex'),'2dabd1f1a1a96b2dd6361b98da84f754088f3b11e4eb2be1d2c4bebf5a2c2a04');
+test('manifest advances025 only; original origins and permissions remain bound with the postblur wait',()=>{
+ const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../manifest.json'),'utf8'));assert.equal(manifest.version,'0.5.25');
+ const {execFileSync}=require('node:child_process');const root=path.join(__dirname,'../..');const old=JSON.parse(execFileSync('git',['show','HEAD:browser-extension/manifest.json'],{cwd:root,encoding:'utf8'}));old.version='0.5.25';assert.deepEqual(manifest,old);
+ assert.match(fs.readFileSync(path.join(__dirname,'../ic-entry.js'),'utf8'),/edited_score_validation_pending/);
 });

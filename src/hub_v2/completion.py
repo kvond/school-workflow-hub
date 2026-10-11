@@ -29,7 +29,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from . import graphical_choice, response_binding, workspace_binding
+from . import graphical_choice, response_binding, workspace_binding, writing_fields
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -259,6 +259,8 @@ def read_deck(raw):
                 if seen[unit["key"]] > 1:
                     unit["key"] += "|%d" % seen[unit["key"]]
             slide = {"number": number, "units": units}
+            if tree is not None and any(u.get("binding", {}).get("kind") == writing_fields.KIND for u in units):
+                writing_fields.attach(slide, tree, root, pictures, archive, _box, _name, part=name)
             if tree is not None and any(u.get("binding", {}).get("kind") == graphical_choice.KIND for u in units):
                 slide["choice_shapes"] = graphical_choice.read_shapes(tree, box=_box, affine=_affine, text=_text, name=_name)
             # Raster regions are evidence only for a reviewed explicit activity,
@@ -508,6 +510,8 @@ def _assign(slide_markers, written, template_slide, size, *, student_slide=None)
     if not slide_markers:
         return result, list(written), "no code"
     if any("binding" in m for m in slide_markers):
+        if all(m.get("binding", {}).get("kind") == writing_fields.KIND for m in slide_markers):
+            return writing_fields.answers(slide_markers, written, template_slide, student_slide, size, _plain)
         if all(m.get("binding", {}).get("kind") == workspace_binding.KIND for m in slide_markers):
             return workspace_binding.answers(slide_markers, written, template_slide, student_slide, size, _plain)
         if all(m.get("binding", {}).get("kind") == "conditional-response-row" for m in slide_markers):
@@ -956,7 +960,9 @@ def assess(student, template, *, found_codes_only=False):
                 found[key] = {"category": key[0], "id": key[1], "slide": slide["number"], "status": status,
                               "excerpt": words[:80], "answer": answer[:MAX_ANSWER],
                               "at": where["number"], "question": slide_title(where)}
-                if any(u.get("picture") for u, _ in items):
+                if any(u.get("completion_only") == "new original profile image" for u, _ in items):
+                    found[key]["completion_evidence"] = "New profile picture placed in the original response region"
+                elif any(u.get("picture") for u, _ in items):
                     found[key]["completion_evidence"] = "Original picture placed in response region"
                 elif any(u.get("completion_only") == "numeric record" for u, _ in items):
                     found[key]["completion_evidence"] = "Numeric measurement recorded in original response fields"
@@ -968,6 +974,10 @@ def assess(student, template, *, found_codes_only=False):
                     found[key]["completion_evidence"] = "One original YES/NO option circled"
                     found[key]["recorded_choice"] = next(u["recorded_choice"] for u, _ in items
                                                         if u.get("completion_only") == "circled choice")
+                elif any(u.get("completion_only") == "original raster option" for u, _ in items):
+                    found[key]["completion_evidence"] = "One original printed option circled"
+                    found[key]["recorded_choice"] = next(u["recorded_choice"] for u, _ in items
+                                                        if u.get("completion_only") == "original raster option")
                 elif any(u.get("completion_only") == "highlighted choice" for u, _ in items):
                     found[key]["completion_evidence"] = "One original YES/NO option highlighted"
                     found[key]["recorded_choice"] = next(u["recorded_choice"] for u, _ in items

@@ -2013,10 +2013,13 @@ def verify_feedback_successor(token, config, class_key, prior_feedback_id):
         return {"status": "held", "problem": _problem(error)}
 
 
-def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
+def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
+                         imported_review_sha256=None, imported_teacher_reference_sha256=None, refresh_index=True):
     """File teacher-authorized science-writing feedback in one existing folder."""
     cls, run = saved_report.get("class_key"), None
     try:
+        if type(refresh_index) is not bool:
+            raise Held("The trusted filing worker must explicitly preserve or defer the index refresh.")
         if (saved_report.get("schema") != "science-writing/v1" or saved_report.get("report_type") != "science_writing"
                 or not re.fullmatch(r"feedbacksource_[a-f0-9]{64}", str(saved_report.get("id", "")))
                 or not isinstance(pdf_bytes, bytes) or not pdf_bytes.startswith(b"%PDF") or len(pdf_bytes) > 25_000_000
@@ -2038,7 +2041,7 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
         observations = (saved_report.get("provenance") or {}).get("source_observations", [])
         if not isinstance(observations, list) or not observations or len(observations) > 500:
             raise Held("The science-writing report has no bounded source observations.")
-        sources = {}
+        sources, imported_metadata = {}, {}
         for observation in observations:
             ident = observation.get("source_file_id")
             revision = str(observation.get("source_revision") or "")
@@ -2046,8 +2049,44 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
                     or not ident or not revision):
                 raise Held("A science-writing observation belongs to a different student or has no source revision.")
             if ident in sources:
-                if sources[ident]["source_version"] != revision:
+                if (sources[ident]["source_version"] != revision
+                        or (observation.get("source_kind") == IMPORTED_ORIGINAL
+                            and any(sources[ident].get(k) != observation.get(o) for k, o in (
+                                ("source_record_key", "source_record_key"), ("source_sha256", "source_sha256"),
+                                ("source_review_sha256", "source_review_sha256"), ("date", "date"), ("date_basis", "date_basis"))))):
                     raise Held("This science-writing report combines unconfirmed revisions of one submission.")
+                continue
+            if observation.get("source_kind") == IMPORTED_ORIGINAL:
+                owned = [a for a in artifacts if a.get("status") == "verified"
+                         and a.get("source_kind") == IMPORTED_ORIGINAL
+                         and a.get("record_key") == observation.get("source_record_key")
+                         and a.get("drive_file_id") == ident and a.get("student_key") == student["student_key"]]
+                if len(owned) != 1:
+                    raise Held("This writing source has no single verified imported-original record.")
+                artifact = owned[0]
+                meta = google.drive_file(token, ident, FIELDS)
+                _verify_imported_original(meta, artifact)
+                from . import imported_original_feedback
+                evidence = imported_original_feedback.validate_saved_report(saved_report,
+                    expected_review_sha256=imported_review_sha256,
+                    expected_teacher_reference_sha256=imported_teacher_reference_sha256)
+                if (str(meta.get("version")) != revision or meta.get("modifiedTime") != observation.get("source_modified_at")
+                        or observation.get("source_sha256") != artifact["copied_content_proof"]["sha256"]
+                        or observation.get("date") != artifact["date"] or observation.get("date_basis") != artifact["date_basis"]
+                        or observation.get("submitted_at") is not None
+                        or evidence.get("record_key") != artifact["record_key"] or evidence.get("source_metadata") != meta
+                        or evidence.get("import_provenance") != artifact["import_provenance"]
+                        or evidence.get("source_sha256") != observation.get("source_sha256")
+                        or evidence.get("review_sha256") != observation.get("source_review_sha256")
+                        or evidence.get("student", {}).get("student_key") != student["student_key"]):
+                    raise Held("This imported worksheet's exact writing evidence or external submission date changed.")
+                imported_metadata[ident] = meta
+                sources[ident] = {"source_kind": IMPORTED_ORIGINAL, "source_record_key": artifact["record_key"],
+                    "source_file_id": ident, "source_version": revision, "source_modified_at": meta.get("modifiedTime"),
+                    "source_sha256": artifact["copied_content_proof"]["sha256"], "source_review_sha256": observation.get("source_review_sha256"),
+                    "date": artifact["date"], "date_basis": artifact["date_basis"], "submitted_at": None,
+                    "assignment": artifact["assignment"], "lesson_status": artifact["lesson_status"],
+                    "source_context": artifact["source_context"], "import_provenance": artifact["import_provenance"]}
                 continue
             owned = [a for a in artifacts if a.get("status") == "verified" and a.get("source_file_id") == ident
                      and a.get("source_version") == revision]
@@ -2093,6 +2132,8 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
         run = _Run(token, write_token, config, cls)
         _private(google.drive_file(token, student["parent"], FIELDS), parent=run.course["id"], folder=True)
         _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True, write=True)
+        if any(google.drive_file(token, ident, FIELDS) != meta for ident, meta in imported_metadata.items()):
+            raise Held("An imported writing source changed before feedback filing. No report was created.")
         ident = key("archivefeedback", [scope, saved_report["id"]]); old = _read(run.port, ident)
         if old and (old.value.get("student_key") != student["student_key"]
                     or old.value.get("report_source_sha256") != report_hash
@@ -2116,6 +2157,8 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
                 "source_sha256": report_hash, "identity_status": student.get("identity_status", "identity_unverified")})
         run.attach(student, artifact)
         _feedback_file(token, scope, run.course, student, artifact)
+        if any(google.drive_file(token, ident, FIELDS) != meta for ident, meta in imported_metadata.items()):
+            raise Held("An imported writing source changed after filing; preserve the report for review.")
         if prior:
             # A single fenced class claim serializes replacements. Never retire
             # the current version before the new PDF and its owner are verified.
@@ -2133,7 +2176,8 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes):
             _feedback_successor(token, scope, run.course, owner.value, docs[prior_key].value, docs)
         run.finish({"status": "verified", "report_type": "science_writing", "feedback_id": saved_report["id"], "drive_file_id": artifact["drive_file_id"]})
         value = _feedback_metadata(artifact, student, run.course)
-        value["index_sync"] = refresh_work_index(token, write_token, config)
+        value["index_sync"] = (refresh_work_index(token, write_token, config) if refresh_index else
+            {"status": "deferred", "native_index_write": False, "problem": "The Root worker will verify the existing source rows before updating their feedback links."})
         return value
     except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
         result = {"status": "held", "class_key": cls, "feedback_id": saved_report.get("id"), "problem": _problem(error)}
@@ -2462,17 +2506,31 @@ def work_index_rows(token, config):
                 for report in feedback:
                     if report.get("report_type") == "science_writing" and report.get("source_records"):
                         for source_record in report["source_records"]:
-                            candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
-                                and a.get("source_file_id") == source_record.get("source_file_id")
-                                and a.get("source_version") == source_record.get("source_version")]
+                            imported = source_record.get("source_kind") == IMPORTED_ORIGINAL
+                            if imported:
+                                candidates = [a for a in works if a.get("source_kind") == IMPORTED_ORIGINAL
+                                    and a.get("record_key") == source_record.get("source_record_key")
+                                    and a.get("drive_file_id") == source_record.get("source_file_id")
+                                    and str((a.get("imported_file_revision") or {}).get("version")) == source_record.get("source_version")
+                                    and (a.get("copied_content_proof") or {}).get("sha256") == source_record.get("source_sha256")
+                                    and a.get("date") == source_record.get("date")
+                                    and a.get("import_provenance") == source_record.get("import_provenance")]
+                            else:
+                                candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
+                                    and a.get("source_file_id") == source_record.get("source_file_id")
+                                    and a.get("source_version") == source_record.get("source_version")]
                             linked = next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
                             if linked:
                                 used.add(linked["record_key"])
                             status = "Science writing feedback covers this submission" if linked else "Science writing feedback; work not located"
                             if report.get("supersession_verified"):
                                 status = "Superseded feedback; previous version retained. " + status
-                            rows.append(_index_row(class_name, student, linked, report, status,
-                                key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")])))
+                            # The current imported-work row keeps its original key
+                            # and teacher note; historical reports retain separate keys.
+                            row_key = (key("workindexrow", [student["student_key"], linked["record_key"]])
+                                if imported and linked and not report.get("supersession_verified")
+                                else key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")]))
+                            rows.append(_index_row(class_name, student, linked, report, status, row_key))
                         continue
                     candidates = [a for a in works if a.get("source_kind") != IMPORTED_ORIGINAL
                         and a.get("source_file_id") == report.get("source_file_id")

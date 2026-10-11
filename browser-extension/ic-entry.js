@@ -71,7 +71,23 @@
     const current=read(false);
     if(!sameContext(current.s,plan)||!current.s.inputs.includes(input))fail('ic_changed');
     input.blur();
-    if(input.value.trim()!==String(change.value))fail('typing_not_taken');
+    diagnostic='edited_score_validation_pending';
+    const validationStarted=Date.now();
+    // IC's own keyup subscription schedules validation after its 1000ms turn;
+    // blur validation also awaits studentScoreUpdated. Observe its existing
+    // rendered input and dirty state after that turn, without typing again.
+    await new Promise(resolve=>setTimeout(resolve,1100));
+    const validationRemaining=20000-(Date.now()-validationStarted);
+    if(validationRemaining<=0)fail('typing_not_taken');
+    await until(()=>{
+     const current=read(false);
+     if(!sameContext(current.s,plan)||!current.s.inputs.includes(input)
+      ||current.s.inputs.filter(i=>norm(i.getAttribute('aria-label'))===change.label).length!==1)fail('ic_changed');
+     const actual=current.snapshot.rows.find(r=>r.label===change.label);
+     if(!actual||JSON.stringify(actual.flags)!==JSON.stringify(planned.flags))fail('ic_changed');
+     return input.value.trim()===String(change.value)&&current.s.save.getAttribute('title')===DIRTY;
+    },validationRemaining);
+    diagnostic='';
    },
    save:async()=>{
     const {s,snapshot}=read(false);if(!sameContext(s,plan))fail('ic_changed');
@@ -125,6 +141,7 @@
  };
  const READBACK_MESSAGES={
   save_confirmation_pending:'IC did not show its saved-state confirmation in time.',
+  edited_score_validation_pending:'IC did not finish validating this typed score in time. Do not repeat entry; reload and check this assignment first.',
   edited_scores_not_recognized:'IC did not confirm that it recognized the edited scores. Do not repeat entry; reload and check this assignment first.',
   reload_document_pending:'The reloaded assignment did not finish opening in time.',
   reload_panel_unusable:'The reloaded score panel could not be read safely.',

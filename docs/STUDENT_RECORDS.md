@@ -27,6 +27,25 @@ registration reuses it. The work index retains the observed local submission day
 original Schoology link and filed-work link on later refreshes. Registration time
 stays separate, and worksheet feedback remains pending until separately verified.
 
+An internal filing worker can prepare writing feedback for one such PDF or PNG
+without manufacturing a Form event. It needs the actual original bytes, literal
+source metadata bookends and a separately authenticated review of every rendered
+page and each original response region. The worker supplies the original page
+count from its independent render proof; the adapter does not count PDF pages or
+perform OCR. The reviewed teacher worksheet identifies
+the question, printed text and response box; its frozen digest and the response
+review digest must be supplied independently again when filing. Printed prompts,
+identity, pictures and supplied examples cannot provide writing quotations.
+
+The existing vocabulary, conceptual understanding, evidence and reasoning rubric
+uses exact short quotations from those authored fields. Unavailable evidence stays
+unrated. These observations are feedback only, with no completion count or grade.
+The original external submission date stays on the work; the actual preparation
+date labels the feedback. The existing private folder and WorkIndex row are reused,
+preserving the original link, row key and teacher note. There is no public review
+payload endpoint, automatic OCR attribution or scheduled worksheet-feedback job
+in this adapter; a trusted worker must supply and verify the review and PDF.
+
 Teacher-confirmed former-student work can stay in a tagged private class
 `Former students` container with an explicitly unconfirmed former section.
 The class index's `historical_sources` binding must match the saved student,
@@ -252,3 +271,5 @@ Do not trash files or folders. An empty Form response folder may still be an
 active or future upload destination and must never receive this label merely
 because it is empty. Retain original IDs, source links, distinct revisions and
 named-user access during any authorized reorganization.
+
+For recovered worksheet feedback, the reviewed page/question label is shown to the student; original object IDs and exact quote/source digests remain private provenance. A trusted Root filing worker may explicitly defer the normal WorkIndex refresh (default unchanged), then guard the existing five source keys and full native sheet before updating only feedback links/status/dates. Submission dates remain original.

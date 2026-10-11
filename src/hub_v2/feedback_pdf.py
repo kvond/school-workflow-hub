@@ -212,7 +212,9 @@ def render_science_writing(saved):
             raise Held('The science-writing report needs shorter observations to fit two pages without dropping evidence.')
         heading.drawOn(c, 44, y)
         context = dimension['lesson'] + ' | ' + dimension['source_date']
-        if dimension.get('question_id'):
+        if dimension.get('source_location'):
+            context += ' | ' + dimension['source_location']
+        elif dimension.get('question_id'):
             context += ' | ' + dimension['question_id']
         y = paragraph(context, y - 3, 'small', width=296, floor=floor)
         y = paragraph('From your submitted work: "' + dimension['example'] + '"' if dimension['example'].strip()

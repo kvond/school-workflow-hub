@@ -84,11 +84,14 @@ def rows(form, scored, now, *, recheck=False):
     deadline_known = bool(cutoff and (not window.get("from") or (start and start <= cutoff)))
     closed = bool(deadline_known and cutoff < now)
     elsewhere = set()
+    elsewhere_details = {}
     accepted = set()
     for item in form.get("elsewhere", []):
         last, _, first = item.get("who", "").partition(",")
-        (accepted if item.get("accepted_intake") else elsewhere).add(
-            person({"last": last, "first": first, "section": item["section"]}))
+        identity = person({"last": last, "first": first, "section": item["section"]})
+        (accepted if item.get("accepted_intake") else elsewhere).add(identity)
+        if not item.get("accepted_intake"):
+            elsewhere_details.setdefault(identity, []).append(item)
     result = {}
 
     def add(row, kind, notes=None, revision=None, reason=""):
@@ -136,7 +139,21 @@ def rows(form, scored, now, *, recheck=False):
             add(row, "none", reason="its two weeks haven't started" if deadline_known else
                 "its two-week deadline is unconfirmed; no zero prepared")
         elif row.get("unsorted") or person(row) in elsewhere:
-            add(row, "check", reason="submission needs review")
+            # Only the canonical routed destination may name another lesson.
+            # A filename or an unverified/ambiguous destination cannot supply it.
+            destinations = {" ".join(str(item.get("to") or "").split())
+                            for item in elsewhere_details.get(person(row), [])
+                            if form.get("form_id") and item.get("source_form_id") == form.get("form_id")
+                            and item.get("assignment_form_id")
+                            and item["assignment_form_id"] != form.get("form_id")
+                            and isinstance(item.get("to"), str) and item["to"].strip()}
+            if len(destinations) == 1:
+                destination = next(iter(destinations))
+                destination = destination.encode("utf-16-le", errors="replace")[:160].decode("utf-16-le", errors="ignore")
+                reason = "Received for %s; not this lesson. Review its original turn-in route; preserve current grades." % destination
+            else:
+                reason = "Submission needs review; confirm its original lesson and turn-in route. Preserve current grades."
+            add(row, "check", reason=reason)
         elif person(row) in accepted:
             add(row, "none", reason="accepted through this Form for another assignment; no score inferred here")
         elif recheck:
