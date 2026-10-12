@@ -323,7 +323,7 @@ test('receipt bridge reports allowlisted HTTP, connection and acknowledgement fa
  const cases=[
   {status:401,cause:'hub_signed_out',code:'signed_out'},
   {status:403,cause:'hub_access_denied',code:'hub_unavailable'},
-  {status:503,cause:'hub_http_error',code:'hub_unavailable'},
+  {status:503,cause:'hub_http_error',code:'receipt_unconfirmed'},
   {status:200,type:'text/html',cause:'hub_invalid_response',code:'hub_unavailable'},
   {status:200,invalidJSON:true,cause:'hub_invalid_response',code:'hub_unavailable'},
   {status:200,data:{recorded:false},cause:'hub_report_not_acknowledged',code:'receipt_unconfirmed'},
@@ -1191,7 +1191,7 @@ test('source-change popup explains the source stop and sends its own flag only f
  assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
 });
 test('source-change helper package has the next version without broad automatic retry expansion',()=>{
- assert.equal(JSON.parse(source('manifest.json')).version,'0.5.30');
+ assert.equal(JSON.parse(source('manifest.json')).version,'0.5.31');
  assert.match(source('morning-background.js'),/const completedRecheckCodes=new Set\(\['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores'\]\)/);
 });
 

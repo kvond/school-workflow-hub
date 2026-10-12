@@ -1,5 +1,19 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Bounded receipt rejection details (0.5.31)
+
+If the Hub rejects a mapped comparison receipt, the helper retains only a known
+server reason and HTTP status in the assignment context. Private error messages,
+student rows and provider data are discarded. Malformed, oversized or unreadable
+bodies remain a generic rejection; a stalled body stops at the existing deadline.
+Every rejected or timed-out receipt remains unconfirmed and stops further entry.
+
+This diagnostic update adds no retry or updated-version recovery grant and does
+not confirm an earlier failed receipt. Check saved scores in every current mapped
+IC assignment before the existing explicit recovery action allows one new pass.
+The original stopped run stays incomplete. Source and receipt deadlines, exact
+assignment binding, higher-only entry and authentication handling are unchanged.
+
 ## Exact source-list wait and finite updated-helper pass (0.5.30)
 
 Initial source lists and per-column source rechecks now allow 200 seconds for
