@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "School Workflow Hub \u2014 browser companion",
   "description": "Enter reviewed Hub scores in IC; optional weekday 7 a.m. entry with exact assignment bindings, keep-higher rules and readback.",
-  "version": "0.5.31",
+  "version": "0.5.32",
   "minimum_chrome_version": "102",
   "permissions": [
     "storage",

@@ -1,5 +1,18 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Registered teacher-source timeout check (0.5.32)
+
+A typed Google GET timeout while reading an exact registered teacher source may
+receive one additional read-only source-list check before an assignment's first
+column executes. The replacement must match the original complete rows, targets
+and source revision. Permission failures, generic error prose, missing codes,
+changed sources, later columns and receipt failures cannot use this extra read.
+
+A repeated registered teacher-source timeout stops the pass and names that read
+failure in the assignment context and popup. It retains the existing source-stop
+and checked-recovery safeguards. This update adds no grade-write retry or new run
+grant; deadlines, higher-only entry and uncertain-save behavior are unchanged.
+
 ## Bounded receipt rejection details (0.5.31)
 
 If the Hub rejects a mapped comparison receipt, the helper retains only a known

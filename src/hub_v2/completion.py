@@ -1210,6 +1210,17 @@ def _registered_teacher_membership(token, parent, meta, fields):
     return sorted(items, key=lambda item: item["id"])
 
 
+def _registered_teacher_read_failure(error, binding):
+    """A typed GET timeout for this registered collection, never guessed prose."""
+    from . import google
+    if (binding and isinstance(error, google.GoogleError)
+            and error.status is None and error.reason == "read_timeout"):
+        return {"source": "registered_teacher", "reason": "read_timeout",
+                "scope": {"class": binding["class_key"], "week": binding["week"],
+                          "form": binding["form_id"]}}
+    return None
+
+
 def _registered_teacher_sources(token, binding):
     """Exact existing parent/teacher metadata bookends; no root search or move."""
     from . import google
@@ -1244,12 +1255,18 @@ def _registered_teacher_sources(token, binding):
         result["membership_evidence"] = memberships
     except (google.GoogleError, Unreadable) as error:
         result["problem"] = "Cannot verify the exact Form's registered teacher sources: %s" % error
+        failure = _registered_teacher_read_failure(error, binding)
+        if failure:
+            result["read_failure"] = failure
     return result
 
 
 def _registered_teacher_bookend(token, binding, before, templates):
     """The templates actually consumed must match the fresh source resolution."""
+    from . import google
     after = _registered_teacher_sources(token, binding)
+    if after.get("read_failure"):
+        raise google.GoogleError(after["problem"], reason="read_timeout")
     if after.get("problem") or after != before:
         raise Unreadable(after.get("problem") or "The registered teacher sources changed while their contents were read.")
     expected = {deck["id"]: deck["metadata"] for deck in before["decks"]}
@@ -1344,6 +1361,7 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
     if sources["problem"]:
         return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson", "context": context,
                 "source_resolution": sources, "problem": context + ": " + sources["problem"],
+                **({"read_failure": sources["read_failure"]} if sources.get("read_failure") else {}),
                 "action": "Check this exact Agenda lesson folder and current deck links, then recheck; no title-based replacement was selected."}
     ids = [item["id"] for item in sources["decks"]]
     results = []
@@ -1358,18 +1376,23 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
             checked.update(deck_id=deck_id, title=meta.get("name", ""))
         except (google.GoogleError, Unreadable) as error:
             checked = {"status": "NOT_READY", "deck_id": deck_id, "code": "deck_not_ready", "label": "Cannot read lesson", "problem": str(error)}
+            failure = _registered_teacher_read_failure(error, binding)
+            if failure:
+                checked["read_failure"] = failure
         results.append(checked)
     if binding:
         try:
             _registered_teacher_bookend(token, binding, sources, bound_templates)
         except (google.GoogleError, Unreadable) as error:
             results.append({"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson",
-                            "problem": str(error)})
+                            "problem": str(error),
+                            **({"read_failure": failure} if (failure := _registered_teacher_read_failure(error, binding)) else {})})
     failed = next((r for r in results if r["status"] != "READY"), None)
     return {"status": "NOT_READY" if failed else "READY", "code": "deck_not_ready" if failed else None,
             "label": failed.get("label", "Needs check") if failed else "Ready",
             "scope": "assignment", "context": context, "student_copies_checked": False, "linked_decks": results,
             "source_resolution": sources,
+            **({"read_failure": failed["read_failure"]} if failed and failed.get("read_failure") else {}),
             "problem": context + ": " + failed["problem"] if failed else None,
             "action": failed.get("action") if failed and failed.get("action") else
                       ("Check this exact linked lesson's access or readability, then recheck before rerunning grading.")
