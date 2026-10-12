@@ -49,7 +49,7 @@ class GoogleReadTimeoutTests(unittest.TestCase):
                 google.get_json('https://provider.example.test/read', 'synthetic-token')
             self.assertEqual(caught.exception.status, status)
             self.assertIsNone(completion._registered_teacher_read_failure(caught.exception, declaration(FIRST)))
-            session.request.assert_called_once()
+            self.assertEqual(session.request.call_count, 2 if status == 500 else 1)
 
 
 class RegisteredTeacherTimeoutTests(unittest.TestCase):

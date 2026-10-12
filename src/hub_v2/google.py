@@ -130,22 +130,27 @@ def service_account(config=None):
 
 def get_json(url, token, params=None, timeout=20, method="GET", body=None):
     from requests.exceptions import Timeout
-    try:
-        response = _session().request(method, url, params=params, json=body, timeout=(5, timeout),
-                                      allow_redirects=False, headers={"Authorization": "Bearer " + token})
-    except Timeout:
-        # This is a transport classification, not an automatic provider retry.
-        # Write-capable requests must never acquire the read-only retry tag.
-        raise GoogleError("Google didn't answer in time. Try again.",
-                          reason="read_timeout" if method == "GET" else None) from None
-    except Exception:
-        raise GoogleError("Google didn't answer in time. Try again.") from None
-    if response.status_code == 200:
+    for attempt in range(2):
         try:
-            return response.json()
-        except ValueError:
-            raise GoogleError("Google sent an unreadable answer.", 200) from None
-    raise _response_error(response)
+            response = _session().request(method, url, params=params, json=body, timeout=(5, timeout),
+                                          allow_redirects=False, headers={"Authorization": "Bearer " + token})
+        except Timeout:
+            # This is a transport classification, not an automatic provider retry.
+            # Write-capable requests must never acquire the read-only retry tag.
+            raise GoogleError("Google didn't answer in time. Try again.",
+                              reason="read_timeout" if method == "GET" else None) from None
+        except Exception:
+            raise GoogleError("Google didn't answer in time. Try again.") from None
+        if response.status_code == 200:
+            try:
+                return response.json()
+            except ValueError:
+                raise GoogleError("Google sent an unreadable answer.", 200) from None
+        if method == "GET" and attempt == 0 and response.status_code == 500:
+            # The status is sufficient; do not inspect an untrusted error body
+            # to decide whether to repeat this identical, bounded read.
+            continue
+        raise _response_error(response)
 
 
 def _response_error(response):
