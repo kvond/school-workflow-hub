@@ -707,7 +707,8 @@ function renderNextLessons(audits) {
 }
 
 async function printTodayFeedback(data, status, button) {
-  const files = data.files || [];
+  const pendingOnly = data.print_pending_only === true;
+  const files = pendingOnly ? (data.pending_files || []) : (data.files || []);
   button.disabled = true;
   const printWindow = window.open('about:blank', '_blank');
   if (!printWindow) {
@@ -719,7 +720,11 @@ async function printTodayFeedback(data, status, button) {
   try {
     let packet = data.daily_packet;
     let response;
-    if (packet?.status === 'ready' && (!files.length || data.packet_matches_sources === true)) {
+    if (pendingOnly) {
+      response = await fetch('api/feedback/print-today', {method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: files.map(file => file.id)})});
+      packet = null;
+    } else if (packet?.status === 'ready' && (!files.length || data.packet_matches_sources === true)) {
       response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
     } else if (packet?.configured) {
       const finalized = await fetch('api/feedback/daily', {method: 'POST', credentials: 'same-origin',
@@ -760,7 +765,12 @@ function renderTodayFeedback(data) {
   const files = data.files || [];
   const packet = data.daily_packet;
   const panel = cockpitPanel('Daily feedback document');
-  const historical = data.date && data.date < (data.requested_date || todayISO());
+  const delivery = data.delivery || packet?.delivery;
+  const deliveryVerified = delivery?.status === 'verified';
+  const pending = Array.isArray(data.pending_files) ? data.pending_files : [];
+  const pendingCount = deliveryVerified ? (delivery.pending_file_ids || []).length : null;
+  const recordedPrinted = deliveryVerified && pendingCount === 0;
+  const historical = recordedPrinted || (data.date && data.date < (data.requested_date || todayISO()) && !pending.length);
   const sourceNotice = data.source_problem ? note('Current feedback sources could not be fully checked. ' +
     (packet?.status === 'ready' ? 'This saved dated document remains available: ' : '') + data.source_problem, 'info') : null;
   if (!files.length && packet?.status !== 'ready') {
@@ -781,22 +791,40 @@ function renderTodayFeedback(data) {
   const dates = (packet?.available_dates || []).filter(item => item.date !== data.date &&
     /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(item.pdf_url || ''));
   const checklist = cockpit.learningData?.checklist_url;
+  const printPending = deliveryVerified && pending.length > 0;
   const button = el('button', {type: 'button', class: historical ? '' : 'primary'},
-    `${historical ? 'Reprint saved feedback' : 'Print all feedback'} — ${data.date}`);
-  button.onclick = () => printTodayFeedback(data, status, button);
+    printPending ? `Print pending feedback (${pending.length})` : `${historical ? 'Reprint saved feedback' : 'Print all feedback'} — ${data.date}`);
+  const pendingIDs = new Set(pending.map(file => file.id));
+  const exactCurrentDay = pending.length === files.length && files.every(file => pendingIDs.has(file.id));
+  const pendingPreview = printPending && !exactCurrentDay;
+  button.onclick = () => printTodayFeedback({...data, print_pending_only: pendingPreview}, status, button);
+  if (printPending && pending.length > 100) button.disabled = true;
   const savedURL = packet?.status === 'ready' && /^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(packet.pdf_url || '') ? packet.pdf_url : null;
-  const contents = [status,
+  const deliveryNotice = recordedPrinted
+    ? note(`These exact report versions are recorded Printed${delivery.handed_file_ids?.length ? `; ${delivery.handed_file_ids.length} are recorded Handed` : ''}. Saved PDFs remain available to reprint.`, 'info')
+    : delivery?.status === 'unavailable' ? note(delivery.problem || 'Delivery records could not be verified; reports remain pending.', 'info') : null;
+  const pendingList = pending.length ? el('details', {}, el('summary', {text: `${pending.length} pending report versions across feedback dates`}),
+    el('ul', {}, ...pending.map(file => el('li', {}, link(file.name, file.url),
+      el('small', {class: 'muted', text: ` · ${file.feedback_day || file.created_day}`}))))) : null;
+  const sourceBlocks = (data.pending_source_problems || []).map(group =>
+    el('details', {}, el('summary', {text: `${group.date} · ${group.files?.length || 0} pending versions need source verification`}),
+      note(group.problem || 'Existing print source boundaries are not verified.', 'info'),
+      el('ul', {}, ...(group.files || []).map(file => el('li', {}, link(file.name, file.url))))));
+  const contents = [status, historical ? null : deliveryNotice, pendingList, ...sourceBlocks,
+    printPending && pending.length > 100 ? note('This pending list exceeds one print preview. Open the exact report links to print smaller groups.', 'info') : null,
     savedURL ? el('p', {}, link(`Open saved daily feedback — ${packet.date} (${packet.pages} pages)`, savedURL))
-      : note(packet?.configured ? 'Printing saves this day’s all-class document. Verified student copies stay in their folders; existing class packets stay at class level.'
+      : note(pendingPreview ? 'Print pending opens a preview of only these report versions. It does not save a daily document.' : packet?.configured ? 'Printing saves this day’s all-class document. Verified student copies stay in their folders; existing class packets stay at class level.'
         : 'The daily document folder is not connected yet. The existing feedback can be printed as a preview.', 'info'),
-    data.packet_matches_sources === false ? note('The saved document differs from the current verified feedback list. Print all feedback saves an updated version; the earlier PDF is preserved.', 'info') : null,
+    data.packet_matches_sources === false ? note(pendingPreview
+      ? 'The saved full document differs from these pending versions. Print pending opens only the pending preview; the saved full PDF is preserved.'
+      : 'The saved document differs from the current verified feedback list. Print all feedback saves an updated version; the earlier PDF is preserved.', 'info') : null,
     checklist && !historical ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
     el('div', {class: 'action-row'}, button),
     files.length ? el('details', {}, el('summary', {text: 'Current feedback by student'}), list) : null,
     dates.length ? el('details', {}, el('summary', {text: 'Other saved feedback dates'}),
       el('ul', {}, ...dates.map(item => el('li', {}, link(`${item.date} · ${item.pages} pages`, item.pdf_url))))) : null].filter(Boolean);
   if (historical) {
-    panel.append(...[el('p', {text: `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${data.requested_date || todayISO()}. Earlier dated feedback remains available to reprint.`}),
+    panel.append(...[el('p', {text: recordedPrinted ? 'No pending printing for these exact report versions. Historical PDFs remain available.' : `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${data.requested_date || todayISO()}. Earlier dated feedback remains available to reprint.`}), deliveryNotice,
       sourceNotice,
       checklist ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
       el('details', {}, el('summary', {text: `Earlier feedback · latest saved ${data.date}`}), ...contents)].filter(Boolean));
