@@ -31,6 +31,13 @@
  const code=e=>safe.has(e?.message)?e.message:'panel_unusable';
  const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
  const receiptServerText=Object.freeze({source_changed:'source changed',coverage_incomplete:'source readiness not ready',receipt_unconfirmed:'comparison could not be verified',mapping_required:'assignment mapping required',no_scores:'no current source scores',source_scores_held:'current source scores need review',excluded_week:'assignment excluded'});
+ const teacherReadTimeoutText=' · Source check: registered teacher read timed out';
+ function registeredTeacherTimeout(response,scope){
+  const r=response?.readiness,f=r?.read_failure,exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(k=>Object.hasOwn(value,k));
+  return response?.code==='coverage_incomplete'&&r?.status==='NOT_READY'&&r?.code==='deck_not_ready'&&r?.label==='Cannot read lesson'
+   &&exact(f,['source','reason','scope'])&&f.source==='registered_teacher'&&f.reason==='read_timeout'
+   &&exact(f.scope,['class','week','form'])&&Object.keys(scope).every(k=>typeof f.scope[k]==='string'&&f.scope[k]===scope[k]);
+ }
  const receiptTransportText=Object.freeze({hub_request_timeout:'Hub request timed out',hub_bridge_timeout:'Hub connection timed out',hub_http_error:'Hub rejected receipt',hub_signed_out:'Hub sign-in required',hub_access_denied:'Hub access denied'});
  const bridgeCause=e=>/Receiving end does not exist/i.test(e?.message||'')?'hub_bridge_missing':/message (?:port|channel) closed|back.forward cache/i.test(e?.message||'')?'hub_bridge_closed':'hub_bridge_unavailable';
  const deadline=(promise,ms=100000)=>{let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('panel_unusable')),ms);})]).finally(()=>clearTimeout(timer));};
@@ -564,8 +571,24 @@
       // the next column's in-progress state before its read-only preflight.
       summary.code='running';await write(s);
       // Re-read source and exact mapping before each section/column.
-      const fresh=await hub(source,'list',scope);
-      if(fresh.code!=='ready'||!initial.revision||fresh.revision!==initial.revision||JSON.stringify(fresh.list.rows)!==JSON.stringify(list.rows)||JSON.stringify(fresh.targets)!==JSON.stringify(initial.targets))throw Error('source_changed');
+      let fresh=await hub(source,'list',scope);
+      // One read-only retry belongs only to this item's untouched first column.
+      // The original full list and exact targets still bind any later execution.
+      if(registeredTeacherTimeout(fresh,scope)&&results.length===0&&!active&&!s.inflight&&!s.blocked&&!s.report_pending&&!pending.size
+         &&['filled','raised','kept','left'].every(k=>summary[k]===0)&&Object.values(summary.reasons).every(v=>v===0)
+         &&typeof initial.revision==='string'&&/^[a-f0-9]{64}$/.test(initial.revision)){
+       const setting=await read(),at=M.clock();
+       if(!setting.enabled)throw Error('disabled');
+       if(at.day!==s.day||(!manualNow&&at.minutes>=720))throw Error('missed_noon');
+       fresh=await hub(source,'list',scope);
+      }
+      if(fresh.code!=='ready'||!initial.revision||fresh.revision!==initial.revision||JSON.stringify(fresh.list?.rows)!==JSON.stringify(list.rows)||JSON.stringify(fresh.targets)!==JSON.stringify(initial.targets)){
+       if(registeredTeacherTimeout(fresh,scope)){
+        const context=` · ${String(binding.section).slice(0,100)} · ${binding.column==='notes'?'Notes':'Revision'}`;
+        summary.assignment=summary.assignment.slice(0,200-context.length-teacherReadTimeoutText.length)+teacherReadTimeoutText;
+       }
+       throw Error('source_changed');
+      }
       await usable(destination,binding.url);
       active={run_id:s.report.run_id,nonce:crypto.randomUUID(),tab:destination,url:binding.url,manualNow};
       // Mark potentially uncertain BEFORE sending a write-capable request.
