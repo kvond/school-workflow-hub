@@ -387,7 +387,21 @@ def status(token, config, date_et=None):
                     and item.value.get('date') == day and item.value.get('folder_id') == folder['id']):
                 reply = _reply(item.value, cached=True)
                 history.append({field: reply[field] for field in ('id', 'date', 'pages', 'pdf_url', 'classes')})
-    return {**_reply(stored.value, cached=True), 'available_dates': history}
+    from . import feedback_delivery
+    reply = _reply(stored.value, cached=True)
+    return {**reply, 'available_dates': history, 'delivery': feedback_delivery.packet_projection(config, reply)}
+
+
+def delivery_packet(token, config, ident):
+    """Read an exact immutable private manifest; no source export or packet write."""
+    if not isinstance(ident, str) or not re.fullmatch(r'dailyfeedbackpacket_[a-f0-9]{64}', ident):
+        raise Held('Choose one exact saved daily feedback packet.')
+    folder = _location(token, config)
+    stored = _read(configured_store(config), ident)
+    if not stored or stored.value.get('status') != 'verified' or stored.value.get('folder_id') != folder['id']:
+        raise Held('The chosen daily feedback packet is not a verified private snapshot.')
+    _check_file(token, folder, stored.value)
+    return _reply(stored.value, cached=True)
 
 
 def pdf(token, config, ident):

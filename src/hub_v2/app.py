@@ -19,10 +19,11 @@ from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, google, ledger, morning, morning_entry, native_feedback, recovery, review_context, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, google, ledger, morning, morning_entry, native_feedback, recovery, review_context, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
+          "feedback-delivery.js": "text/javascript; charset=utf-8",
           "provider-status.js": "text/javascript; charset=utf-8",
           "style.css": "text/css; charset=utf-8"}
 SECURITY_HEADERS = [
@@ -126,6 +127,10 @@ def api(sub, query, config):
         if set(query) not in (set(), {'date'}):
             raise ValueError('date')
         return daily_feedback_packet.status(token, config, _one(query, 'date', False) or None)
+    if sub == 'api/feedback/delivery/packet':
+        if set(query) != {'id'}:
+            raise ValueError('id')
+        return daily_feedback_packet.delivery_packet(token, config, _one(query, 'id'))
     if sub == 'api/feedback/today':
         if set(query) not in (set(), {'date'}):
             raise ValueError('date')
@@ -371,6 +376,36 @@ def feedback_list(token, config, agenda, class_key, week, form_id):
             "prompt": feedback.build(context, students, prompt) if prompt and students else None,
             "problem": None if prompt else where, "prompt_url": where if prompt else None,
             "done_before": done_before, "no_revision": no_revision, "sheet": sheet}
+
+
+def feedback_delivery_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
+    try:
+        payload = _json_body(environ, 2000)
+        base = {'action', 'through', 'handed_packet_id'}
+        if payload.get('action') == 'prepare' and set(payload) == base:
+            snapshot = feedback_delivery.prepare(google.service_token(config), config,
+                payload['through'], payload['handed_packet_id'])
+            return respond('200 OK', feedback_delivery.review_reply(snapshot))
+        if payload.get('action') == 'confirm' and set(payload) == base | {
+                'snapshot_sha256', 'printed_attested', 'handed_attested'}:
+            result = feedback_delivery.confirm(google.service_token(config), config,
+                payload['through'], payload['handed_packet_id'], payload['snapshot_sha256'],
+                payload['printed_attested'], payload['handed_attested'],
+                actor=google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config))
+            return respond('200 OK', result)
+        raise ValueError()
+    except (feedback_delivery.Held, daily_feedback_packet.Held, student_archive.Held) as error:
+        return respond('409 Conflict', {'error': str(error)})
+    except (Conflict, StoreUnavailable):
+        return respond('503 Service Unavailable', {'error': 'Delivery capture is unconfirmed. No retry was made. Check its exact readback before preparing another capture.'})
+    except google.GoogleError as error:
+        return respond('502 Bad Gateway', {'error': str(error)})
+    except (ValueError, KeyError, TypeError):
+        return respond('400 Bad Request', {'error': 'Prepare and confirm one exact delivery snapshot.'})
 
 
 def native_feedback_post(environ, respond, config):
@@ -705,6 +740,14 @@ def application(environ, start_response, config=None):
         return student_records_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/record":
         return record_post(environ, respond, config)
+    if method == 'POST' and path == '/v2/api/feedback/delivery/capture':
+        return feedback_delivery_post(environ, respond, config)
+    if method in ('GET', 'HEAD') and path == '/v2/feedback/delivery':
+        try:
+            google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        except google.SignInRequired:
+            return respond('401 Unauthorized', {'error': 'Please sign in again: reload this page.'})
+        return respond('200 OK', (STATIC / 'feedback-delivery.html').read_bytes(), 'text/html; charset=utf-8')
     if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save',
                                      '/v2/api/feedback/print-today', '/v2/api/feedback/daily'):
         return native_feedback_post(environ, respond, config)

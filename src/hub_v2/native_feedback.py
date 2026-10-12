@@ -830,7 +830,7 @@ def _feedback_files(token, config):
                            **({'contract_evidence_expires_at': contract_expiry} if contract_expiry else {}),
                            **{field: item[field] for field in ('contract_keys', 'contract_checked_at',
                                'contract_status') if item.get(field)},
-                           **{field: item[field] for field in ('pdf_sha256', 'shared_source_key', 'shared_source_document_id',
+                           **{field: item[field] for field in ('pdf_sha256', 'drive_md5', 'shared_source_key', 'shared_source_document_id',
                               'shared_pdf_sha256', 'covered_by_packet_manifest', 'covered_by_packet_id') if item.get(field)}}
     return {'configured': legacy['configured'] or archive_on, 'files': list(by_id.values()),
             'problem': None if legacy['configured'] or archive_on else legacy['problem']}
@@ -959,6 +959,7 @@ def today_files(token, config, *, date_et=None):
     if not available['configured']:
         return {**available, 'date': day}
     files = [item for item in available['files'] if item.get('feedback_day', item['created_day']) <= day]
+    delivery_catalog = list(files)
     batch_day = max((item.get('feedback_day', item['created_day']) for item in files), default=day)
     files = [item for item in files if item.get('feedback_day', item['created_day']) == batch_day]
     if daily_feedback_packet.enabled(config):
@@ -966,8 +967,30 @@ def today_files(token, config, *, date_et=None):
     order = {name: index for index, name in enumerate(FEEDBACK_FOLDERS)}
     files.sort(key=lambda item: (order[item['course']], item['created_at'], item['name'].casefold()))
     packet = daily_feedback_packet.status(token, config, batch_day if files else None)
+    from . import feedback_delivery
+    delivery = feedback_delivery.current_projection(token, config, delivery_catalog)
+    pending_ids = set(delivery['pending_file_ids'])
+    pending_files, pending_blocks = [], []
+    pending_days = sorted({item.get('feedback_day', item['created_day']) for item in delivery_catalog if item['id'] in pending_ids})
+    for pending_day in pending_days:
+        day_pending = [item for item in delivery_catalog if item['id'] in pending_ids
+                       and item.get('feedback_day', item['created_day']) == pending_day]
+        if not daily_feedback_packet.enabled(config):
+            pending_files.extend(day_pending)
+            continue
+        try:
+            selected = _select_daily_sources(available, pending_day)
+            selected_ids = {item['id'] for item in selected}
+            pending_files.extend(item for item in day_pending if item['id'] in selected_ids)
+            omitted = [item for item in day_pending if item['id'] not in selected_ids]
+            if omitted:
+                pending_blocks.append({'date': pending_day, 'files': omitted,
+                    'problem': 'These pending versions are excluded by the existing packet duplicate/source boundaries; no preview was authorized.'})
+        except Held as error:
+            pending_blocks.append({'date': pending_day, 'files': day_pending, 'problem': str(error)})
     return {'configured': True, 'date': packet['date'] if not files and packet.get('status') == 'ready' else batch_day, 'requested_date': day,
-            'files': files, 'problem': None,
+            'files': files, 'problem': None, 'delivery': delivery,
+            'pending_files': pending_files, 'pending_source_problems': pending_blocks,
             'current_sources_verified': True,
             'daily_packet': packet,
             'packet_matches_sources': (daily_feedback_packet.matches_sources(token, packet, files)
@@ -982,7 +1005,7 @@ def print_today(token, config, file_ids, *, date_et=None):
     current = today_files(token, config, date_et=date_et)
     if not current['configured']:
         raise Held(current['problem'])
-    by_id = {item['id']: item for item in current['files']}
+    by_id = {item['id']: item for item in current['files'] + current.get('pending_files', [])}
     if any(file_id not in by_id for file_id in file_ids):
         raise Held('The feedback list changed. Refresh Today before printing.')
     order = {name: index for index, name in enumerate(FEEDBACK_FOLDERS)}
