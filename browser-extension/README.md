@@ -1,5 +1,21 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Exact source-list wait and finite updated-helper pass (0.5.30)
+
+Initial source lists and per-column source rechecks now allow 200 seconds for
+HTTP and 210 seconds for the worker bridge. Entry receipts keep those same
+limits; catalog, report and recovery waits remain 90/100 seconds. No deadline
+retries a request, IC entry or Save.
+
+For the delivered 0.5.29 manual pass that stopped during an initial source read,
+the popup may offer one explicit **Run all mapped assignments now** with 0.5.30.
+It requires unchanged earlier scores, only known source-check/exempt left cells
+or known skipped items, and no uncertainty or pending delivery. The helper
+consumes the existing version marker before contacting tabs or the network,
+keeps the stopped report and its manual retry marker, and rereads all sources
+and IC values with the higher-only rule. A new failure remains incomplete;
+this grant never repeats automatically or authorizes a 0.5.30-origin stop.
+
 ## Explicit restart after an automatic source-read stop (0.5.29)
 
 A delivered automatic pass may offer **Run all mapped assignments now** once
