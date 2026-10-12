@@ -6,6 +6,32 @@
  if(!C?.HUB_ORIGIN||location.origin!==C.HUB_ORIGIN||window.top!==window)return;
  const scope=p=>p&&['biology','forensics','anatomy'].includes(p.class)&&typeof p.week==='string'&&p.week.length<=100&&/^[A-Za-z0-9_-]{10,100}$/.test(p.form);
  const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
+ const serverCodes=new Set(['source_changed','coverage_incomplete','receipt_unconfirmed','mapping_required','no_scores','source_scores_held','excluded_week']);
+ async function rejectionCode(response,signal){
+  // Error bodies may contain private source details. Retain only a known code,
+  // never their message, readiness rows or provider data; do not read unbounded text.
+  if(!(response.headers.get('content-type')||'').includes('application/json')||!response.body?.getReader)return;
+  const length=response.headers.get('content-length');
+  if(length&&(!/^\d+$/.test(length)||Number(length)>16384))return;
+  let reader,onAbort;
+  try{
+   if(signal.aborted)return;
+   reader=response.body.getReader();
+   const stopped=new Promise(resolve=>{onAbort=()=>resolve(null);signal.addEventListener('abort',onAbort,{once:true});});
+   const decoder=new TextDecoder('utf-8',{fatal:true});let bytes=0,body='';
+   for(let chunks=0;chunks<64;chunks++){
+    if(signal.aborted)return;
+    const part=await Promise.race([reader.read(),stopped]);if(signal.aborted)return;
+    if(part.done){
+     const value=JSON.parse(body+decoder.decode());
+     return value&&!Array.isArray(value)&&typeof value.code==='string'&&serverCodes.has(value.code)?value.code:undefined;
+    }
+    if(!(part.value instanceof Uint8Array)||(bytes+=part.value.byteLength)>16384)return;
+    body+=decoder.decode(part.value,{stream:true});
+   }
+  }catch{/* An unreadable error body cannot establish a server reason. */}
+  finally{if(onAbort)signal.removeEventListener('abort',onAbort);try{reader?.cancel().catch(()=>{});}catch{}}
+ }
  async function call(path,payload){
   // Exact source lists and entry receipts may take longer; neither wait retries IC.
   const wait=(path==='morning/entry'&&payload)||(!payload&&path.startsWith('morning/list?'))?200000:90000;
@@ -15,7 +41,13 @@
     ...(payload?{headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}:{})});}catch(e){throw failure('hub_unavailable',e?.name==='AbortError'?'hub_request_timeout':'hub_network_error');}
    if(r.status===401)throw failure('signed_out','hub_signed_out',r.status);
    if(r.status===403)throw failure('hub_unavailable','hub_access_denied',r.status);
-   if(!r.ok)throw failure('hub_unavailable','hub_http_error',r.status);
+   if(!r.ok){
+    const server_code=await rejectionCode(r,controller.signal);
+    const receipt=['morning/reports','morning/entry'].includes(path)&&payload;
+    const error=failure(receipt?'receipt_unconfirmed':'hub_unavailable',controller.signal.aborted?'hub_request_timeout':'hub_http_error',r.status);
+    if(server_code)error.server_code=server_code;
+    throw error;
+   }
    const type=r.headers.get('content-type')||'';
    if(!type.includes('application/json'))throw failure('hub_unavailable','hub_invalid_response',r.status);
    let value;try{value=await r.json();}catch(e){throw failure('hub_unavailable',e?.name==='AbortError'?'hub_request_timeout':'hub_invalid_response',r.status);}
@@ -42,7 +74,7 @@
     return saved;
    }
    throw Error('hub_unavailable');
-  })().then(data=>reply({ok:true,data}),error=>reply({ok:false,code:error.message==='signed_out'?'signed_out':error.message==='receipt_unconfirmed'?'receipt_unconfirmed':'hub_unavailable',...M.preflight('summary_publish',error)})).finally(()=>clearInterval(ping));
+  })().then(data=>reply({ok:true,data}),error=>reply({ok:false,code:error.message==='signed_out'?'signed_out':error.message==='receipt_unconfirmed'?'receipt_unconfirmed':'hub_unavailable',...M.preflight('summary_publish',error),...(serverCodes.has(error.server_code)?{server_code:error.server_code}:{})})).finally(()=>clearInterval(ping));
   return true;
  });
 })();

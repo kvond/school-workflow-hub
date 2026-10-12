@@ -30,13 +30,19 @@
  };
  const code=e=>safe.has(e?.message)?e.message:'panel_unusable';
  const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
+ const receiptServerText=Object.freeze({source_changed:'source changed',coverage_incomplete:'source readiness not ready',receipt_unconfirmed:'comparison could not be verified',mapping_required:'assignment mapping required',no_scores:'no current source scores',source_scores_held:'current source scores need review',excluded_week:'assignment excluded'});
+ const receiptTransportText=Object.freeze({hub_request_timeout:'Hub request timed out',hub_bridge_timeout:'Hub connection timed out',hub_http_error:'Hub rejected receipt',hub_signed_out:'Hub sign-in required',hub_access_denied:'Hub access denied'});
  const bridgeCause=e=>/Receiving end does not exist/i.test(e?.message||'')?'hub_bridge_missing':/message (?:port|channel) closed|back.forward cache/i.test(e?.message||'')?'hub_bridge_closed':'hub_bridge_unavailable';
  const deadline=(promise,ms=100000)=>{let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('panel_unusable')),ms);})]).finally(()=>clearTimeout(timer));};
  async function hub(tab,action,payload){
   let current;try{current=await chrome.tabs.get(tab);}catch{throw failure('hub_unavailable','hub_tab_closed');}
   try{if(new URL(current.url).origin!==C.HUB_ORIGIN)throw Error();}catch{throw failure('signed_out','hub_origin_changed');}
   let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}),['record','list'].includes(action)?210000:100000);}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
-  if(!r?.ok)throw failure(safe.has(r?.code)?r.code:'hub_unavailable',r?.cause||'hub_bridge_unavailable',r?.status);return r.data;
+  if(!r?.ok){
+   const error=failure(safe.has(r?.code)?r.code:'hub_unavailable',r?.cause||'hub_bridge_unavailable',r?.status);
+   if(action==='record'&&typeof r?.server_code==='string'&&Object.hasOwn(receiptServerText,r.server_code))error.server_code=r.server_code;
+   throw error;
+  }return r.data;
  }
  async function publish(state,tab){
   let failed=null;
@@ -584,7 +590,15 @@
       if(!good)throw Error('panel_unusable');
      }
      targetInProgress=null;
-     try{await hub(source,'record',{run_id:s.report.run_id,scope,revision:initial.revision,list,targets,results});}catch{summary.code='receipt_unconfirmed';throw Error('receipt_unconfirmed');}
+     try{await hub(source,'record',{run_id:s.report.run_id,scope,revision:initial.revision,list,targets,results});}catch(error){
+      summary.code='receipt_unconfirmed';
+      const reason=typeof error?.server_code==='string'&&Object.hasOwn(receiptServerText,error.server_code)?receiptServerText[error.server_code]
+       :Object.hasOwn(receiptTransportText,error?.cause)?receiptTransportText[error.cause]:'confirmation failed';
+      const status=Number.isInteger(error?.status)&&error.status>=100&&error.status<=599?` (HTTP ${error.status})`:'';
+      const detail=` · Receipt: ${reason}${status}`;
+      summary.assignment=summary.assignment.slice(0,200-detail.length)+detail;
+      throw Error('receipt_unconfirmed');
+     }
      await publish(s,source);
      if(s.report_pending)throw Error('receipt_unconfirmed');
     }
