@@ -7,8 +7,8 @@
  const scope=p=>p&&['biology','forensics','anatomy'].includes(p.class)&&typeof p.week==='string'&&p.week.length<=100&&/^[A-Za-z0-9_-]{10,100}$/.test(p.form);
  const failure=(code,cause,status)=>Object.assign(Error(code),M.preflight('summary_publish',{cause,status}));
  async function call(path,payload){
-  // Receipt validation rechecks exact sources after IC readback; its wait never repeats IC.
-  const wait=path==='morning/entry'&&payload?200000:90000;
+  // Exact source lists and entry receipts may take longer; neither wait retries IC.
+  const wait=(path==='morning/entry'&&payload)||(!payload&&path.startsWith('morning/list?'))?200000:90000;
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),wait);
   try{
    let r;try{r=await fetch('/v2/api/'+path,{method:payload?'POST':'GET',credentials:'same-origin',cache:'no-store',redirect:'error',signal:controller.signal,

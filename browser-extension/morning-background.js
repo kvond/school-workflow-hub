@@ -35,7 +35,7 @@
  async function hub(tab,action,payload){
   let current;try{current=await chrome.tabs.get(tab);}catch{throw failure('hub_unavailable','hub_tab_closed');}
   try{if(new URL(current.url).origin!==C.HUB_ORIGIN)throw Error();}catch{throw failure('signed_out','hub_origin_changed');}
-  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}),action==='record'?210000:100000);}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
+  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}),['record','list'].includes(action)?210000:100000);}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
   if(!r?.ok)throw failure(safe.has(r?.code)?r.code:'hub_unavailable',r?.cause||'hub_bridge_unavailable',r?.status);return r.data;
  }
  async function publish(state,tab){
@@ -368,6 +368,46 @@
    &&Object.values(items.at(-1).reasons).every(n=>n===0)
    &&!/ · .+ · (?:Notes|Revision)$/.test(items.at(-1).assignment);
  }
+ function sourceWaitFixRepeat(s,t=M.clock()){
+  const report=s.report,items=report?.items;
+  const keys=i=>Object.keys(i).sort().join('|')==='assignment|class_name|code|filled|kept|left|raised|reasons|week';
+  const counts=i=>['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600);
+  const reasons=i=>i.reasons&&!Array.isArray(i.reasons)
+   &&Object.keys(i.reasons).sort().join('|')==='check|excused|exempt|flag|missing|name'
+   &&Object.values(i.reasons).every(n=>Number.isInteger(n)&&n>=0&&n<=3600);
+  const context=i=>typeof i.assignment==='string'&&i.assignment.trim()&&i.assignment.length<=200
+   &&!/[\x00-\x1f\x7f]/.test(i.assignment)&&Object.values(classNames).includes(i.class_name)
+   &&typeof i.week==='string'&&/^Wk (?:0[1-9]|[1-4]\d|5[0-3])$/.test(i.week)
+   &&!/ · .+ · (?:Notes|Revision)$/.test(i.assignment);
+  const zeroReasons=i=>Object.values(i.reasons).every(n=>n===0);
+  const reservedSkip=i=>i.assignment==='Work a case'||/intentionally skipped/i.test(i.assignment);
+  const completed=i=>i.code==='nothing_to_enter'&&i.filled===0&&i.raised===0&&i.kept>0
+   &&!reservedSkip(i)
+   &&['flag','excused','name','missing'].every(k=>i.reasons[k]===0)
+   &&i.left===i.reasons.check+i.reasons.exempt;
+  const knownSkip=i=>zeroCounts(i)&&zeroReasons(i)&&((!reservedSkip(i)&&['no_scores','coverage_incomplete'].includes(i.code))
+   ||(i.code==='excluded_week'&&i.class_name==='Forensics'&&i.week==='Wk 01'&&i.assignment==='Work a case')
+   ||(i.class_name==='Forensics'&&i.week==='Wk 03'&&i.code==='nothing_to_enter'
+    &&i.assignment==='Inductive and Deductive Reasoning — Turn In (intentionally skipped this school year)'));
+  const unused=!Object.hasOwn(s,'updated_recheck_version')
+   ||(typeof s.updated_recheck_version==='string'&&/^0\.5\.(?:[0-9]|1[0-9]|2[0-9])$/.test(s.updated_recheck_version));
+  // One explicit next-version source-wait pass after the earlier manual grant
+  // was consumed. Keep its report and markers; this is never an uncertain-save retry.
+  return automaticSourceReadStates.has(s)&&chrome.runtime.getManifest().version==='0.5.30'
+   &&s.run_helper_version==='0.5.29'&&unused&&s.enabled===true
+   &&s.blocked===false&&s.inflight===false&&s.report_pending===false&&s.execution_started===true
+   &&Array.isArray(s.outbox)&&s.outbox.length===0&&Object.keys(s.outbox).length===0&&!pending.size&&!active
+   &&validDay(s.day)&&s.day===t.day&&report?.day===s.day&&validRun(report?.run_id)
+   &&s.manual_run_day===t.day&&s.manual_run_retry_day===t.day&&!verifiedReport(s)
+   &&typeof report==='object'&&!Array.isArray(report)&&Object.keys(report).sort().join('|')==='code|day|items|roster|run_id'
+   &&report.code==='hub_unavailable'&&report.roster==='unavailable'
+   &&Array.isArray(items)&&items.length>=2&&items.length<=300&&Object.keys(items).length===items.length
+   &&Array.from(items).every(i=>i&&!Array.isArray(i)&&keys(i)&&context(i)&&counts(i)&&reasons(i))
+   &&new Set(items.map(i=>JSON.stringify([i.class_name,i.week,i.assignment]))).size===items.length
+   &&items.slice(0,-1).every(i=>completed(i)||knownSkip(i))&&items.slice(0,-1).some(completed)
+   &&items.at(-1).code==='hub_unavailable'&&zeroCounts(items.at(-1))&&zeroReasons(items.at(-1))
+   &&!/ · .+ · (?:Notes|Revision)$/.test(items.at(-1).assignment);
+ }
  function manualNowAllowed(s,t=M.clock()){
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
@@ -380,7 +420,7 @@
   // Hub and IC values and the keep-higher plan prevents duplicate/lower scores.
   const updatedCodeRun=completedRecheckReport(s)
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
-  const repeat=safePreflightRepeat(s,t)||automaticSourceReadRepeat(s,t);
+  const repeat=safePreflightRepeat(s,t)||automaticSourceReadRepeat(s,t)||sourceWaitFixRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
   const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t)||currentReadbackMismatchRecoveryGrant(s,t)||currentTypingStoppedRecoveryGrant(s,t));
   return s.enabled&&(sameDay||freshManualDay(s,t))
@@ -394,6 +434,12 @@
    const requestedAt=M.clock();
    const preflightRepeat=manualNow&&safePreflightRepeat(s,requestedAt);
    if(manualNow&&!manualNowAllowed(s,requestedAt))return;
+   if(manualNow&&sourceWaitFixRepeat(s,requestedAt)){
+    // Consume the finite upgrade grant before any tab/network operation.
+    // Preserve the prior manual provenance, retry marker and delivered report.
+    s.updated_recheck_version=chrome.runtime.getManifest().version;
+    await write(s);
+   }
    if(manualNow&&automaticSourceReadRepeat(s,requestedAt)){
     // Consume before tabs/network; the exact stopped report remains in Hub history.
     // manual_run_day is set only when the new explicit pass actually starts.
