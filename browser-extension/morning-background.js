@@ -8,7 +8,15 @@
  const KEY='morning_state',ALARM='hub-weekday-morning';
  let busy=false,active=null,sourceTab=null,queue=Promise.resolve();
  const locked=fn=>{const next=queue.then(fn,fn);queue=next.catch(()=>{});return next;};
- const read=async()=>{const data=await chrome.storage.local.get([KEY,'morning_enabled','morning_enabled_day']);return {day:'',blocked:false,...data[KEY],enabled:data.morning_enabled===true,enabled_day:data.morning_enabled_day||''};};
+ // The new automatic-source grant requires actual durable guard fields;
+ // read()'s historical blocked:false default must not manufacture that proof.
+ const automaticSourceReadStates=new WeakSet();
+ const read=async()=>{
+  const data=await chrome.storage.local.get([KEY,'morning_enabled','morning_enabled_day']);
+  const stored=data[KEY],s={day:'',blocked:false,...stored,enabled:data.morning_enabled===true,enabled_day:data.morning_enabled_day||''};
+  if(stored&&typeof stored==='object'&&!Array.isArray(stored)&&typeof stored.blocked==='boolean'&&['blocked','inflight','execution_started','report_pending','outbox','run_helper_version'].every(k=>Object.hasOwn(stored,k)))automaticSourceReadStates.add(s);
+  return s;
+ };
  const write=s=>{const {enabled,enabled_day,...stored}=s;return chrome.storage.local.set({[KEY]:stored});};
  const reasons=()=>({flag:0,exempt:0,excused:0,check:0,name:0,missing:0});
  const classNames={biology:'Biology',forensics:'Forensics',anatomy:'Anatomy & Physiology'};
@@ -330,6 +338,36 @@
    &&v.for_helper_version===chrome.runtime.getManifest().version&&validRun(v.event_id)
    &&v.prior_report_signature===JSON.stringify(s.report);
  }
+ function automaticSourceReadRepeat(s,t=M.clock()){
+  const report=s.report,items=report?.items;
+  const datedBeforeToday=k=>!Object.hasOwn(s,k)||(validDay(s[k])&&s[k]<t.day);
+  const keys=i=>Object.keys(i).sort().join('|')==='assignment|class_name|code|filled|kept|left|raised|reasons|week';
+  const counts=i=>['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600);
+  const reasons=i=>i.reasons&&!Array.isArray(i.reasons)
+   &&Object.keys(i.reasons).sort().join('|')==='check|excused|exempt|flag|missing|name'
+   &&Object.values(i.reasons).every(n=>Number.isInteger(n)&&n>=0&&n<=3600);
+  const context=i=>typeof i.assignment==='string'&&i.assignment.trim()&&i.assignment.length<=200
+   &&!/[\x00-\x1f\x7f]/.test(i.assignment)&&!/intentionally skipped/i.test(i.assignment)
+   &&Object.values(classNames).includes(i.class_name)&&typeof i.week==='string'&&/^Wk (?:0[1-9]|[1-4]\d|5[0-3])$/.test(i.week);
+  // Only a delivered automatic pass whose earlier assignment comparisons are
+  // complete may offer one explicit new pass after an initial source-read stop.
+  // A source/receipt/write uncertainty, skipped item or partial column is not a grant.
+  return automaticSourceReadStates.has(s)&&chrome.runtime.getManifest().version==='0.5.29'
+   &&['0.5.28','0.5.29'].includes(s.run_helper_version)
+   &&s.enabled===true&&s.blocked===false&&s.inflight===false&&s.report_pending===false
+   &&s.execution_started===true&&Array.isArray(s.outbox)&&s.outbox.length===0&&Object.keys(s.outbox).length===0&&!pending.size&&!active
+   &&validDay(s.day)&&s.day===t.day&&report?.day===s.day&&validRun(report?.run_id)
+   &&datedBeforeToday('manual_run_day')&&datedBeforeToday('manual_run_retry_day')&&!verifiedReport(s)
+   &&typeof report==='object'&&!Array.isArray(report)&&Object.keys(report).sort().join('|')==='code|day|items|roster|run_id'
+   &&report.code==='hub_unavailable'&&report.roster==='unavailable'
+   &&Array.isArray(items)&&items.length>=2&&items.length<=300
+   &&Object.keys(items).length===items.length&&Array.from(items).every(i=>i&&!Array.isArray(i)&&keys(i)&&context(i)&&counts(i)&&reasons(i))
+   &&new Set(items.map(i=>JSON.stringify([i.class_name,i.week,i.assignment]))).size===items.length
+   &&items.slice(0,-1).every(i=>completedCodes.has(i.code)&&i.filled+i.raised+i.kept>0)
+   &&items.at(-1).code==='hub_unavailable'&&zeroCounts(items.at(-1))
+   &&Object.values(items.at(-1).reasons).every(n=>n===0)
+   &&!/ · .+ · (?:Notes|Revision)$/.test(items.at(-1).assignment);
+ }
  function manualNowAllowed(s,t=M.clock()){
   const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
    &&Array.isArray(s.report.items)&&s.report.items.length===0;
@@ -342,7 +380,7 @@
   // Hub and IC values and the keep-higher plan prevents duplicate/lower scores.
   const updatedCodeRun=completedRecheckReport(s)
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
-  const repeat=safePreflightRepeat(s,t);
+  const repeat=safePreflightRepeat(s,t)||automaticSourceReadRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
   const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t)||currentReadbackMismatchRecoveryGrant(s,t)||currentTypingStoppedRecoveryGrant(s,t));
   return s.enabled&&(sameDay||freshManualDay(s,t))
@@ -356,6 +394,12 @@
    const requestedAt=M.clock();
    const preflightRepeat=manualNow&&safePreflightRepeat(s,requestedAt);
    if(manualNow&&!manualNowAllowed(s,requestedAt))return;
+   if(manualNow&&automaticSourceReadRepeat(s,requestedAt)){
+    // Consume before tabs/network; the exact stopped report remains in Hub history.
+    // manual_run_day is set only when the new explicit pass actually starts.
+    s.manual_run_retry_day=requestedAt.day;
+    await write(s);
+   }
    if(manualNow&&currentReceiptRecoveryGrant(s,requestedAt)){
     // Consume the explicit once-per-version grant before any tab/network action.
     // The earlier report remains unchanged and its private history is retained.

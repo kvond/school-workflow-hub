@@ -1,5 +1,20 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Explicit restart after an automatic source-read stop (0.5.29)
+
+A delivered automatic pass may offer **Run all mapped assignments now** once
+that day when earlier assignments completed their IC comparisons and the next
+assignment stopped before entry because its initial Hub source read failed.
+The new pass rereads Hub sources and current IC values and keeps higher scores.
+It requires the school profile's single signed-in Hub tab and IC tab. Opening
+or refreshing a tab does not start the pass; only the popup button does.
+
+The helper consumes this grant before contacting tabs or the network and keeps
+the stopped report in its history. Pending receipts, uncertain saves, partial
+columns, source changes, skipped or held items, and unknown report shapes cannot
+use it. It does not resume the old run or retry automatically, and the existing
+200-second entry-acknowledgement wait remains unchanged.
+
 ## Exact comparison receipt wait (0.5.28)
 
 After all mapped IC panels return verified results, the helper allows up to
