@@ -433,7 +433,7 @@ def prepare(token, write_token, config, *, actor):
             eligible.append(event)
     ready = eligible
     if not ready:
-        return {'status': 'held', 'report_count': 0, 'held_count': len(policy.value['events']), 'email_sent': False}
+        return {'status': 'held', 'report_count': 0, 'held_count': status(config)['counts']['held'], 'email_sent': False}
     chosen, size = [], 0
     for event in ready[:MAX_BATCH]:
         length = int(event.value['source']['revision']['size'])
