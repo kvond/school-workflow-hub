@@ -841,6 +841,15 @@ function renderTodayFeedback(data) {
   const files = data.files || [];
   const packet = data.daily_packet;
   const panel = cockpitPanel('Daily feedback document');
+  const email = data.email_delivery;
+  if (email?.configured === true && email.status === 'active') {
+    const counts = email.counts || {};
+    if (['ready', 'reserved', 'sent', 'held', 'uncertain'].every(key => Number.isInteger(counts[key]) && counts[key] >= 0)) {
+      panel.append(el('p', {class: 'muted', role: 'status', text: `Automatic school email to ${email.recipient}: ${counts.ready + counts.reserved} pending · ${counts.sent} sent · ${counts.uncertain} uncertain${counts.held ? ` · ${counts.held} held` : ''}. Weekdays at 7:30; printing and handing out remain separate.`}));
+    }
+  } else if (email?.status === 'unavailable') {
+    panel.append(note('Automatic email status could not be verified. Hub print controls remain available.', 'info'));
+  }
   const delivery = data.delivery || packet?.delivery;
   const deliveryVerified = delivery?.status === 'verified';
   const pending = Array.isArray(data.pending_files) ? data.pending_files : [];

@@ -19,7 +19,7 @@ from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, recovery, review_context, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -123,6 +123,10 @@ def api(sub, query, config):
     if sub == 'api/learning-report':
         return learning_report(config)
     token = google.service_token(config)
+    if sub == 'api/feedback/email/outbox':
+        if query:
+            raise ValueError()
+        return print_ready_email.status(config)
     if sub == 'api/feedback/daily':
         if set(query) not in (set(), {'date'}):
             raise ValueError('date')
@@ -406,6 +410,39 @@ def feedback_delivery_post(environ, respond, config):
         return respond('502 Bad Gateway', {'error': str(error)})
     except (ValueError, KeyError, TypeError):
         return respond('400 Bad Request', {'error': 'Prepare and confirm one exact delivery snapshot.'})
+
+
+def print_ready_email_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
+    try:
+        payload = _json_body(environ, 20_000_000)
+        actor = google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        action = payload.get('action')
+        if action == 'activate' and set(payload) == {'action', 'recipient', 'manual_seed', 'initial_baseline'}:
+            result = print_ready_email.activate(google.service_token(config), config, payload['recipient'],
+                actor=actor, manual_seed=payload['manual_seed'], initial_baseline=payload['initial_baseline'])
+        elif action == 'prepare' and set(payload) == {'action'}:
+            result = print_ready_email.prepare(google.service_token(config), google.service_token(config, write=True), config, actor=actor)
+        elif action == 'begin_send' and set(payload) == {'action', 'id'}:
+            result = print_ready_email.begin_send(google.service_token(config), config, payload['id'], actor=actor)
+        elif action == 'hold_uncertain' and set(payload) == {'action', 'id', 'claim_token'}:
+            result = print_ready_email.hold_uncertain(config, payload['id'], payload['claim_token'], actor=actor)
+        elif action == 'confirm_sent' and set(payload) == {'action', 'id', 'claim_token', 'message_id', 'labels', 'raw_base64'}:
+            result = print_ready_email.confirm_sent(config, payload['id'], payload['claim_token'], payload['message_id'], payload['labels'], payload['raw_base64'], actor=actor)
+        else:
+            raise ValueError()
+        return respond('200 OK', result)
+    except (print_ready_email.Held, native_feedback.Held, daily_feedback_packet.Held, student_archive.Held) as error:
+        return respond('409 Conflict', {'error': str(error)})
+    except (Conflict, StoreUnavailable):
+        return respond('503 Service Unavailable', {'error': 'The email reservation is unconfirmed. Read back its exact state and Sent message; never automatically resend.'})
+    except google.GoogleError as error:
+        return respond('502 Bad Gateway', {'error': str(error)})
+    except (ValueError, KeyError, TypeError):
+        return respond('400 Bad Request', {'error': 'Use one exact supported print-ready email operation.'})
 
 
 def native_feedback_post(environ, respond, config):
@@ -746,6 +783,8 @@ def application(environ, start_response, config=None):
         return record_post(environ, respond, config)
     if method == 'POST' and path == '/v2/api/feedback/delivery/capture':
         return feedback_delivery_post(environ, respond, config)
+    if method == 'POST' and path == '/v2/api/feedback/email/outbox':
+        return print_ready_email_post(environ, respond, config)
     if method in ('GET', 'HEAD') and path == '/v2/feedback/delivery':
         try:
             google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
@@ -805,8 +844,14 @@ def application(environ, start_response, config=None):
             from .feedback_pdf import render
             return respond('200 OK', render(saved), 'application/pdf',
                            [('Content-Disposition', 'inline; filename="student-feedback-draft.pdf"')])
+        if sub == 'api/feedback/email/pdf':
+            if set(query) != {'id'}:
+                raise ValueError()
+            raw, name = print_ready_email.packet_pdf(google.service_token(config), config, _one(query, 'id'))
+            return respond('200 OK', raw, 'application/pdf',
+                [('Content-Disposition', 'attachment; filename="new-print-ready-forms.pdf"')])
         body = api(sub, query, config)
-    except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held) as error:
+    except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held, print_ready_email.Held) as error:
         return respond('409 Conflict', {'error': str(error)})
     except ValueError:
         return respond("400 Bad Request", {"error": "That request wasn't understood."})

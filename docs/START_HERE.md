@@ -86,6 +86,58 @@ Keep the saved target, quotations, levels and older PDF immutable. File a new
 presentation version through the existing private archive with exact predecessor
 proof and readback; do not alter Printed or Handed-to-student state.
 
+## Automatic teacher email for new print-ready work
+
+The private `print_ready_email` outbox connects verified new individual feedback,
+science-writing reports and current work contracts to the existing weekday
+teacher worker's school Gmail connector. Cloud Run has no Gmail credential and
+does not send mail itself. Keep the existing schedule; do not add a sender job.
+
+Activate once using the explicit allowed school recipient, the preserved complete
+initial catalog and its exact fresh metadata bookend. All historical file/report
+versions and saved times at or before that baseline remain excluded. A separately
+verified manual email may seed its exact logical report, private file, student,
+PDF digest and actual raw school Sent message. Identical report aliases do not
+create another email event. Never use Printed/Handed or unprinted history as an
+email selector. Original assessments, copies and delivery marks remain immutable.
+
+Authenticated same-origin JSON POST `/v2/api/feedback/email/outbox` supports:
+
+- `activate`: `recipient`, `manual_seed`, `initial_baseline` (all explicit).
+- `prepare`: no additional fields. This recovers new events and prepares one
+  private incremental PDF of up to 200 reports within the existing 10 MB bound.
+  Oversized runs use successive bounded parts; a later A+B packet emails only B
+  after A has an exact Sent receipt. Teachers normally receive one attachment.
+- `begin_send`: `id`. Only its first exact successful CAS reply grants
+  `send_allowed_once`; retain its unique `claim_token`. A lost reply is held,
+  never automatically reclaimed, including on a later run.
+- `confirm_sent`: `id`, `claim_token`, `message_id`, `labels`, `raw_base64` from
+  the actual Gmail raw Sent readback. The host validates the school sender and
+  recipient, unchanged subject and exactly one decoded matching PDF attachment.
+- `hold_uncertain`: `id`, `claim_token`. Never retry an uncertain provider send.
+
+Authenticated GET of that outbox returns counts, the exact active reservation
+and manifest, and bounded manual-seed proof. Batch replies include `pdf_url`,
+original source dates/revisions/hashes, `expires_at` and the unchanged MIME
+attachment name/subject. GET `/v2/api/feedback/email/pdf?id=...` reads the private
+verified batch PDF. The authorized host may call these same module functions
+with the existing approved service identity; never forge IAP, copy browser
+credentials or manufacture a successful receipt. Use the actual school Gmail
+connector profile, no CC/BCC, one send, then full actual Sent readback. Check the
+real UTC clock against `expires_at` immediately before calling Gmail.
+
+Missing-work contracts must still be open and current, with their complete plan
+published and checked time at or before now, and expiry strictly after now.
+An expired/closed prepared batch may be retired only while CAS proves no Gmail
+send was fenced; unrelated valid sources can then form a new packet. A reserved
+or uncertain send remains fenced. Source availability, identity or private
+readback failures stay explicit holds. Multi-chunk Sent confirmation may be
+reconciled against the same exact message without another provider call.
+
+The Daily feedback card shows school-email counts separately from paper states.
+Hub Print/download remains the fallback. Enabled configuration and a schedule
+are not proof of a first unattended send; report actual mail acceptance separately.
+
 ## October 5 verification continuation
 
 The teacher approved the existing OpenAI connection and a one-page ninth-grade
