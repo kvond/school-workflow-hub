@@ -36,6 +36,28 @@ function boot({popup = true, navigationFails = false} = {}) {
 const files = [{id: 'fictional-source', name: 'Saved feedback', course_name: 'Biology', created_at: DAY + 'T15:00:00Z',
   url: 'https://drive.google.com/open?id=fictional-source', course_folder_url: 'https://drive.google.com/drive/folders/FICTIONAL_CLASS'}];
 
+test('automatic email status stays visible for historical and empty cards without altering paper state or controls', () => {
+  const {ui} = boot();
+  const email_delivery = {configured: true, status: 'active', recipient: 'teacher@school.example',
+    counts: {ready: 2, reserved: 1, sent: 4, uncertain: 1, held: 2}};
+  const before = JSON.stringify(email_delivery);
+  for (const data of [{date: DAY, requested_date: '2026-10-09', files, daily_packet: packet}, {files: []}]) {
+    const rendered = ui.renderTodayFeedback({...data, email_delivery});
+    assert.match(rendered.textContent, /Automatic school email to teacher@school.example: 3 pending · 4 sent · 1 uncertain · 2 held/);
+    assert.match(rendered.textContent, /Weekdays at 7:30; printing and handing out remain separate/);
+    assert.equal(walk(rendered).filter(node => node.tagName === 'button').length, data.files.length ? 1 : 0);
+    assert.doesNotMatch(rendered.textContent, /Printed =|Handed =|printed successfully|email successfully/);
+  }
+  assert.equal(JSON.stringify(email_delivery), before);
+});
+
+test('unverified email status never claims delivery and keeps the existing PDF fallback', () => {
+  const {ui} = boot();
+  const rendered = ui.renderTodayFeedback({date: DAY, files, daily_packet: packet, email_delivery: {status: 'unavailable'}});
+  assert.match(rendered.textContent, /Automatic email status could not be verified.*Hub print controls remain available/);
+  assert.equal(walk(rendered).filter(node => node.tagName === 'button').length, 1);
+});
+
 test('Today links the actual saved feedback date across classes, with source links collapsed', () => {
   const {ui} = boot();
   const rendered = ui.renderTodayFeedback({date: DAY, requested_date: '2026-10-08', files, daily_packet: packet});

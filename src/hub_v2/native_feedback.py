@@ -706,6 +706,9 @@ def _legacy_feedback_files(token, config):
                 or (not records_root and root_id not in (folder.get('parents') or []))):
             raise Held('A configured private feedback folder no longer matches its course. No packet was assembled.')
         for item in google.folder_children(token, folder_id):
+            props = item.get('properties') or {}
+            if props.get('hubDailyFeedbackPacket') or props.get('hubPrintReadyEmailBatch'):
+                continue  # System aggregates never become student source reports, even after a rename.
             name = str(item.get('name') or '')
             if item.get('mimeType') not in PRINTABLE_MIMES or not _student_print_name(name):
                 continue
@@ -820,6 +823,8 @@ def _feedback_files(token, config):
                            'course_folder_url': 'https://drive.google.com/drive/folders/' + class_folder,
                            'student_folder': item.get('student_folder_name') or '',
                            'student_name': item.get('student_folder_name') or '',
+                           'student_key': item.get('student_key'), 'student_section': item.get('student_section'),
+                           'assignment': item.get('assignment'),
                            'report_type': item.get('report_type') or 'critical_aspects',
                            'student_folder_url': 'https://drive.google.com/drive/folders/' + str(item.get('student_folder_id') or ''),
                            'created_at': created, 'created_day': created_day,
@@ -988,8 +993,16 @@ def today_files(token, config, *, date_et=None):
                     'problem': 'These pending versions are excluded by the existing packet duplicate/source boundaries; no preview was authorized.'})
         except Held as error:
             pending_blocks.append({'date': pending_day, 'files': day_pending, 'problem': str(error)})
+    from . import print_ready_email
+    try:
+        email_delivery = print_ready_email.status(config)
+        email_delivery.pop('active_batch_details', None)  # No named manifest on the compact Today summary.
+        email_delivery.pop('manual_seed_details', None)
+    except (print_ready_email.Held, student_archive.Held, StoreUnavailable, Conflict):
+        email_delivery = {'status': 'unavailable', 'configured': False}
     return {'configured': True, 'date': packet['date'] if not files and packet.get('status') == 'ready' else batch_day, 'requested_date': day,
             'files': files, 'problem': None, 'delivery': delivery,
+            'email_delivery': email_delivery,
             'pending_files': pending_files, 'pending_source_problems': pending_blocks,
             'current_sources_verified': True,
             'daily_packet': packet,

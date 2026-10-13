@@ -1808,6 +1808,8 @@ def file_feedback(token, write_token, config, saved_value, pdf_bytes):
         value = _feedback_metadata(artifact, student, run.course)
         run.finish({"status": "verified", "feedback_id": saved_value["id"], "drive_file_id": artifact["drive_file_id"]})
         value["index_sync"] = refresh_work_index(token, write_token, config)
+        from . import print_ready_email
+        value['email_outbox'] = print_ready_email.notify_ready(token, config, [saved_value['id']])
         return value
     except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
         result = {"status": "held", "class_key": cls, "feedback_id": saved_value.get("id"), "problem": _problem(error)}
@@ -1824,6 +1826,7 @@ def _feedback_metadata(artifact, student, course):
             "feedback_id": artifact["feedback_id"], "class_key": artifact["class_key"],
             "student_folder_id": student["drive_file_id"], "student_folder_name": student["name"],
             "student_key": student["student_key"],
+            "student_section": student.get("section"), "assignment": artifact.get("assignment"),
             "class_folder_id": course["id"], "class_folder_name": course.get("name", ""),
             "created_at": artifact["created_at"], "saved_at": artifact["saved_at"],
             "source_sha256": artifact.get("source_sha256"), "drive_md5": artifact.get("pdf_md5"),
@@ -2188,6 +2191,8 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
         value = _feedback_metadata(artifact, student, run.course)
         value["index_sync"] = (refresh_work_index(token, write_token, config) if refresh_index else
             {"status": "deferred", "native_index_write": False, "problem": "The Root worker will verify the existing source rows before updating their feedback links."})
+        from . import print_ready_email
+        value['email_outbox'] = print_ready_email.notify_ready(token, config, [saved_report['id']])
         return value
     except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
         result = {"status": "held", "class_key": cls, "feedback_id": saved_report.get("id"), "problem": _problem(error)}

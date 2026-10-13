@@ -260,7 +260,9 @@ def publish_current_plan(token, config, verified_plan, bundle_results, *, write_
             raise archive.Held("The current work-check pointer did not read back exactly.")
         run.finish({"status": "verified", "current_contract_plan": pointer_id,
                     "student_bundles": len(groups), "contracts": len(contracts)})
-        return {**value, "student_bundles": len(groups), "contracts": len(contracts)}
+        from . import print_ready_email
+        return {**value, "student_bundles": len(groups), "contracts": len(contracts),
+            'email_outbox': print_ready_email.notify_ready(token, config, feedback_ids)}
     except (archive.Held, policy.CoverageError, google.GoogleError, Conflict, StoreUnavailable,
             KeyError, TypeError, ValueError) as error:
         result = {"status": "held", "problem": archive._problem(error), "grade_change": False, "delivery_changed": False}
