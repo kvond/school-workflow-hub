@@ -93,9 +93,65 @@ test('source locations annotate slide files while Forms, folders, Docs and Sheet
   const lines = allNodes(panel).filter(node => node.tagName === 'li');
   assert.match(lines[0].textContent, /Exact lesson Slides · Slide 19/);
   for (const line of lines.slice(1, 5)) assert.doesNotMatch(line.textContent, /Slides? |verified/);
-  assert.match(lines[5].textContent, /Exact original file · Slides not verified/);
+  assert.equal(lines[5].textContent, 'Exact original file');
   assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 6);
   assert.equal(JSON.stringify(notice), before);
+});
+
+test('five unassessed native and PPTX source holds retain their manual checks without implying missing codes or excluding mixed-title originals', async () => {
+  const {ui, context} = boot([]), requests = [];
+  const kinds = ['revision_provenance', 'revision_provenance', 'revision_provenance', 'identity_unverified', 'source_route_unverified'];
+  const notices = kinds.map((issue_kind, index) => {
+    const id = 'FICTIONALORIGINAL' + index;
+    const pptx = index % 2 === 1;
+    return sourceNotice({kind: 'review', issue_kind,
+      reason: `Manual original check ${index + 1}: confirm this original's identity and revision provenance.`,
+      next_action: `Open exact original ${index + 1}; preserve its answers, history and current grades.`,
+      sources: [{file_id: id, resource_type: pptx ? 'file' : 'slides',
+        label: pptx ? `Fictional Observation_Deductive_Reasoning_${index}.pptx` : `Fictional Observation original ${index}`,
+        url: pptx ? `https://drive.google.com/open?id=${id}` : `https://docs.google.com/presentation/d/${id}/edit`}],
+      slides: [{file_id: id, numbers: [], verified: false}]});
+  });
+  const data = sourceSummary([sourceContext(sourceScope, notices, {teacher_actionable: true, intake_status: 'unavailable',
+    source_selection: {submitted_originals: 0, assessment_performed: false}})]), before = JSON.stringify(data);
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => data}; };
+  const panel = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true}); await tick();
+  assert.match(panel.children[0].textContent, /5 teacher actions/);
+  assert.match(panel.textContent, /Forensics · Wk 03 · Observation/);
+  assert.match(panel.textContent, /Observation_Deductive_Reasoning_1\.pptx/);
+  for (let index = 0; index < 5; index++) {
+    assert.ok(panel.textContent.includes(`Manual original check ${index + 1}`));
+    assert.ok(panel.textContent.includes(`Open exact original ${index + 1}`));
+  }
+  assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 5);
+  assert.doesNotMatch(panel.textContent, /Slides not verified|Exact slide numbers are unavailable|Needs embedded codes|repair codes|Excluded from grading/i);
+  assert.deepEqual(requests, ['api/review-context']); assert.equal(JSON.stringify(data), before);
+});
+
+test('assessment notices distinguish unavailable exact slide numbers from content or code verification and preserve only proven numbers', () => {
+  const {ui} = boot([]), id = 'FICTIONALFILE123';
+  for (const url of [`https://docs.google.com/presentation/d/${id}/edit`, `https://drive.google.com/open?id=${id}`]) {
+    const base = sourceNotice({kind: 'review', issue_kind: 'assessment',
+      reason: 'The current assessed response needs its evidence checked.',
+      next_action: 'Review the exact assessed response; preserve existing grades.',
+      sources: [{file_id: id, label: 'Exact assessed original', url}]});
+    for (const slides of [[{file_id: id, numbers: [], verified: false}],
+      [{file_id: id, numbers: [19], verified: false}], [{file_id: id, numbers: [19, 19], verified: true}]]) {
+      const panel = ui.renderSourceReviewNotice({...base, slides}, sourceContext().scope);
+      assert.match(panel.textContent, /Exact assessed original · Exact slide numbers are unavailable for this check/);
+      assert.doesNotMatch(panel.textContent, /Slides not verified|Needs embedded codes|repair codes|Slide 19/i);
+      assert.match(panel.textContent, /Next action: Review the exact assessed response/);
+    }
+    const verified = ui.renderSourceReviewNotice({...base, slides: [{file_id: id, numbers: [19, 21], verified: true}]}, sourceContext().scope);
+    assert.match(verified.textContent, /Exact assessed original · Slides 19, 21/);
+    assert.doesNotMatch(verified.textContent, /unavailable for this check|Slides not verified/);
+    const noLink = ui.renderSourceReviewNotice({...base, sources: [{file_id: id, label: 'Unavailable original',
+      url: 'https://drive.google.com/open?id=WRONGFILE123'}]}, sourceContext().scope);
+    assert.ok(allNodes(noLink).some(node => node.tagName === 'li' && node.textContent === 'Source link unavailable'));
+    assert.doesNotMatch(noLink.textContent, /unavailable for this check|Slides not verified|Slide 19/);
+  }
+  const noSources = ui.renderSourceReviewNotice(sourceNotice({issue_kind: 'assessment', sources: [], slides: []}), sourceContext().scope);
+  assert.ok(allNodes(noSources).some(node => node.tagName === 'p' && node.textContent === 'Source link unavailable'));
 });
 
 test('verified source history renders exact original links and Saved datetime outside the attention list', () => {
@@ -127,7 +183,8 @@ test('retained history never suppresses genuine current unknown notices or weake
   assert.equal(attention(panel).length, 1);
   assert.match(attention(panel)[0].textContent, /Parker, Pat \(identity unverified\).*Current unmatched original.*Next action: Check/);
   assert.doesNotMatch(attention(panel)[0].textContent, /Avery, Ann|Saved history is literal/);
-  assert.match(panel.textContent, /Source link unavailable.*Slides? 19/);
+  assert.ok(allNodes(panel).some(node => node.tagName === 'li' && node.textContent === 'Source link unavailable'));
+  assert.match(attention(panel)[0].textContent, /Slide 19/);
   assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 1);
   assert.equal(allNodes(panel).some(node => node.tagName === 'script'), false);
   assert.ok(panel.textContent.includes('<script>Saved history is literal</script>'));
@@ -184,10 +241,11 @@ test('lesson-wide checks and genuine unknown identities/slides remain distinct w
     student: {verified: false}, slides: [], reason: 'The exact lesson folder is unavailable.'})]), sourceScope);
   assert.match(lesson.textContent, /Lesson-wide source check · no individual student/);
   assert.doesNotMatch(lesson.textContent, /Student identity not verified/);
-  assert.match(lesson.textContent, /Slides not verified/);
+  assert.doesNotMatch(lesson.textContent, /Slides not verified|Exact slide numbers are unavailable/);
   const unknown = ui.renderSourceReviewContext(sourceContext(sourceScope, [sourceNotice({student: {verified: false},
     slides: [{file_id: 'ANOTHERFILE123', numbers: [19], verified: true}]})]), sourceScope);
-  assert.match(unknown.textContent, /Student identity not verified/); assert.match(unknown.textContent, /Slides not verified/);
+  assert.match(unknown.textContent, /Student identity not verified/);
+  assert.doesNotMatch(unknown.textContent, /Slides not verified|Exact slide numbers are unavailable/);
   assert.doesNotMatch(unknown.textContent, /· Slide 19/);
   const waiting = ui.renderSourceReviewContext(sourceContext(sourceScope, [], {status: 'waiting',
     limitations: ['Waiting for original submissions; no student-copy repair is requested.']}), sourceScope, {compactEmpty: true});
@@ -412,7 +470,8 @@ test('readiness review links name exact sources and missing codes stay advisory 
   const panel = context.ui.renderSourceReviewNotice(advisory, {class_name: 'Biology', week: 'Wk 07', lesson: base.topic});
   assert.equal(context.lessonReviews.lessonReviewBadge(base).textContent, 'Code advisory');
   assert.match(panel.textContent, /Lesson-wide source check.*Missing codes alone.*do not hold grading/);
-  assert.match(panel.textContent, /Slides not verified/); assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 1);
+  assert.doesNotMatch(panel.textContent, /Slides not verified|Exact slide numbers are unavailable/);
+  assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 1);
   assert.doesNotMatch(panel.textContent, /Repair codes|unmarked copies are held/i);
   const photoRow = {...base, topic: 'Photosynthesis', release: {...release,
     source_resolution: {decks: [{id: 'PHOTODECKFILE123', title: 'Wk 06 Photosynthesis'}]}}};
@@ -488,7 +547,8 @@ test('readiness source links deduplicate exact resources and ready Next Agenda r
     problem: 'The exact source repeats a feedback marker.', action: 'Review the duplicate marker without changing answers.'}};
   const held = context.lessonCompact.renderNextLessons({biology: {data: {rows: [issue]}}});
   assert.match(held.textContent, /Lesson-wide source check.*The exact source repeats a feedback marker/);
-  assert.match(held.textContent, /Slides not verified.*Next action: Review the duplicate marker/);
+  assert.match(held.textContent, /Next action: Review the duplicate marker/);
+  assert.doesNotMatch(held.textContent, /Slides not verified|Exact slide numbers are unavailable/);
   assert.equal(allNodes(held).filter(node => node.tagName === 'a').length, 3);
   const empty = context.lessonCompact.renderNextLessons({});
   assert.equal(empty.tagName, 'details'); assert.equal(empty.open, undefined);
@@ -1498,7 +1558,7 @@ test('former student work is linked as history outside attention with no active 
   const before = JSON.stringify(data), panel = ui.renderSourceReviewContext(data, sourceScope);
   assert.equal(attention(panel).length, 0);
   assert.match(panel.textContent, /Former student work · history retained.*Former, Faye · Former student/);
-  assert.match(panel.textContent, /Slides not verified/);
+  assert.doesNotMatch(panel.textContent, /Slides not verified|Exact slide numbers are unavailable/);
   assert.ok(panel.textContent.includes('<script>Former history is literal</script>'));
   assert.deepEqual(allNodes(panel).filter(node => node.tagName === 'a').map(node => node.href),
     ['https://drive.google.com/open?id=FICTIONALFORMER123', 'https://drive.google.com/open?id=FICTIONALCOPY1234']);

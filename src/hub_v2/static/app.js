@@ -409,9 +409,10 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
     const verified = slide?.verified === true && Array.isArray(numbers) && numbers.length > 0
       && numbers.every(number => Number.isInteger(number) && number > 0 && number <= 1000)
       && new Set(numbers).size === numbers.length;
-    const where = verified ? `${numbers.length === 1 ? 'Slide' : 'Slides'} ${numbers.join(', ')}` : 'Slides not verified';
+    const where = verified ? `${numbers.length === 1 ? 'Slide' : 'Slides'} ${numbers.join(', ')}`
+      : notice.issue_kind === 'assessment' ? 'Exact slide numbers are unavailable for this check' : null;
     return el('li', {}, url ? link(source.label || 'Open exact source', url) : el('span', {text: 'Source link unavailable'}),
-      hasSlides ? ' · ' + where : null);
+      url && hasSlides && where ? ' · ' + where : null);
   });
   return el('div', {class: retained ? 'source-history-entry' : formerWork ? 'former-source-entry' : matchedOther ? 'matched-source-entry' : 'source-review'},
     includeContext ? el('strong', {text: `${context} · ${identity}`}) : el('strong', {text: identity}),
@@ -420,7 +421,7 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
         day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short'})})) : null,
     el('p', {text: `${retained || matchedOther || formerWork ? '' : 'Reason: '}${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
     sourceLines.length ? el('ul', {class: 'files'}, ...sourceLines)
-      : el('p', {class: 'muted', text: 'Source link unavailable · Slides not verified'}),
+      : el('p', {class: 'muted', text: 'Source link unavailable'}),
     retained || matchedOther || formerWork ? null : el('p', {}, el('strong', {text: 'Next action: '}),
       typeof notice.next_action === 'string' && notice.next_action ? notice.next_action : 'No exact next action was returned.'));
 }
