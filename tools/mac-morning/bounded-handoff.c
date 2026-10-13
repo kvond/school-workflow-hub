@@ -2,6 +2,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -17,17 +18,21 @@ static void pause_poll(void) {
  nanosleep(&t,0);
 }
 int main(int argc,char **argv) {
- if(argc<2 || argv[1][0]!='/')return 64;
+ int first=1,capture_stderr=0;
+ if(argc>1 && strcmp(argv[1],"--capture-stderr")==0){first=2;capture_stderr=1;}
+ if(argc<=first || argv[first][0]!='/')return 64;
  posix_spawn_file_actions_t actions;
  posix_spawn_file_actions_init(&actions);
  posix_spawn_file_actions_addopen(&actions,STDOUT_FILENO,"/dev/null",O_WRONLY,0);
- posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
+ // A worker may explicitly capture stderr privately. The normal app still
+ // suppresses it; the wrapper never stores or publishes command output.
+ if(!capture_stderr)posix_spawn_file_actions_addopen(&actions,STDERR_FILENO,"/dev/null",O_WRONLY,0);
  pid_t child;
- int started=posix_spawn(&child,argv[1],&actions,0,&argv[1],environ);
+ int started=posix_spawn(&child,argv[first],&actions,0,&argv[first],environ);
  posix_spawn_file_actions_destroy(&actions);
  if(started)return 65;
  int status=0;
- double deadline=monotonic()+5.0;
+ double deadline=monotonic()+30.0;
  while(monotonic()<deadline){
   pid_t result=waitpid(child,&status,WNOHANG);
   if(result==child)return WIFEXITED(status)?WEXITSTATUS(status):66;

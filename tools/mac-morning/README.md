@@ -41,7 +41,7 @@ Desktop Finder alias or symlink may point to the app after confirming the path
 does not already exist.
 
 When Chrome is already running, its exact executable receives the selected
-profile and page through a five-second bounded command. That command is inside
+profile and page through a thirty-second bounded command. That command is inside
 the built-in Mac sandbox with signals to outside processes denied and writes to
 the three exact canonical singleton paths denied. It can neither kill the
 existing browser nor take over its singleton files. An unsuccessful handoff
@@ -52,6 +52,17 @@ instance. The restriction is necessary because Chrome's ordinary singleton
 failure path can terminate an unresponsive browser. The relevant implementation
 is Chromium's
 [`process_singleton_posix.cc`](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/chrome/browser/process_singleton_posix.cc).
+
+For local diagnosis, the launcher writes only a controlled stage token and
+numeric exit results to `~/Library/Logs/School Morning/last-launch.private.json`.
+The folder is private and the file has mode 0600. It contains no command output,
+arguments, sites, profile configuration or sign-in data. Diagnostic failure does
+not relax the browser guard. The native alert keeps the teacher's next action
+plain; the status file is for a worker diagnosing a failed launch.
+An explicitly authorized worker may use `bounded-handoff --capture-stderr`
+with a private, size-limited stderr capture to diagnose the exact guarded child.
+The ordinary app suppresses command output. This option does not alter the
+sandbox or allow an unrestricted Chrome invocation.
 
 Synthetic verification:
 
