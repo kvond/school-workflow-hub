@@ -77,6 +77,27 @@ test('source context renders full current identity/reason/action and verified so
   assert.equal(allNodes(panel).some(node => node.tagName === 'script'), false);
 });
 
+test('source locations annotate slide files while Forms, folders, Docs and Sheets stay direct context links', () => {
+  const {ui} = boot([]);
+  const resources = [
+    {file_id: 'SLIDESSOURCE123', label: 'Exact lesson Slides', url: 'https://docs.google.com/presentation/d/SLIDESSOURCE123/edit'},
+    {file_id: 'FOLDERSOURCE123', label: 'Exact lesson folder', url: 'https://drive.google.com/drive/folders/FOLDERSOURCE123'},
+    {file_id: 'FORMSOURCE123', label: 'Exact turn-in Form', url: 'https://docs.google.com/forms/d/FORMSOURCE123/edit'},
+    {file_id: 'DOCSOURCE123', label: 'Exact source document', url: 'https://docs.google.com/document/d/DOCSOURCE123/edit'},
+    {file_id: 'SHEETSOURCE123', label: 'Exact source spreadsheet', url: 'https://docs.google.com/spreadsheets/d/SHEETSOURCE123/edit'},
+    {file_id: 'ORIGINALFILE123', label: 'Exact original file', url: 'https://drive.google.com/open?id=ORIGINALFILE123'}
+  ];
+  const notice = sourceNotice({sources: resources, slides: resources.map((source, index) =>
+    ({file_id: source.file_id, numbers: index ? [] : [19], verified: index === 0}))});
+  const before = JSON.stringify(notice), panel = ui.renderSourceReviewNotice(notice, sourceContext().scope);
+  const lines = allNodes(panel).filter(node => node.tagName === 'li');
+  assert.match(lines[0].textContent, /Exact lesson Slides · Slide 19/);
+  for (const line of lines.slice(1, 5)) assert.doesNotMatch(line.textContent, /Slides? |verified/);
+  assert.match(lines[5].textContent, /Exact original file · Slides not verified/);
+  assert.equal(allNodes(panel).filter(node => node.tagName === 'a').length, 6);
+  assert.equal(JSON.stringify(notice), before);
+});
+
 test('verified source history renders exact original links and Saved datetime outside the attention list', () => {
   const {ui} = boot([]);
   const data = sourceContext(sourceScope, [], {status: 'history_retained',
@@ -234,6 +255,80 @@ test('refresh cancels the pending aggregate and rejects all old named details', 
   ui.invalidateReviewPanel(panel); answer({ok: true, json: async () => sourceSummary([sourceContext()])}); await tick();
   assert.equal(requests.length, 1); assert.match(panel.textContent, /Refreshing current source context/);
   assert.doesNotMatch(panel.textContent, /Avery, Ann|Slide 19/);
+  assert.equal(panel.children[0].tagName, 'summary');
+  assert.match(panel.children[0].textContent, /Current source checks.*Refreshing current source context/);
+});
+
+test('current source checks stay collapsed while their visible summary keeps exact scope and notice counts', async () => {
+  const {ui, context} = boot([]);
+  const unavailable = sourceContext({...sourceScope, form_id: 'UNAVAILABLEFORM123'}, [], {status: 'unavailable'});
+  context.fetch = async () => ({ok: true, json: async () => sourceSummary([sourceContext(), unavailable])});
+  const panel = ui.currentSourceReviewPanel();
+  assert.equal(panel.tagName, 'details'); assert.equal(panel.open, undefined);
+  const summary = panel.children[0];
+  assert.equal(summary.tagName, 'summary');
+  assert.match(summary.textContent, /Current source checks.*Reading shared current source context/);
+  await tick();
+  assert.match(summary.textContent, /2 exact lesson scopes read; 1 unavailable · 1 current source notice\./);
+  assert.doesNotMatch(summary.textContent, /Avery, Ann|Slide 19/);
+  assert.match(panel.textContent, /Avery, Ann.*Slide 19.*Next action:/);
+  assert.equal(panel.open, undefined, 'finishing the source read does not expand the details');
+});
+
+test('source-check read failures remain visible in the collapsed summary without creating names', async () => {
+  const {ui, context} = boot([]);
+  context.fetch = async () => { throw new Error('Fictional source read unavailable.'); };
+  const panel = ui.currentSourceReviewPanel(); await tick();
+  assert.match(panel.children[0].textContent, /Current source checks.*Unavailable; no named review is issued/);
+  assert.equal(panel.open, undefined);
+  assert.doesNotMatch(panel.textContent, /Avery, Ann|Slide 19/);
+});
+
+test('Today source checks reuse one overview for actions and keep waiting, excluded and retained history out of teacher tasks', async () => {
+  const {ui, context} = boot([]), requests = [], summaries = [];
+  const review = sourceContext(sourceScope, [sourceNotice()], {teacher_actionable: true,
+    retained_history: [retainedSourceHistory()], matched_other_lessons: [matchedOtherLesson()]});
+  const waiting = sourceContext({...sourceScope, form_id: 'WAITINGFORM123'}, [], {status: 'waiting', teacher_actionable: false});
+  const excluded = sourceContext({...sourceScope, form_id: 'EXCLUDEDFORM123'}, [], {status: 'excluded', teacher_actionable: false});
+  const history = sourceContext({...sourceScope, form_id: 'HISTORYFORM123'}, [], {status: 'history_retained', teacher_actionable: false,
+    retained_history: [retainedSourceHistory({student: {first: 'Saved', last: 'History', section: 'A2 Forensic', verified: true}})]});
+  const failed = sourceContext({...sourceScope, form_id: 'FAILEDFORM123'}, [], {status: 'unavailable', intake_status: 'unavailable', teacher_actionable: false,
+    limitations: ['The exact current intake read was unavailable; refresh this scope.']});
+  const data = sourceSummary([review, waiting, excluded, history, failed]), before = JSON.stringify(data);
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => data}; };
+  const panel = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true, onSummary: data => summaries.push(data)}); await tick();
+  assert.deepEqual(requests, ['api/review-context']); assert.equal(summaries.length, 1); assert.equal(summaries[0], data);
+  assert.match(panel.children[0].textContent, /5 exact lesson scopes read; 1 unavailable · 1 teacher action/);
+  assert.match(panel.textContent, /Avery, Ann.*Slide 19.*Next action:/);
+  assert.match(panel.textContent, /exact current intake read was unavailable/);
+  assert.doesNotMatch(panel.textContent, /Waiting for original submissions|Excluded from this current|History, Saved|Original matched to another|Saved verification as of/);
+  assert.equal(JSON.stringify(data), before);
+});
+
+test('a genuine source hold remains a Today teacher action when no original was allocated to this Form', async () => {
+  const {ui, context} = boot([]), summaries = [];
+  const notice = sourceNotice({reason: 'The readable original is outside this exact Form allocation; confirm its identity and route.',
+    next_action: 'Check the exact received original on slide 19; retain its answers and history.'});
+  const review = sourceContext(sourceScope, [notice], {status: 'review', teacher_actionable: true,
+    intake_status: 'unavailable', source_selection: {submitted_originals: 0, assessment_performed: false}});
+  context.fetch = async () => ({ok: true, json: async () => sourceSummary([review])});
+  const panel = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true, onSummary: value => summaries.push(value)});
+  await tick();
+  assert.match(panel.children[0].textContent, /1 teacher action/);
+  assert.match(panel.textContent, /outside this exact Form allocation.*Exact received original · Slide 19.*Next action: Check the exact received original/);
+  assert.doesNotMatch(panel.textContent, /Current source context is unavailable|No current teacher action|Waiting for/);
+  assert.equal(summaries.length, 1);
+});
+
+test('an informational label cannot let an invalid overview authorize quiet waiting rows', async () => {
+  const {ui, context} = boot([]), summaries = [];
+  const invalid = sourceContext(sourceScope, [], {status: 'waiting', teacher_actionable: false, checked_at: 'not-a-time'});
+  context.fetch = async () => ({ok: true, json: async () => sourceSummary([invalid])});
+  const panel = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true, onSummary: value => summaries.push(value)});
+  await tick();
+  assert.equal(summaries.length, 0);
+  assert.match(panel.children[0].textContent, /Unavailable/);
+  assert.doesNotMatch(panel.textContent, /No current teacher action|Waiting for digital submissions|Avery, Ann/);
 });
 
 test('automatic review hides empty unassessed groups, keeps waiting and failures scoped, and states the limitation once', async () => {
@@ -371,7 +466,7 @@ test('mixed Photosynthesis topic uses actual resolved deck and Form titles befor
 test('readiness source links deduplicate exact resources and ready Next Agenda rows stay compact', () => {
   const {context} = boot([]);
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
-  const next = source.slice(source.indexOf('function renderNextLessons('), source.indexOf('async function printTodayFeedback('));
+  const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
   vm.runInContext(helpers + '\n' + next + '\nglobalThis.lessonCompact = {lessonReviewNotice, renderNextLessons};', context);
   const row = {classKey: 'biology', className: 'Biology', week: 'Wk 07', topic: 'Cellular Respiration',
     release: {status: 'READY', issues: [], source_resolution: {decks: [
@@ -383,6 +478,10 @@ test('readiness source links deduplicate exact resources and ready Next Agenda r
   assert.equal(new Set(notice.sources.map(source => source.url)).size, 3);
   const audits = {biology: {data: {rows: [row]}}};
   const ready = context.lessonCompact.renderNextLessons(audits);
+  assert.equal(ready.tagName, 'details'); assert.equal(ready.open, undefined);
+  assert.equal(ready.children[0].tagName, 'summary');
+  assert.match(ready.children[0].textContent, /Next from Agenda.*1 current\/upcoming lesson source check$/);
+  assert.doesNotMatch(ready.children[0].textContent, /Cellular Respiration|Linked lesson source is ready/);
   assert.match(ready.textContent, /Linked lesson source is ready\. Student copies are checked separately/);
   assert.doesNotMatch(ready.textContent, /Lesson-wide source check|Slides not verified|Next action:|Student identity not verified/);
   const issue = {...row, release: {...row.release, status: 'NOT_READY', issues: ['duplicate_feedback_marker'],
@@ -391,12 +490,57 @@ test('readiness source links deduplicate exact resources and ready Next Agenda r
   assert.match(held.textContent, /Lesson-wide source check.*The exact source repeats a feedback marker/);
   assert.match(held.textContent, /Slides not verified.*Next action: Review the duplicate marker/);
   assert.equal(allNodes(held).filter(node => node.tagName === 'a').length, 3);
+  const empty = context.lessonCompact.renderNextLessons({});
+  assert.equal(empty.tagName, 'details'); assert.equal(empty.open, undefined);
+  assert.match(empty.children[0].textContent, /Next from Agenda.*No current\/upcoming checks available/);
+});
+
+test('Next Agenda keeps planning links for verified waiting or excluded Forms and never treats failed or unmatched intake as waiting', () => {
+  const {context} = boot([]);
+  const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
+  const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
+  vm.runInContext(helpers + '\n' + next + '\nglobalThis.nextAgenda = {renderNextLessons};', context);
+  const row = {classKey: 'biology', className: 'Biology', week: 'Wk 07', topic: 'Exact future lesson',
+    forms: [{form_id: 'WAITINGFORM123'}], release: {status: 'NOT_READY', issues: ['lesson_folder_unverified'],
+      readability: {stage: 'folder'}, problem: 'Audit folder needs repair.', action: 'Repair this folder before grading.'}};
+  const audits = {biology: {data: {rows: [row]}}};
+  const scope = {class_key: 'biology', week: 'Wk 07', form_id: 'WAITINGFORM123'};
+  const empty = sourceSummary([sourceContext(scope, [], {status: 'waiting', intake_status: 'waiting', teacher_actionable: false})]);
+  const panel = context.nextAgenda.renderNextLessons(audits, empty);
+  assert.match(panel.textContent, /Waiting for digital submissions.*Lesson planning remains available/);
+  assert.doesNotMatch(panel.textContent, /Audit folder needs repair|Repair this folder|Slides not verified|Next action:/);
+  assert.equal(allNodes(panel).filter(node => node.tagName === 'button').length, 1);
+  panel.open = true;
+  const excluded = sourceSummary([sourceContext(scope, [], {status: 'excluded', intake_status: 'excluded', teacher_actionable: false})]);
+  assert.equal(context.nextAgenda.renderNextLessons(audits, excluded, panel), panel);
+  assert.equal(panel.open, true, 'a completed overview does not collapse a teacher-opened planning section');
+  assert.match(panel.textContent, /Excluded from current grading review/);
+  const failed = sourceSummary([sourceContext(scope, [], {status: 'unavailable', intake_status: 'unavailable', teacher_actionable: false})]);
+  const unavailable = context.nextAgenda.renderNextLessons(audits, failed);
+  assert.match(unavailable.textContent, /Intake unavailable.*Current intake could not be verified/);
+  assert.doesNotMatch(unavailable.textContent, /Waiting for submissions|Waiting for digital submissions|Repair this folder/);
+  const foreign = sourceSummary([sourceContext({...scope, form_id: 'ANOTHERFORM123'}, [], {status: 'waiting'})]);
+  assert.match(context.nextAgenda.renderNextLessons(audits, foreign).textContent, /Audit folder needs repair/);
+  const duplicated = sourceSummary([empty.reviews[0], empty.reviews[0]]);
+  assert.match(context.nextAgenda.renderNextLessons(audits, duplicated).textContent, /Audit folder needs repair/);
+  const repeatedLink = {...row, forms: [...row.forms, ...row.forms]};
+  assert.match(context.nextAgenda.renderNextLessons({biology: {data: {rows: [repeatedLink]}}}, empty).textContent,
+    /Waiting for digital submissions/);
+  const futureRow = {...row, week: 'Wk 08', topic: 'Exact upcoming lesson', forms: [{form_id: 'FUTUREFORM123'}]};
+  const plannedAudits = {biology: {data: {rows: [row, futureRow]}}};
+  const planned = context.nextAgenda.renderNextLessons(plannedAudits, empty, undefined, 'Wk 07');
+  assert.match(planned.textContent, /Upcoming lesson.*Digital intake has not been checked/);
+  assert.doesNotMatch(planned.textContent, /Audit folder needs repair|Repair this folder|Next action:/);
+  const futureFailed = sourceSummary([...empty.reviews, sourceContext({...scope, week: 'Wk 08', form_id: 'FUTUREFORM123'}, [],
+    {status: 'unavailable', intake_status: 'unavailable', teacher_actionable: false})]);
+  assert.match(context.nextAgenda.renderNextLessons(plannedAudits, futureFailed, undefined, 'Wk 07').textContent,
+    /Exact upcoming lesson.*Intake unavailable.*Current intake could not be verified/);
 });
 
 test('two exact Form collections render separate ready sources and informational Agenda omissions', () => {
   const {context} = boot([]);
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
-  const next = source.slice(source.indexOf('function renderNextLessons('), source.indexOf('async function printTodayFeedback('));
+  const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
   const auditUI = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
   vm.runInContext(helpers + '\n' + next + '\n' + auditUI + '\nglobalThis.formReadiness = {lessonReadinessRows, renderNextLessons, linkCheckResult};', context);
   const form = (id, title, deck, folder) => ({class_key: 'forensics', week: 'Wk 06', form_id: id, form_title: title,
@@ -432,7 +576,7 @@ test('two exact Form collections render separate ready sources and informational
 test('one failed Form source retains its own context without borrowing ready sibling links', () => {
   const {context} = boot([]);
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
-  const next = source.slice(source.indexOf('function renderNextLessons('), source.indexOf('async function printTodayFeedback('));
+  const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
   vm.runInContext(helpers + '\n' + next + '\nglobalThis.formReadiness = {lessonReadinessRows, renderNextLessons};', context);
   const first = {class_key: 'forensics', week: 'Wk 06', form_id: 'FIRSTFORM123', form_title: 'Searching and Photography',
     status: 'READY', issues: [], source_resolution: {decks: [{id: 'SEARCHTEACHER123', title: 'Searching'}], folders: []}};

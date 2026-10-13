@@ -1,5 +1,5 @@
 'use strict';
-importScripts('config.js','protocol.js','entry.js','morning.js');
+importScripts('config.js','protocol.js','entry.js','morning.js','morning-tabs.js');
 const P=globalThis.HubPostingProtocol,C=globalThis.HubPostingConfig,E=globalThis.HubIcEntry;
 // Private, memory-only bindings. Restart requires source/destination recovery.
 const pending=new Map();

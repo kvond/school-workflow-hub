@@ -47,7 +47,12 @@ def source_link(url, file_id=None):
     if not ident or (file_id is not None and ident != file_id):
         return None
     # Strip query/fragment transport and page guesses; slides are shown as text.
-    return {'file_id': ident, 'url': ('https://drive.google.com/drive/folders/' + ident
+    if parts.hostname == 'docs.google.com':
+        resource_type = {'presentation': 'slides', 'document': 'document', 'spreadsheets': 'spreadsheet',
+                         'forms': 'form'}[parts.path.split('/')[1]]
+    else:
+        resource_type = 'folder' if parts.path.startswith('/drive/folders/') else 'file'
+    return {'file_id': ident, 'resource_type': resource_type, 'url': ('https://drive.google.com/drive/folders/' + ident
             if parts.hostname == 'drive.google.com' and parts.path.startswith('/drive/folders/')
             else 'https://docs.google.com/%s/d/%s/edit' % (parts.path.split('/')[1], ident)
             if parts.hostname == 'docs.google.com' else 'https://drive.google.com/open?id=' + ident)}
@@ -95,6 +100,7 @@ def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis
     files = files if files is not None else [f for snapshot in [row] + row.get('earlier', [])
                                             for f in snapshot.get('files', [])]
     sources = _sources(files)
+    slide_sources = [s for s in sources if s['resource_type'] in ('slides', 'file')]
     numbers = _slides(reason) if assessed else []
     student = _student(row)
     if action is None:
@@ -111,8 +117,8 @@ def notice(scope, row, reason, *, files=None, action=None, assessed=False, basis
             'student': student, 'reason': str(reason),
             'sources': sources,
             'slides': [{'file_id': s['file_id'], 'numbers': numbers if assessed and len(sources) == 1 else [],
-                        'verified': bool(assessed and len(sources) == 1 and numbers)} for s in sources],
-            'slide_note': '' if assessed and len(sources) == 1 and numbers else 'Slide numbers could not be verified.',
+                        'verified': bool(assessed and len(sources) == 1 and numbers)} for s in slide_sources],
+            'slide_note': '' if not slide_sources or assessed and len(sources) == 1 and numbers else 'Slide numbers could not be verified.',
             'next_action': action,
             'source_basis': basis or {'kind': 'current_selection'}}
 
@@ -208,6 +214,25 @@ def cached_reviews(token, agenda, class_key, week, form_id, rows, *, config=None
     return results, limitations
 
 
+def _review_state(result):
+    """Separate teacher repair requests from verified waiting and failed reads."""
+    status = result['status']
+    result['teacher_actionable'] = bool(status == 'review' and result.get('notices'))
+    originals = result['source_selection'].get('submitted_originals')
+    result['intake_status'] = (status if status in ('waiting', 'excluded', 'unavailable')
+                              else 'received' if isinstance(originals, int) and originals > 0 else 'unavailable')
+    return result
+
+
+def _excluded(current_scope, *, submitted_originals=None, checked_at=None):
+    """A verified exact policy needs no source repair or provider-derived issue."""
+    return _review_state({'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
+        'scope': current_scope, 'notices': [], 'status': 'excluded',
+        'limitations': [(current_scope.get('grade_policy') or {}).get('reason') or
+                        'This exact assignment is excluded from current review; original work and history are retained.'],
+        'source_selection': {'submitted_originals': submitted_originals, 'assessment_performed': False}})
+
+
 def build(current_scope, found, cached=None, *, checked_at=None):
     """Format current evidence without scoring, writes or inferred identities."""
     forms = [f for lesson in found.get('lessons', []) for f in lesson.get('forms', [])
@@ -222,11 +247,11 @@ def build(current_scope, found, cached=None, *, checked_at=None):
                  and bool(re.fullmatch(r'(?:work\s+a\s+case|(?:.*\b)?sheppard(?:\b.*)?)',
                                        str(current_scope['lesson']).strip(), re.I)))
     if policy.get('excluded') or case_skip:
-        return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
+        return _review_state({'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
                 'scope': current_scope, 'notices': [], 'status': 'excluded',
                 'limitations': [policy['reason'] + ' No assessment is requested; Lab Safety and original grade history are unchanged.' if policy.get('excluded') else 'The teacher asked to skip Week 01 cases for grading. No case review or grade is requested here. This display does not certify a deployed grading exclusion; Lab Safety and existing grade history are unchanged.'],
                 'source_selection': {'submitted_originals': sum(len(r.get('files', [])) for r in form.get('students', []) + form.get('late', [])),
-                                     'assessment_performed': False}}
+                                     'assessment_performed': False}})
     for row in rows + [r for r in form.get('students', []) + form.get('late', []) if not r.get('matched')]:
         if _exempt(row):
             continue
@@ -337,10 +362,10 @@ def build(current_scope, found, cached=None, *, checked_at=None):
         limitations.append('Waiting for submissions. No student-copy repair or grade is requested before an original is received.')
     elif submitted:
         limitations.append('This view shows current source issues, not a new grading pass. Earlier response checks appear only when the original and linked teacher copy still match. Other responses have not been checked here.')
-    return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
+    return _review_state({'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
             'scope': current_scope, 'notices': notices, 'matched_other_lessons': matched_other_lessons, 'limitations': limitations,
             'status': 'review' if notices else 'waiting' if waiting else 'not_assessed',
-            'source_selection': {'submitted_originals': submitted, 'assessment_performed': False}}
+            'source_selection': {'submitted_originals': submitted, 'assessment_performed': False}})
 
 
 def _rate_limited(reason):
@@ -348,14 +373,17 @@ def _rate_limited(reason):
 
 
 def _unavailable(current_scope, reason, *, checked_at=None):
+    policy = current_scope.get('grade_policy') or {}
+    if policy.get('excluded') and not policy.get('problem'):
+        return _excluded(current_scope, checked_at=checked_at)
     action = ('Read again after Google allows requests. No source repair or student identity decision is requested.'
               if _rate_limited(reason) else
               'Refresh when this source read is available. No student identity decision or grade change is requested from an incomplete read.')
-    return {'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
+    return _review_state({'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
             'scope': current_scope, 'status': 'unavailable',
             'notices': [notice(current_scope, {}, reason, files=current_scope['sources'], action=action, affected_scope='lesson')],
             'limitations': [str(reason), action, 'Current source details are unavailable; no claim about student identity or missing work is made.'],
-            'source_selection': {'submitted_originals': None, 'assessment_performed': False}}
+            'source_selection': {'submitted_originals': None, 'assessment_performed': False}})
 
 
 def _roster_problem(snapshot, classes):
@@ -443,9 +471,35 @@ def _former_context(token, config, current_scope, found, result, roster_snapshot
     output["notices"], output["former_student_work"] = notices, history
     return output
 
+def _exclude_resolved_targets(config, agenda, current_scope, result):
+    """Keep exact excluded target history out of current teacher requests."""
+    visible, history = [], []
+    for detail in result.get('matched_other_lessons', []):
+        target = detail.get('target') or {}
+        try:
+            link = source_link(target.get('url'), target.get('form_id'))
+            if (target.get('class_key') != current_scope['class_key'] or not target.get('week')
+                    or not link or link['resource_type'] != 'form'):
+                raise ValueError('unverified target')
+            policy = work.assignment_policy(config, agenda, target['class_key'], target['week'], target['form_id'])
+        except (ValueError, TypeError, KeyError):
+            policy = {}
+        if policy.get('excluded') and not policy.get('problem'):
+            history.append({**detail, 'teacher_actionable': False, 'target_grade_policy': policy})
+        else:
+            visible.append(detail)
+    if history:
+        result = deepcopy(result)
+        result['matched_other_lessons'] = visible
+        result['excluded_assignment_history'] = result.get('excluded_assignment_history', []) + history
+    return result
+
+
 def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=None):
     if (current_scope.get('grade_policy') or {}).get('problem'):
         return _unavailable(current_scope, current_scope['grade_policy']['problem'])
+    if (current_scope.get('grade_policy') or {}).get('excluded'):
+        return _excluded(current_scope)
     if found.get('review_unavailable'):
         return _unavailable(current_scope, ' '.join(found['review_unavailable']))
     form_id = current_scope['form_id']
@@ -456,9 +510,10 @@ def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=
     problems = [forms[0].get('problem'), found.get('folder_note'), *found.get('problems', []),
                 *(f.get('problem') for row in candidates for snapshot in [row] + row.get('earlier', [])
                   for f in snapshot.get('files', []))]
+    availability = [p for p in (forms[0].get('problem'), found.get('folder_note'), *found.get('problems', [])) if p]
     rate_problem = next((p for p in problems if p and _rate_limited(p)), None)
-    if rate_problem:
-        return _unavailable(current_scope, rate_problem)
+    if rate_problem or availability:
+        return _unavailable(current_scope, rate_problem or ' '.join(availability))
     cached, limitations = cached_reviews(token, agenda, current_scope['class_key'], current_scope['week'], form_id,
                                          completion.recheck_candidates(forms[0]), config=config)
     rate_problem = next((p for p in limitations if _rate_limited(p)), None)
@@ -468,7 +523,8 @@ def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=
     result['limitations'].extend(limitations)
     from . import source_history_dispositions
     result = source_history_dispositions.apply(token, config, agenda, current_scope, found, result, roster_snapshot)
-    return _former_context(token, config, current_scope, found, result, roster_snapshot)
+    result = _former_context(token, config, current_scope, found, result, roster_snapshot)
+    return _review_state(_exclude_resolved_targets(config, agenda, current_scope, result))
 
 
 def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None):

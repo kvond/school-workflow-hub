@@ -41,14 +41,19 @@ test('recorded exact versions are compact historical reprints, unknown delivery 
 });
 
 test('partial or older-date pending preview sends only exact pending IDs and never rebuilds the old daily packet', async () => {
-  const calls = [], ui = renderer(async (url, options) => { calls.push([url, options]); return {ok:true,blob:async()=>({type:'application/pdf',size:10})}; });
+  const previewID = 'feedbackprintpreview_' + 'b'.repeat(64);
+  const preview = {schema:'hub-feedback-print-preview/v1',status:'ready',id:previewID,preview_only:true,
+    daily_document_saved:false,delivery_changed:false,source_count:1,pages:2,
+    name:'Feedback-print-preview-'+'b'.repeat(12)+'.pdf',pdf_url:'/v2/api/feedback/preview/pdf?id='+previewID};
+  const calls = [], ui = renderer(async (url, options) => { calls.push([url, options]); return {ok:true,json:async()=>preview}; });
   const view = data({packet_matches_sources:false,pending_files:[file('REPORT2')],delivery:{status:'verified',pending_file_ids:['REPORT2'],printed_file_ids:['REPORT1'],handed_file_ids:[]}});
   const panel = ui.renderTodayFeedback(view), button = nodes(panel).find(n=>n.tagName==='button');
   assert.equal(button.textContent,'Print pending feedback (1)'); await button.onclick();
-  assert.equal(calls.length,1); assert.equal(calls[0][0],'api/feedback/print-today');
+  assert.equal(calls.length,1); assert.equal(calls[0][0],'api/feedback/preview');
   assert.match(panel.textContent,/Print pending opens only the pending preview/);
   assert.deepEqual(JSON.parse(calls[0][1].body),{ids:['REPORT2']});
-  assert.doesNotMatch(panel.textContent,/Daily feedback document opened|Print all feedback saves an updated version|Printing saves this day/); assert.match(panel.textContent,/Feedback preview opened/);
+  assert.doesNotMatch(panel.textContent,/Daily feedback PDF ready|Print all feedback saves an updated version|Printing saves this day/); assert.match(panel.textContent,/Pending feedback preview ready/);
+  assert.ok(nodes(panel).some(node=>node.tagName==='a'&&node.href===preview.pdf_url));
 });
 
 test('all pending current-day reports retain the existing saved daily-document print path', async () => {
@@ -56,7 +61,7 @@ test('all pending current-day reports retain the existing saved daily-document p
   const view = data({pending_files:[file('REPORT1'),file('REPORT2')],packet_matches_sources:true,delivery:{status:'verified',pending_file_ids:['REPORT1','REPORT2'],printed_file_ids:[],handed_file_ids:[]}});
   const panel=ui.renderTodayFeedback(view); await nodes(panel).find(n=>n.tagName==='button').onclick();
   assert.equal(calls.length,1); assert.equal(calls[0][0],view.daily_packet.pdf_url);
-  assert.match(panel.textContent,/Daily feedback document opened/);
+  assert.match(panel.textContent,/Daily feedback PDF ready/);
 });
 
 function page(fetch) {

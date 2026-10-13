@@ -21,17 +21,17 @@ const renderer = source.slice(source.indexOf('async function printTodayFeedback(
 const walk = node => [node, ...node.children.filter(child => child instanceof Element).flatMap(walk)];
 const DAY = '2026-10-07', id = 'dailyfeedbackpacket_' + 'a'.repeat(64);
 const packet = {configured: true, status: 'ready', date: DAY, source_count: 3, pages: 7, pdf_url: '/v2/api/feedback/daily/pdf?id=' + id};
-function boot() {
+function boot({popup = true, navigationFails = false} = {}) {
   const requests = [], printed = [];
   const printWindow = {addEventListener(name, callback) { this.loaded = callback; }, print() { printed.push('print'); }, close() { printed.push('close'); },
-    set location(value) { this.url = value; this.loaded?.(); }};
+    set location(value) { if (navigationFails) throw Error('In-app popup navigation unavailable'); this.url = value; this.loaded?.(); }};
   const context = vm.createContext({document: {createElement: tag => new Element(tag)}, Node: Element,
-    window: {open: () => printWindow}, setTimeout: fn => { fn(); },
-    URL: {createObjectURL: () => 'blob:fictional', revokeObjectURL() {}},
+    window: {location: {href: 'https://school.invalid/v2/#today'}, open: () => popup ? printWindow : null}, setTimeout: fn => { fn(); },
+    URL,
     fetch: async (url, options) => { requests.push({url, options}); return url === 'api/feedback/daily'
       ? {ok: true, json: async () => packet} : {ok: true, blob: async () => ({type: 'application/pdf', size: 100})}; }});
   vm.runInContext(prefix + '\nfunction loadToday() {}\n' + renderer + '\nglobalThis.ui = {renderTodayFeedback, printTodayFeedback};', context);
-  return {ui: context.ui, requests, printed};
+  return {ui: context.ui, requests, printed, printWindow, context};
 }
 const files = [{id: 'fictional-source', name: 'Saved feedback', course_name: 'Biology', created_at: DAY + 'T15:00:00Z',
   url: 'https://drive.google.com/open?id=fictional-source', course_folder_url: 'https://drive.google.com/drive/folders/FICTIONAL_CLASS'}];
@@ -73,17 +73,70 @@ test('teacher writing dimensions remain collapsed, labelled and absent for legac
 });
 
 test('the print action finalizes the exact day, fetches its saved PDF, and never changes delivery state', async () => {
-  const {ui, requests, printed} = boot(), status = new Element('p'), button = new Element('button');
+  const {ui, requests, printed, printWindow} = boot(), status = new Element('p'), button = new Element('button');
   await ui.printTodayFeedback({date: DAY, files, daily_packet: {configured: true, status: 'not_saved'}}, status, button);
   assert.equal(requests.length, 2);
   assert.equal(requests[0].url, 'api/feedback/daily');
   assert.deepEqual(JSON.parse(requests[0].options.body), {date: DAY});
   assert.equal(requests[1].url, packet.pdf_url);
   assert.ok(requests.every(request => request.options.credentials === 'same-origin'));
-  assert.deepEqual(printed, ['print']);
-  assert.match(status.textContent, /document opened for 2026-10-07: 7 pages across classes.*PDF print button \(or Cmd\/Ctrl\+P\).*whole document.*daily document is saved/);
-  assert.doesNotMatch(status.textContent, /Print dialog opened|Printed =|Handed =|printed successfully/);
+  assert.deepEqual(printed, [], 'preparing the PDF does not start a physical print job');
+  assert.equal(printWindow.url, 'https://school.invalid' + packet.pdf_url);
+  assert.match(status.textContent, /Daily feedback PDF ready for 2026-10-07: 7 pages across classes.*daily document is saved.*Open PDF.*Download PDF.*PDF print button \(or Cmd\/Ctrl\+P\).*whole document/);
+  assert.doesNotMatch(status.textContent, /Print dialog opened|document opened|Printed =|Handed =|printed successfully/);
+  assert.equal(walk(status).find(node => node.textContent === 'Open PDF').href, packet.pdf_url);
   assert.equal(button.disabled, false);
+});
+
+const previewID = 'feedbackprintpreview_' + 'b'.repeat(64);
+const preview = {schema: 'hub-feedback-print-preview/v1', status: 'ready', id: previewID,
+  preview_only: true, daily_document_saved: false, delivery_changed: false,
+  name: 'Feedback-print-preview-' + 'b'.repeat(12) + '.pdf', source_count: 1, pages: 2,
+  pdf_url: '/v2/api/feedback/preview/pdf?id=' + previewID};
+
+test('a blocked or unsupported popup still leaves a verified HTTPS pending preview to open or download', async () => {
+  for (const options of [{popup: false}, {navigationFails: true}]) {
+    const {ui, context, printed} = boot(options), requests = [];
+    context.fetch = async (url, options) => { requests.push({url, options}); return {ok: true, json: async () => preview}; };
+    const status = new Element('p'), button = new Element('button');
+    await ui.printTodayFeedback({date: DAY, files: [...files, {...files[0], id: 'already-handed'}],
+      pending_files: files, print_pending_only: true, daily_packet: packet}, status, button);
+    assert.equal(requests.length, 1); assert.equal(requests[0].url, 'api/feedback/preview');
+    assert.deepEqual(JSON.parse(requests[0].options.body), {ids: ['fictional-source']});
+    assert.match(status.textContent, /Pending feedback preview ready: 1 exact report version, 2 pages.*separate from the saved daily document/);
+    const links = walk(status).filter(node => node.tagName === 'a');
+    assert.deepEqual(links.map(node => node.href), [preview.pdf_url, preview.pdf_url]);
+    assert.equal(links[1].download, preview.name);
+    assert.equal(button.disabled, false); assert.deepEqual(printed, []);
+    assert.doesNotMatch(status.textContent, /preview opened|daily document is saved|Allow pop-ups|blob:/);
+  }
+});
+
+test('native PDF navigation uses the same HTTPS preview route and never replaces a pending preview with the saved full packet', async () => {
+  const {ui, context, printWindow, printed} = boot();
+  context.fetch = async () => ({ok: true, json: async () => preview});
+  const status = new Element('p');
+  await ui.printTodayFeedback({date: DAY, files, pending_files: files, print_pending_only: true,
+    daily_packet: packet}, status, new Element('button'));
+  assert.equal(printWindow.url, 'https://school.invalid' + preview.pdf_url);
+  assert.ok(walk(status).filter(node => node.tagName === 'a').every(node => node.href === preview.pdf_url));
+  assert.doesNotMatch(status.textContent, /Daily feedback PDF ready|daily document is saved/);
+  assert.deepEqual(printed, []);
+});
+
+test('an unavailable or malformed preview cannot advertise a PDF, change delivery or retry automatically', async () => {
+  for (const descriptor of [{error: 'Private preview unavailable.'}, {...preview, preview_only: false},
+    {...preview, pdf_url: packet.pdf_url}, {...preview, pdf_url: 'blob:unusable'}]) {
+    const {ui, context, printed} = boot(), calls = [];
+    context.fetch = async url => { calls.push(url); return {ok: !descriptor.error, json: async () => descriptor}; };
+    const status = new Element('p'), button = new Element('button');
+    await ui.printTodayFeedback({date: DAY, files, pending_files: files, print_pending_only: true,
+      daily_packet: packet}, status, button);
+    assert.equal(calls.length, 1); assert.equal(button.disabled, false);
+    assert.equal(walk(status).filter(node => node.tagName === 'a').length, 0);
+    assert.doesNotMatch(status.textContent, /preview ready|preview opened|Recorded|Printed =|Handed =/);
+    assert.deepEqual(printed, ['close']);
+  }
 });
 
 test('a saved dated snapshot remains reprintable when current sources are unavailable', async () => {

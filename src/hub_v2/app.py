@@ -19,7 +19,7 @@ from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, google, ledger, morning, morning_entry, native_feedback, recovery, review_context, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, recovery, review_context, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -415,7 +415,11 @@ def native_feedback_post(environ, respond, config):
     from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
     from school_workflow_hub.adapters.hosted_agenda import ConnectionError
     try:
-        payload = _json_body(environ, 2000)
+        payload = _json_body(environ, 25_000 if environ['PATH_INFO'].endswith('/preview') else 2000)
+        if environ['PATH_INFO'].endswith('/preview'):
+            if set(payload) != {'ids'}:
+                raise ValueError()
+            return respond('200 OK', feedback_print_preview.prepare(google.service_token(config), config, payload['ids']))
         if environ['PATH_INFO'].endswith('/daily'):
             if set(payload) != {'date'}:
                 raise ValueError()
@@ -454,7 +458,7 @@ def native_feedback_post(environ, respond, config):
         found = lesson_work(token, config, agenda, cls, week, fresh=True)
         inputs = native_feedback.evidence(assertion, token, config, agenda, payload, found)
         return respond('200 OK', native_feedback.generate(config, inputs))
-    except (native_feedback.Held, daily_feedback_packet.Held) as error:
+    except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held) as error:
         return respond('409 Conflict', {'error': str(error)})
     except Conflict:
         return respond('409 Conflict', {'error': 'This feedback is already being prepared. Reopen the saved draft before retrying.'})
@@ -749,7 +753,7 @@ def application(environ, start_response, config=None):
             return respond('401 Unauthorized', {'error': 'Please sign in again: reload this page.'})
         return respond('200 OK', (STATIC / 'feedback-delivery.html').read_bytes(), 'text/html; charset=utf-8')
     if method == 'POST' and path in ('/v2/api/feedback/draft', '/v2/api/feedback/save',
-                                     '/v2/api/feedback/print-today', '/v2/api/feedback/daily'):
+                                     '/v2/api/feedback/print-today', '/v2/api/feedback/daily', '/v2/api/feedback/preview'):
         return native_feedback_post(environ, respond, config)
     if method == "POST" and path in ("/v2/api/answers", "/v2/api/answers/sweep"):
         return retired_answers_post(environ, respond, config)
@@ -777,6 +781,15 @@ def application(environ, start_response, config=None):
         return respond("401 Unauthorized", {"error": "Please sign in again: reload this page."})
     try:
         query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=10)
+        if sub == 'api/feedback/preview/pdf':
+            if set(query) != {'id'}:
+                raise ValueError()
+            try:
+                packet, name = feedback_print_preview.pdf(config, _one(query, 'id'))
+            except (feedback_print_preview.StoreUnavailable, feedback_print_preview.Conflict):
+                return respond('503 Service Unavailable', {'error': 'The private print preview is unavailable. No delivery records changed.'})
+            return respond('200 OK', packet, 'application/pdf',
+                [('Content-Disposition', 'inline; filename="%s"' % name)])
         if sub == 'api/feedback/daily/pdf':
             if set(query) != {'id'}:
                 raise ValueError()
@@ -793,7 +806,7 @@ def application(environ, start_response, config=None):
             return respond('200 OK', render(saved), 'application/pdf',
                            [('Content-Disposition', 'inline; filename="student-feedback-draft.pdf"')])
         body = api(sub, query, config)
-    except (native_feedback.Held, daily_feedback_packet.Held) as error:
+    except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held) as error:
         return respond('409 Conflict', {'error': str(error)})
     except ValueError:
         return respond("400 Bad Request", {"error": "That request wasn't understood."})

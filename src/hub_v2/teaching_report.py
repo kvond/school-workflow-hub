@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import re
 import uuid
 from . import completion
-from . import google, student_archive
+from . import google, student_archive, longitudinal_report
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import CloudState, Conflict, StoreUnavailable, bounded_json, key
 from school_workflow_hub.core.runs import content_hash
@@ -142,6 +142,8 @@ def native_observations(saved, student_key, source_date, *, lesson_key,
                        'lesson': saved.get('assignment', {}).get('assignment_title') or lesson_key,
                        'reference_url': saved.get('assignment', {}).get('source_url', ''),
                        'source_date_basis': date_basis, 'submitted_at': submitted_at,
+                       'section': saved.get('person', {}).get('section'),
+                       'class_key': 'biology', 'rubric_version': 'science-writing-four-dimensions/v1',
                        'saved_feedback_id': saved.get('id'),
                        'review_status': 'Source interpretation for teacher review'})
     return result
@@ -282,6 +284,110 @@ def writing_tables(observations, active_students):
     return {'Student evidence': detail, 'Whole class': measures}
 
 
+def growth_tables(observations, active_students, *, critical_observations=()):
+    """Add evidence-bound longitudinal tables without rerating saved work."""
+    try:
+        value = longitudinal_report.build(observations, active_students)
+        if critical_observations:
+            value['tables']['Critical aspect attainment'] = longitudinal_report.critical_attainment(
+                critical_observations, active_students)
+            paired, individual = longitudinal_report.critical_pairs(critical_observations, active_students)
+            value['tables']['Critical aspect comparisons'] = paired
+            value['tables']['Student concept comparisons'] = individual
+        value['tables']['Student figure data'], value['student_figures'] = longitudinal_report.student_series(
+            observations, active_students)
+        return value
+    except longitudinal_report.Held as error:
+        raise Held(str(error)) from None
+
+
+def additive_growth_plan(book, tables, *, chart_tables=(), student_figures=()):
+    """Plan new report tabs and bounded figures; never edit existing evidence.
+
+    A publisher must fresh-read this metadata, verify private access and apply
+    the reviewed requests once, then read every added cell and chart back.
+    Existing tabs with these names hold for review rather than being replaced.
+    This pure planner contains no Google, provider, model or state write.
+    """
+    from hashlib import sha256
+    existing = {s['properties']['title']: s for s in book['sheets']}
+    if set(existing) & set(tables):
+        raise Held('An added growth tab already exists. Preserve its cells and verify the prior update before another write.')
+    used = {s['properties']['sheetId'] for s in book['sheets']}
+    requests, planned = [], {}
+    for title, rows in tables.items():
+        if not rows or len(rows) > 10000 or len(rows[0]) > 26:
+            raise Held('The new growth table exceeds its reviewed rectangle.')
+        sid = int(sha256(('biology-growth/v1|' + title).encode()).hexdigest()[:7], 16)
+        if sid in used:
+            raise Held('A planned growth sheet ID is already in use; inspect the existing tab.')
+        used.add(sid); planned[title] = sid
+        width = max(len(r) for r in rows)
+        grid_rows = max(100, len(rows) + 5, len(student_figures)*23+5 if title == 'Student figure data' else 0)
+        requests.append({'addSheet': {'properties': {'sheetId': sid, 'title': title,
+            'gridProperties': {'rowCount': grid_rows, 'columnCount': 26, 'frozenRowCount': 1}}}})
+        padded = [list(r) + [''] * (width - len(r)) for r in rows]
+        requests.append({'updateCells': {'range': {'sheetId': sid, 'startRowIndex': 0,
+            'endRowIndex': len(rows), 'startColumnIndex': 0, 'endColumnIndex': width},
+            'rows': [{'values': [{'userEnteredValue': {'boolValue': x} if isinstance(x, bool) else
+                {'numberValue': x} if isinstance(x, (int, float)) else {'stringValue': str(x or '')}}
+                for x in row]} for row in padded], 'fields': 'userEnteredValue'}})
+        requests.append({'repeatCell': {'range': {'sheetId': sid, 'startRowIndex': 0, 'endRowIndex': 1,
+            'startColumnIndex': 0, 'endColumnIndex': width}, 'cell': {'userEnteredFormat': {
+                'backgroundColor': {'red': .09, 'green': .22, 'blue': .29},
+                'textFormat': {'bold': True, 'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
+                'wrapStrategy': 'WRAP'}}, 'fields': 'userEnteredFormat'}})
+        requests.append({'updateDimensionProperties': {'range': {'sheetId': sid, 'dimension': 'COLUMNS',
+            'startIndex': 0, 'endIndex': width}, 'properties': {'pixelSize': 180}, 'fields': 'pixelSize'}})
+    for title in chart_tables:
+        rows, sid = tables[title], planned[title]
+        if len(rows) < 2:
+            continue  # N/A never becomes a zero-valued figure.
+        count = len(rows)
+        def source(column):
+            return {'sourceRange': {'sources': [{'sheetId': sid, 'startRowIndex': 0,
+                'endRowIndex': count, 'startColumnIndex': column, 'endColumnIndex': column + 1}]}}
+        requests.append({'repeatCell': {'range': {'sheetId': sid, 'startRowIndex': 1, 'endRowIndex': count,
+            'startColumnIndex': 1, 'endColumnIndex': 3}, 'cell': {'userEnteredFormat': {
+                'numberFormat': {'type': 'PERCENT', 'pattern': '0.0%'}}}, 'fields': 'userEnteredFormat.numberFormat'}})
+        critical = title.startswith('Critical')
+        requests.append({'addChart': {'chart': {'spec': {'title': 'Critical-aspect attainment across lessons' if critical else 'Observed proficiency across lessons',
+            'subtitle': ('Different concepts and aspect denominators; dates are saved assessments.' if critical else
+                         'Same paired students; original work dates. Different lesson tasks, teacher review.'),
+            'basicChart': {'chartType': 'BAR', 'legendPosition': 'BOTTOM_LEGEND', 'headerCount': 1,
+                'axis': [{'position': 'BOTTOM_AXIS', 'title': 'Proficient + Extending / rated aspects in same students' if critical else 'Proficient + Extending / paired students'},
+                         {'position': 'LEFT_AXIS', 'title': 'Measure / earlier → later lesson'}],
+                'domains': [{'domain': source(0)}],
+                'series': [{'series': source(1), 'targetAxis': 'BOTTOM_AXIS', 'colorStyle': {'rgbColor': {'red': .55, 'green': .64, 'blue': .70}}},
+                           {'series': source(2), 'targetAxis': 'BOTTOM_AXIS', 'colorStyle': {'rgbColor': {'red': .03, 'green': .49, 'blue': .64}}}]}},
+            'position': {'overlayPosition': {'anchorCell': {'sheetId': sid, 'rowIndex': 1, 'columnIndex': 5},
+                'widthPixels': 1050, 'heightPixels': max(440, min(1500, count * 44))}}}}})
+    for index, block in enumerate(student_figures):
+        sid = planned['Student figure data']
+        def source(column):
+            return {'sourceRange': {'sources': [{'sheetId': sid, 'startRowIndex': block['start_row'],
+                'endRowIndex': block['end_row'], 'startColumnIndex': column, 'endColumnIndex': column+1}]}}
+        colors = ((.03,.49,.64), (.50,.31,.64), (.09,.51,.43), (.83,.40,.16))
+        requests.append({'addChart': {'chart': {'spec': {'title': block['title'],
+            'subtitle': '1 Beginning · 2 Developing · 3 Proficient · 4 Extending. One point is not a trend; blanks break lines.',
+            'basicChart': {'chartType': 'LINE', 'legendPosition': 'BOTTOM_LEGEND', 'headerCount': 1,
+                'interpolateNulls': False, 'lineSmoothing': False,
+                'axis': [{'position': 'BOTTOM_AXIS', 'title': 'Original submitted work date / lesson'},
+                         {'position': 'LEFT_AXIS', 'title': 'Observed four-level category (no average)',
+                          'viewWindowOptions': {'viewWindowMin': 1, 'viewWindowMax': 4, 'viewWindowMode': 'EXPLICIT'}}],
+                'domains': [{'domain': source(5)}],
+                'series': [{'series': source(col), 'targetAxis': 'LEFT_AXIS',
+                            'colorStyle': {'rgbColor': dict(zip(('red','green','blue'), color))},
+                            'pointStyle': {'shape': 'CIRCLE', 'size': 5}} for col, color in enumerate(colors, 1)
+                           if any(isinstance(row[col], (int, float)) for row in
+                                  tables['Student figure data'][block['start_row']+1:block['end_row']])]}},
+            'position': {'overlayPosition': {'anchorCell': {'sheetId': sid, 'rowIndex': index*23+1, 'columnIndex': 6},
+                'widthPixels': 900, 'heightPixels': 420}}}}})
+    return {'spreadsheet_id': book['spreadsheetId'], 'requests': requests, 'sheet_ids': planned,
+            'expected_tables': tables, 'existing_titles': sorted(existing), 'grade_writes': 0,
+            'source_writes': 0, 'model_calls': 0}
+
+
 def _sheet_rows(resource):
     result = []
     for data in resource.get('data', []):
@@ -305,7 +411,15 @@ def refresh_writing_tables(token, write_token, config, active_students):
     def renew():
         nonlocal claim
         claim = cloud.renew(claim)
-    result = _refresh_writing_tables(token, write_token, config, active_students, renew)
+    from . import growth_refresh
+    growth_hold = growth_refresh.recover(token, config, renew)
+    if growth_hold is not None:
+        result = {'status': 'held', 'class_key': 'biology', 'growth': growth_hold,
+                  'problem': 'Saved student feedback remains available. The prior teacher-report growth update needs exact reconciliation before another report write.',
+                  'model_calls': 0, 'grade_writes': 0}
+    else:
+        result = _refresh_writing_tables(token, write_token, config, active_students, renew)
+        result['growth'] = growth_refresh.refresh(token, write_token, config, active_students, renew)
     renew()
     cloud.finish(claim, records={'biology_reporting': result})
     return result

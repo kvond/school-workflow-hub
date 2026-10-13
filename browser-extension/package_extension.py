@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
 
 FILES = ("background.js", "protocol.js", "plan.js", "executor.js", "hub-content.js", "ic-content.js",
-         "ic-adapter.js", "morning.js", "morning-background.js", "morning-hub.js", "entry.js", "hub-entry.js", "ic-entry.js", "popup.html", "popup.css", "popup.js")
+         "ic-adapter.js", "morning.js", "morning-tabs.js", "morning-background.js", "morning-hub.js", "morning-setup.html", "morning-setup.css", "morning-setup.js", "entry.js", "hub-entry.js", "ic-entry.js", "popup.html", "popup.css", "popup.js")
 
 
 def origin(value):

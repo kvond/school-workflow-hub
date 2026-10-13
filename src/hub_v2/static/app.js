@@ -68,6 +68,11 @@ function cockpitPanel(title, ...children) {
   return el('section', {class: 'cockpit-panel'}, el('h2', {text: title}), ...children);
 }
 
+function cockpitDetails(title, context, ...children) {
+  return el('details', {class: 'cockpit-panel cockpit-details'},
+    el('summary', {}, el('h2', {text: title}), context), ...children);
+}
+
 function releaseIssue(value) {
   if (!value) return '';
   const [code, aspect, phase] = String(value).split(':');
@@ -396,6 +401,8 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
   const locations = Array.isArray(notice.slides) ? notice.slides : [];
   const sourceLines = sources.map(source => {
     const url = reviewSourceURL(source);
+    const hasSlides = !url || !(/^https:\/\/drive\.google\.com\/drive\/folders\//.test(url)
+      || /^https:\/\/docs\.google\.com\/(forms|document|spreadsheets)\//.test(url));
     const matching = locations.filter(slide => slide?.file_id === source.file_id);
     const slide = matching.length === 1 ? matching[0] : null;
     const numbers = slide?.numbers;
@@ -404,7 +411,7 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
       && new Set(numbers).size === numbers.length;
     const where = verified ? `${numbers.length === 1 ? 'Slide' : 'Slides'} ${numbers.join(', ')}` : 'Slides not verified';
     return el('li', {}, url ? link(source.label || 'Open exact source', url) : el('span', {text: 'Source link unavailable'}),
-      ' · ', where);
+      hasSlides ? ' · ' + where : null);
   });
   return el('div', {class: retained ? 'source-history-entry' : formerWork ? 'former-source-entry' : matchedOther ? 'matched-source-entry' : 'source-review'},
     includeContext ? el('strong', {text: `${context} · ${identity}`}) : el('strong', {text: identity}),
@@ -506,16 +513,20 @@ function invalidateReviewPanel(panel) {
   if (!panel) return;
   const parts = reviewPanels.get(panel);
   nextReviewRequest(panel);
-  if (parts) { nextReviewRequest(parts.body); parts.body.replaceChildren(); }
-  panel.replaceChildren(el('p', {class: 'muted', text: 'Refreshing current source context…'}));
+  if (parts) {
+    nextReviewRequest(parts.body); parts.body.replaceChildren();
+    parts.progress.textContent = 'Refreshing current source context…';
+  } else panel.replaceChildren(el('p', {class: 'muted', text: 'Refreshing current source context…'}));
 }
 
-function currentSourceReviewPanel(active = true) {
-  const progress = el('p', {class: 'muted', role: 'status', text: 'Reading shared current source context…'});
+function currentSourceReviewPanel(active = true, options = {}) {
+  const progress = el('span', {class: 'cockpit-summary-context muted', role: 'status', text: 'Reading shared current source context…'});
   const body = el('div', {'aria-live': 'polite'});
-  const panel = cockpitPanel('Current source checks',
-    el('p', {class: 'muted', text: 'Current source details are read separately from historical helper counts. This view does not score work; an empty review is not completed assessment or complete coverage.'}), progress, body);
-  reviewPanels.set(panel, {body});
+  const panel = cockpitDetails('Current source checks', progress,
+    el('p', {class: 'muted', text: options.teacherActionsOnly
+      ? 'Current teacher actions from this source read. Saved entries and source history remain in Student work.'
+      : 'Current source details are read separately from historical helper counts. This view does not score work; an empty review is not completed assessment or complete coverage.'}), body);
+  reviewPanels.set(panel, {body, progress});
   if (!active) { progress.textContent = 'Current source checks are read when this page is opened.'; return panel; }
   const seq = nextReviewRequest(panel);
   getJSON('api/review-context').then(data => {
@@ -527,14 +538,24 @@ function currentSourceReviewPanel(active = true) {
     const scopes = data.reviews.map(review => ({review, scope: reviewScope(review.scope)}));
     if (scopes.some(item => !item.scope) || new Set(scopes.map(item => JSON.stringify(item.scope))).size !== scopes.length)
       throw new Error('Exact lesson scopes could not be confirmed.');
+    // Filtering informational rows must not turn a malformed scope response
+    // into proof of empty intake or suppress its availability limitation.
+    if (options.teacherActionsOnly) scopes.forEach(({review, scope}) => renderSourceReviewContext(review, scope));
     const limitationsSeen = new Set();
-    const rendered = scopes.map(({review, scope}) => ({review,
-      detail: renderSourceReviewContext(review, scope, {compactEmpty: true, limitationsSeen})}));
+    const unavailableReview = review => review.status === 'unavailable';
+    const rendered = scopes.filter(({review}) => !options.teacherActionsOnly || unavailableReview(review)
+      || (review.teacher_actionable !== false && !['waiting', 'excluded'].includes(review.status) && review.notices.length))
+      .map(({review, scope}) => {
+        const displayed = options.teacherActionsOnly ? {...review, retained_history: [], matched_other_lessons: [], former_student_work: [],
+          ...(unavailableReview(review) ? {status: 'unavailable', notices: []} : {})} : review;
+        return {review: displayed, detail: renderSourceReviewContext(displayed, scope, {compactEmpty: true, limitationsSeen})};
+      });
     if (data.status === 'unavailable') {
       progress.textContent = 'Current source checks are unavailable; no named review is issued.';
       body.replaceChildren(note('The shared source read could not be verified. No student identity decision is requested from this failed read; the saved helper receipt is unchanged.', 'info'),
         ...[...data.limitations, ...data.reviews.flatMap(review => review.limitations)].filter(value => typeof value === 'string' && value)
           .filter((value, index, all) => all.indexOf(value) === index).map(value => note(value, 'info')));
+      options.onSummary?.(data);
       return;
     }
     let unassessed = false, unavailable = 0;
@@ -550,11 +571,15 @@ function currentSourceReviewPanel(active = true) {
       }
     }
     if (unassessed) body.append(note('Some original submissions have no current verified assessment details. This view did not score them; complete coverage or IC completion is not established.', 'info'));
+    if (options.teacherActionsOnly && !rendered.length) body.append(el('p', {class: 'muted',
+      text: 'No current teacher action was returned. This does not establish complete assessment or an IC run.'}));
     body.append(...data.limitations.filter(value => typeof value === 'string' && value && !limitationsSeen.has(value)).map(value => note(value, 'info')));
-    progress.textContent = scopes.length ? `Current source checks · ${scopes.length} exact lesson scopes read${unavailable ? `; ${unavailable} unavailable` : ''}. Checked ${when(data.checked_at)}.`
+    const notices = rendered.reduce((count, {review}) => count + (review.status === 'unavailable' ? 0 : review.notices.length), 0);
+    progress.textContent = scopes.length ? `${scopes.length} exact lesson scopes read${unavailable ? `; ${unavailable} unavailable` : ''} · ${notices} ${options.teacherActionsOnly ? 'teacher action' : 'current source notice'}${notices === 1 ? '' : 's'}. Checked ${when(data.checked_at)}.`
       : 'No exact current lesson scopes were returned; coverage is not established.';
+    options.onSummary?.(data);
   }).catch(error => {
-    if (reviewRequests.get(panel) === seq) { progress.textContent = ''; body.replaceChildren(note('Current source checks are unavailable: ' + error.message + ' No student identity decision is requested from a failed read; the saved helper receipt is unchanged.', 'info')); }
+    if (reviewRequests.get(panel) === seq) { progress.textContent = 'Unavailable; no named review is issued.'; body.replaceChildren(note('Current source checks are unavailable: ' + error.message + ' No student identity decision is requested from a failed read; the saved helper receipt is unchanged.', 'info')); }
   });
   return panel;
 }
@@ -683,80 +708,130 @@ async function openAgendaLesson(classKey, week, row) {
   }
 }
 
-function renderNextLessons(audits) {
+function agendaIntakeStatus(row, summary) {
+  if (summary?.schema !== 'hub-source-review-context-summary/v1' || summary.status !== 'current'
+      || !Array.isArray(summary.reviews) || !(row.forms || []).length) return null;
+  const forms = [...new Set((row.forms || []).map(form => form.form_id))];
+  if (forms.some(form => !reviewScope({class_key: row.classKey, week: row.week, form_id: form}))) return null;
+  const matches = forms.map(form => summary.reviews.filter(review => sameReviewScope(reviewScope(review.scope),
+    {class_key: row.classKey, week: row.week, form_id: form})));
+  if (matches.some(items => items.length !== 1)) return null;
+  const reviews = matches.map(items => items[0]);
+  if (reviews.some(review => review.status === 'unavailable')) return 'unavailable';
+  if (reviews.some(review => review.status === 'review' && review.teacher_actionable !== false && review.notices?.length)) return null;
+  if (reviews.some(review => review.intake_status === 'unavailable')) return 'unreviewed';
+  if (reviews.every(review => review.status === 'excluded' || review.intake_status === 'excluded')) return 'excluded';
+  if (reviews.every(review => ['waiting', 'excluded'].includes(review.status)
+      || ['waiting', 'excluded'].includes(review.intake_status))) return 'waiting';
+  return null;
+}
+
+function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails('Next from Agenda'), currentWeek = null) {
   const rows = allReleaseRows(audits);
-  if (!rows.length) return cockpitPanel('Next from Agenda',
+  const populate = (context, ...children) => {
+    panel.replaceChildren(el('summary', {}, el('h2', {text: 'Next from Agenda'}), context), ...children);
+    return panel;
+  };
+  if (!rows.length) return populate(el('span', {class: 'cockpit-summary-context muted', text: 'No current/upcoming checks available'}),
     note('No current/upcoming lesson code check is available. Open Lessons / VT to inspect the Agenda and links.', 'info'));
   const bodyRows = rows.map(row => {
+    const agendaRows = audits?.[row.classKey]?.data?.rows || [];
+    const currentRows = agendaRows.filter(item => item.week === currentWeek);
+    const nextRows = agendaRows.filter(item => item.week === row.week);
+    const future = currentRows.length === 1 && nextRows.length === 1
+      && agendaRows.indexOf(nextRows[0]) > agendaRows.indexOf(currentRows[0]);
+    const intake = agendaIntakeStatus(row, sourceSummary) || (future ? 'planned' : null);
+    const planningOnly = ['waiting', 'excluded', 'planned', 'unreviewed'].includes(intake);
     const ready = row.release.status === 'READY' && !row.release.problem && !row.release.issues?.length
       && !row.release.teacher_holds?.length;
     return el('tr', {},
       el('td', {text: row.className}),
       el('td', {text: row.week}),
       el('td', {text: row.topic}),
-      el('td', {}, lessonReviewBadge(row)),
-      el('td', {}, ready ? el('p', {text: 'Linked lesson source is ready. Student copies are checked separately.'})
+      el('td', {}, intake ? el('span', {class: 'release-badge neutral', text: intake === 'waiting'
+        ? 'Waiting for submissions' : intake === 'excluded' ? 'Excluded from grading review'
+          : intake === 'planned' ? 'Upcoming lesson' : intake === 'unreviewed' ? 'Intake not verified' : 'Intake unavailable'}) : lessonReviewBadge(row)),
+      el('td', {}, planningOnly ? el('p', {text: intake === 'waiting'
+        ? 'Waiting for digital submissions. Lesson planning remains available.' : intake === 'planned'
+          ? 'Upcoming lesson planning. Digital intake has not been checked.' : intake === 'unreviewed'
+            ? 'Digital intake status is not established. Lesson planning remains available.' : 'Excluded from current grading review. Lesson planning remains available.'})
+        : intake === 'unavailable' ? note('Current intake could not be verified. The read limitation is in Current source checks.', 'info')
+        : ready ? el('p', {text: 'Linked lesson source is ready. Student copies are checked separately.'})
         : renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
-        renderAgendaSourceDiscrepancy(row),
+        planningOnly || intake === 'unavailable' ? null : renderAgendaSourceDiscrepancy(row),
         el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
   });
   const table = el('table', {class: 'cockpit-table'},
     el('thead', {}, el('tr', {}, ...['Class', 'Week', 'Lesson', 'Release', 'Next'].map(text => el('th', {text})))),
     el('tbody', {}, ...bodyRows));
-  return cockpitPanel('Next from Agenda', el('div', {class: 'table-wrap'}, table));
+  return populate(
+    el('span', {class: 'cockpit-summary-context muted', text: `${rows.length} current/upcoming lesson source check${rows.length === 1 ? '' : 's'}`}),
+    el('div', {class: 'table-wrap'}, table));
 }
 
 async function printTodayFeedback(data, status, button) {
   const pendingOnly = data.print_pending_only === true;
   const files = pendingOnly ? (data.pending_files || []) : (data.files || []);
   button.disabled = true;
-  const printWindow = window.open('about:blank', '_blank');
-  if (!printWindow) {
-    status.textContent = 'The print packet was not opened. Allow pop-ups for the Hub, then press Print all feedback again.';
-    button.disabled = false;
-    return;
-  }
-  status.textContent = `Preparing all-class feedback for ${data.date}…`;
+  let printWindow = null;
+  try { printWindow = window.open('about:blank', '_blank'); } catch { /* the HTTPS link remains usable */ }
+  status.textContent = pendingOnly
+    ? `Preparing ${files.length} pending feedback report version${files.length === 1 ? '' : 's'}…`
+    : `Preparing all-class feedback for ${data.date}…`;
   try {
-    let packet = data.daily_packet;
-    let response;
-    if (pendingOnly) {
-      response = await fetch('api/feedback/print-today', {method: 'POST', credentials: 'same-origin',
+    let packet = data.daily_packet, preview = null;
+    let pdfURL, filename;
+    if (pendingOnly || !packet?.configured) {
+      const prepared = await fetch('api/feedback/preview', {method: 'POST', credentials: 'same-origin',
         headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: files.map(file => file.id)})});
+      preview = await prepared.json();
+      if (!prepared.ok) throw new Error(preview.error || 'The private print preview could not be prepared.');
+      if (preview.schema !== 'hub-feedback-print-preview/v1' || preview.status !== 'ready'
+          || preview.preview_only !== true || preview.daily_document_saved !== false || preview.delivery_changed !== false
+          || !/^feedbackprintpreview_[a-f0-9]{64}$/.test(preview.id || '')
+          || preview.pdf_url !== '/v2/api/feedback/preview/pdf?id=' + preview.id
+          || preview.source_count !== files.length || !Number.isInteger(preview.pages) || preview.pages < 1
+          || !/^Feedback-print-preview-[a-f0-9]{12}\.pdf$/.test(preview.name || ''))
+        throw new Error('The exact private print preview could not be verified.');
+      pdfURL = preview.pdf_url; filename = preview.name;
       packet = null;
-    } else if (packet?.status === 'ready' && (!files.length || data.packet_matches_sources === true)) {
-      response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
-    } else if (packet?.configured) {
-      const finalized = await fetch('api/feedback/daily', {method: 'POST', credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({date: data.date})});
-      packet = await finalized.json();
-      if (!finalized.ok || packet.status !== 'ready') throw new Error(packet.error || packet.problem || 'The daily feedback document was not saved.');
-      response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
     } else {
-      response = await fetch('api/feedback/print-today', {method: 'POST', credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ids: files.map(file => file.id)})});
+      if (!(packet?.status === 'ready' && (!files.length || data.packet_matches_sources === true))) {
+        const finalized = await fetch('api/feedback/daily', {method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({date: data.date})});
+        packet = await finalized.json();
+        if (!finalized.ok || packet.status !== 'ready') throw new Error(packet.error || packet.problem || 'The daily feedback document was not saved.');
+      }
+      if (!/^\/v2\/api\/feedback\/daily\/pdf\?id=dailyfeedbackpacket_[a-f0-9]{64}$/.test(packet.pdf_url || ''))
+        throw new Error('The saved daily feedback PDF link could not be verified.');
+      const response = await fetch(packet.pdf_url, {credentials: 'same-origin', cache: 'no-store'});
+      if (!response.ok) {
+        let detail = 'The saved PDF could not be opened.';
+        try { detail = (await response.json()).error || detail; } catch { /* keep the safe message */ }
+        throw new Error(detail);
+      }
+      const blob = await response.blob();
+      if (blob.type !== 'application/pdf' || !blob.size) throw new Error('The print packet was empty.');
+      pdfURL = packet.pdf_url; filename = 'Daily-student-feedback-' + data.date + '.pdf';
     }
-    if (!response.ok) {
-      let detail = 'The packet could not be prepared.';
-      try { detail = (await response.json()).error || detail; } catch { /* keep the safe message */ }
-      throw new Error(detail);
-    }
-    const blob = await response.blob();
-    if (blob.type !== 'application/pdf' || !blob.size) throw new Error('The print packet was empty.');
-    const url = URL.createObjectURL(blob);
-    printWindow.addEventListener('load', () => setTimeout(() => printWindow.print(), 900), {once: true});
-    printWindow.location = url;
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    status.textContent = packet?.status === 'ready'
-      ? `Daily feedback document opened for ${data.date}: ${packet.pages} pages across classes. Use the PDF print button (or Cmd/Ctrl+P) to print the whole document. The daily document is saved; verified individual copies remain in student folders. Printing and handing out remain your own records.`
-      : `Feedback preview opened for ${data.date}. Use the PDF print button (or Cmd/Ctrl+P) to print the whole document. This preview is not a saved daily document. Printing and handing out remain your own records.`;
-    if (packet?.status === 'ready') loadToday(true);
-    button.disabled = false;
+    // Native PDF viewers and in-app browsers do not reliably signal load or
+    // support window.print(). Keep a normal authenticated HTTPS link visible.
+    try {
+      if (printWindow && !printWindow.closed) {
+        printWindow.location = new URL(pdfURL, window.location.href).href;
+        printWindow.focus?.();
+      }
+    } catch { /* a blocked/closed popup does not remove the prepared PDF link */ }
+    const preparedText = packet?.status === 'ready'
+      ? `Daily feedback PDF ready for ${data.date}: ${packet.pages} pages across classes. The daily document is saved. `
+      : `${pendingOnly ? 'Pending feedback preview' : 'Feedback preview'} ready: ${preview.source_count} exact report version${preview.source_count === 1 ? '' : 's'}, ${preview.pages} page${preview.pages === 1 ? '' : 's'}. This is a print preview, separate from the saved daily document. `;
+    status.replaceChildren(preparedText, link('Open PDF', pdfURL), ' · ',
+      el('a', {href: pdfURL, download: filename, text: 'Download PDF'}),
+      ' · Use the PDF print button (or Cmd/Ctrl+P) to print the whole document. Printing and handing out remain your own records.');
   } catch (error) {
-    printWindow.close();
+    try { printWindow?.close(); } catch { /* no preview opened */ }
     status.textContent = error.message;
-    button.disabled = false;
-  }
+  } finally { button.disabled = false; }
 }
 
 function renderTodayFeedback(data) {
@@ -895,13 +970,16 @@ async function loadToday(force = false) {
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
     const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
-    visibleReviewPanels.today = currentSourceReviewPanel();
+    const nextAgenda = renderNextLessons(audits, null, undefined, day.week?.label);
+    visibleReviewPanels.today = currentSourceReviewPanel(true, {teacherActionsOnly: true, onSummary: summary => {
+      if (seq === cockpit.seq) renderNextLessons(audits, summary, nextAgenda, day.week?.label);
+    }});
     $('today-body').replaceChildren(
       el('div', {class: 'cockpit-grid'},
         renderMorningCockpit(report, routineData),
         renderNeedsYou(report)),
       visibleReviewPanels.today,
-      renderNextLessons(audits));
+      nextAgenda);
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
