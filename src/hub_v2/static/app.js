@@ -2703,6 +2703,100 @@ async function runLinkCheck() {
   button.disabled = false;
 }
 
+// ---------- Next week: the weekly preflight ----------
+const PREFLIGHT_CLASS = {Biology: 'biology', Forensics: 'forensics', 'A&P': 'anatomy'};
+const preflight = {week: '', seq: 0};
+
+function preflightSection(title, ...children) {
+  return el('section', {class: 'preflight-section'}, el('h2', {text: title}), ...children);
+}
+function preflightTag(name) { return el('span', {class: 'preflight-tag ' + (PREFLIGHT_CLASS[name] || ''), text: name}); }
+
+function renderPreflight(data) {
+  $('preflight-title').textContent = `Next week · ${data.week}`;
+  const packet = $('preflight-packet');
+  packet.href = `api/preflight/packet?week=${encodeURIComponent(data.week)}`;
+  packet.hidden = !data.print.length;
+  const select = $('preflight-week');
+  if (!select.options.length) {
+    for (const label of data.weeks || []) select.append(el('option', {value: label, text: label}));
+  }
+  select.value = data.week;
+  const exception = e => el('li', {},
+    preflightTag(e.class), e.day ? el('strong', {text: e.day + ' · '}) : null,
+    el('span', {class: 'what', text: e.text}),
+    e.action ? el('div', {class: 'fix-it', text: e.action}) : null,
+    e.url ? link('Open ↗', e.url) : null);
+  const groups = [['fix', 'Fix before Monday'], ['decide', 'Decide'], ['tidy', 'Tidy when you can']];
+  const sections = [];
+  for (const [level, title] of groups) {
+    const items = data.exceptions.filter(e => e.level === level);
+    if (!items.length) continue;
+    const list = el('ul', {class: 'preflight-list'}, items.map(exception));
+    sections.push(level === 'tidy'
+      ? el('details', {class: 'preflight-section'}, el('summary', {text: `${title} (${items.length})`}), list)
+      : preflightSection(`${title} (${items.length})`, list));
+  }
+  if (!data.exceptions.length) sections.push(preflightSection('Ready', el('p', {class: 'preflight-clear', text: 'Nothing needs you before this week starts.'})));
+  if (data.print.length) {
+    sections.push(preflightSection('Print and lab packet',
+      el('table', {class: 'preflight-table'},
+        el('thead', {}, el('tr', {}, ['Day', 'Class', 'Print', 'Copies'].map(h => el('th', {text: h})))),
+        el('tbody', {}, data.print.map(p => el('tr', {},
+          el('td', {text: p.day}), el('td', {}, preflightTag(p.class)),
+          el('td', {}, p.url ? link(p.name, p.url) : p.name, p.optional ? el('span', {class: 'muted', text: ' (optional)'}) : null,
+            !p.url ? el('div', {class: 'muted', text: 'No file linked yet.'}) : null),
+          el('td', {text: p.copies})))))));
+  }
+  if (data.supplies.length) {
+    const kinds = [['buy', 'Buy'], ['on order', 'On order — confirm it arrived'], ['pull', 'Pull from storage']];
+    sections.push(preflightSection('Supplies', ...kinds.map(([kind, title]) => {
+      const rows = data.supplies.filter(r => r.kind === kind);
+      return rows.length ? el('div', {}, el('h3', {text: title}), el('ul', {class: 'preflight-list'}, rows.map(r =>
+        el('li', {}, preflightTag(r.class), r.item, r.by ? el('span', {class: 'muted', text: ` · by ${r.by}`}) : null,
+          r.purpose ? el('span', {class: 'muted', text: ` · ${r.purpose}`}) : null)))) : null;
+    })));
+  }
+  if (data.digital.length) {
+    sections.push(preflightSection('Paper or digital', el('ul', {class: 'preflight-list'}, data.digital.map(d =>
+      el('li', {}, preflightTag(d.class), el('span', {class: 'what', text: d.name + ': '}), d.text, ' ',
+        d.url ? link('Student copy link ↗', d.url) : null)))));
+  }
+  if (data.schoology.length) {
+    sections.push(el('details', {class: 'preflight-section'},
+      el('summary', {text: `Links to post or confirm in Schoology (${data.schoology.length})`}),
+      el('p', {class: 'muted', text: 'The Hub cannot read Schoology. These are the exact student links for this week.'}),
+      el('ul', {class: 'preflight-list'}, data.schoology.map(s =>
+        el('li', {}, preflightTag(s.class), `${s.lesson} — ${s.what}: `, link(s.url, s.url))))));
+  }
+  if (data.meetings.length) {
+    sections.push(el('details', {class: 'preflight-section'},
+      el('summary', {text: 'How each meeting uses its deck (90-minute estimate)'}),
+      el('table', {class: 'preflight-table'},
+        el('thead', {}, el('tr', {}, ['Day', 'Class', 'Deck day', 'Slides', 'About'].map(h => el('th', {text: h})))),
+        el('tbody', {}, data.meetings.map(m => el('tr', {},
+          el('td', {text: m.day}), el('td', {}, preflightTag(m.class)), el('td', {text: String(m.deck_day)}),
+          el('td', {text: m.slides}), el('td', {text: m.shared_with > 1 ? `${m.minutes} min over ${m.shared_with} meetings` : `${m.minutes} min`})))))));
+  }
+  const checked = data.checked;
+  sections.push(el('p', {class: 'muted', text: `Checked ${checked.lessons} lessons, ${checked.decks} decks and ${checked.links} links. Nothing was changed.`}));
+  $('preflight-body').replaceChildren(...sections);
+}
+
+async function loadPreflight(week = preflight.week) {
+  const seq = ++preflight.seq;
+  setStatus('preflight-status', 'Checking the week… (reads every deck, folder and Form)');
+  try {
+    const data = await getJSON('api/preflight' + (week ? `?week=${encodeURIComponent(week)}` : ''));
+    if (seq !== preflight.seq) return;
+    preflight.week = data.week;
+    renderPreflight(data);
+    setStatus('preflight-status', '');
+  } catch (error) {
+    if (seq === preflight.seq) setStatus('preflight-status', error.message, true);
+  }
+}
+
 function loadRoutine() {
   renderRoutine();
   loadMorningSummary();
@@ -2710,14 +2804,15 @@ function loadRoutine() {
 }
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  const current = ['today', 'plans', 'work', 'routine'].includes(tab) ? tab : 'today';
-  for (const name of ['today', 'plans', 'work', 'routine']) $('page-' + name).hidden = name !== current;
+  const current = ['today', 'plans', 'preflight', 'work', 'routine'].includes(tab) ? tab : 'today';
+  for (const name of ['today', 'plans', 'preflight', 'work', 'routine']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   if (current === 'today') loadToday();
   else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
   else if (current === 'routine') loadRoutine();
+  else if (current === 'preflight') { if (!preflight.week) loadPreflight(); }
   else {
     loadLessonReadiness();
     if (!plans.started) loadPlans(plans.date);
@@ -2736,6 +2831,8 @@ $('work-section').addEventListener('change', e => { work.section = e.target.valu
 $('student-records').addEventListener('toggle', () => { if ($('student-records').open) loadStudentRecords(true); });
 $('reload-today').addEventListener('click', () => loadToday(true));
 $('reload-routine').addEventListener('click', loadRoutine);
+$('reload-preflight').addEventListener('click', () => loadPreflight());
+$('preflight-week').addEventListener('change', e => loadPreflight(e.target.value));
 $('run-link-check').addEventListener('click', runLinkCheck);
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); await loadStudentRecords(true); } catch (error) { setStatus('work-status', error.message, true); }

@@ -19,7 +19,7 @@ from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
+from . import agenda_edit, audit, completion, preflight, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -161,6 +161,10 @@ def api(sub, query, config):
     agenda = load_agenda(token, config, fresh)
     sheet = {"title": agenda.title,
              "url": "https://docs.google.com/spreadsheets/d/%s/edit" % agenda.spreadsheet_id}
+    if sub == "api/preflight":
+        if not set(query) <= {"week", "fresh"}:
+            raise ValueError("week")
+        return preflight.for_hub(token, config, agenda, _one(query, "week", False) or None)
     if sub == "api/morning/catalog":
         return morning.catalog(agenda, config)
     if sub == "api/morning/reports":
@@ -844,6 +848,16 @@ def application(environ, start_response, config=None):
             from .feedback_pdf import render
             return respond('200 OK', render(saved), 'application/pdf',
                            [('Content-Disposition', 'inline; filename="student-feedback-draft.pdf"')])
+        if sub == 'api/preflight/packet':
+            if not set(query) <= {'week'}:
+                raise ValueError()
+            token = google.service_token(config)
+            result = preflight.for_hub(token, config, load_agenda(token, config),
+                                       _one(query, 'week', False) or None)
+            raw, _ = preflight.packet(result, preflight.GoogleSources(token))
+            name = 'print-packet-%s.pdf' % re.sub(r'[^A-Za-z0-9]+', '-', result['week']).strip('-')
+            return respond('200 OK', raw, 'application/pdf',
+                           [('Content-Disposition', 'inline; filename="%s"' % name)])
         if sub == 'api/feedback/email/pdf':
             if set(query) != {'id'}:
                 raise ValueError()

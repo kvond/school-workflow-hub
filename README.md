@@ -138,6 +138,17 @@ every empty score is 0 from the first turn-in on (nothing turned in yet, or no
 revised answers yet), and each 0 is replaced when the student turns work in
 before the two weeks close; those zeros are listed for IC too.
 
+**Next week (weekly preflight).** Before a week starts, the Next week page reads
+that week's Agenda rows, decks, lesson folders, Forms and Worksheets tab and
+lists only what needs the teacher: unplanned meeting days, plans that disagree
+with the A/B and closure schedule, decks whose Variation Theory sequence or slide
+references broke after edits, revision due before it can happen, deck days that
+don't fit a 90-minute block, stale dates and authoring notes on student slides,
+and links that are broken or disagree across systems. It also builds the week's
+print packet (one PDF with copy counts from the roster), the paper-or-digital
+options and the lab supply list. It only reads. See
+[the weekly preflight](docs/WEEKLY_PREFLIGHT.md).
+
 **Answers by question** (Biology and A&P) shows what each student wrote in
 each coded box of their on-time deck, one table per slide of the handed-out
 deck, with first and revised answers side by side and blank or

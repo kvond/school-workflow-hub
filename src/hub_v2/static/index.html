@@ -15,6 +15,7 @@
   <nav class="tabs" aria-label="Pages">
     <a href="#today" data-tab="today">Today</a>
     <a href="#plans" data-tab="plans">Lessons / VT</a>
+    <a href="#preflight" data-tab="preflight">Next week</a>
     <a href="#work" data-tab="work">Student work</a>
     <a href="#routine" data-tab="routine">System</a>
   </nav>
@@ -56,6 +57,22 @@
     <nav id="days" class="days" aria-label="Choose a calendar date across four weeks"></nav>
     <p id="plans-status" class="status" role="status"></p>
     <div id="cards" class="cards"></div>
+  </section>
+  <section id="page-preflight" hidden>
+    <div class="bar">
+      <div>
+        <p class="eyebrow">WEEKLY PREFLIGHT</p>
+        <h1 id="preflight-title">Next week</h1>
+        <p class="muted">Only what needs you before the week starts, plus the print packet and supply list.</p>
+      </div>
+      <div class="controls">
+        <label>Week <select id="preflight-week"></select></label>
+        <button type="button" id="reload-preflight">Run again</button>
+        <a class="button primary" id="preflight-packet" target="_blank" rel="noopener noreferrer" hidden>Print packet (PDF)</a>
+      </div>
+    </div>
+    <p id="preflight-status" class="status" role="status"></p>
+    <div id="preflight-body"></div>
   </section>
   <section id="page-work" hidden>
     <div class="bar">
