@@ -993,7 +993,7 @@ def today_files(token, config, *, date_et=None):
                     'problem': 'These pending versions are excluded by the existing packet duplicate/source boundaries; no preview was authorized.'})
         except Held as error:
             pending_blocks.append({'date': pending_day, 'files': day_pending, 'problem': str(error)})
-    from . import print_ready_email
+    from . import print_ready_email, student_archive
     try:
         email_delivery = print_ready_email.status(config)
         email_delivery.pop('active_batch_details', None)  # No named manifest on the compact Today summary.
