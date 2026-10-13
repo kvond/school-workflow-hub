@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 from .native_feedback import Held, LEVELS, TEACHER_DIMENSIONS
 
 HAND_BACK = 'Write this yourself, then hand this page back to me. This is the part I read.'
-SCIENCE_WRITING_RENDER_VERSION = 'science-writing-pdf/v2'
+SCIENCE_WRITING_RENDER_VERSION = 'science-writing-pdf/v3'
+MAX_WRITING_SAMPLES = 125
 WRITING_KEYS = ('vocabulary', 'conceptual', 'evidence', 'reasoning')
 WRITING_CHART_LABELS = ('Vocabulary', 'Conceptual answers', 'Specific evidence', 'Reasoning')
 
@@ -20,6 +21,9 @@ def _science_writing_history(saved):
     when it agrees with the source date. Without that evidence, no line joins
     two same-day lessons. Older payloads supply only their selected examples.
     """
+    if (not isinstance(saved.get('lessons'), list)
+            or not 1 <= len(saved['lessons']) <= MAX_WRITING_SAMPLES):
+        raise Held('The writing charts need a bounded list of every verified submitted source.')
     prepared = saved.get('prepared_at', '')
     try:
         if datetime.strptime(prepared, '%Y-%m-%d').date().isoformat() != prepared:
@@ -27,10 +31,10 @@ def _science_writing_history(saved):
     except (ValueError, TypeError):
         raise Held('The science-writing report needs its actual preparation date.') from None
     context = saved.get('presentation_context') or {}
-    if not isinstance(context, dict) or (context and set(context) != {'original_submission_times'}):
+    if (not isinstance(context, dict) or set(context) - {'original_submission_times', 'writing_display'}):
         raise Held('The writing charts need only their verified original submission-time context.')
     events = context.get('original_submission_times', []) if isinstance(context, dict) else None
-    if not isinstance(events, list) or len(events) > 3:
+    if not isinstance(events, list) or len(events) > MAX_WRITING_SAMPLES:
         raise Held('The writing charts need bounded original submission-time evidence.')
     source_times = {}
     for event in events:
@@ -58,22 +62,24 @@ def _science_writing_history(saved):
         except (ValueError, TypeError, AttributeError):
             raise Held('A writing-chart sample needs its verified original work date and submission time.') from None
         title_key = (lesson['title'], day)
-        if title_key in by_title or (source[0] and source in by_source):
-            raise Held('Two writing-chart samples describe the same source; confirm one observation per lesson.')
+        if source[0] and source in by_source:
+            raise Held('Two writing-chart samples describe the same source revision.')
         slot = {'lesson': lesson['title'], 'date': day, 'moment': moment,
                 'source_file_id': source[0], 'source_revision': source[1],
                 'date_sort': date, 'observations': {}}
-        slots.append(slot); by_title[title_key] = slot
+        slots.append(slot); by_title.setdefault(title_key, []).append(slot)
         if source[0]:
             by_source[source] = slot
     if any(source not in by_source for source in source_times):
         raise Held('A writing-chart submission time does not belong to a listed original source revision.')
     rows = (saved.get('provenance') or {}).get('source_observations')
     if rows is not None:
-        if not isinstance(rows, list) or len(rows) > 12 or not rows:
+        if not isinstance(rows, list) or len(rows) > MAX_WRITING_SAMPLES * 4 or not rows:
             raise Held('The writing charts need a bounded set of source-bound observations.')
         canonical = dict(zip(TEACHER_DIMENSIONS, WRITING_KEYS))
         for row in rows:
+            if not isinstance(row, dict):
+                raise Held('A writing-chart observation needs a source-bound record.')
             source = (row.get('source_file_id'), str(row.get('source_revision', '')))
             slot, key = by_source.get(source), canonical.get(row.get('dimension'))
             student_key = saved['student'].get('student_key')
@@ -92,9 +98,10 @@ def _science_writing_history(saved):
             slot['observations'][key] = level
     else:
         for dimension in saved['dimensions']:
-            slot = by_title.get((dimension.get('lesson'), dimension.get('source_date')))
-            if slot is None:
+            matches = by_title.get((dimension.get('lesson'), dimension.get('source_date')), [])
+            if len(matches) != 1:
                 raise Held('A selected writing example does not match a listed source lesson and date.')
+            slot = matches[0]
             slot['observations'][dimension['key']] = dimension['level']
     # Precise original timestamps order same-day work. A date-only tie stays
     # explicit and unconnected, rather than turning a filename sort into growth.
@@ -125,7 +132,7 @@ def render_science_writing(saved):
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.platypus import Paragraph
     if (saved.get('schema') != 'science-writing/v1' or saved.get('report_type') != 'science_writing'
-            or not isinstance(saved.get('lessons'), list) or not 1 <= len(saved['lessons']) <= 3
+            or not isinstance(saved.get('lessons'), list) or not 1 <= len(saved['lessons']) <= MAX_WRITING_SAMPLES
             or len(saved.get('dimensions', [])) != 4
             or {item.get('key') for item in saved['dimensions']} != set(WRITING_KEYS)):
         raise Held('The science-writing report needs four distinct supported writing observations and its source lessons.')
@@ -135,6 +142,9 @@ def render_science_writing(saved):
                 or (not dimension['example'].strip() and dimension['level'] != 'Evidence unavailable')):
             raise Held('The writing report needs an observed level and a short exact example for each dimension.')
     slots, charts = _science_writing_history(saved)
+    if (saved.get('presentation_context') or {}).get('writing_display') is not None:
+        from .science_writing_display import render
+        return render(saved, slots, charts)
     prepared = saved['prepared_at']
     stream = BytesIO(); c = canvas.Canvas(stream, pagesize=(612, 792), invariant=1)
     c.setTitle('Science writing feedback - ' + saved['student']['name'])

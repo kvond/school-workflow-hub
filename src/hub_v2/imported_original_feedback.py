@@ -133,7 +133,7 @@ def evidence(record, student, before, after, original_bytes, review, *,
         'form_event': None, 'submitted_at': None, 'grade_or_completion_assessment': False}
 
 
-def report(evidence, dimensions, *, prepared_date, saved_at, target_title, target_text):
+def report(evidence, dimensions, *, prepared_date, saved_at, target_title, target_text, cer_practice=None):
     """Validate teacher-reviewed four-dimension observations; author no PDF."""
     need(evidence.get('schema') == SCHEMA and evidence.get('rubric_version') == RUBRIC, 'Verified imported response evidence required.')
     need(isinstance(dimensions, list) and len(dimensions) == 4, 'Each existing writing dimension needs one observation.')
@@ -179,6 +179,11 @@ def report(evidence, dimensions, *, prepared_date, saved_at, target_title, targe
         'provenance': {'source_observation_schema': SCHEMA, 'rubric_version': RUBRIC, 'source_observations': rows,
                        'teacher_review_status': 'Source-reviewed writing observations prepared for teacher review',
                        'imported_source_evidence': deepcopy(evidence)}}
+    if cer_practice is not None:
+        # New teacher-directed writing reports use the same actual author
+        # pipeline; original saved reports still reproduce byte-for-byte.
+        from .science_writing_display import context
+        value['presentation_context'] = context(value, cer_practice)
     value['report_source_sha256'] = content_hash(value);value['id'] = 'feedbacksource_' + value['report_source_sha256']
     return value
 
@@ -222,8 +227,14 @@ def validate_saved_report(value, *, expected_review_sha256, expected_teacher_ref
     need(isinstance(rows, list) and len(rows) == 4, 'The imported report needs the same four observations.')
     dimensions = [{k: r.get(k) for k in ('dimension', 'level', 'question_id', 'quote', 'explanation')} for r in rows]
     target = value.get('target') or {}
+    display = (value.get('presentation_context') or {}).get('writing_display')
+    practice = None
+    if display is not None:
+        from .science_writing_display import validate
+        validate(value)
+        practice = {k: v for k, v in display['cer'].items() if k != 'lesson_reference'}
     expected = report(capture, dimensions, prepared_date=value.get('prepared_at'), saved_at=value.get('saved_at'),
-                      target_title=target.get('title'), target_text=target.get('text'))
+                      target_title=target.get('title'), target_text=target.get('text'), cer_practice=practice)
     actual = {k: v for k, v in value.items() if k not in {'pdf_path', 'pdf_bytes', 'pdf_sha256'}}
     need(actual == expected, 'The saved imported report no longer reproduces its exact source observations.')
     return capture

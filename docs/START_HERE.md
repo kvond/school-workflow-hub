@@ -53,6 +53,39 @@ feedback PDFs are separate from these teacher reports; the Hub source list
 and print packet must use the same duplicate suppression and current source
 revisions. Made, Printed and Handed to student remain separate states.
 
+## Student science-writing presentation
+
+The trusted science-writing author includes every verified submitted original
+in the source list, including pieces without a writing observation. Each exact
+source revision gets a point in all four writing charts; an unassessed piece
+remains an explicit gap. Multiple submissions to the same lesson remain separate
+samples. Only verified original submission times may order same-day samples.
+Never infer chronology from lesson order, filenames, edits or feedback dates.
+
+Use the actual author pipeline `science_writing_display.prepare_presentation`
+for corrected or later presentations of an existing report. It selects the
+latest actually reviewed source, requires teacher-reviewed practice, prepares
+the immutable replacement payload and renders its PDF. The existing imported
+worksheet author also accepts `cer_practice` and produces the same current CER
+format; legacy report reproduction stays unchanged.
+
+Use `science_writing_display.context` with teacher-reviewed CER practice tied
+to the latest actually reviewed lesson. Supply one relatively easy question,
+exactly three scientifically valid evidence statements, and the actual lesson
+reference. The function defaults to latest-work narration. For the teacher's
+explicit initial correction only, `comparison=True` describes both adjacent
+reviewed pieces and explains changed levels using their saved quotations and
+dimension-specific explanations. These are observations of different tasks,
+not a diagnosis of student ability. The charts retain all source history in
+either narrative mode, with additional readable pages when necessary.
+
+The final page provides separate Claim, Evidence and Reasoning writing lines.
+The given facts are practice material, never attributed student writing. A paper
+CER is not completed or rated until its authentic returned artifact is reviewed.
+Keep the saved target, quotations, levels and older PDF immutable. File a new
+presentation version through the existing private archive with exact predecessor
+proof and readback; do not alter Printed or Handed-to-student state.
+
 ## October 5 verification continuation
 
 The teacher approved the existing OpenAI connection and a one-page ninth-grade

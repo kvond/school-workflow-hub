@@ -1865,7 +1865,8 @@ def _science_presentation_context(report, sources):
     context = report.get("presentation_context")
     if context is None:
         return
-    if not isinstance(context, dict) or set(context) != {"original_submission_times"}:
+    if (not isinstance(context, dict) or "original_submission_times" not in context
+            or set(context) - {"original_submission_times", "writing_display"}):
         raise Held("This presentation context contains unsupported assessment changes.")
     events = context["original_submission_times"]
     if not isinstance(events, list) or len(events) > 500:
@@ -1882,6 +1883,14 @@ def _science_presentation_context(report, sources):
                                               or original.get("date_basis") != "form_receipt"))):
             raise Held("This chart's submission order does not match the original verified Form receipt.")
         seen.add(ident)
+    if "writing_display" in context:
+        # Teaching practice is a source-bound presentation overlay. It cannot
+        # replace the immutable saved levels, quotations or assessment target.
+        from .science_writing_display import validate
+        try:
+            validate(report)
+        except ValueError as error:
+            raise Held(str(error)) from None
 
 
 def _feedback_file(token, scope, course, student, artifact, metadata=None):
