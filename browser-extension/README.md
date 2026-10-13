@@ -1,5 +1,28 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## School morning tabs (0.5.33)
+
+The extension's `morning-setup.html` page opens only missing Hub and Infinite
+Campus tabs in its installed profile. It keeps existing tabs intact, reports
+real duplicate counts and asks the teacher to check unsaved work before closing
+extras. Setup performs navigation only: no grading request, settings change,
+sign-in probe, stored state change or recovery acknowledgement. Existing exact
+host permissions provide site-tab access; own extension page URLs are available
+under Chromium's
+[`extension_tab_util.cc`](https://chromium.googlesource.com/chromium/src/+/HEAD/chrome/browser/extensions/extension_tab_util.cc)
+rules without adding the broad `tabs` permission.
+
+The weekday worker and setup page count only exact Hub app shells: `/`,
+`/index.html`, `/v2`, `/v2/` and `/v2/index.html` on the configured exact origin.
+Current query/hash navigation and legacy Page 2 remain supported. Same-origin
+PDF previews, API replies, assets and sign-in routes do not satisfy the Hub-tab
+gate. Two real dashboards still refuse the run. Grade, source, receipt and
+recovery gates are unchanged; opening a tab is not a completed run.
+
+The reversible local Mac launcher is documented in
+[`tools/mac-morning`](../tools/mac-morning/README.md). Installation and normal
+school-profile launch remain separate live checks.
+
 ## Registered teacher-source timeout check (0.5.32)
 
 A typed Google GET timeout while reading an exact registered teacher source may

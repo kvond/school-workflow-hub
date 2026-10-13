@@ -3,8 +3,8 @@
  * Reserve each destination before contacting IC. A restart never repeats it. */
 (() => {
  'use strict';
- const M=globalThis.HubMorning,C=globalThis.HubPostingConfig,E=globalThis.HubIcEntry;
- if(!M||!chrome.alarms||!chrome.storage.local)return;
+ const M=globalThis.HubMorning,C=globalThis.HubPostingConfig,E=globalThis.HubIcEntry,T=globalThis.HubMorningTabs;
+ if(!M||!T||!chrome.alarms||!chrome.storage.local)return;
  const KEY='morning_state',ALARM='hub-weekday-morning';
  let busy=false,active=null,sourceTab=null,queue=Promise.resolve();
  const locked=fn=>{const next=queue.then(fn,fn);queue=next.catch(()=>{});return next;};
@@ -487,7 +487,7 @@
     await write(s);
    }
    const completedRecheck=manualNow&&completedRecheckReport(s);
-   const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
+   const hubs=T.hubTabs(await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'}),C.HUB_ORIGIN);
    s.outbox=s.outbox||[];
    for(const day of M.missed(s)){
     s.outbox.push({day,run_id:crypto.randomUUID(),code:'missed_noon',roster:'unavailable',items:[]});s.day=day;
@@ -662,7 +662,7 @@
      legacyVerification?`Current mapped IC scores verified for a new run. Prior ${s.report.day} receipt remains unconfirmed. ${note}`:note;
     if(!note||verificationNote.length>500)recovery_error='Add a short verification note.';
     else try{
-     const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
+     const hubs=T.hubTabs(await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'}),C.HUB_ORIGIN);
      if(hubs.length!==1)throw Error();
      let ic=null;
      if(currentVerification){

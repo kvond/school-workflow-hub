@@ -31,7 +31,7 @@ is returned without undoing the saved student feedback or retrying a provider.
 
 `refresh_writing_tables(read_token, write_token, config, active_students)` reads
 the immutable private batches and receives a fresh, complete current roster with
-unique `student_key`, `name`, and `section`. It updates only Student evidence and
+unique `student_key`, `name`, and `section`. It updates Student evidence and
 Whole class in the analysis, plus Report and Lesson measures in DTGSS. Teaching
 plan checkboxes and teacher notes are preserved. No student files, feedback PDFs,
 delivery states, original submissions, paid providers or grades are touched.
@@ -46,6 +46,26 @@ A lost Sheet response triggers one exact readback, never a blind POST retry.
 Unconfirmed tables leave saved feedback and original work available. Private CAS
 claims serialize source-batch saves and refreshes, and server ownership is renewed
 immediately before mutations.
+
+The same refresh returns a separate `growth` result for the existing Student
+growth and Student figure data tabs, and DTGSS Across lessons, Growth figure data
+and writing evidence limits. Original source IDs, dates, levels, rubric versions
+and answer fields bind the old table and chart blocks before updating them.
+Existing charts retain their styles and positions; new numeric dimensions use
+the reviewed four-dimension palette. Levels retain the fixed 1–4 axis and blanks
+break lines. Ordinal categories are never averaged. New rubric/field chart groups,
+ambiguous ownership, teacher edits and changed source bookends hold growth without
+undoing saved feedback. Dated conceptual/critical tables and manual notes remain
+unchanged. These synthetic tests are implementation evidence, not live acceptance.
+Before the first growth POST, the existing private CAS store reserves hashes of
+both expected table/chart sets and protected workbook content. A crash or
+unconfirmed write keeps automatic growth updates held across later runs. Recovery
+fresh-reads both books before ordinary teacher-table refresh and clears the hold
+only when every expected value, chart and protected content matches. Partial
+two-workbook updates never automatically replay the remaining write. Until that
+pending update is reconciled, both ordinary teacher-table and growth mutations
+remain held so the protected snapshot can still be checked. Student feedback is
+already saved and remains printable.
 
 ## Student science-writing PDF
 

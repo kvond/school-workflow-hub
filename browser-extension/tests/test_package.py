@@ -27,6 +27,12 @@ class PackageTest(unittest.TestCase):
             self.assertEqual(scripts["https://school.example.test/*"][-3:], ["entry.js", "morning.js", "ic-entry.js"])
             self.assertNotIn("externally_connectable", manifest)
             self.assertNotIn("web_accessible_resources", manifest)
+            for name in ("morning-tabs.js", "morning-setup.html", "morning-setup.css", "morning-setup.js"):
+                self.assertTrue((one / name).is_file())
+            page = (one / "morning-setup.html").read_text()
+            self.assertIn('src="config.js"', page)
+            self.assertIn('src="morning-tabs.js"', page)
+            self.assertNotIn('http', page)
             with ZipFile(first) as zipped:
                 self.assertEqual(set(zipped.namelist()), set(packager.FILES) | {"manifest.json", "config.js"})
 

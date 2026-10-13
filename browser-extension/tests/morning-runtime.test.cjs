@@ -1,5 +1,5 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const E=require('../entry.js');global.HubIcEntry=E;const M=require('../morning.js'),P=require('../protocol.js');
+const E=require('../entry.js');global.HubIcEntry=E;const M=require('../morning.js'),P=require('../protocol.js'),T=require('../morning-tabs.js');
 const C={HUB_ORIGIN:'https://hub.example.test',IC_ORIGIN:'https://school.example.test'};
 const source=name=>fs.readFileSync(path.join(__dirname,'..',name),'utf8');
 const uuid=()=>crypto.randomUUID();
@@ -30,7 +30,7 @@ function background(options={}){
  const tabs={1:{id:1,url:C.HUB_ORIGIN+'/v2/',status:'complete'},2:{id:2,url:C.IC_ORIGIN+'/campus/',status:'complete'}};
  const runtime={id:'extension',getURL:n=>'chrome-extension://extension/'+n,getManifest:()=>({version:options.version||'0.5.14'}),onMessage:{addListener:fn=>listeners.message=fn},onStartup:{addListener:fn=>listeners.start=fn}};
  const invoke=(m,sender={id:'extension',url:runtime.getURL('popup.html')})=>new Promise(resolve=>{if(listeners.message(m,sender,resolve)!==true)resolve(undefined);});
- const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,URL,Date,crypto,console,setTimeout:options.timers?.setTimeout||setTimeout,clearTimeout:options.timers?.clearTimeout||clearTimeout,pending:options.pending||new Map(),chrome:{runtime,
+ const context={HubMorning:{...M,clock:()=>M.clock(now),due:s=>M.due(s,now),missed:s=>M.missed(s,now)},HubPostingConfig:C,HubIcEntry:E,HubMorningTabs:T,URL,Date,crypto,console,setTimeout:options.timers?.setTimeout||setTimeout,clearTimeout:options.timers?.clearTimeout||clearTimeout,pending:options.pending||new Map(),chrome:{runtime,
  storage:{local:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,structuredClone(state[k])])),set:async data=>{if(data.morning_state)writes.push(structuredClone(data.morning_state));Object.assign(state,structuredClone(data));},setAccessLevel:async v=>{state.access=v.accessLevel;}}},
  alarms:{get:async()=>null,create:async(name,config)=>{state.alarm={name,config};},onAlarm:{addListener:fn=>listeners.alarm=fn}},
  tabs:{query:async({url})=>{if(options.checkQuery)options.checkQuery(state,url);return Object.values(tabs).filter(t=>t.url.startsWith(url.slice(0,-1)));},get:async id=>{if(options.staleNavigation&&id===2&&calls.includes('navigate')){options.staleNavigation=false;return {...tabs[id],url:C.IC_ORIGIN+'/campus/'};}return tabs[id];},update:async(id,v)=>{calls.push('navigate');if(options.failSecondNavigation&&calls.filter(c=>c==='navigate').length===2)throw Error('panel_unusable');Object.assign(tabs[id],v);return tabs[id];},sendMessage:async(id,m)=>{
@@ -112,6 +112,32 @@ test('morning complete path saves report, exact-route entry, then records once a
  assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.ok(h.calls.indexOf('record')>h.calls.indexOf('execute'));
  assert.equal(h.state.morning_state.report.code,'finished');assert.equal(h.state.morning_state.blocked,false);
  assert.ok(!JSON.stringify(h.state).includes('Avery'));
+});
+test('one real Hub with HTTPS PDF/API tabs preserves the strict one-dashboard gate',async()=>{
+ const h=background();
+ h.tabs[3]={id:3,url:C.HUB_ORIGIN+'/v2/api/feedback/daily?id=synthetic',status:'complete'};
+ h.tabs[4]={id:4,url:C.HUB_ORIGIN+'/v2/api/morning/reports',status:'complete'};
+ await h.alarm();
+ assert.equal(h.state.morning_state.report.code,'finished');assert.equal(h.calls.filter(c=>c==='execute').length,1);
+});
+test('PDF/API tabs cannot replace the Hub and two real Hub shells still stop before IC',async()=>{
+ for(const mode of ['PDF_only','two_dashboards']){
+  const h=background();
+  if(mode==='PDF_only')h.tabs[1].url=C.HUB_ORIGIN+'/v2/api/feedback/daily?id=synthetic';
+  else h.tabs[3]={id:3,url:C.HUB_ORIGIN+'/index.html?page=2',status:'complete'};
+  await h.alarm();
+  assert.equal(h.state.morning_state.report.code,'hub_unavailable');
+  assert.equal(h.state.morning_state.report.preflight.cause,mode==='PDF_only'?'hub_tab_missing':'hub_tab_count');
+  assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
+ }
+});
+test('filtered dashboard selection retains the starting receipt acknowledgement gate',async()=>{
+ const h=background({reportReplies:[{ok:true,data:{recorded:false}}]});
+ h.tabs[3]={id:3,url:C.HUB_ORIGIN+'/v2/api/feedback/daily?id=synthetic',status:'complete'};
+ await h.alarm();
+ assert.equal(h.state.morning_state.report.code,'receipt_unconfirmed');
+ assert.equal(h.state.morning_state.report.preflight.cause,'hub_report_not_acknowledged');
+ assert.ok(!h.calls.includes('catalog'));assert.ok(!h.calls.includes('execute'));
 });
 test('failed starting receipt retains a safe cause; later successful delivery does not execute IC',async()=>{
  const privateMessage='Could not establish connection. Receiving end does not exist. private-student https://secret.example.test/';
@@ -1191,7 +1217,7 @@ test('source-change popup explains the source stop and sends its own flag only f
  assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
 });
 test('source-change helper package has the next version without broad automatic retry expansion',()=>{
- assert.equal(JSON.parse(source('manifest.json')).version,'0.5.32');
+ assert.equal(JSON.parse(source('manifest.json')).version,'0.5.33');
  assert.match(source('morning-background.js'),/const completedRecheckCodes=new Set\(\['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores'\]\)/);
 });
 

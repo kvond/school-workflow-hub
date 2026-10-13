@@ -191,6 +191,11 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .cockpit-panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin: 0 0 16px; }
 .cockpit-grid .cockpit-panel { margin: 0; }
 .cockpit-panel h2 { margin: 0 0 10px; font-size: 18px; }
+.cockpit-details > summary { cursor: pointer; }
+.cockpit-details > summary h2 { display: inline; margin: 0; }
+.cockpit-summary-context { display: inline; margin-left: 10px; font-size: 13px; font-weight: 400; }
+.cockpit-details[open] > summary { margin-bottom: 12px; }
+.cockpit-details > summary:focus-visible { outline: 2px solid var(--link); outline-offset: 4px; border-radius: 2px; }
 .cockpit-number { margin: 0; font-size: 38px; font-weight: 750; line-height: 1; color: var(--accent); }
 .cockpit-label { margin: 5px 0 10px; color: var(--muted); }
 .attention-list { margin: 6px 0 10px; padding-left: 20px; }

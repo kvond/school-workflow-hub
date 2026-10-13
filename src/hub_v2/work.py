@@ -289,7 +289,7 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
     return roots, None
 
 
-def list_tree(token, roots):
+def list_tree(token, roots, *, require_complete=False):
     """(items, parents): everything inside the given folders, subfolders included."""
     items, parents, queue, seen = [], {}, list(roots), set()
     while queue and len(seen) < MAX_FOLDERS:
@@ -304,6 +304,8 @@ def list_tree(token, roots):
             items.append(item)
             if item.get("mimeType") == google.FOLDER:
                 queue.append(item["id"])
+    if require_complete and queue:
+        raise google.GoogleError("The declared Form upload folders exceeded the complete-read limit.")
     return items, parents
 
 
@@ -1061,10 +1063,79 @@ def read_form(token, form, account):
         return item
     item["responses"] = len(item["found"])
     try:
-        item["name"] = google.drive_file(token, form["form_id"]).get("name", "")
+        metadata = google.drive_file(token, form["form_id"])
+        item["name"] = metadata.get("name", "")
+        if (metadata.get("id") == form["form_id"] and metadata.get("mimeType") == "application/vnd.google-apps.form"
+                and metadata.get("trashed") is False):
+            item["_upload_form_verified"] = True
     except google.GoogleError:
         pass
     return item
+
+
+def _declared_upload_folders(token, forms):
+    """Exact linked Form questions authorize only their own upload roots.
+
+    Used when the existing response/name discovery found no roots. Reading
+    a Form's declared folder never authorizes traversal of its parent.
+    The same structure and folder metadata are checked again after listing.
+    """
+    from school_workflow_hub.adapters.assignment_form_intake import upload_folders
+    from school_workflow_hub.adapters.hosted_agenda import ConnectionError
+    fields = "formId,revisionId,items(questionItem(question(fileUploadQuestion(folderId))))"
+    metadata_fields = "id,name,mimeType,trashed,parents,version,modifiedTime"
+    basis, owners = {}, {}
+    if len(forms) > 20:
+        raise google.GoogleError("Too many linked Forms to verify their upload folders completely.")
+    if len({f["form_id"] for f in forms}) != len(forms):
+        raise google.GoogleError("Duplicate linked Form scopes prevent verified upload-folder ownership.")
+    for form in forms:
+        fid = form["form_id"]
+        if form.get("problem") or not form.get("_upload_form_verified"):
+            raise google.GoogleError("An exact linked Form could not be verified for upload-folder discovery.")
+        form_metadata = google.drive_file(token, fid, metadata_fields)
+        if (not isinstance(form_metadata, dict) or form_metadata.get("id") != fid
+                or form_metadata.get("mimeType") != "application/vnd.google-apps.form"
+                or form_metadata.get("trashed") is not False or not form_metadata.get("version") or not form_metadata.get("modifiedTime")):
+            raise google.GoogleError("The exact linked Form's current metadata could not be verified.")
+        info = google.get_json("https://forms.googleapis.com/v1/forms/" + fid, token, {"fields": fields})
+        if not isinstance(info, dict) or info.get("formId") != fid or not isinstance(info.get("revisionId"), str) or not info["revisionId"]:
+            raise google.GoogleError("The linked Form's current upload-folder declaration could not be verified.")
+        try:
+            folder_ids = upload_folders(info)
+        except ConnectionError:
+            raise google.GoogleError("The linked Form's upload-folder declaration is incomplete.") from None
+        if not folder_ids:
+            raise google.GoogleError("The linked Form has no verified file-upload folder declaration.")
+        folders = {}
+        for folder_id in folder_ids:
+            if folder_id in owners and owners[folder_id] != fid:
+                raise google.GoogleError("Multiple linked Forms declare the same upload folder; assignment ownership needs review.")
+            metadata = google.drive_file(token, folder_id, metadata_fields)
+            if (not isinstance(metadata, dict) or metadata.get("id") != folder_id or metadata.get("mimeType") != google.FOLDER
+                    or metadata.get("trashed") is not False or not metadata.get("version") or not metadata.get("modifiedTime")):
+                raise google.GoogleError("The exact declared upload folder is unavailable or cannot be verified as current.")
+            folders[folder_id] = metadata
+            owners[folder_id] = fid
+            if len(owners) > MAX_FOLDERS:
+                raise google.GoogleError("Too many declared Form upload folders to verify completely.")
+        basis[fid] = {"form": info, "form_metadata": form_metadata, "folders": folders}
+    return basis
+
+
+def _declared_roots_for(item_id, parents, roots):
+    """Walk only the known declared tree; no provider or parent traversal."""
+    owned, seen = set(), set()
+    for _ in range(MAX_FOLDERS + 2):
+        if item_id in seen:
+            raise google.GoogleError("The declared upload-folder hierarchy is cyclic.")
+        seen.add(item_id)
+        if item_id in roots:
+            owned.add(item_id)
+        if item_id not in parents:
+            return owned
+        item_id = parents[item_id]
+    raise google.GoogleError("The declared upload-folder hierarchy exceeded the complete-read limit.")
 
 
 def _words(text):
@@ -1321,11 +1392,32 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                                         [f["name"] for f in forms], response_folders,
                                         roster.SECTIONS[class_key], [f["label"] for f in forms],
                                         other_titles)
+    declared, declared_members = {}, {}
+    if not roots and forms and any(f.get("_upload_form_verified") for f in forms):
+        try:
+            declared = _declared_upload_folders(token, forms)
+            roots = {fid: info.get("name", "") for entry in declared.values() for fid, info in entry["folders"].items()}
+            folder_note = None
+        except google.GoogleError as error:
+            folder_note = "The linked Forms' declared upload folders couldn't be verified (%s). Only readable Form uploads were read." % error
     try:
-        items, parents = list_tree(token, roots)
+        items, parents = list_tree(token, roots, require_complete=bool(declared))
+        if declared:
+            for entry in declared.values():
+                for fid, info in entry["folders"].items():
+                    if fid not in parents and info.get("parents"):
+                        parents[fid] = info["parents"][0]
+            declared_members = {fid: owned for fid in set(roots) | {i["id"] for i in items}
+                                if (owned := _declared_roots_for(fid, parents, roots))}
+            if any(len(owned) != 1 for owned in declared_members.values()):
+                raise google.GoogleError("Linked Forms' declared upload trees overlap; assignment ownership needs review.")
+        if declared and _declared_upload_folders(token, forms) != declared:
+            raise google.GoogleError("The Form declaration or upload-folder metadata changed during discovery.")
     except google.GoogleError as error:
         items, parents = [], {}
         folder_note = "The turn-in folders couldn't be read (%s), so only Form uploads were read." % error
+        if declared:
+            roots, declared, declared_members = {}, {}, {}
     for fid, info in list(known.items()) + list(upload_folders.items()):
         if fid not in parents and info.get("parents"):
             parents[fid] = info["parents"][0]
@@ -1341,13 +1433,18 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     # Which folders hold each Form's uploads: its titled folder, and wherever its
     # responses were saved (plus the Form folder around that question folder).
     # A section's lesson folder named for one assignment belongs to that Form.
+    declared_tree = set(declared_members)
     for fid, name in roots.items():
+        if fid in declared_tree:
+            continue
         title = _lesson_folder_title(name)
         owners = [f for f in forms if f["form_id"] and title and title == norm(assignment_title(f["label"]))]
         if len(owners) == 1:
             owners[0].setdefault("lesson_folders", set()).add(fid)
     for form in forms:
-        mine = {fid for fid, name in names.items() if form["name"] and name == form["name"] + " (File responses)"}
+        mine = {fid for fid, name in names.items() if fid not in declared_tree
+                and form["name"] and name == form["name"] + " (File responses)"}
+        mine |= set(declared.get(form["form_id"], {}).get("folders", {}))
         mine |= form.get("lesson_folders", set())
         questions = {p for s in form["found"] for f in s["files"]
                      for p in known.get(f["id"], {}).get("parents") or []} & set(holders)
@@ -1372,7 +1469,8 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     loose += [(s["files"][0]["id"], s) for s in shared]
     for file_id, submission in loose:
         chain = set(_ancestors(file_id, parents))
-        owners = [form for form in forms if form["folders"] & chain]
+        owners = ([form for form in forms if set(declared.get(form["form_id"], {}).get("folders", {})) & declared_members[file_id]]
+                  if file_id in declared_members else [form for form in forms if form["folders"] & chain])
         if len(owners) == 1:
             owners[0]["found"].append(submission)
         elif len(readable) == 1:
