@@ -62,6 +62,13 @@ remains an explicit gap. Multiple submissions to the same lesson remain separate
 samples. Only verified original submission times may order same-day samples.
 Never infer chronology from lesson order, filenames, edits or feedback dates.
 
+Use the actual author pipeline `science_writing_display.prepare_presentation`
+for corrected or later presentations of an existing report. It selects the
+latest actually reviewed source, requires teacher-reviewed practice, prepares
+the immutable replacement payload and renders its PDF. The existing imported
+worksheet author also accepts `cer_practice` and produces the same current CER
+format; legacy report reproduction stays unchanged.
+
 Use `science_writing_display.context` with teacher-reviewed CER practice tied
 to the latest actually reviewed lesson. Supply one relatively easy question,
 exactly three scientifically valid evidence statements, and the actual lesson

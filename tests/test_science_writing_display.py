@@ -5,7 +5,7 @@ import unittest
 
 from pypdf import PdfReader
 from hub_v2.feedback_pdf import _science_writing_history, render_science_writing
-from hub_v2.science_writing_display import context, validate
+from hub_v2.science_writing_display import context, validate, prepare_presentation
 from hub_v2.native_feedback import Held, TEACHER_DIMENSIONS
 from hub_v2.student_archive import _science_assessment, _science_presentation_context
 
@@ -27,6 +27,7 @@ def fixture(count=2):
             value['provenance']['source_observations'].append({'student_key': 'person-one', 'section': 'Fictional Biology',
                 'source_file_id': lesson['source_file_id'], 'source_revision': '1', 'lesson': lesson['title'],
                 'date': lesson['source_date'], 'dimension': dimension, 'level': 'Proficient' if i % 2 == 0 else 'Developing',
+                'reference_url': 'https://example.test/teacher-lesson-%s' % (i // 2),
                 'quote': 'Earlier sample.' if i == 0 else 'Latest sample %s.' % i,
                 'explanation': 'Accurate earlier mechanism.' if i == 0 else 'Later explanation omits the mechanism.'})
     return value
@@ -39,6 +40,21 @@ def practice():
 
 
 class WritingDisplayTests(unittest.TestCase):
+    def test_actual_author_pipeline_renders_latest_cer_and_new_immutable_id_without_mutating_old_report(self):
+        old = fixture(); old['id'] = 'feedbacksource_' + 'a' * 64
+        before = copy.deepcopy(old)
+        value, raw = prepare_presentation(old, practice(), prepared_date='2026-10-13', saved_at='2026-10-13T14:00:00Z')
+        self.assertEqual(old, before)
+        self.assertEqual(_science_assessment(value), _science_assessment(old))
+        self.assertEqual(value['supersedes_report_id'], old['id'])
+        self.assertNotEqual(value['id'], old['id'])
+        self.assertEqual(value['presentation_context']['writing_display']['mode'], 'latest')
+        pages = PdfReader(io.BytesIO(raw)).pages
+        self.assertNotIn('Earlier sample.', pages[0].extract_text())
+        self.assertIn('Latest sample 1.', pages[0].extract_text())
+        self.assertIn(practice()['question'], pages[-1].extract_text())
+        self.assertEqual(prepare_presentation(old, practice(), prepared_date='2026-10-13', saved_at='2026-10-13T14:00:00Z')[1], raw)
+
     def test_initial_comparison_explains_actual_decline_and_keeps_assessment_and_old_target(self):
         value = fixture(); before = copy.deepcopy(value)
         value['presentation_context'] = context(value, practice(), comparison=True)
@@ -102,11 +118,25 @@ class WritingDisplayTests(unittest.TestCase):
                        lambda r: r['presentation_context']['writing_display']['cer']['evidence'].pop(),
                        lambda r: r['presentation_context']['writing_display']['cer']['evidence'].append('Fourth fact.'),
                        lambda r: r['presentation_context']['writing_display'].update(mode='guessed'),
+                       lambda r: r['presentation_context']['writing_display']['cer'].update(lesson_reference='https://example.test/wrong-lesson'),
                        lambda r: r['presentation_context'].update(original_submission_times=[])):
             value = fixture(); value['presentation_context'] = context(value, practice())
             mutate(value)
             with self.subTest(mutate=mutate), self.assertRaises(Held):
                 render_science_writing(value)
+
+    def test_one_unknown_same_day_time_cannot_hide_before_two_known_times_and_claim_latest(self):
+        value = fixture(3)
+        value['presentation_context']['original_submission_times'].pop(0)
+        with self.assertRaisesRegex(Held, 'verified submission order'):
+            context(value, practice())
+        value = fixture(3)
+        value['lessons'][0]['source_date'] = '2026-09-30'
+        for row in value['provenance']['source_observations']:
+            if row['source_file_id'] == 'source-0':
+                row['date'] = '2026-09-30'
+        value['presentation_context']['original_submission_times'].pop(0)
+        self.assertEqual(context(value, practice())['writing_display']['latest_source']['source_file_id'], 'source-2')
 
     def test_archive_overlay_validates_original_receipts_and_does_not_permit_rerating(self):
         value = fixture(); old = copy.deepcopy(value)

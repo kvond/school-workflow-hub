@@ -10,6 +10,23 @@ FILE,RAW=imported_fixture.FILE,imported_fixture.RAW
 PNG=b'\x89PNG\r\n\x1a\nFictional captured page PNG'
 
 class ImportedWorksheetFeedback(unittest.TestCase):
+ def test_existing_author_with_reviewed_practice_builds_latest_CER_and_reproduces_same_source_report(self):
+  practice={'question':'Which claim is supported by the supplied fictional evidence?',
+    'evidence':['The fictional sample differs from the suspect profile.','The comparison uses the same tested locations.','The repeated fictional test gives the same result.'],
+    'reference_url':'https://example.test/reviewed-lesson'}
+  v=feedback.report(self.capture(),self.observations(),prepared_date='2026-10-11',saved_at='2026-10-11T12:00:00Z',
+    target_title='Historical question',target_text='How does the DNA result support your claim?',cer_practice=practice)
+  self.assertEqual(v['presentation_context']['writing_display']['mode'],'latest')
+  self.assertEqual(v['presentation_context']['writing_display']['latest_source']['source_file_id'],FILE)
+  self.verify(v)
+  from hub_v2.feedback_pdf import render_science_writing
+  from pypdf import PdfReader
+  from io import BytesIO
+  reader=PdfReader(BytesIO(render_science_writing(v)))
+  self.assertEqual(len(reader.pages),3)
+  self.assertIn(practice['question'],reader.pages[-1].extract_text())
+  self.assertNotIn('One question I want to discuss',reader.pages[-1].extract_text())
+  self.assertIn('not assessed in this report',reader.pages[-1].extract_text())
  def setUp(self):
   self.fixture=imported_fixture.ImportedOriginalArchiveTests('runTest');self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
   registered=self.fixture.register();self.record=deepcopy(self.fixture.port.rows[registered['record_key']].value)

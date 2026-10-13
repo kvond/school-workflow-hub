@@ -4,6 +4,8 @@ No assessment, source, grade, delivery, provider or storage writes. The practice
 is supplied teaching material, never evidence of a student's completed work.
 """
 from io import BytesIO
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from xml.sax.saxutils import escape
 
 from .native_feedback import Held, LEVELS, TEACHER_DIMENSIONS
@@ -20,6 +22,29 @@ def _reviewed(slots):
     return reviewed
 
 
+def _before(left, right):
+    return left['date'] < right['date'] or (left['moment'] and right['moment']
+           and left['moment'] < right['moment'])
+
+
+def _lesson_reference(saved, latest):
+    refs = {r.get('reference_url') for r in (saved.get('provenance') or {}).get('source_observations', [])
+            if r.get('source_file_id') == latest['source_file_id']
+            and str(r.get('source_revision')) == latest['source_revision'] and r.get('reference_url')}
+    for lesson in saved['lessons']:
+        if (lesson.get('source_file_id') == latest['source_file_id']
+                and str(lesson.get('source_revision')) == latest['source_revision'] and lesson.get('reference_url')):
+            refs.add(lesson['reference_url'])
+    imported = (saved.get('provenance') or {}).get('imported_source_evidence') or {}
+    if (imported.get('source_file_id') == latest['source_file_id']
+            and str(imported.get('source_revision')) == latest['source_revision']
+            and (imported.get('teacher') or {}).get('id')):
+        refs.add('https://drive.google.com/open?id=' + imported['teacher']['id'])
+    if len(refs) != 1:
+        raise Held('The CER needs the latest exact lesson reference from its verified source evidence.')
+    return refs.pop()
+
+
 def context(saved, cer, *, comparison=False):
     """Build the new presentation overlay; default to latest-work narration.
 
@@ -33,12 +58,54 @@ def context(saved, cer, *, comparison=False):
         raise Held('Choose the initial comparison or subsequent latest-work presentation explicitly.')
     slots = _science_writing_history(saved)[0]
     latest = _reviewed(slots)[-1]
+    if not isinstance(cer, dict) or set(cer) - {'question', 'evidence', 'reference_url', 'lesson_reference'}:
+        raise Held('Supply the teacher-reviewed CER practice as a bounded evidence record.')
     result = deepcopy(saved.get('presentation_context') or {'original_submission_times': []})
+    practice = deepcopy(cer)
+    practice['lesson_reference'] = _lesson_reference(saved, latest)
     result['writing_display'] = {'schema': SCHEMA, 'mode': 'comparison' if comparison else 'latest',
         'latest_source': {'source_file_id': latest['source_file_id'], 'source_revision': latest['source_revision']},
-        'cer': deepcopy(cer)}
+        'cer': practice}
     validate({**saved, 'presentation_context': result}, slots)
     return result
+
+
+def prepare_presentation(saved, cer, *, prepared_date, saved_at, comparison=False):
+    """Author a new immutable presentation using the existing archive contract.
+
+    This is the trusted author pipeline: choose the latest actual reviewed
+    source, attach the teacher-reviewed lesson CER, render and hash its PDF.
+    Existing saved assessment and older delivery versions remain unchanged.
+    """
+    from copy import deepcopy
+    import hashlib
+    import re
+    from .feedback_pdf import render_science_writing, SCIENCE_WRITING_RENDER_VERSION
+    from school_workflow_hub.core.runs import content_hash
+    try:
+        stamp = datetime.fromisoformat(saved_at.replace('Z', '+00:00'))
+        valid = (stamp.tzinfo is not None and stamp.astimezone(ZoneInfo('America/New_York')).date().isoformat() == prepared_date
+                 and datetime.strptime(prepared_date, '%Y-%m-%d').date().isoformat() == prepared_date)
+    except (ValueError, TypeError, AttributeError):
+        valid = False
+    if not valid or not re.fullmatch(r'feedbacksource_[a-f0-9]{64}', str(saved.get('id', ''))):
+        raise Held('The writing presentation needs its actual preparation time and existing saved report identity.')
+    version = saved.get('presentation_version', 1)
+    if type(version) is not int or version < 1:
+        raise Held('The existing writing presentation version is invalid.')
+    value = deepcopy(saved)
+    for name in ('pdf_path', 'pdf_bytes', 'pdf_sha256', 'id', 'report_source_sha256'):
+        value.pop(name, None)
+    value.update(prepared_at=prepared_date, saved_at=saved_at,
+        presentation_version=version + 1,
+        supersedes_report_id=saved['id'], supersession_previous_payload=deepcopy(saved))
+    value['presentation_context'] = context(value, cer, comparison=comparison)
+    basis = {k: v for k, v in value.items() if k != 'supersession_previous_payload'}
+    value['report_source_sha256'] = content_hash([SCIENCE_WRITING_RENDER_VERSION, basis])
+    value['id'] = 'feedbacksource_' + value['report_source_sha256']
+    pdf = render_science_writing(value)
+    value['pdf_sha256'] = hashlib.sha256(pdf).hexdigest()
+    return value, pdf
 
 
 def validate(saved, slots=None):
@@ -50,27 +117,27 @@ def validate(saved, slots=None):
         raise Held('The writing presentation needs its supported narrative scope and teacher-provided CER.')
     reviewed = _reviewed(slots)
     latest = reviewed[-1]
-    if len(reviewed) > 1:
-        previous = reviewed[-2]
-        ordered = previous['date'] < latest['date'] or (previous['moment'] and latest['moment']
-                  and previous['moment'] < latest['moment'])
-        if not ordered:
-            raise Held('The latest writing source needs verified submission order; title or filename order is not enough.')
+    if any(not _before(previous, latest) for previous in reviewed[:-1]):
+        raise Held('The latest writing source needs verified submission order; title or filename order is not enough.')
+    if (display['mode'] == 'comparison' and len(reviewed) > 2
+            and any(not _before(previous, reviewed[-2]) for previous in reviewed[:-2])):
+        raise Held('The comparison needs a uniquely verified previous reviewed source.')
     if (not isinstance(display['latest_source'], dict)
             or display['latest_source'] != {'source_file_id': latest['source_file_id'],
                                             'source_revision': latest['source_revision']}
             or not latest['source_file_id']):
         raise Held('The writing practice must belong to the latest exact reviewed source revision.')
     cer = display['cer']
-    if (not isinstance(cer, dict) or set(cer) != {'question', 'evidence', 'reference_url'}
+    if (not isinstance(cer, dict) or set(cer) != {'question', 'evidence', 'reference_url', 'lesson_reference'}
             or not isinstance(cer['question'], str) or not 1 <= len(cer['question']) <= 350
             or not isinstance(cer['evidence'], list) or len(cer['evidence']) != 3
             or any(not isinstance(item, str) or not 1 <= len(item) <= 300 for item in cer['evidence'])
             or len(set(cer['evidence'])) != 3
             or not isinstance(cer['reference_url'], str) or not cer['reference_url'].startswith('https://')
-            or len(cer['reference_url']) > 1000):
+            or len(cer['reference_url']) > 1000
+            or cer['lesson_reference'] != _lesson_reference(saved, latest)):
         raise Held('The CER needs one easy lesson question and exactly three distinct teacher-provided evidence statements.')
-    for item in [cer['question'], cer['reference_url'], *cer['evidence']]:
+    for item in [cer['question'], cer['reference_url'], cer['lesson_reference'], *cer['evidence']]:
         if any(ord(char) < 32 for char in item):
             raise Held('The teacher-provided CER contains unsupported control characters.')
     rows = (saved.get('provenance') or {}).get('source_observations')
