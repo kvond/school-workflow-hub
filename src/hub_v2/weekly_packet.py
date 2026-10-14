@@ -137,6 +137,7 @@ def _render(reply, digest, generated_at, ranges, teacher_ranges):
         for lesson in lessons:
             dates = sorted({d for values in lesson["meeting_dates"].values() for d in values})
             for day in dates or [""]:
+                first = not dates or day == dates[0]
                 story.append(p("%s - %s - %s" % (_day(day) or lesson["week"], ", ".join(lesson["sections"]),
                                                  lesson["topic"]), "h2"))
                 if lesson["status"] != "ready":
@@ -151,6 +152,11 @@ def _render(reply, digest, generated_at, ranges, teacher_ranges):
                 else:
                     story.append(p("Flow not yet reviewed.", "warn"))
                 items = [prints[i] for i in lesson["print_items"] if i in prints and not prints[i]["teacher_only"]]
+                if not first:
+                    # One lesson, one print list and prep: under its first meeting.
+                    if items or lesson.get("teacher_prep"):
+                        story.append(p("Print list and prep: see %s." % _day(dates[0]), "small"))
+                    continue
                 if items:
                     story.append(p("Print", "h2"))
                     rows = [["Item", "Quantity (basis)", "File / pages", "Sides"]]
@@ -160,8 +166,10 @@ def _render(reply, digest, generated_at, ranges, teacher_ranges):
                         rows.append([p(item["text"] + (" (optional)" if item["optional"] else ""), "small"),
                                      p(_quantity(item), "small"),
                                      p("%s%s" % (file.get("name") or "NO FILE", " - packet pages %d-%d" % where
-                                                 if where else ""), "small"),
-                                     p(file.get("sides") or "unknown", "small")])
+                                                 if where else " - Word file: print it from the lesson folder"
+                                                 if file.get("print_from_folder") else ""), "small"),
+                                     p("as the file is set up" if file.get("print_from_folder")
+                                       else file.get("sides") or "unknown", "small")])
                     table = Table(rows, colWidths=[150, 150, 150, 70], repeatRows=1)
                     table.setStyle(TableStyle([("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8),
                                                ("GRID", (0, 0), (-1, -1), 0.4, muted), ("VALIGN", (0, 0), (-1, -1), "TOP")]))

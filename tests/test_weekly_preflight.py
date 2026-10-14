@@ -360,6 +360,27 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual([(c['date'], c['closed']) for c in reading['dated']], [('2026-10-23', True)])
 
 
+class DeckSupplyTests(unittest.TestCase):
+    def test_deck_lines_are_split_and_kept_only_for_this_weeks_activity(self):
+        week = wp._week_text({'topic': 'Fermentation', 'prep': 'LAB Yeast Fermentation Lab',
+                              'plans': [{'plan': 'Fermentation lesson, yeast-balloon quick demo', 'note': ''}]})
+        self.assertEqual(wp.deck_supply_items(
+            'Active dry yeast (1 packet per class), sugar, balloons, and small clear plastic bottles '
+            '\u2014 yeast balloon lab (Day 2)', week, 'buy'),
+            ['Active dry yeast (1 packet per class)', 'sugar', 'balloons', 'small clear plastic bottles'])
+        self.assertEqual(wp.deck_supply_items(
+            'Marshmallows, bamboo skewers or metal tongs, and a lighter \u2014 burning-marshmallow demo (Day 1)',
+            week, 'buy'), [])
+        self.assertEqual(wp.deck_supply_items('Safety glasses and paper towels', week, 'put_out'),
+                         ['Safety glasses', 'paper towels'])
+
+    def test_handouts_on_a_put_out_line_are_not_supplies(self):
+        self.assertEqual(wp.deck_supply_items('CA1 / CA2 worksheets in the pickup tray', set(), 'put_out'), [])
+        self.assertEqual(wp.deck_supply_items('Bottles, balloons, yeast, sugar, and funnels at each lab station (Day 2)',
+                                              set(), 'put_out'),
+                         ['Bottles', 'balloons', 'yeast', 'sugar', 'funnels'])
+
+
 class PreflightRunTests(Base):
     def test_calendar_conflicts_needs_content_and_prep_deadlines(self):
         result = self.run_check()

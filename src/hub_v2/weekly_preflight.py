@@ -764,6 +764,36 @@ def parse_prep(value, monday, meeting_dates):
             "items": rows}
 
 
+HANDOUT = re.compile(r"\b(work)?sheets?\b|\bhandouts?\b|\bcopies\b|\bprint", re.I)
+GENERIC = {"demo", "lab", "day", "activity", "station", "stations", "class", "lesson", "quick", "short"}
+
+
+def _week_text(found):
+    """This week's Agenda words for one lesson: day plans, notes, to-do and prep."""
+    parts = [found.get("topic", ""), found.get("todo", ""), found.get("prep", "")]
+    parts += [p.get("plan", "") + " " + p.get("note", "") for p in found.get("plans", [])]
+    return set(_tokens(" ".join(parts), stop=set()))
+
+
+def deck_supply_items(line, week_tokens, kind):
+    """The supply items one deck BUY AHEAD / PUT OUT line names for THIS week.
+
+    A deck line reads "A, B, and C — what it is for (Day 2)". A deck spans
+    several weeks, so a line is kept only when this week's Agenda mentions
+    what it is for (the yeast lab is kept, last week's marshmallow demo is
+    not); a line naming no purpose is kept. Handouts on a PUT OUT line are
+    print items, not supplies."""
+    text = " ".join(str(line or "").split())
+    head, purpose = (re.split(r"\s+[—–]\s+", text, maxsplit=1) + [""])[:2]
+    purpose_tokens = [t for t in _tokens(re.sub(r"\(Day\s*\d+\)", " ", purpose), stop=STOP) if t not in GENERIC]
+    if purpose_tokens and not set(purpose_tokens) & week_tokens:
+        return []
+    head = re.sub(r"\s+at each (lab )?station.*$", "", head, flags=re.I)
+    parts = [part.strip(" .") for part in re.split(r",\s*(?:and\s+|or\s+)?|\s+and\s+(?![^()]*\))", head)]
+    items = [part for part in parts if part and not (kind == "put_out" and HANDOUT.search(part))]
+    return [re.sub(r"^(a|an|the)\s+", "", item, flags=re.I) for item in items]
+
+
 def _head_tokens(name):
     return _tokens(re.sub(r"^\d+\s*\w*\s+(?:of\s+)?", "", name), stop={"of", "the", "a", "an", "and", "for"})
 
@@ -1421,12 +1451,15 @@ def _content(ctx, lesson, counts):
         for line in blocks.get("print", []):
             lesson["print_lines"].append({"text": line["text"], "source": "deck “%s” slide %d" % (node["name"], line["slide"]),
                                           "slide": line["slide"], "deck_id": node["id"]})
+        week_text = _week_text(lesson["found"])
         for kind, status in (("buy", "buy"), ("put_out", "stock unknown")):
             for line in blocks.get(kind, []):
-                lesson["supply_rows"].append(_supply_row(
-                    line["text"], status, lesson, {"use_dates": sorted({d for s in lesson["meeting_dates"].values() for d in s})},
-                    "deck “%s” slide %d (%s)" % (node["name"], line["slide"], "BUY AHEAD" if kind == "buy" else "PUT OUT"),
-                    node["url"], lesson["sections"], counts))
+                items = deck_supply_items(line["text"], week_text, kind)
+                for item in items:
+                    lesson["supply_rows"].append(_supply_row(
+                        item, status, lesson, {"use_dates": sorted({d for s in lesson["meeting_dates"].values() for d in s})},
+                        "deck “%s” slide %d (%s)" % (node["name"], line["slide"], "BUY AHEAD" if kind == "buy" else "PUT OUT"),
+                        node["url"], lesson["sections"], counts))
         lesson["teacher_prep"] += [{"text": line["text"], "slide": line["slide"], "deck": node["name"]}
                                    for line in blocks.get("prepare", [])]
         lesson.setdefault("teacher_only_slides", {})[node["id"]] = teacher
@@ -1479,12 +1512,9 @@ def _print_file(ctx, lesson, member):
         return {**node, "pages": None, "sides": "unknown", "revision": ""}
     node.update(revision=revision(meta), version=meta.get("version"))
     if member["mimeType"] == DOCX:
-        lesson["exceptions"].append(_exception(
-            "print_file_not_exportable", "needs_decision", lesson,
-            "“%s” is a Word file, so the Hub can't add it to the packet or count its pages." % member["name"],
-            "Save it as a PDF or Google Doc in the lesson folder.", url=node["url"], sources=[member["id"]],
-            revision_key=node["revision"]))
-        return {**node, "pages": None, "sides": "unknown"}
+        # The Hub can't render Word files; the packet lists it to print from
+        # the folder instead. That is a print instruction, not a decision.
+        return {**node, "pages": None, "sides": "unknown", "print_from_folder": True}
     pages = ctx.check("pages", node, _pages)
     if pages is None:
         lesson["pending"].append(member["id"])
