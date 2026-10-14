@@ -39,10 +39,13 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   are deadlines, never meeting claims.
 - **Agenda links.** A visible label that is plain text while its hidden URL
   cell holds a link is repairable when the same column's other rows share one
-  `=IF($P{row}="","—",HYPERLINK($P{row},"label"))` formula. The repair rereads
-  the header rows and the row, writes only that plain cell, and reads it back;
-  a repeat finds nothing to do. Formula cells, linked cells and typed text are
-  never written; a visible link that disagrees with its hidden URL is reported.
+  `=IF($P{row}="","—",HYPERLINK($P{row},"label"))` formula. When the column
+  shares no formula (the Forensics 2nd-deck display column), the plan writes
+  the same label text as a linked label to the hidden URL, the way a Hub
+  lesson save writes one. The repair rereads the header rows and the row,
+  writes only that plain cell, and reads it back; a repeat finds nothing to
+  do. Formula cells, linked cells, blank cells and typed text are never
+  written; a visible link that disagrees with its hidden URL is reported.
   The Forensics hidden 2nd-deck slot before the folder column is expected.
 - **Sources** (teacher deck, the `/copy` student template — the same file,
   folder, 2nd deck, extra material, Turn-in Forms with their published
@@ -55,12 +58,24 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
 - **Deck content.** Completion codes via `audit._release_deck` (non-ready
   results read "Needs embedded codes" with the missing/extra IDs and slides);
   slide count, TEACHER REFERENCE / NAVIGATION slides, and their TO PRINT,
-  BUY AHEAD, PREPARE and PUT OUT FOR STUDENTS blocks. An unreadable deck names
-  the stage that failed.
+  BUY AHEAD, PREPARE and PUT OUT FOR STUDENTS blocks; the deck's web links
+  (linked text, typed URLs, a URL under the line that names it). A bracketed
+  authoring note on a slide students see — one opening with DRAFT, TODO,
+  NOTE, TEACHER, added, corrected or verify and a dash or colon, such as
+  “[DRAFT — confirm …]” or “[verify verbatim …]” — is one
+  `authoring_note_on_student_slide` decision per slide, quoting the first
+  ~80 characters: remove it or move it to speaker notes. Teacher slides,
+  sentence-case prompts (“[Note: use mL]”), `[[codes]]` and boxes holding a
+  code are never read for notes. An unreadable deck names the stage that
+  failed.
 - **Print list.** Quantities from current roster counts per section ("1 per
   student", "1 per group" = ceil(n/4), optional "if needed" / support copies),
   matched to folder PDFs and Google Docs by name, with page counts and sides.
-  Key/answer files are TEACHER ONLY. Word files must be saved as PDF or Doc.
+  A line with no folder file whose own text, or its deck's link list, gives
+  an http(s) page is “print from web: URL” — a print instruction in the
+  packet and in the Week ahead **Print list**, not a decision; with no URL it
+  stays a decision. Key/answer files are TEACHER ONLY. Word files print from the
+  lesson folder.
 - **Supply list.** BUY, PULL, on order and deck blocks, merged by name with
   every source kept. Statuses are buy, pull, on order (not verified in hand)
   and stock unknown; nothing is marked in hand or bought.

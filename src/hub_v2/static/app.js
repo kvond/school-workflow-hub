@@ -956,7 +956,7 @@ async function loadTodayFeedback(seq) {
 // One collapsible Today section. It reads the last saved check; "Check now"
 // rereads the Agenda and lesson sources. Only unresolved, actionable items are
 // listed; the machine evidence for each stays inside its own details.
-const weekAhead = {seq: 0, data: null, busy: '', error: '', supplies: false, repairs: {}, packet: null};
+const weekAhead = {seq: 0, data: null, busy: '', error: '', supplies: false, prints: false, repairs: {}, packet: null};
 const WEEK_AHEAD_STATUS = {ready: 'Ready', needs_decision: 'Needs decisions', incomplete: 'Check incomplete',
   inaccessible: 'Source unavailable', repaired_and_verified: 'Repaired and verified', not_checked: 'Not checked yet'};
 
@@ -983,7 +983,7 @@ function weekAheadItem(item, data) {
     item.status === 'repairable' ? el('div', {class: 'action-row'},
       el('button', {type: 'button', disabled: repair?.busy, onclick: () => weekAheadRepair(item, !repair?.plan)},
         repair?.plan ? 'Apply this repair' : 'Preview repair'),
-      repair?.plan ? el('span', {class: 'muted', text: ` Writes ${repair.plan.formula} into ${repair.plan.cell} only.`}) : null,
+      repair?.plan ? el('span', {class: 'muted', text: ` Writes ${repair.plan.writes || repair.plan.formula} into ${repair.plan.cell} only.`}) : null,
       repair?.message ? el('span', {class: 'muted', text: ' ' + repair.message}) : null) : null,
     el('details', {}, el('summary', {class: 'muted', text: 'Evidence'}),
       el('pre', {text: JSON.stringify({kind: item.kind, status: item.status, blocking: item.blocking,
@@ -999,6 +999,26 @@ function weekAheadSupplies(data) {
       el('td', {text: s.item + (s.also_named?.length ? ` (also: ${s.also_named.join(', ')})` : '')}),
       el('td', {text: s.status}), el('td', {text: s.quantity}), el('td', {text: s.lessons.join('; ')}),
       el('td', {text: s.use_dates.join(', ') || 'not stated'}), el('td', {text: s.prep_by || ''})))));
+}
+
+// The print list: each item's matched file, or the web page it prints from.
+function weekAheadPrints(data) {
+  const rows = data?.print_items || [];
+  if (!rows.length) return note('No print items are listed for these weeks.', 'info');
+  const quantity = p => Object.keys(p.per_section || {}).length
+    ? Object.entries(p.per_section).map(([s, n]) => `${s}: ${n ?? '?'}`).join(', ') + ` (${p.basis})` : p.basis;
+  const where = p => {
+    const url = p.web?.url || '';
+    if (url) return el('span', {}, 'Print from web: ', /^https?:\/\//.test(url) ? link(url, url) : url);
+    if (!p.file) return 'No file';
+    return p.file.name + (p.file.pages ? ` · ${p.file.pages} page${p.file.pages > 1 ? 's' : ''}, ${p.file.sides}`
+      : p.file.print_from_folder ? ' · Word file: print it from the lesson folder' : '');
+  };
+  return el('table', {class: 'cockpit-table'},
+    el('thead', {}, el('tr', {}, ...['Item', 'Lesson', 'Quantity', 'File or instruction'].map(h => el('th', {text: h})))),
+    el('tbody', {}, ...rows.map(p => el('tr', {},
+      el('td', {text: p.text + (p.optional ? ' (optional)' : '') + (p.teacher_only ? ' · TEACHER ONLY' : '')}),
+      el('td', {text: `${p.class} · ${p.lesson}`}), el('td', {text: quantity(p)}), el('td', {}, where(p))))));
 }
 
 function renderWeekAhead() {
@@ -1032,6 +1052,8 @@ function renderWeekAhead() {
       packet?.status === 'ready' ? link('Open Monday packet (PDF)', packet.pdf_url) : null,
       el('button', {type: 'button', disabled: !!weekAhead.busy || !data || ['not_checked', 'incomplete'].includes(data.status),
         onclick: buildWeekPacket}, packet?.status === 'ready' ? 'Rebuild packet if changed' : 'Prepare Monday packet'),
+      el('button', {type: 'button', onclick: () => { weekAhead.prints = !weekAhead.prints; renderWeekAhead(); }},
+        weekAhead.prints ? 'Hide print list' : 'Print list'),
       el('button', {type: 'button', onclick: () => { weekAhead.supplies = !weekAhead.supplies; renderWeekAhead(); }},
         weekAhead.supplies ? 'Hide supply list' : 'Supply list')),
     el('p', {class: 'muted', text: `Last successful check: ${data?.last_successful_check ? when(data.last_successful_check) : 'none for these weeks'}. ` +
@@ -1039,6 +1061,7 @@ function renderWeekAhead() {
     weekAhead.busy ? note(weekAhead.busy, 'info') : null,
     weekAhead.error ? note(weekAhead.error) : null,
     data?.status === 'incomplete' ? note('This check did not finish, so nothing in it counts as ready. Check now resumes where it stopped.') : null,
+    weekAhead.prints ? weekAheadPrints(data) : null,
     weekAhead.supplies ? weekAheadSupplies(data) : null,
     shownItems.length ? el('ul', {class: 'attention-list'}, ...shownItems.map(item => weekAheadItem(item, data)))
       : data && data.status !== 'not_checked' ? el('p', {class: 'ok', text: '✓ Nothing unresolved in these weeks.'}) : null,

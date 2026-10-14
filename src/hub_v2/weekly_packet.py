@@ -56,7 +56,8 @@ def manifest(reply):
                                      for name, r in sorted((l.get("reviews") or {}).items())}}
                         for l in reply["lessons"]],
             "print": [[p["id"], p["text"], p["teacher_only"], p["optional"], p["basis"], p["per_section"],
-                       (p.get("file") or {}).get("id"), (p.get("file") or {}).get("revision")]
+                       (p.get("file") or {}).get("id"), (p.get("file") or {}).get("revision"),
+                       (p.get("web") or {}).get("url")]
                       for p in reply["print_items"]],
             "supplies": [[s["item"], s["status"], s["quantity"], s["use_dates"], s["prep_by"], s["lessons"]]
                          for s in reply["supplies"]]}
@@ -161,15 +162,17 @@ def _render(reply, digest, generated_at, ranges, teacher_ranges):
                     story.append(p("Print", "h2"))
                     rows = [["Item", "Quantity (basis)", "File / pages", "Sides"]]
                     for item in items:
-                        file = item.get("file") or {}
+                        file, web = item.get("file") or {}, item.get("web") or {}
                         where = ranges.get(file.get("id"))
+                        if web:  # a web page: printed from its address, not part of this packet
+                            shown, how = "Print from web: " + web["url"], "as the page prints"
+                        else:
+                            shown = "%s%s" % (file.get("name") or "NO FILE", " - packet pages %d-%d" % where
+                                              if where else " - Word file: print it from the lesson folder"
+                                              if file.get("print_from_folder") else "")
+                            how = "as the file is set up" if file.get("print_from_folder") else file.get("sides") or "unknown"
                         rows.append([p(item["text"] + (" (optional)" if item["optional"] else ""), "small"),
-                                     p(_quantity(item), "small"),
-                                     p("%s%s" % (file.get("name") or "NO FILE", " - packet pages %d-%d" % where
-                                                 if where else " - Word file: print it from the lesson folder"
-                                                 if file.get("print_from_folder") else ""), "small"),
-                                     p("as the file is set up" if file.get("print_from_folder")
-                                       else file.get("sides") or "unknown", "small")])
+                                     p(_quantity(item), "small"), p(shown, "small"), p(how, "small")])
                     table = Table(rows, colWidths=[150, 150, 150, 70], repeatRows=1)
                     table.setStyle(TableStyle([("FONT", (0, 0), (-1, 0), "Helvetica-Bold", 8),
                                                ("GRID", (0, 0), (-1, -1), 0.4, muted), ("VALIGN", (0, 0), (-1, -1), "TOP")]))
@@ -203,8 +206,10 @@ def _render(reply, digest, generated_at, ranges, teacher_ranges):
         if item["teacher_only"]:
             file = item.get("file") or {}
             where = teacher_ranges.get(file.get("id"))
+            web = (item.get("web") or {}).get("url")
             teacher.append(p("%s - %s - %s%s" % (item["class"], item["lesson"], item["text"],
-                                                 " (packet pages %d-%d)" % where if where else " (no file)")))
+                                                 " (packet pages %d-%d)" % where if where else
+                                                 " (print from web: %s)" % web if web else " (no file)")))
     separator = BytesIO()
     SimpleDocTemplate(separator, pagesize=letter, invariant=1, title="Teacher-only",
                       leftMargin=40, rightMargin=40, topMargin=40, bottomMargin=40).build(teacher)

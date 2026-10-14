@@ -110,3 +110,24 @@ test('an unfinished check says so and cannot prepare a packet', async () => {
   const prepare = walk(box).find(node => node.tagName === 'button' && node.textContent === 'Prepare Monday packet');
   assert.equal(prepare.disabled, '');
 });
+
+test('the print list shows a web page as a print instruction with its link', async () => {
+  const web = 'https://science.example.org/activities/yeast-inflated-balloons';
+  const prints = [
+    {text: 'Science World — Yeast-Inflated Balloons (1 per group)', class: 'Biology', lesson: 'Fictional respiration',
+     per_section: {'A4 Biology': 6}, basis: '1 per group of 4: 1 x ceil(students/4)', optional: false, teacher_only: false,
+     file: null, web: {url: web, from: "the deck's link list"}, instruction: 'print from web: ' + web},
+    {text: 'CER worksheet (1 per student)', class: 'Biology', lesson: 'Fictional respiration', per_section: {'A4 Biology': 22},
+     basis: '1 per student (current roster)', optional: false, teacher_only: false,
+     file: {name: 'Fictional CER worksheet.pdf', pages: 1, sides: 'single-sided'}}];
+  const {ui, document} = boot(() => ({...reply, print_items: prints}));
+  await ui.loadWeekAhead();
+  const box = document.getElementById('today-week-ahead');
+  const find = label => walk(box).find(node => node.tagName === 'button' && node.textContent === label);
+  await find('Print list').listeners.click();
+  assert.match(box.textContent, /Print from web: https:\/\/science\.example\.org\/activities\/yeast-inflated-balloons/);
+  assert.ok(walk(box).some(node => node.tagName === 'a' && node.href === web));
+  assert.match(box.textContent, /A4 Biology: 6 \(1 per group of 4/);
+  assert.match(box.textContent, /Fictional CER worksheet\.pdf · 1 page, single-sided/);
+  assert.ok(find('Hide print list'));
+});

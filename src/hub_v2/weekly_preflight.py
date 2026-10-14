@@ -16,18 +16,22 @@ asks for by fingerprint.
   never meeting claims.
 - Agenda links. A visible label cell that is plain text while its hidden URL
   cell has a URL can't be clicked. Its repair plan restores the formula the
-  same column uses in its other rows (see repair_link). A visible link that
-  disagrees with its hidden URL is reported, never overwritten.
+  same column uses in its other rows, or, when the column shares no formula,
+  links the label the cell already shows to its hidden URL (see repair_link).
+  A visible link that disagrees with its hidden URL is reported, never
+  overwritten.
 - Sources, as the Hub's own account sees them (not proof of student access):
   decks, the /copy student template (the same file), the lesson folder (a
   complete listing, or held), Forms with their published responder IDs, and
   extra material. A Form shared by several rows is not an error, and no
   submission count is read, so an untaught lesson never looks like missing work.
-- Deck content: the existing completion readiness (audit._release_deck) and
-  the teacher-reference blocks TO PRINT, BUY AHEAD, PREPARE and PUT OUT FOR
-  STUDENTS.
+- Deck content: the existing completion readiness (audit._release_deck), the
+  teacher-reference blocks TO PRINT, BUY AHEAD, PREPARE and PUT OUT FOR
+  STUDENTS, the deck's web links, and authoring notes ("[DRAFT — …]") left on
+  slides students see.
 - Print and supply lists: quantities from the roster, print lines matched to
-  folder files by name, page counts; BUY / PULL / on order, never "in hand".
+  folder files by name (or, with no file, to a web page the line or the deck's
+  link list names), page counts; BUY / PULL / on order, never "in hand".
 
 Reviewed parts (a meeting's 90-minute flow, a VT verdict, a print decision, a
 visual check) are records a person saves, bound to the source revisions they
@@ -47,13 +51,13 @@ from io import BytesIO
 
 from . import agenda as agenda_module, audit, completion, google, roster, work
 from .agenda import first_link, lesson_kind, links, norm, plain, text
-from .agenda_edit import REF, _cell_range, _write_error, column_letter
+from .agenda_edit import REF, _cell_range, _linked_cell, _write_error, column_letter
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bounded_json, key
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/1"
+RULES = "weekly-preflight-rules/2"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -310,6 +314,12 @@ def column_pattern(cells, layout, visible_col, hidden_col, skip_row):
     return ranked[0][0], SAFE.fullmatch(ranked[0][0]).group(3)
 
 
+def column_link_labels(cells, layout, visible_col, skip_row):
+    """The labels the other rows of this column show as links (normalized)."""
+    return {norm(text(cells.get((row, visible_col)))) for row, _ in layout["rows"]
+            if row != skip_row and not plain(cells.get((row, visible_col)))} - {""}
+
+
 def _cell_url(agenda, entry, col, row):
     return "https://docs.google.com/spreadsheets/d/%s/edit#gid=%s&range=%s%d" % (
         agenda.spreadsheet_id, entry.get("sheet_id", 0), column_letter(col), row)
@@ -357,25 +367,35 @@ def link_findings(agenda, class_key, rows):
                 continue
             template, label = column_pattern(cells, layout, visible_col, hidden_col, row)
             shown_text = text(visible).strip()
-            broken = _blank(shown_text) or "↗" in shown_text or (label and norm(shown_text) == norm(label))
+            # A label, not typed text: blank, an ↗ label, or the label the column's other rows link.
+            broken = (_blank(shown_text) or "↗" in shown_text or (label and norm(shown_text) == norm(label))
+                      or norm(shown_text) in column_link_labels(cells, layout, visible_col, row))
             item = {**base, "kind": "visible_link_not_clickable",
                     "reason": "The visible %s cell %s%d is plain text, so it can't be clicked, while its hidden "
                               "%s%d holds the link." % (role, column_letter(visible_col), row,
                                                         column_letter(hidden_col), row)}
             if broken and template:
-                item["plan"] = {"column": column_letter(visible_col), "row": row,
+                item["plan"] = {"kind": "formula", "column": column_letter(visible_col), "row": row,
                                 "formula": template.replace("{row}", str(row)), "label": label,
                                 "pattern_from": "other rows of column %s" % column_letter(visible_col)}
             elif not broken:
                 item["reason"] += " The cell holds typed text, so the Hub leaves it for you."
+            elif not _blank(shown_text):
+                # No formula to copy: the same label, linked to the hidden URL
+                # the way agenda_edit writes a linked label.
+                item["plan"] = {"kind": "linked_label", "column": column_letter(visible_col), "row": row,
+                                "label": shown_text, "url": hidden_url,
+                                "pattern_from": "the label cell %s%d already shows" % (column_letter(visible_col), row)}
             else:
-                item["reason"] += " The other rows of this column don't share one link formula to copy."
+                item["reason"] += (" The other rows of this column don't share one link formula to copy, and the "
+                                   "cell has no label to link.")
             found.append(item)
     for item in found:
+        plan = item.get("plan") or {}
         item["fingerprint"] = content_hash({"kind": item["kind"], "agenda": agenda.spreadsheet_id,
                                             "sheet": item["sheet_id"], "row": item["row"], "column": item["column"],
                                             "text": item["visible_text"], "hidden": item["hidden_url"],
-                                            "plan": (item.get("plan") or {}).get("formula")})
+                                            "plan": plan.get("formula") or plan.get("kind")})
     return found
 
 
@@ -385,9 +405,10 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
     The plan is recomputed from the freshly loaded Agenda. Before writing, the
     tab's header rows and this row are read again: the week label, the column
     headers, the plain label text and the hidden URL must still be what the
-    plan saw. Only that one plain cell is written, with the formula the same
-    column uses in its other rows; it is read back afterwards. A second request
-    finds nothing to do.
+    plan saw. Only that one plain cell is written: with the formula the same
+    column uses in its other rows, or, when the column shares no formula, as
+    the same label text linked to the hidden URL (agenda_edit's linked cell).
+    It is read back afterwards. A second request finds nothing to do.
     """
     if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
         raise Held("Choose one exact link repair from the latest check.")
@@ -404,9 +425,13 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
                 "message": "That link is no longer a plain label with a hidden URL. Nothing was written."}
     if not plan.get("plan"):
         raise Held("This link needs your decision; the Hub has no safe formula to restore for it.")
+    fix = plan["plan"]
+    linked = fix["kind"] == "linked_label"
     reply = {"status": "planned", "fingerprint": fingerprint, "dry_run": dry_run, "changed": False,
              "class_key": plan["class_key"], "week": plan["week"], "row": plan["row"],
-             "cell": plan["plan"]["column"] + str(plan["row"]), "formula": plan["plan"]["formula"],
+             "cell": fix["column"] + str(plan["row"]), "formula": fix.get("formula"),
+             "label": fix["label"] if linked else None, "url": fix["url"] if linked else None,
+             "writes": "the label “%s” linked to %s" % (fix["label"], fix["url"]) if linked else fix["formula"],
              "source_url": plan["source_url"]}
     if dry_run:
         return reply
@@ -432,25 +457,29 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
     if (not plain(cell) or _formula(cell) or text(cell).strip() != plan["visible_text"]
             or first_link(fresh.get((row, hidden_col))) != plan["hidden_url"]):
         raise Held("That cell changed since the check (it may already be fixed). Nothing was written.")
+    new_cell = _linked_cell(fix["label"], fix["url"]) if linked else {"userEnteredValue": {"formulaValue": fix["formula"]}}
     try:
         google.batch_update(write_token, agenda.spreadsheet_id, [{"updateCells": {
-            "range": _cell_range(entry.get("sheet_id", 0), row, visible_col),
-            "rows": [{"values": [{"userEnteredValue": {"formulaValue": plan["plan"]["formula"]}}]}],
-            "fields": "userEnteredValue"}}])
+            "range": _cell_range(entry.get("sheet_id", 0), row, visible_col), "rows": [{"values": [new_cell]}],
+            "fields": "userEnteredValue,textFormatRuns" if linked else "userEnteredValue"}}])
     except google.GoogleError as error:
         raise _write_error(config, error) from None
     after = google.sheet_grid(token, agenda.spreadsheet_id, ["%s!%s%d" % (tab, column_letter(visible_col), row)]
                               ).get(entry["tab"], {}).get((row, visible_col))
     shown = [url for url, _ in links(after)]
-    verified = (_formula(after).replace(" ", "") == plan["plan"]["formula"].replace(" ", "")
-                and (not shown or file_id(shown[0]) == file_id(plan["hidden_url"])))
+    if linked:
+        verified = (not _formula(after) and text(after).strip() == fix["label"] and bool(shown)
+                    and (shown[0] == fix["url"] or file_id(shown[0]) == file_id(fix["url"]) != ""))
+    else:
+        verified = (_formula(after).replace(" ", "") == fix["formula"].replace(" ", "")
+                    and (not shown or file_id(shown[0]) == file_id(plan["hidden_url"])))
     reply.update(status="repaired_and_verified" if verified else "unconfirmed", changed=True,
                  verified_at=now() if verified else None)
     if verified:
         record = {"schema": SCHEMA, "kind": "link_repair", "fingerprint": fingerprint, "status": reply["status"],
-                  "class_key": plan["class_key"], "week": plan["week"], "row": row, "column": plan["plan"]["column"],
-                  "formula": plan["plan"]["formula"], "role": plan["role"], "verified_at": reply["verified_at"],
-                  "source_url": plan["source_url"]}
+                  "class_key": plan["class_key"], "week": plan["week"], "row": row, "column": fix["column"],
+                  "repair": fix["kind"], "formula": fix.get("formula"), "label": reply["label"], "url": reply["url"],
+                  "role": plan["role"], "verified_at": reply["verified_at"], "source_url": plan["source_url"]}
         _put(port, receipt_id, record)
         _index_repair(port, agenda.spreadsheet_id, record)
     return reply
@@ -462,7 +491,8 @@ def _index_repair(port, spreadsheet_id, record):
         old = port.read([ident]).documents[ident]
         items = dict((old.value if old else {}).get("items", {}))
         items["%s:%s:%s" % (record["class_key"], record["row"], record["column"])] = {
-            field: record[field] for field in ("fingerprint", "week", "formula", "role", "verified_at", "source_url")}
+            field: record.get(field) for field in ("fingerprint", "week", "repair", "formula", "label", "url", "role",
+                                                   "verified_at", "source_url")}
         if len(items) > 400:
             items = dict(sorted(items.items(), key=lambda kv: kv[1]["verified_at"])[-400:])
         try:
@@ -514,41 +544,100 @@ def run_id(spreadsheet_id, monday, weeks):
 TEACHER_ONLY = re.compile(r"TEACHER\s+(?:REFERENCE|NAVIGATION)")
 HEADINGS = (("TO PRINT", "print"), ("BUY AHEAD", "buy"), ("PREPARE", "prepare"), ("PUT OUT FOR STUDENTS", "put_out"))
 BULLET = " \t•▪◦*-–—·>‣○●□☐✓"
+WEB = re.compile(r"https?://[^\s\"'<>\[\]]+")
+MAX_WEB_LINKS = 80
+# A note the author left for herself on a slide students see: "[DRAFT — confirm
+# …]", "[added — …]", "[corrected: …]", "[TODO: …]", "[verify verbatim …]".
+# Only a bracket that opens with one of these marker words and then a dash or
+# colon counts (an all-lowercase or all-caps "verify" may take its object
+# instead). Sentence-case prompts ("[Note: use mL]", "[Verify your answer]")
+# and [[codes]] never match, and a box holding a code (an answer area or the
+# code list) is never read for notes.
+AUTHORING_NOTE = re.compile(
+    r"(?<!\[)\[(?!\[)[ \t]*(?:(?:DRAFT|TODO|NOTE|TEACHER(?:[ \t]+(?:NOTE|ONLY))?|ADDED|[Aa]dded|CORRECTED"
+    r"|[Cc]orrected|VERIFY|[Vv]erify)[ \t]*[—–:]|(?:verify|VERIFY)[ \t]+[A-Za-z])[^\]]{0,600}\]?")
 
 
-def _native_texts(elements, out, depth=0):
+def _container_text(runs, links, index):
+    """One shape's or table cell's words; each linked run's start goes to links."""
+    value = ""
+    for run in runs:
+        piece = (run or {}).get("textRun") or {}
+        url = (((piece.get("style") or {}).get("link") or {}).get("url") or "")
+        if url:
+            links.append({"text": index, "at": len(value), "url": url})
+        value += piece.get("content", "")
+    return value
+
+
+def _native_texts(elements, out, links, depth=0):
     for element in elements or []:
         if not isinstance(element, dict) or depth > 20:
             continue
         if "elementGroup" in element:
-            _native_texts((element["elementGroup"] or {}).get("children"), out, depth + 1)
+            _native_texts((element["elementGroup"] or {}).get("children"), out, links, depth + 1)
         if "shape" in element:
             runs = ((element["shape"] or {}).get("text") or {}).get("textElements") or []
-            out.append("".join(((run or {}).get("textRun") or {}).get("content", "") for run in runs))
+            out.append(_container_text(runs, links, len(out)))
         if "table" in element:
             for table_row in (element["table"] or {}).get("tableRows") or []:
                 for table_cell in (table_row or {}).get("tableCells") or []:
                     runs = ((table_cell or {}).get("text") or {}).get("textElements") or []
-                    out.append("".join(((run or {}).get("textRun") or {}).get("content", "") for run in runs))
+                    out.append(_container_text(runs, links, len(out)))
 
 
 def outline_native(presentation):
-    """[{"number", "object_id", "texts"}] from a presentations.get response."""
+    """[{"number", "object_id", "texts", "links"}] from a presentations.get
+    response; links are the linked runs as {"text": index, "at": offset, "url"}."""
     slides = presentation.get("slides") if isinstance(presentation, dict) else None
     if not isinstance(slides, list):
         raise completion.Unreadable("The native deck has no readable slide list.")
     out = []
     for number, page in enumerate(slides, 1):
-        texts = []
-        _native_texts((page or {}).get("pageElements"), texts)
-        out.append({"number": number, "object_id": (page or {}).get("objectId", ""), "texts": texts})
+        texts, links = [], []
+        _native_texts((page or {}).get("pageElements"), texts, links)
+        out.append({"number": number, "object_id": (page or {}).get("objectId", ""), "texts": texts, "links": links})
     return out
 
 
 def outline_deck(deck):
-    """The same outline from completion.read_deck's parsed .pptx."""
-    return [{"number": slide["number"], "object_id": "", "texts": [unit["text"] for unit in slide["units"]]}
-            for slide in deck["slides"]]
+    """The same outline from completion.read_deck's parsed .pptx (typed URLs only)."""
+    return [{"number": slide["number"], "object_id": "", "texts": [unit["text"] for unit in slide["units"]],
+             "links": []} for slide in deck["slides"]]
+
+
+def web_links(slide):
+    """[{"label", "url", "slide"}]: each http(s) page one slide links, with the
+    words that name it. A URL typed on a line, or linked text, is named by its
+    own line ("Science World — Yeast-Inflated Balloons: https://…"); a bare URL
+    line, or a URL alone in the next table cell, by the line before it."""
+    linked = {}
+    for item in slide.get("links") or []:
+        if WEB.match(str(item.get("url") or "")):
+            linked.setdefault(item["text"], []).append((item["at"], item["url"]))
+    out, previous = [], ""
+    for index, value in enumerate(slide["texts"]):
+        start = 0
+        for raw in value.split("\n"):
+            end = start + len(raw)
+            urls = [m.group(0).rstrip(".,;)") for m in WEB.finditer(raw)]
+            urls += [url for at, url in linked.get(index, []) if start <= at <= end and url not in urls]
+            label = " ".join(WEB.sub(" ", raw).split()).strip(BULLET + ":|")
+            start = end + 1
+            if not urls:
+                previous = label or previous
+                continue
+            for url in urls:
+                if (label or previous) and len(url) <= 1000:
+                    out.append({"label": (label or previous)[:160], "url": url, "slide": slide["number"]})
+            previous = ""
+    return out
+
+
+def authoring_notes(slide):
+    """The bracketed authoring notes on one slide, each as written."""
+    return [" ".join(match.group(0).split()) for value in slide["texts"] if "[[" not in value
+            for match in AUTHORING_NOTE.finditer(value)]
 
 
 def _heading(line):
@@ -565,7 +654,8 @@ def _heading(line):
 
 def deck_summary(outline):
     """Slide count, teacher-only slides, the TO PRINT / BUY AHEAD / PREPARE /
-    PUT OUT blocks of teacher-reference slides, and where each code sits."""
+    PUT OUT blocks of teacher-reference slides, where each code sits, the
+    deck's web links, and authoring notes on the slides students see."""
     teacher = [s["number"] for s in outline if any(TEACHER_ONLY.search(t.upper()) for t in s["texts"])]
     blocks = {kind: [] for _, kind in HEADINGS}
     for slide in outline:
@@ -582,6 +672,11 @@ def deck_summary(outline):
                 if current and head[1]:
                     blocks[current].append({"text": head[1], "slide": slide["number"]})
                 continue
+            if current == "print" and WEB.fullmatch(line) and blocks["print"] \
+                    and blocks["print"][-1]["slide"] == slide["number"]:
+                # A bare URL under a print item is where that item prints from.
+                blocks["print"][-1].setdefault("url", line.rstrip(".,;)"))
+                continue
             if current:
                 blocks[current].append({"text": line, "slide": slide["number"]})
     codes = {}
@@ -589,9 +684,17 @@ def deck_summary(outline):
         for value in slide["texts"]:
             for match in completion.MARKER.finditer(value):
                 codes.setdefault("%s %s" % (match.group(1), match.group(3).strip()), []).append(slide["number"])
+    links = list({(link["label"], link["url"]): link for slide in outline for link in web_links(slide)}.values())
+    notes = []
+    for slide in outline:
+        found = [] if slide["number"] in teacher else authoring_notes(slide)
+        if found:
+            notes.append({"slide": slide["number"], "count": len(found),
+                          "note": found[0] if len(found[0]) <= 80 else found[0][:79].rstrip() + "…"})
     return {"slide_count": len(outline), "teacher_only_slides": teacher, "blocks": blocks,
             "code_slides": {k: sorted(set(v)) for k, v in codes.items()},
-            "page_ids": {str(s["number"]): s["object_id"] for s in outline if s["object_id"]}}
+            "page_ids": {str(s["number"]): s["object_id"] for s in outline if s["object_id"]},
+            "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes}
 
 
 def _readiness(token, node):
@@ -716,6 +819,38 @@ def match_file(line, files):
     # Fewer unmatched words wins ("CER worksheet" over "CER worksheet answer key").
     ambiguous = len(ranked) > 1 and ranked[0][:3] == ranked[1][:3]
     return ranked[0][5], round(-ranked[0][0], 2), ambiguous
+
+
+def match_link(line, links):
+    """The one deck link whose name carries the print line's words: at least
+    three in four of them and two or more (or exactly the same words). Two
+    equally good links to different pages match neither."""
+    want = set(_tokens(WEB.sub(" ", line)))
+    if not want:
+        return None
+    ranked = []
+    for link in links:
+        have = set(_tokens(link["label"]))
+        shared = len(want & have)
+        if shared and shared / len(want) >= 0.75 and (shared >= 2 or have == want):
+            ranked.append((-shared / len(want), len(have), link))
+    ranked.sort(key=lambda r: r[:2])
+    if not ranked or any(r[:2] == ranked[0][:2] and r[2]["url"] != ranked[0][2]["url"] for r in ranked[1:]):
+        return None
+    return ranked[0][2]
+
+
+def web_source(line, links):
+    """Where a print line with no folder file prints from: the http(s) URL on
+    the line itself (or on the bare line under it), else the matching entry of
+    its own deck's link list; None when neither gives one."""
+    own = line.get("url") or next((m.group(0).rstrip(".,;)") for m in WEB.finditer(line["text"])), "")
+    if own:
+        return {"url": own, "from": "the print line"}
+    found = match_link(line["text"], links)
+    if not found:
+        return None
+    return {"url": found["url"], "label": found["label"], "slide": found["slide"], "from": "the deck's link list"}
 
 
 ORDER = re.compile(r"✔\s*on\s+order\s*[—–:\-]?\s*(.+)$", re.I)
@@ -1176,11 +1311,16 @@ def _plan_checks(agenda, lesson, days, calendars, empty_days):
 def _link_checks(agenda, lesson, repairs):
     for item in link_findings(agenda, lesson["class_key"], [lesson["row"]]):
         plan = item.get("plan")
+        if not plan:
+            action = "Fix the %s link in the Agenda by hand." % item["role"]
+        elif plan["kind"] == "linked_label":
+            action = ("Use “Repair link” to link the label “%s” in %s%d to its hidden %s%d URL (the same text, "
+                      "now clickable)." % (plan["label"], plan["column"], plan["row"], item["hidden_column"], plan["row"]))
+        else:
+            action = ("Use “Repair link” to restore %s in %s%d (the same formula the column uses in its other rows)."
+                      % (plan["formula"], plan["column"], plan["row"]))
         lesson["exceptions"].append(_exception(
-            item["kind"], "repairable" if plan else "needs_decision", lesson, item["reason"],
-            ("Use “Repair link” to restore %s in %s%d (the same formula the column uses in its other rows)."
-             % (plan["formula"], plan["column"], plan["row"])) if plan else
-            "Fix the %s link in the Agenda by hand." % item["role"],
+            item["kind"], "repairable" if plan else "needs_decision", lesson, item["reason"], action,
             url=item["source_url"], sources=[item["hidden_url"]], revision_key=item["visible_text"],
             detail="%s%d" % (item["column"], item["row"]),
             evidence={k: item.get(k) for k in ("column", "hidden_column", "visible_text", "hidden_url", "plan",
@@ -1192,13 +1332,18 @@ def _link_checks(agenda, lesson, repairs):
         if class_key != lesson["class_key"] or int(row) != lesson["row"]:
             continue
         cell = entry["cells"].get((lesson["row"], _column_index(column)))
-        if _formula(cell).replace(" ", "") == receipt["formula"].replace(" ", ""):
+        if receipt.get("formula"):
+            holds = _formula(cell).replace(" ", "") == receipt["formula"].replace(" ", "")
+        else:  # a linked label: the same text, still linked to the same URL
+            holds = (not _formula(cell) and text(cell).strip() == receipt.get("label")
+                     and first_link(cell) == receipt.get("url"))
+        if holds:
             lesson["repaired"].append(receipt)
             done = _exception("visible_link_not_clickable", "repaired_and_verified", lesson,
                               "The %s link in %s%d was restored and read back %s." % (
                                   receipt["role"], column, lesson["row"], receipt["verified_at"]),
                               "Nothing to do.", url=receipt["source_url"], blocking=False,
-                              evidence={"formula": receipt["formula"]})
+                              evidence={k: receipt.get(k) for k in ("formula", "label", "url") if receipt.get(k)})
             done["fingerprint"] = receipt["fingerprint"]
             lesson["exceptions"].append(done)
 
@@ -1450,7 +1595,20 @@ def _content(ctx, lesson, counts):
         teacher = outline.get("teacher_only_slides") or []
         for line in blocks.get("print", []):
             lesson["print_lines"].append({"text": line["text"], "source": "deck “%s” slide %d" % (node["name"], line["slide"]),
-                                          "slide": line["slide"], "deck_id": node["id"]})
+                                          "slide": line["slide"], "deck_id": node["id"], "url": line.get("url")})
+        lesson.setdefault("deck_links", {})[node["id"]] = outline.get("web_links") or []
+        pages = outline.get("page_ids") or {}
+        for note in outline.get("authoring_notes") or []:
+            page = pages.get(str(note["slide"]))
+            lesson["exceptions"].append(_exception(
+                "authoring_note_on_student_slide", "needs_decision", lesson,
+                "Slide %d of the %s is a slide students see, and it carries an authoring note: “%s”%s." % (
+                    note["slide"], "/".join(node["roles"]).replace("_", " "), note["note"],
+                    " (and %d more on that slide)" % (note["count"] - 1) if note["count"] > 1 else ""),
+                "Remove or move this note to speaker notes.",
+                url=node["url"] + ("#slide=id." + page if page and node["url"].endswith("/edit") else ""),
+                sources=[node["id"]], revision_key=note["note"], detail="authoring:%d" % note["slide"],
+                slides=[note["slide"]], evidence={"note": note["note"], "notes_on_slide": note["count"]}))
         week_text = _week_text(lesson["found"])
         for kind, status in (("buy", "buy"), ("put_out", "stock unknown")):
             for line in blocks.get(kind, []):
@@ -1468,11 +1626,14 @@ def _content(ctx, lesson, counts):
 
 def _print_items(ctx, lesson, counts):
     files = lesson.get("folder_files", [])
+    deck_links = lesson.get("deck_links", {})
     used = set()
     dates = sorted({d for s in lesson["meeting_dates"].values() for d in s})
     for line in lesson["print_lines"]:
         amount = quantity(line["text"], lesson["sections"], counts)
-        best, score, ambiguous = match_file(line["text"], files)
+        best, score, ambiguous = match_file(WEB.sub(" ", line["text"]), files)
+        # No folder file: a web page the line or its own deck's link list names is a print instruction.
+        web = None if best else web_source(line, deck_links.get(line.get("deck_id"), []))
         teacher_only = bool(KEYWORDS.search(line["text"]) or (best and KEYWORDS.search(best["name"])))
         item = {"id": content_hash([lesson["lesson_id"], line["text"], line.get("slide")])[:24],
                 "class_key": lesson["class_key"], "class": lesson["class"], "week": lesson["week"],
@@ -1483,6 +1644,8 @@ def _print_items(ctx, lesson, counts):
         if best and not ambiguous:
             used.add(best["id"])
             item["file"] = _print_file(ctx, lesson, best)
+        elif web:
+            item.update(web=web, instruction="print from web: " + web["url"])
         elif not amount["optional"] or ambiguous:
             reason = ("“%s” matches more than one folder file equally." % line["text"]) if ambiguous else \
                 "Print item “%s” (%s) has no matching file in the lesson folder." % (line["text"], line["source"])

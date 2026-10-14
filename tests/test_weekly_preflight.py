@@ -311,7 +311,13 @@ class Base(unittest.TestCase):
             update = request['updateCells']
             grid = self.grids[names[update['range']['sheetId']]]
             row, col = update['range']['startRowIndex'] + 1, update['range']['startColumnIndex'] + 1
-            formula = update['rows'][0]['values'][0]['userEnteredValue']['formulaValue']
+            value = update['rows'][0]['values'][0]
+            if 'stringValue' in value['userEnteredValue']:  # a linked label
+                label = value['userEnteredValue']['stringValue']
+                grid[row, col] = cell(label, userEnteredValue={'stringValue': label},
+                                      textFormatRuns=deepcopy(value['textFormatRuns']))
+                continue
+            formula = value['userEnteredValue']['formulaValue']
             hidden, label = re.search(r'HYPERLINK\(\$([A-Z]+)\d+,"([^"]+)"', formula).groups()
             url = agenda.first_link(grid.get((row, wp._column_index(hidden))))
             grid[row, col] = cell(label, userEnteredValue={'formulaValue': formula}, hyperlink=url)
@@ -379,6 +385,63 @@ class DeckSupplyTests(unittest.TestCase):
         self.assertEqual(wp.deck_supply_items('Bottles, balloons, yeast, sugar, and funnels at each lab station (Day 2)',
                                               set(), 'put_out'),
                          ['Bottles', 'balloons', 'yeast', 'sugar', 'funnels'])
+
+
+WEB_PAGE = 'https://science.example.org/activities/yeast-inflated-balloons'
+
+
+def outline_slide(number, *texts):
+    return {'number': number, 'object_id': 'page%d' % number, 'texts': list(texts), 'links': []}
+
+
+class DeckTextTests(unittest.TestCase):
+    def test_linked_text_typed_urls_and_table_cells_name_their_web_links(self):
+        runs = [{'textRun': {'content': 'Activity and resource links\n'}},
+                {'textRun': {'content': 'Science World — Yeast-Inflated Balloons',
+                             'style': {'link': {'url': WEB_PAGE}}}},
+                {'textRun': {'content': '\nGo to slide 3', 'style': {'link': {'slideIndex': 2}}}},
+                {'textRun': {'content': '\nElephant toothpaste demo: https://demos.example.org/toothpaste.\n'}}]
+        cells = [{'text': {'textElements': [{'textRun': {'content': 'Density column demo\n'}}]}},
+                 {'text': {'textElements': [{'textRun': {'content': 'https://demos.example.org/density\n'}}]}}]
+        outline = wp.outline_native({'slides': [{'objectId': 'links', 'pageElements': [
+            {'objectId': 's1', 'shape': {'text': {'textElements': runs}}},
+            {'objectId': 't1', 'table': {'tableRows': [{'tableCells': cells}]}}]}]})
+        self.assertEqual([(l['label'], l['url'], l['slide']) for l in wp.deck_summary(outline)['web_links']], [
+            ('Science World — Yeast-Inflated Balloons', WEB_PAGE, 1),
+            ('Elephant toothpaste demo', 'https://demos.example.org/toothpaste', 1),
+            ('Density column demo', 'https://demos.example.org/density', 1)])
+
+    def test_a_print_line_matches_one_named_web_link_or_none(self):
+        links = [{'label': 'Science World — Yeast-Inflated Balloons', 'url': WEB_PAGE, 'slide': 5},
+                 {'label': 'Balloon safety video', 'url': 'https://video.example.org/balloons', 'slide': 5}]
+        self.assertEqual(wp.match_link('Science World — Yeast-Inflated Balloons (1 per group)', links)['url'], WEB_PAGE)
+        self.assertIsNone(wp.match_link('Balloons', links), 'one shared word is not a match')
+        self.assertIsNone(wp.match_link('Lab safety card', links))
+        twins = links + [{'label': 'Science World: Yeast Inflated Balloons', 'url': 'https://mirror.example.org/y', 'slide': 6}]
+        self.assertIsNone(wp.match_link('Science World — Yeast-Inflated Balloons', twins), 'two pages, no guess')
+        line = {'text': 'Gel diagram (1 per student)', 'url': 'https://diagrams.example.org/gel.pdf'}
+        self.assertEqual(wp.web_source(line, links), {'url': 'https://diagrams.example.org/gel.pdf', 'from': 'the print line'})
+        self.assertEqual(wp.web_source({'text': 'Gel diagram https://diagrams.example.org/gel.pdf'}, [])['url'],
+                         'https://diagrams.example.org/gel.pdf')
+        self.assertIsNone(wp.web_source({'text': 'Lab safety card (1 per group)'}, links))
+
+    def test_authoring_notes_on_student_slides_are_found_once_per_slide(self):
+        draft = '[DRAFT — confirm which unit exam is used for the end-of-unit test before this deck is shared]'
+        summary = wp.deck_summary([
+            outline_slide(1, 'Unit review', draft),
+            outline_slide(2, 'Enzymes speed reactions [added — example from the lab]', 'Rate [corrected: mL/min]'),
+            outline_slide(3, '“Enzymes are catalysts” [verify verbatim against the text]'),
+            outline_slide(4, 'TEACHER REFERENCE\n[DRAFT — swap the demo]\n[TODO: buy yeast]'),
+            outline_slide(5, '[Note: use mL]', '[Verify your prediction with a partner]', '[Type your answer here]',
+                          '[Draft — your first idea]', 'Your answer [[DRAFT:C06:Q1]] [TODO: widen box]',
+                          '[[NOTES:C06:Q1]]', '[ ]'),
+            outline_slide(6, '[TODO: add the graph]', '[NOTE — Friday is a B Friday]')])
+        self.assertEqual(summary['authoring_notes'], [
+            {'slide': 1, 'count': 1, 'note': draft[:79].rstrip() + '…'},
+            {'slide': 2, 'count': 2, 'note': '[added — example from the lab]'},
+            {'slide': 3, 'count': 1, 'note': '[verify verbatim against the text]'},
+            {'slide': 6, 'count': 2, 'note': '[TODO: add the graph]'}])
+        self.assertEqual(summary['teacher_only_slides'], [4])
 
 
 class PreflightRunTests(Base):
@@ -536,6 +599,45 @@ class PreflightRunTests(Base):
         self.assertIn('Cycle 07 — Mitosis (spare)', stray['reason'])
         self.assertFalse(stray['blocking'])
 
+    def test_a_print_item_with_no_file_prints_from_the_web_page_the_deck_or_line_names(self):
+        slides = deepcopy(BIO_SLIDES)
+        slides[3] = [('reference', slides[3][0][1].replace(
+            '• Lab safety card (1 per group)\n', '• Lab safety card (1 per group)\n'
+            '• Science World — Yeast-Inflated Balloons (1 per group)\n'
+            '• Gel diagram (1 per student)\n  https://diagrams.example.org/gel-diagram.pdf\n'))]
+        slides.append([('links', 'TEACHER NAVIGATION\nActivity and resource links\n'
+                                 'Science World — Yeast-Inflated Balloons\n' + WEB_PAGE)])
+        self.src.decks[BIO_DECK] = slides
+        result = self.run_check()
+        items = {p['text']: p for p in result['print_items']}
+        balloons = items['Science World — Yeast-Inflated Balloons (1 per group)']
+        self.assertEqual(balloons['web'], {'url': WEB_PAGE, 'label': 'Science World — Yeast-Inflated Balloons',
+                                           'slide': 5, 'from': "the deck's link list"})
+        self.assertEqual((balloons['instruction'], balloons['file'], balloons['per_section']),
+                         ('print from web: ' + WEB_PAGE, None, {'A4 Biology': 6}))
+        gel = items['Gel diagram (1 per student)']
+        self.assertEqual(gel['instruction'], 'print from web: https://diagrams.example.org/gel-diagram.pdf')
+        self.assertFalse([p for p in result['print_items'] if p['text'].startswith('https://')])
+        missing = [e for e in result['exceptions'] if e['kind'] == 'print_item_no_file']
+        self.assertEqual(len(missing), 1, 'no URL anywhere: still a decision')
+        self.assertIn('Lab safety card', missing[0]['reason'])
+
+    def test_an_authoring_note_on_a_student_slide_is_one_decision_per_slide(self):
+        note = '[DRAFT — confirm which unit exam is used for the test; the old one had a different key]'
+        self.src.decks[BIO_DECK] = BIO_SLIDES + [
+            [('question', 'Which reactant limits the yeast? ' + note), ('aside', '[added — balloon photo]')],
+            [('question', '[Note: give your answer in mL]'), ('notes', '[[NOTES:C06:Q4]]')]]
+        result = self.run_check()
+        found = [e for e in self.exceptions(result, 'biology', 5) if e['kind'] == 'authoring_note_on_student_slide']
+        self.assertEqual([(e['status'], e['blocking'], e['slides']) for e in found], [('needs_decision', True, [5])])
+        self.assertIn(note[:79].rstrip() + '…', found[0]['reason'])
+        self.assertIn('and 1 more on that slide', found[0]['reason'])
+        self.assertEqual(found[0]['next_action'], 'Remove or move this note to speaker notes.')
+        self.assertEqual(found[0]['source_url'], deck_url(BIO_DECK) + '#slide=id.0009_p5')
+        again = self.run_check()
+        self.assertEqual([e['fingerprint'] for e in self.exceptions(again, 'biology', 5)
+                          if e['kind'] == 'authoring_note_on_student_slide'], [found[0]['fingerprint']])
+
     def test_unchanged_sources_reuse_checks_and_a_new_revision_rechecks_only_that_source(self):
         self.run_check('2026-10-26')
         first = Counter({k: v for k, v in self.src.calls.items() if k.startswith(('export:', 'native:'))})
@@ -638,6 +740,73 @@ class LinkRepairTests(Base):
         with self.assertRaisesRegex(wp.Held, 'changed since the check'):
             wp.repair_link('read', 'write', self.config, stale, finding['fingerprint'], dry_run=False, port=self.port)
         self.assertEqual(self.writes, [])
+
+    def no_formula_column(self, label=LABELS['second']):
+        """The Forensics 2nd-deck display column N with no formula in any row,
+        and N6 plain text while its hidden R6 holds the deck link."""
+        grid = self.grids['🔬 Forensics']
+        for row in (4, 5, 7):
+            grid.pop((row, 14), None)
+        grid[6, 14] = cell(label)
+        return grid
+
+    def test_a_label_in_a_column_with_no_formula_is_linked_in_place_and_a_second_run_is_a_no_op(self):
+        grid = self.no_formula_column()
+        [finding] = self.plan(6, 'forensics')
+        self.assertEqual(finding['plan'], {'kind': 'linked_label', 'column': 'N', 'row': 6, 'label': LABELS['second'],
+                                           'url': deck_url(FOR_SECOND), 'pattern_from': 'the label cell N6 already shows'})
+        before = self.run_check()
+        item = next(e for e in self.exceptions(before, 'forensics', 6) if e['kind'] == 'visible_link_not_clickable')
+        self.assertEqual((item['status'], item['fingerprint']), ('repairable', finding['fingerprint']))
+        self.assertIn('link the label “🎞 2nd deck ↗” in N6 to its hidden R6 URL', item['next_action'])
+        preview = wp.repair_link('read', None, self.config, self.agenda(), finding['fingerprint'], port=self.port)
+        self.assertEqual((preview['status'], preview['cell'], preview['formula'], self.writes), ('planned', 'N6', None, []))
+        self.assertEqual(preview['writes'], 'the label “🎞 2nd deck ↗” linked to ' + deck_url(FOR_SECOND))
+        done = wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'], dry_run=False,
+                              port=self.port)
+        self.assertEqual(done['status'], 'repaired_and_verified')
+        [[request]] = self.writes
+        self.assertEqual(request['updateCells'], {
+            'range': {'sheetId': 3, 'startRowIndex': 5, 'endRowIndex': 6, 'startColumnIndex': 13, 'endColumnIndex': 14},
+            'rows': [{'values': [{'userEnteredValue': {'stringValue': LABELS['second']},
+                                  'textFormatRuns': [{'startIndex': 0, 'format': {'link': {'uri': deck_url(FOR_SECOND)}}}]}]}],
+            'fields': 'userEnteredValue,textFormatRuns'})
+        self.assertEqual(agenda.text(grid[6, 14]), LABELS['second'], 'the same visible text')
+        self.assertEqual(self.plan(6, 'forensics'), [])
+        again = wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'], dry_run=False,
+                               port=self.port)
+        self.assertEqual((again['changed'], len(self.writes)), (False, 1))
+        after = self.run_check()
+        repaired = [e for e in self.exceptions(after, 'forensics', 6) if e['kind'] == 'visible_link_not_clickable']
+        self.assertEqual([(e['status'], e['blocking'], e['evidence']) for e in repaired],
+                         [('repaired_and_verified', False, {'label': LABELS['second'], 'url': deck_url(FOR_SECOND)})])
+        self.assertEqual(self.lesson(after, 'forensics', 6)['status'], 'repaired_and_verified')
+
+    def test_a_linked_label_repair_never_overwrites_a_cell_that_became_a_link_or_formula(self):
+        self.no_formula_column()
+        [finding] = self.plan(6, 'forensics')
+        stale = self.agenda()
+        for fixed in (shown('R', 6, LABELS['second'], deck_url(FOR_SECOND)),
+                      cell(LABELS['second'], textFormatRuns=[{'format': {'link': {'uri': deck_url(FOR_SECOND)}}}])):
+            self.grids['🔬 Forensics'][6, 14] = fixed
+            with self.assertRaisesRegex(wp.Held, 'changed since the check'):
+                wp.repair_link('read', 'write', self.config, stale, finding['fingerprint'], dry_run=False, port=self.port)
+        self.assertEqual(self.writes, [])
+
+    def test_a_blank_or_typed_cell_in_a_column_with_no_formula_still_needs_a_decision(self):
+        self.no_formula_column('—')
+        [blank] = self.plan(6, 'forensics')
+        self.assertNotIn('plan', blank)
+        self.assertIn('no label to link', blank['reason'])
+        self.no_formula_column('see the lab binder')
+        [typed] = self.plan(6, 'forensics')
+        self.assertNotIn('plan', typed)
+        self.assertIn('typed text', typed['reason'])
+        # The label the column's other rows show as links is a label, not typed text.
+        self.no_formula_column('2nd deck')
+        self.grids['🔬 Forensics'][5, 14] = cell('2nd deck', textFormatRuns=[{'format': {'link': {'uri': deck_url(FOR_DECK2)}}}])
+        [label] = self.plan(6, 'forensics')
+        self.assertEqual((label['plan']['kind'], label['plan']['label']), ('linked_label', '2nd deck'))
 
 
 class FolderListingTests(unittest.TestCase):
@@ -770,6 +939,19 @@ class PacketTests(Base):
         self.assertNotEqual(before['id'], after['id'])
         self.assertEqual(len(self.archive.created), 2)
         self.assertTrue(weekly_packet.pdf('read', self.config, before['id'], port=self.port)[0].startswith(b'%PDF'))
+
+    def test_a_web_print_item_is_a_print_instruction_in_the_packet_not_a_handout(self):
+        slides = deepcopy(BIO_SLIDES)
+        slides[3] = [('reference', slides[3][0][1].replace(
+            '• Lab safety card (1 per group)\n', '• Science World — Yeast-Inflated Balloons (1 per group)\n'))]
+        slides.append([('links', 'TEACHER NAVIGATION\nScience World — Yeast-Inflated Balloons\n' + WEB_PAGE)])
+        self.src.decks[BIO_DECK] = slides
+        self.src.bump(BIO_DECK)
+        self.run_check()
+        packet = self.build()
+        raw, _ = weekly_packet.pdf('read', self.config, packet['id'], port=self.port)
+        text = re.sub(r'\s+', '', ''.join(page.extract_text() for page in PdfReader(io.BytesIO(raw)).pages))
+        self.assertIn('Printfromweb:%sasthepageprints' % WEB_PAGE, text)
 
     def test_a_handout_changed_since_the_check_stops_the_build(self):
         self.src.bump(HANDOUT)
