@@ -2,6 +2,12 @@
 
 ## System notes and compact pages
 
+Agenda week dates come from the explicit Weeks Monday and takeover cells.
+Descriptive suffixes do not change week identity; break handoffs are not teaching
+weeks, and Wk16b stays distinct. Same-week lesson rows and Forms are preserved.
+Source checks use the current Eastern date. The dated plan and Agenda topic are
+shown separately so a changed daily plan does not imply that its topic was edited.
+
 Long Today panels, class/lesson plans, assignment work tables and System reports
 have keyboard-accessible collapsible headings. Lesson planning Notes keeps its
 existing class/next-week browser storage and now offers a full-width, resizable
