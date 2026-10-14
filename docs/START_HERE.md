@@ -7,6 +7,10 @@ Descriptive suffixes do not change week identity; break handoffs are not teachin
 weeks, and Wk16b stays distinct. Same-week lesson rows and Forms are preserved.
 Source checks use the current Eastern date. The dated plan and Agenda topic are
 shown separately so a changed daily plan does not imply that its topic was edited.
+Returning to Lessons or bringing its browser tab back into view rereads the
+selected date from the Agenda. An active lesson editor keeps its original save
+basis and unsaved draft. Explicit readiness refresh also bypasses the server's
+Agenda cache; it cannot reuse the older lesson behind a newly refreshed plan.
 
 Long Today panels, class/lesson plans, assignment work tables and System reports
 have keyboard-accessible collapsible headings. Lesson planning Notes keeps its

@@ -104,7 +104,7 @@ function releaseBadge(release) {
 async function loadAudits(force = false) {
   if (!force && cockpit.audits && Date.now() - cockpit.auditsAt < 60_000) return cockpit.audits;
   const entries = await Promise.all(CLASSES.map(async ([key, name]) => {
-    try { return [key, name, await getJSON(`api/audit?class=${encodeURIComponent(key)}`)]; }
+    try { return [key, name, await getJSON(`api/audit?class=${encodeURIComponent(key)}${force ? '&fresh=1' : ''}`)]; }
     catch (error) { return [key, name, {rows: [], flags: [], problem: error.message}]; }
   }));
   cockpit.audits = Object.fromEntries(entries.map(([key, name, data]) => [key, {name, data}]));
@@ -1022,7 +1022,18 @@ async function loadLessonReadiness(force = false) {
 }
 
 // ---------- Lesson plans ----------
-const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, started: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
+const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, refreshing: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
+
+async function refreshVisiblePlans() {
+  if (location.hash.slice(1).split('/')[0] !== 'plans' || document.visibilityState === 'hidden'
+      || plans.editing || plans.refreshing) return;
+  // Returning from the Agenda must not keep an indefinitely old lesson. An
+  // active editor retains its original revision and draft for guarded saving.
+  plans.refreshing = true;
+  plans.weeks = {};
+  try { await loadPlans(plans.date, true); }
+  finally { plans.refreshing = false; }
+}
 
 function renderDays(date) {
   if (date < plans.calendarMonday || date > addDays(plans.calendarMonday, 27)) plans.calendarMonday = mondayOf(date);
@@ -1043,7 +1054,7 @@ function renderDays(date) {
 }
 
 async function loadPlans(date, fresh = false) {
-  plans.started = true; plans.date = date; $('date').value = date; renderDays(date);
+  plans.date = date; $('date').value = date; renderDays(date);
   const seq = ++plans.seq;
   plans.data = null;
   $('week-label').textContent = at(date).toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric', year: 'numeric'});
@@ -2792,7 +2803,7 @@ function showTab() {
   else if (current === 'routine') loadRoutine();
   else {
     loadLessonReadiness();
-    if (!plans.started) loadPlans(plans.date);
+    refreshVisiblePlans();
   }
 }
 
@@ -2815,6 +2826,8 @@ $('reload-work').addEventListener('click', async () => {
 $('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
 $('missing-sheets').addEventListener('click', missingWorkSheets);
 window.addEventListener('hashchange', showTab);
+window.addEventListener('focus', refreshVisiblePlans);
+document.addEventListener('visibilitychange', refreshVisiblePlans);
 showTab();
 
 let morningReports = [], morningRecovery = [];
