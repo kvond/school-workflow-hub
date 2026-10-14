@@ -8,6 +8,7 @@ from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import re
+import time
 from urllib.parse import parse_qs, urlsplit
 
 from . import agenda as agenda_module
@@ -16,6 +17,16 @@ from . import completion, google, morning, work
 SCHEMA = 'hub-source-review-context/v1'
 OVERVIEW_SCHEMA = 'hub-source-review-context-summary/v1'
 MAX_REVIEW_SCOPES = 100
+# A typed read timeout repeats the same read-only discovery once, and only while
+# the request has time left; gunicorn ends a request at 60 seconds.
+READ_ATTEMPTS = 2
+RETRY_BUDGET_SECONDS = 20
+TEACHER_MATERIAL = ('Uploaded through this Form from the teacher’s own school account. It is teacher material, '
+                    'not a student submission: it is left out of student work, counts and missing-work checks, '
+                    'and the original stays where it is.')
+_TIMEOUT_READS = {'discovery': 'this lesson’s submissions', 'turn_in_folders': 'the turn-in folders',
+                  'declared_upload_folders': 'the Form upload folders', 'form_responses': 'the Form responses',
+                  'file_metadata': 'submitted file details', 'final_bookend': 'the final Agenda and roster check'}
 _ID = re.compile(r'[A-Za-z0-9_-]{10,200}\Z')
 _META = 'id,mimeType,trashed,modifiedTime,version,md5Checksum,size'
 
@@ -354,6 +365,16 @@ def build(current_scope, found, cached=None, *, checked_at=None):
                 'This source was found in this week’s collection, but its lesson match is unconfirmed; it is not assigned to the selected lesson.',
                 action='Confirm this original’s lesson from its actual content and turn-in route; preserve current grades.',
                 issue_kind='source_issue' if _student(row)['verified'] else 'identity_unverified'))
+    teacher_material = []
+    for row in form.get('teacher_uploads', []) + found.get('teacher_uploads', []):
+        files = [f for snapshot in [row] + row.get('earlier', []) for f in snapshot.get('files', [])]
+        if not _sources(files):
+            continue
+        detail = notice(current_scope, {}, TEACHER_MATERIAL, files=files, action='', affected_scope='lesson',
+                        issue_kind='teacher_material')
+        detail.pop('next_action')
+        detail['kind'] = 'teacher_material'
+        teacher_material.append(detail)
     submitted = sum(len(row.get('files', [])) for row in form.get('students', []) + form.get('late', []))
     waiting = bool(not submitted and not form.get('elsewhere') and not form.get('problem')
                    and not found.get('other_files') and not found.get('problems') and not found.get('assessment_problem'))
@@ -365,25 +386,44 @@ def build(current_scope, found, cached=None, *, checked_at=None):
     return _review_state({'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
             'scope': current_scope, 'notices': notices, 'matched_other_lessons': matched_other_lessons, 'limitations': limitations,
             'status': 'review' if notices else 'waiting' if waiting else 'not_assessed',
-            'source_selection': {'submitted_originals': submitted, 'assessment_performed': False}})
+            'source_selection': {'submitted_originals': submitted, 'assessment_performed': False},
+            **({'teacher_material': teacher_material} if teacher_material else {})})
 
 
 def _rate_limited(reason):
     return bool(re.search(r'\b429\b|rate[- ]limit|rateLimitExceeded|Google is limiting requests', str(reason), re.I))
 
 
-def _unavailable(current_scope, reason, *, checked_at=None):
+def _timeout_failure(reads, attempts):
+    """The typed timeout record a reader uses to offer a retry, never a conclusion."""
+    return {'reason': 'read_timeout', 'reads': sorted(set(reads)), 'attempts': attempts, 'retry': True}
+
+
+def _timeout_reason(failure):
+    reads = [_TIMEOUT_READS.get(read, 'a current source') for read in failure['reads']] or ['a current source']
+    return ('Check timed out — retry. Google didn’t answer in time while reading %s (%d attempt%s). '
+            'Nothing was concluded about this lesson’s submissions.'
+            % (' and '.join(reads), failure['attempts'], '' if failure['attempts'] == 1 else 's'))
+
+
+def _unavailable(current_scope, reason, *, checked_at=None, read_failure=None):
     policy = current_scope.get('grade_policy') or {}
     if policy.get('excluded') and not policy.get('problem'):
         return _excluded(current_scope, checked_at=checked_at)
-    action = ('Read again after Google allows requests. No source repair or student identity decision is requested.'
-              if _rate_limited(reason) else
-              'Refresh when this source read is available. No student identity decision or grade change is requested from an incomplete read.')
+    if read_failure:
+        reason = _timeout_reason(read_failure)
+        action = ('Retry this check. A timed-out read is not missing student work; no student identity decision, '
+                  'missing-work finding or grade change follows from it.')
+    else:
+        action = ('Read again after Google allows requests. No source repair or student identity decision is requested.'
+                  if _rate_limited(reason) else
+                  'Refresh when this source read is available. No student identity decision or grade change is requested from an incomplete read.')
     return _review_state({'schema': SCHEMA, 'checked_at': checked_at or datetime.now(timezone.utc).isoformat(),
             'scope': current_scope, 'status': 'unavailable',
             'notices': [notice(current_scope, {}, reason, files=current_scope['sources'], action=action, affected_scope='lesson')],
             'limitations': [str(reason), action, 'Current source details are unavailable; no claim about student identity or missing work is made.'],
-            'source_selection': {'submitted_originals': None, 'assessment_performed': False}})
+            'source_selection': {'submitted_originals': None, 'assessment_performed': False},
+            **({'read_failure': read_failure} if read_failure else {})})
 
 
 def _roster_problem(snapshot, classes):
@@ -399,20 +439,56 @@ def _agenda_basis(agenda):
     return deepcopy((agenda.spreadsheet_id, agenda.title, agenda.problems, agenda.weeks, agenda.classes))
 
 
-def _bookend(token, config, agenda_basis, catalog, roster_snapshot, reload_agenda):
-    try:
-        after_agenda = reload_agenda()
-        after_catalog = morning.catalog(after_agenda, config)
-        after_roster = work.roster.load(token, config)
-    except google.GoogleError as error:
-        return 'The final Agenda or roster read could not be verified: ' + str(error)
+def _bookend(token, config, agenda_basis, catalog, roster_snapshot, reload_agenda, started=None):
+    """(problem, typed timeout failure or None) from the final Agenda/roster reread."""
+    started = time.monotonic() if started is None else started
+    for attempt in range(1, READ_ATTEMPTS + 1):
+        try:
+            after_agenda = reload_agenda()
+            after_catalog = morning.catalog(after_agenda, config)
+            after_roster = work.roster.load(token, config)
+            break
+        except google.GoogleError as error:
+            if not google.read_timed_out(error):
+                return 'The final Agenda or roster read could not be verified: ' + str(error), None
+            if attempt == READ_ATTEMPTS or time.monotonic() - started >= RETRY_BUDGET_SECONDS:
+                return ('The final Agenda or roster read timed out: ' + str(error),
+                        _timeout_failure(['final_bookend'], attempt))
     problem = _roster_problem(after_roster, {item['class'] for item in catalog['assignments']})
     if problem:
-        return problem
+        return problem, None
     if (_agenda_basis(after_agenda) != agenda_basis or after_catalog != catalog
             or after_roster != roster_snapshot):
-        return 'The Agenda or roster changed during this read. Refresh to read its current source details.'
-    return None
+        return 'The Agenda or roster changed during this read. Refresh to read its current source details.', None
+    return None, None
+
+
+def _timed_out_reads(found):
+    """Typed timeouts recorded by discovery, including per-file metadata reads."""
+    reads = set(found.get('read_timeouts') or [])
+    rows = [row for lesson in found.get('lessons', []) for form in lesson.get('forms', [])
+            for row in form.get('students', []) + form.get('late', [])] + found.get('other_files', [])
+    if any(upload.get('read_timeout') for row in rows for snapshot in [row] + row.get('earlier', [])
+           for upload in snapshot.get('files', [])):
+        reads.add('file_metadata')
+    return reads
+
+
+def _discover(token, config, agenda, class_key, week, roster_snapshot, started):
+    """Read-only discovery, repeated once after a typed timeout while time allows.
+
+    A timeout that remains is returned as a typed failure, not as missing work."""
+    for attempt in range(1, READ_ATTEMPTS + 1):
+        try:
+            found = work.lesson_work(token, config, agenda, class_key, week, review_only=True, roster_snapshot=roster_snapshot)
+        except google.GoogleError as error:
+            found = {'review_unavailable': [str(error)],
+                     **({'read_timeouts': ['discovery']} if google.read_timed_out(error) else {})}
+        reads = _timed_out_reads(found)
+        if not reads:
+            return found
+        if attempt == READ_ATTEMPTS or time.monotonic() - started >= RETRY_BUDGET_SECONDS:
+            return {**found, 'read_failure': _timeout_failure(reads, attempt)}
 
 
 
@@ -500,6 +576,10 @@ def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=
         return _unavailable(current_scope, current_scope['grade_policy']['problem'])
     if (current_scope.get('grade_policy') or {}).get('excluded'):
         return _excluded(current_scope)
+    if found.get('read_failure') or _timed_out_reads(found):
+        # A slow provider is a retry, never a missing original or an identity question.
+        failure = found.get('read_failure') or _timeout_failure(_timed_out_reads(found), 1)
+        return _unavailable(current_scope, '', read_failure=failure)
     if found.get('review_unavailable'):
         return _unavailable(current_scope, ' '.join(found['review_unavailable']))
     form_id = current_scope['form_id']
@@ -528,6 +608,7 @@ def _read_found(token, config, agenda, current_scope, found, *, roster_snapshot=
 
 
 def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None):
+    started = time.monotonic()
     catalog = morning.catalog(agenda, config)
     current_scope = scope(agenda, config, class_key, week, form_id, catalog=catalog)
     roster_snapshot = work.roster.load(token, config)
@@ -535,15 +616,17 @@ def read(token, config, agenda, class_key, week, form_id, *, reload_agenda=None)
     if problem:
         return _unavailable(current_scope, problem)
     before_agenda, before_roster = _agenda_basis(agenda), deepcopy(roster_snapshot)
-    found = work.lesson_work(token, config, agenda, class_key, week, review_only=True, roster_snapshot=roster_snapshot)
+    found = _discover(token, config, agenda, class_key, week, roster_snapshot, started)
     result = _read_found(token, config, agenda, current_scope, found, roster_snapshot=roster_snapshot)
-    problem = _bookend(token, config, before_agenda, catalog, before_roster,
-                        reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])))
-    return _unavailable(current_scope, problem) if problem else result
+    problem, failure = _bookend(token, config, before_agenda, catalog, before_roster,
+                                reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])),
+                                started)
+    return _unavailable(current_scope, problem, read_failure=failure) if problem else result
 
 
 def overview(token, config, agenda, *, reload_agenda=None):
     """One bounded current overview, sharing discovery within this request only."""
+    started = time.monotonic()
     catalog = morning.catalog(agenda, config)
     assignments = catalog['assignments']
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -560,20 +643,19 @@ def overview(token, config, agenda, *, reload_agenda=None):
     groups = list(dict.fromkeys((s['class_key'], s['week']) for s in scopes))
 
     def discover(key):
-        try:
-            return work.lesson_work(token, config, agenda, *key, review_only=True, roster_snapshot=roster_snapshot)
-        except google.GoogleError as error:
-            return {'review_unavailable': [str(error)]}
+        return _discover(token, config, agenda, *key, roster_snapshot, started)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         found_by_scope = dict(zip(groups, pool.map(discover, groups)))
     reviews = [_read_found(token, config, agenda, s, found_by_scope[s['class_key'], s['week']], roster_snapshot=roster_snapshot) for s in scopes]
-    problem = _bookend(token, config, before_agenda, catalog, before_roster,
-                        reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])))
+    problem, failure = _bookend(token, config, before_agenda, catalog, before_roster,
+                                reload_agenda or (lambda: agenda_module.load(token, config['HUB_AGENDA_SPREADSHEET_ID'])),
+                                started)
     if problem:
-        reviews = [_unavailable(s, problem, checked_at=checked_at) for s in scopes]
+        reviews = [_unavailable(s, problem, checked_at=checked_at, read_failure=failure) for s in scopes]
     return {'schema': OVERVIEW_SCHEMA, 'checked_at': checked_at, 'reviews': reviews,
-            'status': 'unavailable' if problem else 'current', 'limitations': [problem] if problem else []}
+            'status': 'unavailable' if problem else 'current', 'limitations': [problem] if problem else [],
+            **({'read_failure': failure} if problem and failure else {})}
 
 
 def for_score(agenda, class_key, week, form_id, file_id, found, score):
