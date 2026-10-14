@@ -55,11 +55,11 @@ class BoundNativeAuditTests(TestCase):
     if foreign:value['problem']='The registered teacher sources do not match their current declared parent.'
     return value
    return deepcopy(source)
-  with patch.object(audit,'_titles',return_value={}),patch.object(audit,'_published',return_value={}),patch.object(audit,'date') as clock, \
+  with patch.object(audit,'_titles',return_value={}),patch.object(audit,'_published',return_value={}),patch.object(audit,'school_today') as clock, \
        patch.object(work,'form_teacher_sources',side_effect=lambda _c,_a,_k,week,_f:binding if week=='Wk 04' else None), \
        patch.object(completion,'lesson_sources',side_effect=resolution),patch.object(completion,'_registered_teacher_sources',return_value=changed), \
        patch.object(google,'drive_file',return_value=self.meta),patch.object(google,'deck_bytes',side_effect=google.GoogleError('Too large.',403)),patch.object(google,'native_presentation',return_value=native()) as native_get,patch.object(google,'append_rows') as writes:
-   clock.today.return_value=date(2026,9,23)
+   clock.return_value=date(2026,9,23)
    result=audit.check('read',ag,'forensics',{})
   writes.assert_not_called()
   return next(row for row in result['rows'] if row['week']=='Wk 04'),native_get

@@ -25,12 +25,18 @@ from . import feedback as feedback_module
 from . import completion
 from . import completion_holds
 from . import google
+from . import ledger
 from . import work
 from .agenda import build_lesson, form_link, links, norm
 
 DECK = re.compile(r"/presentation/d/([A-Za-z0-9_-]{20,})")
 PUBLISHED = re.compile(r"/forms/d/e/([A-Za-z0-9_-]{20,})")
 WEEK = re.compile(r"\b(?:week|wk)\s*0*(\d{1,2})\b", re.I)
+
+
+def school_today():
+    """Use the same Eastern school date as the morning helper and receipts."""
+    return date.fromisoformat(ledger.eastern_now()[:10])
 
 
 def _week(text):
@@ -151,7 +157,7 @@ def check(token, agenda, class_key, config=None):
     # Release checks are heavier than title checks, so run them only for the
     # current and next two planned lessons in this class. Older lessons remain
     # available in the ordinary link audit without re-exporting every deck.
-    current = agenda.week_for(date.today())
+    current = agenda.week_for(school_today())
     active_rows = []
     if current:
         labels = [r["week"] for r in rows]

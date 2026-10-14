@@ -65,7 +65,8 @@ function showAgendaLink(agenda) {
 const cockpit = {seq: 0, audits: null, auditsAt: 0, feedbackData: null, learningData: null};
 
 function cockpitPanel(title, ...children) {
-  return el('section', {class: 'cockpit-panel'}, el('h2', {text: title}), ...children);
+  return el('details', {class: 'cockpit-panel cockpit-details', open: true},
+    el('summary', {}, el('h2', {text: title})), ...children);
 }
 
 function cockpitDetails(title, context, ...children) {
@@ -314,19 +315,15 @@ function renderMorningCockpit(report, routineData) {
 function renderNeedsYou(report) {
   const items = [], unavailable = [];
   if (!report) return cockpitPanel('Run status', note('No receipt is available yet. IC results are not verified.', 'info'));
+  const routineOnly = report.items?.length && report.items.every(row => ['no_scores', 'excluded_week'].includes(row.code));
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
-    if (row.code === 'excluded_week') {
-      unavailable.push(el('p', {class: 'muted'}, el('strong', {text: morningContext(row) + ': '}), MORNING_EXCLUDED));
-      continue;
-    }
+    // Routine outcomes stay in What ran. Current source checks independently
+    // retain real source failures, even when a receipt has no eligible scores.
+    if (['excluded_week', 'no_scores'].includes(row.code)) continue;
     if (row.code === 'source_scores_held') {
       items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row)));
-      continue;
-    }
-    if (row.code === 'no_scores') {
-      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. This receipt does not identify a student source issue. Current source checks are shown separately.'));
       continue;
     }
     const review = morningRowReview(row);
@@ -346,7 +343,9 @@ function renderNeedsYou(report) {
   }
   return cockpitPanel('Rows the helper left unchanged',
     items.length ? el('ul', {class: 'attention-list'}, ...items)
-      : unavailable.length ? null : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
+      : unavailable.length ? null : routineOnly
+        ? el('p', {class: 'muted', text: 'No follow-up is identified by these routine results. What ran retains the record; no IC comparison is confirmed for these lessons. Current source checks appear separately.'})
+        : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
     ...unavailable,
     el('p', {class: 'muted', text: 'IC’s assignment roster determines which students belong in this run. Exempt rows do not require follow-up. The receipt contains counts; Student work gives the source details for the named class and assignment.'}));
 }
@@ -1229,21 +1228,21 @@ function renderNextWeekNotes(data) {
   const box = $('next-week-notes');
   if (!box) return;
   const monday = addDays(data.week?.monday || mondayOf(plans.date), 7);
-  const heading = `Notes for next week · ${weekRange(monday)}`;
   const classes = data.classes || [];
-  box.replaceChildren(el('h2', {text: heading}),
-    el('p', {class: 'muted', text: 'Private notes saved in this browser. One note per class.'}),
+  box.replaceChildren(el('details', {class: 'next-week-notes notes-panel'},
+    el('summary', {}, el('h2', {text: 'Notes'})),
+    el('p', {class: 'muted', text: `Next week · ${weekRange(monday)}. Private notes saved in this browser. One note per class.`}),
     ...classes.map(cls => {
       const key = `next-week-note:${cls.key}:${monday}`;
-      const textarea = el('textarea', {rows: 2, 'aria-label': `${cls.name} notes for next week`, placeholder: `${cls.name}: what needs planning?`});
+      const textarea = el('textarea', {rows: 12, 'aria-label': `${cls.name} notes`, placeholder: `${cls.name}: what needs planning?`});
       textarea.value = store.get(key) || '';
       const status = el('small', {class: 'muted', text: ''});
       textarea.addEventListener('input', () => {
         store.set(key, textarea.value);
-        status.textContent = 'Saved in this browser';
+        status.textContent = store.get(key) === textarea.value ? 'Saved in this browser' : 'Not saved: this browser’s storage is unavailable. Keep this page open and copy your notes.';
       });
-      return el('label', {class: 'next-week-note'}, el('strong', {text: cls.name}), textarea, status);
-    }));
+      return el('details', {class: 'next-week-note'}, el('summary', {text: cls.name}), textarea, status);
+    })));
 }
 
 function block(label, text) {
@@ -1251,11 +1250,11 @@ function block(label, text) {
 }
 
 function renderLesson(cls, lesson, weekday) {
-  const box = el('div', {class: 'lesson', id: `lesson-${cls.key}-${lesson.row}`, tabindex: '-1'}, el('h3', {text: lesson.topic || 'Untitled lesson'}));
+  const box = el('details', {class: 'lesson', open: true, id: `lesson-${cls.key}-${lesson.row}`, tabindex: '-1'},
+    el('summary', {}, el('h3', {text: lesson.today ? `${FULL_DAY[weekday]} plan` : 'Lesson plan'})));
   const today = lesson.today;
   if (today) {
     box.append(el('div', {class: 'today'},
-      el('p', {class: 'label', text: FULL_DAY[weekday] + ' plan'}),
       el('p', {class: 'plan', text: today.plan || 'No plan written for this day yet.'}),
       today.note ? el('p', {class: 'teacher-note'}, el('strong', {text: 'Note: '}), today.note) : null));
   } else if (weekday === 'Sat' || weekday === 'Sun') {
@@ -1263,6 +1262,7 @@ function renderLesson(cls, lesson, weekday) {
   } else {
     box.append(note(`No ${FULL_DAY[weekday]} plan column: ${cls.name} doesn't meet on ${FULL_DAY[weekday]}s.`, 'info'));
   }
+  box.append(block('Agenda topic', lesson.topic || 'Untitled lesson'));
   if (lesson.todo) box.append(block('To-do', lesson.todo));
   if (lesson.prep) box.append(block('Lab / prep', lesson.prep));
   if (lesson.materials.length) {
@@ -1316,7 +1316,7 @@ function lessonEditor(cls, lesson) {
     const input = key === 'topic' || key.startsWith('link:') || key.startsWith('label:')
       ? el('input', {id, type: key.startsWith('link:') ? 'url' : 'text', disabled: locked || edit.busy,
                      placeholder: key.startsWith('link:') ? 'Paste a link, or leave empty' : ''})
-      : el('textarea', {id, rows: key.startsWith('plan:') ? 4 : 2, disabled: locked || edit.busy});
+      : el('textarea', {id, rows: key.startsWith('note:') ? 10 : 4, disabled: locked || edit.busy});
     input.value = edit.draft[key];
     input.addEventListener('input', () => { edit.draft[key] = input.value; });
     form.append(...[el('label', {class: 'field', for: id, text: fieldLabel(key)}), input,
@@ -1435,10 +1435,10 @@ function renderPlans(data) {
   plans.data = data;
   const editing = plans.editing;
   if (editing && !data.classes.some(cls => cls.lessons.some(l => `${cls.key}|${l.row}` === editing.key))) plans.editing = null;
-  $('week-label').textContent = data.week ? `${data.week.label} · ${weekRange(data.week.monday)}` : 'No Agenda week for this date';
+  $('week-label').textContent = data.week ? `Agenda ${data.week.label} · ${weekRange(data.week.monday)}` : 'No Agenda week for this date';
   $('week-closures').textContent = data.week?.closures || '';
   const cards = data.classes.map(cls => {
-    const card = el('article', {class: 'card ' + cls.key}, el('h2', {text: cls.name}));
+    const card = el('details', {class: 'card ' + cls.key, open: true}, el('summary', {}, el('h2', {text: cls.name})));
     if (cls.problem) card.append(note(cls.problem));
     cls.lessons.forEach(lesson => card.append(plans.editing?.key === `${cls.key}|${lesson.row}`
       ? lessonEditor(cls, lesson) : renderLesson(cls, lesson, data.weekday)));
@@ -1448,7 +1448,12 @@ function renderPlans(data) {
   if (plans.focusRow) {
     const target = document.getElementById('lesson-' + plans.focusRow.replace('|', '-'));
     plans.focusRow = null;
-    if (target) requestAnimationFrame(() => { target.scrollIntoView({behavior: 'smooth', block: 'center'}); target.focus?.(); });
+    if (target) requestAnimationFrame(() => {
+      for (let ancestor = target; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+      }
+      target.scrollIntoView({behavior: 'smooth', block: 'center'}); target.focus?.();
+    });
   }
 }
 
@@ -2401,8 +2406,8 @@ function studentRow(row, scores, formId) {
 function renderForm(form, lesson) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
-  const box = el('section', {class: 'form-work'},
-    el('div', {class: 'form-head'}, el('h3', {text: form.label}), link('Open Form ↗', form.url, 'chip')));
+  const box = el('details', {class: 'form-work', open: true},
+    el('summary', {class: 'form-head'}, el('h3', {text: form.label})), link('Open Form ↗', form.url, 'chip'));
   if (form.problem) box.append(note(form.problem));
   if (!form.form_id || (form.problem && !form.students.length)) return box;
   const recheck = closedRecheck(form);
@@ -2538,8 +2543,9 @@ function renderWork() {
   if (data.folder_reviews?.length) {
     parts.push(el('section', {class: 'folder-review'},
       el('h3', {text: 'Check this shared lesson folder'}),
-      ...data.folder_reviews.map(review => el('p', {class: 'note info'},
-        review.message, ' ', link(review.folder_name + ' ↗', review.folder_url)))));
+      el('details', {open: true}, el('summary', {text: `Folder checks (${data.folder_reviews.length})`}),
+        ...data.folder_reviews.map(review => el('p', {class: 'note info'},
+          review.message, ' ', link(review.folder_name + ' ↗', review.folder_url))))));
   }
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week})));
@@ -2551,9 +2557,10 @@ function renderWork() {
     parts.push(el('section', {class: 'form-work'},
       el('div', {class: 'form-head'}, el('h3', {text: 'Confirm these submission matches'})),
       note(`These ${other.length === 1 ? 'file is' : 'files are'} already in the ${data.week} turn-in folders. The Hub couldn’t safely match ${other.length === 1 ? 'it' : 'them'} to one assignment, so scoring is held until the match is clear. Open the linked work and confirm the assignment; nothing was moved.`, 'info'),
-      el('div', {class: 'table-wrap'}, el('table', {},
-        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
-        el('tbody', {}, other.map(r => studentRow(r)))))));
+      el('details', {open: true}, el('summary', {text: `Submission matches to check (${other.length})`}),
+        el('div', {class: 'table-wrap'}, el('table', {},
+          el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
+          el('tbody', {}, other.map(r => studentRow(r))))))));
   }
   const entry = weekEntryBox();
   if (entry) parts.push(entry);
@@ -2577,8 +2584,9 @@ function renderRosterCheck(check) {
     no_roster: f => [el('strong', {text: f.who}), ' isn’t on any class roster', f.assignment ? ` (${f.assignment})` : '', '. New, left, or a visitor?'],
     twice: f => [el('strong', {text: f.who}), ` is listed twice (${f.section}).`],
   };
-  box.append(el('ul', {class: 'flags'}, flags.map(f => el('li', {}, ...say[f.kind](f),
-    f.url ? [' ', link('Open ↗', f.url)] : []))));
+  box.append(el('details', {open: true}, el('summary', {text: `Roster flags to check (${flags.length})`}),
+    el('ul', {class: 'flags'}, flags.map(f => el('li', {}, ...say[f.kind](f),
+      f.url ? [' ', link('Open ↗', f.url)] : [])))));
   return box;
 }
 
@@ -2601,17 +2609,20 @@ function renderTidy(box, p) {
     m.from_name ? el('small', {class: 'muted', text: ' — from ' + m.from_name}) : null);
   const toWeek = p.moves.filter(m => m.to !== 'late'), toLate = p.moves.filter(m => m.to === 'late');
   if (toWeek.length) {
-    parts.push(el('p', {class: 'label', text: `Move into it (${toWeek.length})`}), el('ul', {class: 'files'}, toWeek.map(item)));
+    parts.push(el('details', {open: true}, el('summary', {text: `Move into it (${toWeek.length})`}),
+      el('ul', {class: 'files'}, toWeek.map(item))));
   }
   if (toLate.length) {
-    parts.push(el('p', {class: 'label', text: `Move into “${p.create_late || p.late_folder?.name}” inside it (${toLate.length}) — turned in after their assignment’s two weeks`}),
-      el('ul', {class: 'files'}, toLate.map(item)));
+    parts.push(el('details', {open: true},
+      el('summary', {text: `Move into “${p.create_late || p.late_folder?.name}” inside it (${toLate.length}) — turned in after their assignment’s two weeks`}),
+      el('ul', {class: 'files'}, toLate.map(item))));
   }
   if (p.empty_after.length) {
     parts.push(el('p', {class: 'muted', text: (p.can_trash
-      ? 'Then these emptied extra folders go to the Drive trash (you can restore them): '
-      : 'Then these emptied extra folders get “_” in front of their names so you know to skip them: ')
-      + p.empty_after.map(e => e.name).join(', ')}));
+      ? 'Then these emptied extra folders go to the Drive trash (you can restore them).'
+      : 'Then these emptied extra folders get “_” in front of their names so you know to skip them.')}),
+      el('details', {open: true}, el('summary', {text: `Emptied extra folders (${p.empty_after.length})`}),
+        el('ul', {class: 'files'}, p.empty_after.map(e => el('li', {text: e.name})))));
   }
   if (renames.length) {
     // Name and lesson first, so a Drive search by a student's name finds their work.
@@ -2782,10 +2793,70 @@ async function missingWorkSheets() {
   }
 }
 
+// ---------- Shared System notes ----------
+// Navigation/Refresh must never erase a draft. A reload compares the latest
+// saved copy, and a save is confirmed only by the server's private readback.
+const systemNotes = {loaded: false, loading: false, busy: false, dirty: false,
+  text: '', revision: '', updatedAt: null, message: '', error: false, comparison: null};
+
+function renderSystemNotes() {
+  const state = systemNotes, box = $('system-notes-body');
+  if (!box) return;
+  const input = el('textarea', {rows: 14, maxlength: 30000, 'aria-label': 'System notes',
+    disabled: !state.loaded || state.busy, placeholder: 'What needs attention? Add the class or lesson and a link when useful.'});
+  input.value = state.text;
+  const status = el('p', {class: 'status' + (state.error ? ' error' : ''), role: 'status',
+    text: state.message || (state.updatedAt ? `Saved in the Hub · ${when(state.updatedAt)}` : state.loading ? 'Reading saved notes…' : '')});
+  const save = el('button', {type: 'button', class: 'primary', disabled: !state.loaded || !state.dirty || state.busy,
+    onclick: saveSystemNotes}, state.busy ? 'Saving…' : 'Save notes');
+  input.addEventListener('input', () => {
+    state.text = input.value; state.dirty = true; state.message = 'Unsaved changes'; state.error = false;
+    status.textContent = state.message; status.className = 'status'; save.disabled = state.busy;
+  });
+  box.replaceChildren(...[input, el('div', {class: 'action-row'}, save,
+    el('button', {type: 'button', disabled: state.loading || state.busy, onclick: () => loadSystemNotes(true)},
+      'Reload saved notes')), status,
+    state.comparison !== null ? el('details', {open: true}, el('summary', {text: 'Saved notes from another tab'}),
+      el('p', {class: 'plan', text: state.comparison || '(empty)'}),
+      el('p', {class: 'muted', text: 'Your draft is still above. Combine anything you need before saving.'}),
+      el('button', {type: 'button', onclick: () => {
+        state.text = state.comparison; state.comparison = null; state.dirty = false;
+        state.message = 'Showing saved notes'; state.error = false; renderSystemNotes();
+      }}, 'Use saved notes')) : null].filter(Boolean));
+}
+
+async function loadSystemNotes(force = false) {
+  const state = systemNotes;
+  if (state.loading || state.busy || (state.loaded && !force)) { renderSystemNotes(); return; }
+  state.loading = true; state.message = 'Reading saved notes…'; state.error = false; renderSystemNotes();
+  try {
+    const saved = await getJSON('api/system/notes');
+    const hadDraft = state.loaded && state.dirty && state.text !== saved.text;
+    state.comparison = hadDraft ? saved.text : null;
+    if (!hadDraft) { state.text = saved.text; state.dirty = false; }
+    state.loaded = true; state.revision = saved.revision; state.updatedAt = saved.updated_at;
+    state.message = hadDraft ? 'Saved notes reloaded. Your unsaved draft is preserved above; compare the saved copy below.'
+      : saved.updated_at ? `Saved in the Hub · ${when(saved.updated_at)}` : 'No saved notes yet.';
+  } catch (error) { state.message = error.message; state.error = true; }
+  finally { state.loading = false; renderSystemNotes(); }
+}
+
+async function saveSystemNotes() {
+  const state = systemNotes;
+  if (!state.loaded || !state.dirty || state.busy || state.loading) return;
+  state.busy = true; state.message = 'Saving notes…'; state.error = false; renderSystemNotes();
+  try {
+    const saved = await postJSON('api/system/notes', {text: state.text, revision: state.revision});
+    state.text = saved.text; state.revision = saved.revision; state.updatedAt = saved.updated_at;
+    state.dirty = false; state.comparison = null; state.message = `Saved in the Hub · ${when(saved.updated_at)}`;
+  } catch (error) { state.message = error.message; state.error = true; }
+  finally { state.busy = false; renderSystemNotes(); }
+}
+
 // ---------- Routine: the morning score handoff ----------
 function renderRoutine() {
-  $('routine-body').replaceChildren(el('section', {class: 'routine routine-morning'},
-    el('h2', {text: 'Morning score check'}),
+  $('routine-body').replaceChildren(el('details', {class: 'routine routine-morning'},
+    el('summary', {}, el('h2', {text: 'Morning score check'})),
     el('ol', {},
       el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
       el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, including Study Hall. Verified submitted work is filed as dated copies in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
@@ -2864,6 +2935,7 @@ async function runLinkCheck() {
 
 function loadRoutine() {
   renderRoutine();
+  loadSystemNotes();
   loadMorningSummary();
   window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 }
@@ -2941,7 +3013,7 @@ async function loadMorningSummary() {
     if (seq !== morningSummarySeq) return;
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
-    box.replaceChildren(el('h2', {text: 'Morning helper review'}));
+    box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review'})));
     visibleReviewPanels.routine = currentSourceReviewPanel($('page-routine')?.hidden !== true);
     box.append(visibleReviewPanels.routine);
     if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The weekday helper runs at 7:00 when enabled. An enabled schedule is not proof of entry; Today shows the saved-and-reloaded results when a receipt arrives.', 'info')); return; }
@@ -2964,6 +3036,6 @@ async function loadMorningSummary() {
       const emptyResult = report.items.length ? null : el('p', {text: morningProblem(report)});
       box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), emptyResult, lines, ...details));
     });
-  } catch { if (seq === morningSummarySeq) box.replaceChildren(el('h2', {text: 'Morning helper review'}), note('The morning summary could not be read. No successful IC save is confirmed.')); }
+  } catch { if (seq === morningSummarySeq) box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review · unavailable'})), note('The morning summary could not be read. No successful IC save is confirmed.')); }
 }
 loadMorningSummary();

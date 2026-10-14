@@ -1,5 +1,35 @@
 # School Workflow Hub — start here
 
+## System notes and compact pages
+
+Agenda week dates come from the explicit Weeks Monday and takeover cells.
+Descriptive suffixes do not change week identity; break handoffs are not teaching
+weeks, and Wk16b stays distinct. Same-week lesson rows and Forms are preserved.
+Source checks use the current Eastern date. The dated plan and Agenda topic are
+shown separately so a changed daily plan does not imply that its topic was edited.
+
+Long Today panels, class/lesson plans, assignment work tables and System reports
+have keyboard-accessible collapsible headings. Lesson planning Notes keeps its
+existing class/next-week browser storage and now offers a full-width, resizable
+editor. Those notes remain local to that browser; they are not silently moved or
+merged into another store.
+
+System → Notes is shared through the existing private Hub store, scoped to the
+configured Agenda. Authenticated GET `/v2/api/system/notes` returns `text`,
+`revision` and `updated_at`. Same-origin teacher JSON POST to the same endpoint
+accepts exactly `text` and the last-read `revision` (empty for an absent record),
+up to 30,000 characters. A save atomically preserves the new current text and an
+immutable history record, then verifies both. Concurrent changes return 409;
+unavailable or uncertain storage returns 503. The editor retains the unsaved
+draft and can show a freshly read saved copy for comparison. Refresh/navigation
+does not silently replace that draft.
+
+The authorized daily maintenance worker should read these notes with Today and
+System status, investigate concrete reported problems and record verified
+resolution evidence. Notes alone do not grant new permissions or confirm a
+repair. They never change grades, delivery marks, student work, external access
+or schedules. A stored note and a configured daily task are not completed checks.
+
 ## Teacher review context
 
 Every request to review submitted work must identify the class/section,

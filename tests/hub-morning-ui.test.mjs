@@ -886,7 +886,11 @@ test('an excluded-week receipt completes without IC entry or a save-recovery tas
   const excluded = row({code: 'excluded_week', assignment: 'Fictional day-one exercise', week: 'Wk 01',
     filled: 0, raised: 0, kept: 0, left: 0, reasons: {...baseReasons}});
   const {ui, document} = boot([excluded]);
-  for (const panel of [ui.renderNeedsYou(report([excluded])), ui.renderMorningCockpit(report([excluded]), {})]) {
+  const followup = ui.renderNeedsYou(report([excluded]));
+  assert.doesNotMatch(followup.textContent, /Fictional day-one exercise|No grade rows need attention/);
+  assert.match(followup.textContent, /no IC comparison is confirmed/);
+  assert.equal(attention(followup).length, 0);
+  for (const panel of [ui.renderMorningCockpit(report([excluded]), {})]) {
     assert.match(panel.textContent, /Biology · Wk 01 · Fictional day-one exercise/);
     assert.match(panel.textContent, /intentionally excluded by the school-year policy/);
     assert.match(panel.textContent, /No IC score comparison or entry was attempted for this assignment/);
@@ -918,6 +922,19 @@ test('an excluded lesson cannot inflate confirmed results or suppress another as
     const skipped = allNodes(panel).find(node => node.tagName === 'li' && node.textContent.includes(excluded.assignment));
     assert.doesNotMatch(skipped.textContent, /Save\/readback|correct\/save|clearing the helper verification block/);
   }
+});
+
+test('routine no-score and excluded results do not hide an actionable source hold', () => {
+  const routine = row({code: 'no_scores', assignment: 'Fictional waiting lesson', filled: 0, raised: 0, kept: 0, left: 0});
+  const excluded = row({code: 'excluded_week', assignment: 'Fictional excluded lesson', filled: 0, raised: 0, kept: 0, left: 0});
+  const held = row({code: 'source_scores_held', assignment: 'Fictional actual source issue', source_holds: {checks: 2}, filled: 0, raised: 0, kept: 0});
+  const {ui} = boot([routine, excluded, held]);
+  const followup = ui.renderNeedsYou(report([routine, excluded, held]));
+  assert.match(followup.textContent, /Fictional actual source issue.*2 submitted-work rows need source checks/);
+  assert.doesNotMatch(followup.textContent, /Fictional waiting lesson|Fictional excluded lesson|No grade rows need attention/);
+  const history = ui.renderMorningCockpit(report([routine, excluded, held]), {});
+  assert.match(history.textContent, /Fictional waiting lesson/);
+  assert.match(history.textContent, /Fictional excluded lesson/);
 });
 
 test('empty preflight receipts show the precise safe cause in Today and Routine without an IC hand check', async () => {

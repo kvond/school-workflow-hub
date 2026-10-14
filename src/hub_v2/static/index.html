@@ -49,12 +49,14 @@
         <button type="button" id="reload-plans">Reload</button>
       </div>
     </div>
-    <section id="next-week-notes" class="next-week-notes" aria-label="Planning notes for next week"></section>
+    <section id="next-week-notes" aria-label="Notes"></section>
     <details class="readiness-strip" id="lesson-readiness">
       <summary>VT readiness and feedback-code checks</summary>
       <div id="lesson-readiness-body" aria-live="polite"></div>
     </details>
-    <nav id="days" class="days" aria-label="Choose a calendar date across four weeks"></nav>
+    <details class="calendar-picker" open><summary>Choose a date</summary>
+      <nav id="days" class="days" aria-label="Choose a calendar date across four weeks"></nav>
+    </details>
     <p id="plans-status" class="status" role="status"></p>
     <div id="cards" class="cards"></div>
   </section>
@@ -86,25 +88,30 @@
   </section>
   <section id="page-routine" hidden>
     <div class="bar">
-      <h1>Morning routine</h1>
+      <h1>System</h1>
       <div class="controls">
         <button type="button" id="reload-routine">Refresh</button>
       </div>
     </div>
     <div id="routine-body"></div>
-    <section id="morning-summary" class="routine" aria-live="polite"></section>
+    <details id="system-notes" class="routine notes-panel" open>
+      <summary><h2>Notes</h2></summary>
+      <p class="muted">Issues to fix and decisions to remember. Saved privately in the Hub for your daily check.</p>
+      <div id="system-notes-body" aria-live="polite"></div>
+    </details>
+    <details id="morning-summary" class="routine" aria-live="polite"></details>
     <details class="routine" id="more-hub-tools">
       <summary>More Hub tools</summary>
       <section id="ai-runtime" class="routine" aria-live="polite">
         <h2>AI runtime</h2>
         <p class="muted">Checking the school API provider…</p>
       </section>
-      <section class="routine" id="link-check">
-        <h2>Check lesson links</h2>
+      <details class="routine" id="link-check">
+        <summary><h2>Check lesson links</h2></summary>
         <p class="muted">Checks Agenda Form and deck links. A lesson without an Agenda Form may use Schoology instead; this check cannot inspect Schoology. Run after moving or adding a lesson.</p>
         <div class="action-row"><button type="button" id="run-link-check">Check links</button></div>
         <div id="link-check-body"></div>
-      </section>
+      </details>
     </details>
   </section>
 </main>

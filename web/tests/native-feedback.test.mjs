@@ -61,7 +61,8 @@ test('no source scores and no receipt are not described as a successful IC compa
     const report={code:'finished',items:[{assignment:'Lesson',code:'no_scores',filled:0,raised:0,kept:0,left:0,...details}]};
     assert.match(context.renderMorningCockpit(report,{}).text,/not entered or compared in IC/);
     const followup=context.renderNeedsYou(report).text;
-    assert.match(followup,/IC was not compared/);
+    assert.match(followup,/no IC comparison is confirmed/);
+    assert.doesNotMatch(followup,/Biology · Wk 04 · Lesson/);
     assert.doesNotMatch(followup,/No grade rows were left out|No grade rows need attention|older receipt|Detailed follow-up is unavailable/);
   }
   assert.match(context.renderNeedsYou(null).text,/not verified/);

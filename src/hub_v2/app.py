@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
-from . import deck_repair, weekly_packet, weekly_preflight
+from . import deck_repair, system_notes, weekly_packet, weekly_preflight
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -121,6 +121,10 @@ def learning_report(config):
 
 
 def api(sub, query, config):
+    if sub == 'api/system/notes':
+        if query:
+            raise ValueError()
+        return system_notes.read(config)
     if sub == 'api/learning-report':
         return learning_report(config)
     token = google.service_token(config)
@@ -565,6 +569,24 @@ def retired_answers_post(environ, respond, config):
     return respond("410 Gone", {"error": "The redundant Biology answers archive has been retired."})
 
 
+def system_notes_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = _json_body(environ, 200000)
+        if set(payload) != {'text', 'revision'}:
+            raise ValueError()
+        actor = google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        return respond('200 OK', system_notes.save(config, payload['text'], payload['revision'], actor=actor))
+    except system_notes.Conflict as error:
+        return respond('409 Conflict', {'error': str(error) or 'Notes changed; reload the saved version before saving again.'})
+    except system_notes.StoreUnavailable:
+        return respond('503 Service Unavailable', {'error': 'Notes save is unconfirmed. Your draft is still here; reload saved notes before retrying.'})
+    except (ValueError, TypeError, KeyError):
+        return respond('400 Bad Request', {'error': 'Notes must be plain text, at most 30,000 characters.'})
+
+
 def agenda_post(environ, respond, config):
     """Save a lesson's edited plain-text cells to the Agenda. Signed-in teacher,
     same-origin JSON only; a cell changed in the Agenda meanwhile is a 409."""
@@ -799,6 +821,8 @@ def application(environ, start_response, config=None):
         return retired_answers_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda":
         return agenda_post(environ, respond, config)
+    if method == 'POST' and path == '/v2/api/system/notes':
+        return system_notes_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda/move":
         return move_post(environ, respond, config)
     if method == "POST" and path in WEEKLY_POSTS:
@@ -871,6 +895,8 @@ def application(environ, start_response, config=None):
         return respond('409 Conflict', {'error': str(error)})
     except ValueError:
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
+    except system_notes.StoreUnavailable:
+        return respond('503 Service Unavailable', {'error': 'The private Hub store is unavailable. Reload before making further changes.'})
     except google.GoogleError as error:
         return respond("502 Bad Gateway", {"error": str(error)})
     except Exception:

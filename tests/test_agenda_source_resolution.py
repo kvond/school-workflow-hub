@@ -111,9 +111,9 @@ class ActualFolderTests(unittest.TestCase):
         with patch.object(google,'drive_file',side_effect=self.drive), \
              patch.object(google,'folder_children',return_value=self.children), \
              patch.object(audit,'_titles',return_value={OLD:{'trashed':True},NEW:'Week 08b - Mock trial'}), \
-             patch.object(audit,'_published',return_value={}),patch.object(audit,'date') as clock, \
+             patch.object(audit,'_published',return_value={}),patch.object(audit,'school_today') as clock, \
              patch.object(audit,'_release_deck',return_value={'status':'READY','counts':{'NOTES':1},'issues':[]}) as release:
-            clock.today.return_value=date(2026,9,23)
+            clock.return_value=date(2026,9,23)
             result=audit.check('read',a,'forensics',{})
         current=next(r for r in result['rows'] if r['week']=='Wk 04')
         self.assertEqual(current['release']['status'],'READY')

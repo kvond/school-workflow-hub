@@ -173,9 +173,9 @@ class WholeAssignmentTests(unittest.TestCase):
         teacher_hold={'status':'NOT_READY','held':True,'problem':'Distributed copies are unmarked.','action':'Embed copies preserving answers, then rerun.'}
         with patch.object(audit,'_titles',return_value={}),patch.object(audit,'_published',return_value={}), \
              patch.object(completion,'lesson_sources',return_value={'decks':[{'id':TEMPLATE}], 'stale_links':[], 'folders':[], 'problem':None}), \
-             patch.object(audit,'date') as clock,patch.object(audit,'_release_deck',return_value={'status':'READY','counts':{'NOTES':3},'issues':[]}), \
+             patch.object(audit,'school_today') as clock,patch.object(audit,'_release_deck',return_value={'status':'READY','counts':{'NOTES':3},'issues':[]}), \
              patch.object(holds,'check',return_value=teacher_hold):
-            clock.today.return_value=date(2026,9,23)
+            clock.return_value=date(2026,9,23)
             result=audit.check('read',fixture(),CLASS,{})
         release=next(r['release'] for r in result['rows'] if r['week']==WEEK)
         self.assertEqual(release['status'],'NOT_READY');self.assertEqual(release['linked_source_status'],'READY')
