@@ -707,7 +707,7 @@ def _legacy_feedback_files(token, config):
             raise Held('A configured private feedback folder no longer matches its course. No packet was assembled.')
         for item in google.folder_children(token, folder_id):
             props = item.get('properties') or {}
-            if props.get('hubDailyFeedbackPacket') or props.get('hubPrintReadyEmailBatch'):
+            if props.get('hubDailyFeedbackPacket') or props.get('hubPrintReadyEmailBatch') or props.get('hubWeeklyLessonPacket'):
                 continue  # System aggregates never become student source reports, even after a rename.
             name = str(item.get('name') or '')
             if item.get('mimeType') not in PRINTABLE_MIMES or not _student_print_name(name):

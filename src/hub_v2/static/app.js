@@ -953,6 +953,164 @@ async function loadTodayFeedback(seq) {
   renderTodayFeedbackArea(seq);
 }
 
+// ---------- Week ahead: lesson preflight ----------
+// One collapsible Today section. It reads the last saved check; "Check now"
+// rereads the Agenda and lesson sources. Only unresolved, actionable items are
+// listed; the machine evidence for each stays inside its own details.
+const weekAhead = {seq: 0, data: null, busy: '', error: '', supplies: false, repairs: {}, packet: null};
+const WEEK_AHEAD_STATUS = {ready: 'Ready', needs_decision: 'Needs decisions', incomplete: 'Check incomplete',
+  inaccessible: 'Source unavailable', repaired_and_verified: 'Repaired and verified', not_checked: 'Not checked yet'};
+
+function weekAheadStart() {
+  const saved = store.get('weekAheadStart');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(saved || '') && saved >= mondayOf(todayISO())) return saved;
+  const today = todayISO();
+  return at(today).getDay() >= 5 || at(today).getDay() === 0 ? addDays(mondayOf(today), 7) : mondayOf(today);
+}
+function weekAheadWeeks() {
+  const n = Number(store.get('weekAheadWeeks') || 1);
+  return n >= 1 && n <= 4 ? n : 1;
+}
+
+function weekAheadItem(item, data) {
+  const where = [item.class + (item.sections?.length ? ' · ' + item.sections.join(', ') : ''),
+    item.date ? `${FULL_DAY[new Date(item.date + 'T12:00:00').toLocaleDateString('en-US', {weekday: 'short'})] || ''} ${item.date}`.trim() : item.week,
+    item.lesson, item.slides?.length ? `slide${item.slides.length > 1 ? 's' : ''} ${item.slides.join(', ')}` : ''].filter(Boolean);
+  const repair = weekAhead.repairs[item.fingerprint];
+  return el('li', {},
+    el('strong', {text: where.join(' · ')}), el('br'),
+    item.reason, ' ', el('em', {text: 'Next: ' + item.next_action}), ' ',
+    item.source_url ? link('Open source ↗', item.source_url) : null,
+    item.status === 'repairable' ? el('div', {class: 'action-row'},
+      el('button', {type: 'button', disabled: repair?.busy, onclick: () => weekAheadRepair(item, !repair?.plan)},
+        repair?.plan ? 'Apply this repair' : 'Preview repair'),
+      repair?.plan ? el('span', {class: 'muted', text: ` Writes ${repair.plan.formula} into ${repair.plan.cell} only.`}) : null,
+      repair?.message ? el('span', {class: 'muted', text: ' ' + repair.message}) : null) : null,
+    el('details', {}, el('summary', {class: 'muted', text: 'Evidence'}),
+      el('pre', {text: JSON.stringify({kind: item.kind, status: item.status, blocking: item.blocking,
+        fingerprint: item.fingerprint, first_seen: item.first_seen, evidence: item.evidence}, null, 1)})));
+}
+
+function weekAheadSupplies(data) {
+  const rows = data?.supplies || [];
+  if (!rows.length) return note('No supplies are listed for these weeks.', 'info');
+  return el('table', {class: 'cockpit-table'},
+    el('thead', {}, el('tr', {}, ...['Item', 'Status', 'Quantity', 'Lesson', 'Use dates', 'Prep by'].map(h => el('th', {text: h})))),
+    el('tbody', {}, ...rows.map(s => el('tr', {},
+      el('td', {text: s.item + (s.also_named?.length ? ` (also: ${s.also_named.join(', ')})` : '')}),
+      el('td', {text: s.status}), el('td', {text: s.quantity}), el('td', {text: s.lessons.join('; ')}),
+      el('td', {text: s.use_dates.join(', ') || 'not stated'}), el('td', {text: s.prep_by || ''})))));
+}
+
+function renderWeekAhead() {
+  const box = $('today-week-ahead');
+  if (!box) return;
+  const data = weekAhead.data;
+  const checkedAt = Object.fromEntries((data?.weeks || []).map(w => [w.label, w.checked_at]));
+  const open = (data?.exceptions || []).filter(e => e.status !== 'repaired_and_verified');
+  // A blocking problem, or anything first seen in this check, always shows.
+  const shownItems = open.filter(e => e.blocking || e.first_seen === checkedAt[e.week]);
+  const quiet = open.filter(e => !shownItems.includes(e));
+  const resolved = (data?.exceptions || []).length - open.length;
+  const status = data?.status ? (WEEK_AHEAD_STATUS[data.status] || data.status) : 'Not loaded';
+  const packet = weekAhead.packet || data?.packet;
+  const start = el('input', {type: 'date', value: weekAheadStart(), 'aria-label': 'First week (Monday)'});
+  const weeks = el('select', {'aria-label': 'Weeks'}, ...[1, 2, 3, 4].map(n =>
+    el('option', {value: String(n), selected: n === weekAheadWeeks()}, n === 1 ? '1 week' : `${n} weeks`)));
+  const choose = () => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(start.value)) store.set('weekAheadStart', mondayOf(start.value));
+    store.set('weekAheadWeeks', weeks.value);
+    loadWeekAhead();
+  };
+  start.addEventListener('change', choose);
+  weeks.addEventListener('change', choose);
+  const details = el('details', {class: 'cockpit-panel cockpit-details', id: 'week-ahead', open: store.get('weekAheadOpen') === '1'},
+    el('summary', {}, el('h2', {text: 'Week ahead'}),
+      el('span', {class: 'cockpit-summary-context muted',
+        text: `${status}${open.length ? ` · ${shownItems.length} to resolve` : ''}${data?.last_successful_check ? ' · last successful check ' + when(data.last_successful_check) : ''}`})),
+    el('div', {class: 'controls'}, el('label', {}, 'From ', start), el('label', {}, 'For ', weeks),
+      el('button', {type: 'button', disabled: !!weekAhead.busy, onclick: runWeekAhead}, 'Check now'),
+      packet?.status === 'ready' ? link('Open Monday packet (PDF)', packet.pdf_url) : null,
+      el('button', {type: 'button', disabled: !!weekAhead.busy || !data || ['not_checked', 'incomplete'].includes(data.status),
+        onclick: buildWeekPacket}, packet?.status === 'ready' ? 'Rebuild packet if changed' : 'Prepare Monday packet'),
+      el('button', {type: 'button', onclick: () => { weekAhead.supplies = !weekAhead.supplies; renderWeekAhead(); }},
+        weekAhead.supplies ? 'Hide supply list' : 'Supply list')),
+    el('p', {class: 'muted', text: `Last successful check: ${data?.last_successful_check ? when(data.last_successful_check) : 'none for these weeks'}. ` +
+      'Access is checked with the Hub’s account only; student access is not verified.'}),
+    weekAhead.busy ? note(weekAhead.busy, 'info') : null,
+    weekAhead.error ? note(weekAhead.error) : null,
+    data?.status === 'incomplete' ? note('This check did not finish, so nothing in it counts as ready. Check now resumes where it stopped.') : null,
+    weekAhead.supplies ? weekAheadSupplies(data) : null,
+    shownItems.length ? el('ul', {class: 'attention-list'}, ...shownItems.map(item => weekAheadItem(item, data)))
+      : data && data.status !== 'not_checked' ? el('p', {class: 'ok', text: '✓ Nothing unresolved in these weeks.'}) : null,
+    quiet.length ? el('details', {}, el('summary', {class: 'muted', text: `Earlier notes, unchanged (${quiet.length})`}),
+      el('ul', {class: 'attention-list'}, ...quiet.map(item => weekAheadItem(item, data)))) : null,
+    resolved ? el('p', {class: 'muted', text: `${resolved} repaired and read back.`}) : null,
+    data?.lessons?.length ? el('details', {}, el('summary', {class: 'muted', text: 'Lessons checked'}),
+      el('ul', {}, ...data.lessons.map(l => el('li', {},
+        `${l.class} · ${l.week} · ${l.topic}: ${WEEK_AHEAD_STATUS[l.status] || l.status}`,
+        l.reviews && Object.keys(l.reviews).some(k => k.startsWith('meeting_flow:') && l.reviews[k].state === 'verified')
+          ? ' · flow reviewed' : ' · flow not yet reviewed')))) : null);
+  details.addEventListener('toggle', () => store.set('weekAheadOpen', details.open ? '1' : '0'));
+  box.replaceChildren(details);
+}
+
+async function loadWeekAhead() {
+  const seq = ++weekAhead.seq;
+  weekAhead.error = '';
+  try {
+    const data = await getJSON(`api/weekly-preflight?start=${encodeURIComponent(weekAheadStart())}&weeks=${weekAheadWeeks()}`);
+    if (seq !== weekAhead.seq) return;
+    weekAhead.data = data; weekAhead.packet = null;
+  } catch (error) {
+    if (seq !== weekAhead.seq) return;
+    weekAhead.error = 'The week-ahead check could not be read: ' + error.message;
+  }
+  renderWeekAhead();
+}
+
+async function runWeekAhead() {
+  const seq = ++weekAhead.seq;
+  weekAhead.busy = 'Checking the Agenda and each lesson’s sources… Finished checks are saved as it goes.';
+  weekAhead.error = ''; renderWeekAhead();
+  try {
+    const data = await postJSON('api/weekly-preflight/run', {start: weekAheadStart(), weeks: weekAheadWeeks()});
+    if (seq !== weekAhead.seq) return;
+    weekAhead.data = {...data, packet: weekAhead.data?.packet}; weekAhead.repairs = {};
+  } catch (error) {
+    if (seq === weekAhead.seq) weekAhead.error = error.message;
+  }
+  if (seq !== weekAhead.seq) return;
+  weekAhead.busy = ''; renderWeekAhead();
+}
+
+async function buildWeekPacket() {
+  weekAhead.busy = 'Preparing the Monday packet from the last finished check…'; weekAhead.error = ''; renderWeekAhead();
+  try {
+    weekAhead.packet = await postJSON('api/weekly-preflight/packet', {start: weekAheadStart(), weeks: weekAheadWeeks()});
+  } catch (error) {
+    weekAhead.error = error.message;
+  }
+  weekAhead.busy = ''; renderWeekAhead();
+}
+
+async function weekAheadRepair(item, preview) {
+  const state = weekAhead.repairs[item.fingerprint] = {...weekAhead.repairs[item.fingerprint], busy: true, message: ''};
+  renderWeekAhead();
+  try {
+    const result = await postJSON('api/weekly-preflight/repair', {fingerprint: item.fingerprint, dry_run: preview});
+    if (preview && result.status === 'planned') state.plan = result;
+    else {
+      state.plan = null;
+      state.message = result.status === 'repaired_and_verified' ? 'Repaired and read back. Check now to refresh the list.'
+        : result.message || 'Nothing was written.';
+    }
+  } catch (error) {
+    state.plan = null; state.message = error.message;
+  }
+  state.busy = false; renderWeekAhead();
+}
+
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
   invalidateReviewPanel(visibleReviewPanels.today);
@@ -964,6 +1122,7 @@ async function loadToday(force = false) {
     renderTodayFeedbackArea(seq);
   }
   loadTodayFeedback(seq);
+  loadWeekAhead();
   getJSON('api/learning-report').catch(() => ({configured: false})).then(data => {
     if (seq !== cockpit.seq) return;
     cockpit.learningData = data;

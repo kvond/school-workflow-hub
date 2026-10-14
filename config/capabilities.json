@@ -291,6 +291,25 @@
         "browser_report_save_and_reload_readback",
         "grading_status_read"
       ]
+    },
+    {
+      "id": "weekly_lesson_preflight",
+      "state": "implemented_fixture_tested_not_deployed",
+      "live_verified": false,
+      "evidence_files": [
+        "src/hub_v2/weekly_preflight.py",
+        "src/hub_v2/weekly_packet.py",
+        "src/hub_v2/deck_repair.py",
+        "tests/test_weekly_preflight.py",
+        "tests/hub-week-ahead-ui.test.mjs",
+        "docs/WEEKLY_PREFLIGHT.md"
+      ],
+      "remaining": [
+        "Deploy and run one real week check; compare its calendar, link and source findings with the Agenda by hand",
+        "Verify one guarded Agenda link repair and one deck repair live, with readback",
+        "Build and print one real Monday packet from the private packet folder",
+        "Teacher decides when the weekly check runs; no schedule was created"
+      ]
     }
   ]
 }
