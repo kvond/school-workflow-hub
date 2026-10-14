@@ -93,6 +93,43 @@ def apply(value, *, found=None, scope=None, roster=None, result=None, md=None):
 
 
 class SourceHistoryDispositionTests(unittest.TestCase):
+    def test_link_rendering_hint_preserves_both_receipt_generations(self):
+        row, found, scope, roster, _ = captures()
+        scope['sources'] = [{'file_id': STUDENT, 'url': 'https://docs.google.com/presentation/d/' + STUDENT + '/edit',
+                             'label': 'Registered teacher source'}]
+        legacy_scope = dispositions.current_basis(Agenda(), {}, scope, found, row, roster)['scope']
+        scope['sources'][0]['resource_type'] = 'slides'
+        current_scope = dispositions.current_basis(Agenda(), {}, scope, found, row, roster)['scope']
+        self.assertNotEqual(legacy_scope, current_scope)
+        for captured_scope in (legacy_scope, current_scope):
+            value, _, _ = receipt()
+            value['scope'] = captured_scope
+            value['record_key'] = dispositions.receipt_key(value)
+            out = apply(value, scope=scope)
+            self.assertEqual(out['status'], 'history_retained')
+            self.assertEqual(out['notices'], [])
+            self.assertEqual(len(out['retained_history']), 1)
+            self.assertFalse(out['source_selection']['assessment_performed'])
+
+    def test_legacy_display_compatibility_does_not_accept_changed_lesson_or_source(self):
+        row, found, scope, roster, _ = captures()
+        scope['sources'] = [{'file_id': STUDENT, 'url': 'https://docs.google.com/presentation/d/' + STUDENT + '/edit',
+                             'label': 'Registered teacher source'}]
+        value, _, _ = receipt()
+        value['scope'] = dispositions.current_basis(Agenda(), {}, scope, found, row, roster)['scope']
+        value['record_key'] = dispositions.receipt_key(value)
+        scope['sources'][0]['resource_type'] = 'slides'
+        for change in ('lesson', 'file_id', 'url', 'label'):
+            changed = deepcopy(scope)
+            if change == 'lesson':
+                changed['lesson'] = 'Different lesson'
+            else:
+                changed['sources'][0][change] = 'different'
+            with self.subTest(change=change):
+                out = apply(value, scope=changed)
+                self.assertEqual(len(out['notices']), 1)
+                self.assertEqual(out.get('retained_history'), [])
+
     def test_durable_manual_ack_retains_links_events_and_as_of_time_not_live_grade_claim(self):
         value, basis, detail = receipt(native_at=NOW - timedelta(days=10))
         before = captures()[1]
