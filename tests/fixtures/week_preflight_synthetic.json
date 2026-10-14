@@ -1,0 +1,416 @@
+{
+ "schema_version": "week-preflight-input/v1",
+ "week_id": "synthetic-w08",
+ "week_start": "2026-10-19",
+ "class_minutes": 90,
+ "synthetic": true,
+ "sections": [
+  {
+   "section_id": "BIO-A",
+   "course": "biology",
+   "enrollment": 24
+  },
+  {
+   "section_id": "BIO-B",
+   "course": "biology",
+   "enrollment": 22
+  },
+  {
+   "section_id": "FOR-1",
+   "course": "forensics",
+   "enrollment": 18
+  }
+ ],
+ "lessons": [
+  {
+   "lesson_id": "bio-w08-l1",
+   "course": "biology",
+   "sequence": 1,
+   "title": "Membrane Crossings",
+   "intended_critical_aspects": [
+    "selective permeability"
+   ],
+   "builds_on": [],
+   "deck": {
+    "editable_id": "deck-bio-w08-l1-edit",
+    "student_copy_id": "deck-bio-w08-l1-student",
+    "revision": "r1",
+    "slides": [
+     "TEACHER REFERENCE \u2014 do not project\nWeek 06 \u2014 Synthetic\nCRITICAL ASPECTS\n1 \u2014 Selective permeability: what the membrane lets through\nWEEK QUESTION\nWhy can two small substances cross differently?\nSCORED FOR COMPLETION\nBuild a Rule \u00b7 Pattern break \u00b7 3-Tier \u00b7 What if?\nNOT SCORED\nConcept Bank\n[[MARKER-INVENTORY:C06]] NOTES=6 DRAFT=1 OPTIONAL=1 BANK_TERMS=1 NOTES_IDS=CA1-QUESTION,CA1-CONTRAST,CA1-RULE,CA1-PATTERNBREAK,CA1-MASTERY,WHATIF DRAFT_IDS=CA1-MASTERY OPTIONAL_IDS=OPT-RELATES BANK_IDS=glucose",
+     "Critical aspect: selective permeability\nWhy does water cross differently from glucose?\n[[NOTES:C06:CA1-QUESTION]]",
+     "Critical aspect: selective permeability\nCompare the same cell with two different substances.\n[[NOTES:C06:CA1-CONTRAST]]",
+     "Critical aspect: selective permeability\nFinish this sentence as a rule\n[[NOTES:C06:CA1-RULE]]",
+     "Critical aspect: selective permeability\nPattern break\nWhat changes when direction reverses?\n[[NOTES:C06:CA1-PATTERNBREAK]]",
+     "Critical aspect: selective permeability\nGetting Started\nMastery\n[[NOTES:C06:CA1-MASTERY]]\n[[DRAFT:C06:CA1-MASTERY]]",
+     "Critical aspect: selective permeability\nWhat if?\nApply the rule to a new case.\n[[NOTES:C06:WHATIF]]",
+     "Define these in your own words\n[[BANK:C06:glucose]]\n[[OPTIONAL:C06:OPT-RELATES]]"
+    ]
+   },
+   "flow": [
+    {
+     "segment": "Opening whole",
+     "phase": "whole",
+     "minutes": 10,
+     "mode": "discussion"
+    },
+    {
+     "segment": "Explore",
+     "phase": "explore/play",
+     "minutes": 20,
+     "mode": "hands_on"
+    },
+    {
+     "segment": "Contrast cases",
+     "phase": "variation/critical aspects",
+     "minutes": 25,
+     "mode": "pairs"
+    },
+    {
+     "segment": "Build the rule",
+     "phase": "relationships",
+     "minutes": 20,
+     "mode": "pairs"
+    },
+    {
+     "segment": "Back to the whole",
+     "phase": "coordinate whole",
+     "minutes": 15,
+     "mode": "writing"
+    }
+   ],
+   "materials": [
+    {
+     "material_id": "m-bio1-ws",
+     "title": "Crossing Cases worksheet",
+     "kind": "worksheet",
+     "print": true,
+     "per": "student",
+     "pages": 2,
+     "double_sided": true,
+     "file_revision": "f1",
+     "items": [
+      {
+       "prompt": "Why does water cross faster than glucose?",
+       "response": "short_text"
+      },
+      {
+       "prompt": "State the rule in one sentence.",
+       "response": "long_text"
+      }
+     ]
+    }
+   ],
+   "supplies": [
+    {
+     "item": "Raisins",
+     "quantity": 2,
+     "per": "group",
+     "group_size": 4,
+     "unit": "boxes",
+     "grocery": true
+    },
+    {
+     "item": "Clear cups",
+     "quantity": 2,
+     "per": "group",
+     "group_size": 4,
+     "unit": "",
+     "on_hand": 10
+    }
+   ],
+   "turn_in": {
+    "form_id": "form-bio-w08-l1",
+    "accepting_responses": true,
+    "deck_revision": "r1"
+   }
+  },
+  {
+   "lesson_id": "bio-w08-l2",
+   "course": "biology",
+   "sequence": 2,
+   "title": "Osmosis in Eggs",
+   "intended_critical_aspects": [
+    "water potential"
+   ],
+   "builds_on": [
+    "selective permeability"
+   ],
+   "deck": {
+    "editable_id": "deck-bio-w08-l2-edit",
+    "student_copy_id": "deck-bio-w08-l2-student",
+    "revision": "r1"
+   },
+   "flow": [
+    {
+     "segment": "Opening whole",
+     "phase": "whole",
+     "minutes": 10,
+     "mode": "discussion"
+    },
+    {
+     "segment": "Explore",
+     "phase": "explore/play",
+     "minutes": 20,
+     "mode": "hands_on"
+    },
+    {
+     "segment": "Contrast cases",
+     "phase": "variation/critical aspects",
+     "minutes": 25,
+     "mode": "pairs"
+    },
+    {
+     "segment": "Build the rule",
+     "phase": "relationships",
+     "minutes": 20,
+     "mode": "pairs"
+    },
+    {
+     "segment": "Back to the whole",
+     "phase": "coordinate whole",
+     "minutes": 15,
+     "mode": "writing"
+    }
+   ],
+   "materials": [
+    {
+     "material_id": "m-bio2-lab",
+     "title": "Egg lab sheet",
+     "kind": "lab_sheet",
+     "print": true,
+     "per": "group",
+     "group_size": 4,
+     "pages": 1,
+     "file_revision": "f1",
+     "items": [
+      {
+       "prompt": "Record mass every 10 minutes.",
+       "response": "table"
+      }
+     ]
+    }
+   ],
+   "supplies": [
+    {
+     "item": "Eggs",
+     "quantity": 1,
+     "per": "group",
+     "group_size": 4,
+     "unit": "dozen",
+     "grocery": true
+    },
+    {
+     "item": "White vinegar",
+     "quantity": 1,
+     "per": "class",
+     "unit": "gallon",
+     "grocery": true
+    }
+   ],
+   "turn_in": {
+    "form_id": "form-bio-w08-l2",
+    "accepting_responses": true,
+    "deck_revision": "r1"
+   }
+  },
+  {
+   "lesson_id": "for-w08-l1",
+   "course": "forensics",
+   "sequence": 1,
+   "title": "Fingerprint Patterns",
+   "intended_critical_aspects": [
+    "ridge pattern class"
+   ],
+   "builds_on": [],
+   "deck": {
+    "editable_id": "deck-for-w08-l1-edit",
+    "student_copy_id": "deck-for-w08-l1-student",
+    "revision": "r1"
+   },
+   "flow": [
+    {
+     "segment": "Opening whole",
+     "phase": "whole",
+     "minutes": 10,
+     "mode": "discussion"
+    },
+    {
+     "segment": "Explore",
+     "phase": "explore/play",
+     "minutes": 20,
+     "mode": "hands_on"
+    },
+    {
+     "segment": "Contrast cases",
+     "phase": "variation/critical aspects",
+     "minutes": 25,
+     "mode": "pairs"
+    },
+    {
+     "segment": "Build the rule",
+     "phase": "relationships",
+     "minutes": 20,
+     "mode": "pairs"
+    },
+    {
+     "segment": "Back to the whole",
+     "phase": "coordinate whole",
+     "minutes": 15,
+     "mode": "writing"
+    }
+   ],
+   "materials": [
+    {
+     "material_id": "m-for1-read",
+     "title": "Pattern reading",
+     "kind": "reading",
+     "print": false,
+     "file_revision": "f1"
+    }
+   ],
+   "supplies": [
+    {
+     "item": "Evidence bags",
+     "quantity": 1,
+     "per": "student",
+     "unit": ""
+    }
+   ],
+   "turn_in": {
+    "form_id": "form-for-w08-l1",
+    "accepting_responses": true,
+    "deck_revision": "r1"
+   }
+  }
+ ],
+ "systems": {
+  "folder": [
+   {
+    "lesson_id": "bio-w08-l1",
+    "title": "Membrane Crossings",
+    "editable_deck_id": "deck-bio-w08-l1-edit",
+    "student_deck_id": "deck-bio-w08-l1-student",
+    "material_ids": [
+     "m-bio1-ws"
+    ]
+   },
+   {
+    "lesson_id": "bio-w08-l2",
+    "title": "Osmosis in Eggs",
+    "editable_deck_id": "deck-bio-w08-l2-edit",
+    "student_deck_id": "deck-bio-w08-l2-student",
+    "material_ids": [
+     "m-bio2-lab"
+    ]
+   },
+   {
+    "lesson_id": "for-w08-l1",
+    "title": "Fingerprint Patterns",
+    "editable_deck_id": "deck-for-w08-l1-edit",
+    "student_deck_id": "deck-for-w08-l1-student",
+    "material_ids": [
+     "m-for1-read"
+    ]
+   }
+  ],
+  "agenda": [
+   {
+    "lesson_id": "bio-w08-l1",
+    "section_id": "BIO-A",
+    "title": "Membrane Crossings",
+    "deck_link_id": "deck-bio-w08-l1-student",
+    "form_id": "form-bio-w08-l1",
+    "date": "2026-10-19"
+   },
+   {
+    "lesson_id": "bio-w08-l1",
+    "section_id": "BIO-B",
+    "title": "Membrane Crossings",
+    "deck_link_id": "deck-bio-w08-l1-student",
+    "form_id": "form-bio-w08-l1",
+    "date": "2026-10-19"
+   },
+   {
+    "lesson_id": "bio-w08-l2",
+    "section_id": "BIO-A",
+    "title": "Osmosis in Eggs",
+    "deck_link_id": "deck-bio-w08-l2-student",
+    "form_id": "form-bio-w08-l2",
+    "date": "2026-10-21"
+   },
+   {
+    "lesson_id": "bio-w08-l2",
+    "section_id": "BIO-B",
+    "title": "Osmosis in Eggs",
+    "deck_link_id": "deck-bio-w08-l2-student",
+    "form_id": "form-bio-w08-l2",
+    "date": "2026-10-21"
+   },
+   {
+    "lesson_id": "for-w08-l1",
+    "section_id": "FOR-1",
+    "title": "Fingerprint Patterns",
+    "deck_link_id": "deck-for-w08-l1-student",
+    "form_id": "form-for-w08-l1",
+    "date": "2026-10-20"
+   }
+  ],
+  "schoology": [
+   {
+    "lesson_id": "bio-w08-l1",
+    "section_id": "BIO-A",
+    "title": "Membrane Crossings",
+    "deck_link_id": "deck-bio-w08-l1-student",
+    "form_id": "form-bio-w08-l1",
+    "published": true,
+    "material_ids": [
+     "m-bio1-ws"
+    ]
+   },
+   {
+    "lesson_id": "bio-w08-l1",
+    "section_id": "BIO-B",
+    "title": "Membrane Crossings",
+    "deck_link_id": "deck-bio-w08-l1-student",
+    "form_id": "form-bio-w08-l1",
+    "published": true,
+    "material_ids": [
+     "m-bio1-ws"
+    ]
+   },
+   {
+    "lesson_id": "bio-w08-l2",
+    "section_id": "BIO-A",
+    "title": "Osmosis in Eggs",
+    "deck_link_id": "deck-bio-w08-l2-student",
+    "form_id": "form-bio-w08-l2",
+    "published": true,
+    "material_ids": [
+     "m-bio2-lab"
+    ]
+   },
+   {
+    "lesson_id": "bio-w08-l2",
+    "section_id": "BIO-B",
+    "title": "Osmosis in Eggs",
+    "deck_link_id": "deck-bio-w08-l2-student",
+    "form_id": "form-bio-w08-l2",
+    "published": true,
+    "material_ids": [
+     "m-bio2-lab"
+    ]
+   },
+   {
+    "lesson_id": "for-w08-l1",
+    "section_id": "FOR-1",
+    "title": "Fingerprint Patterns",
+    "deck_link_id": "deck-for-w08-l1-student",
+    "form_id": "form-for-w08-l1",
+    "published": true,
+    "material_ids": [
+     "m-for1-read"
+    ]
+   }
+  ]
+ }
+}

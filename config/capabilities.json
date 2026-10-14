@@ -291,6 +291,23 @@
         "browser_report_save_and_reload_readback",
         "grading_status_read"
       ]
+    },
+    {
+      "id": "week_preflight",
+      "state": "synthetic_engine_implemented_live_readers_pending",
+      "live_verified": false,
+      "evidence_files": [
+        "src/school_workflow_hub/workflows/week_preflight.py",
+        "scripts/week_preflight.py",
+        "tests/test_week_preflight.py",
+        "tests/fixtures/week_preflight_synthetic.json",
+        "docs/WEEK_PREFLIGHT.md"
+      ],
+      "remaining": [
+        "Read-only host readers that build the week snapshot from the weekly folder, Agenda, Schoology, decks/materials and Turn-in Forms",
+        "Private lesson plan fields (intended critical aspects, 90-minute flow, print and supply lines) supplied per lesson",
+        "One supervised real-week run, repair of anything it misses, then adoption as the standard weekly preparation"
+      ]
     }
   ]
 }

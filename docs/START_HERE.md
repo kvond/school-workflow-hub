@@ -86,6 +86,16 @@ Keep the saved target, quotations, levels and older PDF immutable. File a new
 presentation version through the existing private archive with exact predecessor
 proof and readback; do not alter Printed or Handed-to-student state.
 
+## Weekly teaching preflight
+
+`scripts/week_preflight.py` checks one week snapshot before the week begins.
+It covers folder/Agenda/Schoology/deck/Form sync, Variation Theory critical
+aspects and sequence, the 90-minute flow, the Monday print/lab packet,
+supplies and digital alternatives for worksheets. It prints only exceptions
+and the ready-to-use packet and list. The engine is pure and tested with
+synthetic data only. Live snapshot readers and the first real-week run remain
+open. See [Weekly preflight](WEEK_PREFLIGHT.md).
+
 ## Automatic teacher email for new print-ready work
 
 The private `print_ready_email` outbox connects verified new individual feedback,
