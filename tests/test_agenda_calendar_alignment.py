@@ -4,7 +4,7 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from hub_v2 import agenda, app, audit, ledger, work
-from test_hub_v2 import DIRECT, SECOND, cell, grid
+from tests.test_hub_v2 import DIRECT, SECOND, cell, grid
 
 
 def calendar_fixture():
