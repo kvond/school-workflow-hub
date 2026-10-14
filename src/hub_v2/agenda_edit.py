@@ -16,7 +16,7 @@ import random
 import re
 
 from . import google
-from .agenda import build_lesson, field_columns, first_link, form_link, lesson_kind, norm, plain, text
+from .agenda import build_lesson, field_columns, first_link, form_link, lesson_kind, manual_material_links, norm, plain, text
 
 MAX_TEXT = 10000
 MAX_FIELDS = 20
@@ -101,15 +101,35 @@ def _link_cells(cells, cols, row, key, url, topic, name=""):
     own = cols[LINKS[key]]
     if _formula(cells, row, own):
         raise Refused("That link's cell in the Agenda is a formula, so change it in the Agenda.")
+
+    def visible_material(column, wanted):
+        shown = cols.get(column)
+        cell = cells.get((row, shown)) if shown else None
+        manual = manual_material_links(cell)
+        if not shown or shown == own or not manual:
+            return []
+        if len({link for link, _ in manual}) > 1:
+            raise Refused("That visible cell contains multiple material links, so change it in the Agenda.")
+        if _formula(cells, row, shown):
+            raise Refused("That visible link is an explicit formula, so change it in the Agenda.")
+        label = text(cell).strip()
+        new = _plain_cell(wanted) if label.startswith("https://") else _linked_cell(label, wanted)
+        # Replace only this link's URI, retaining the cell's other formatting.
+        new["userEnteredFormat"] = {"textFormat": {"link": {"uri": wanted}}} if wanted else {}
+        return [(shown, new, wanted)]
+
     if key == "deck":
         out = [(own, _plain_cell(url), url)]
+        copy = url[:-len("/edit")] + "/copy" if url else ""
         student = cols.get("student_url")
         if student and not _derived(cells, row, student):
-            copy = url[:-len("/edit")] + "/copy" if url else ""
             out.append((student, _plain_cell(copy), copy))
+        out += visible_material("teacher_deck", url)
+        out += visible_material("student_deck", copy)
         return out
     if key in ("activity", "deck2"):
-        return [(own, _plain_cell(url), url)]
+        return [(own, _plain_cell(url), url)] + (
+            visible_material("second_deck_display", url) if key == "deck2" else [])
     name = " ".join(str(name or "").split()).lstrip("📤 ").strip()[:MAX_NAME]
     if key == "turnin":
         out = [(own, _plain_cell(url), url)]
@@ -186,7 +206,9 @@ def save(token, write_token, config, agenda, class_key, week, row, changes):
         if links:
             google.batch_update(write_token, agenda.spreadsheet_id, [
                 {"updateCells": {"range": _cell_range(entry.get("sheet_id", 0), row, col), "rows": [{"values": [new_cell]}],
-                                 "fields": "userEnteredValue,textFormatRuns"}} for _, col, new_cell, _ in links])
+                                 "fields": "userEnteredValue,textFormatRuns" + (
+                                     ",userEnteredFormat.textFormat.link" if "userEnteredFormat" in new_cell else "")}}
+                for _, col, new_cell, _ in links])
     except google.GoogleError as error:
         raise _write_error(config, error) from None
     ranges += ["%s!%s%d" % (tab, column_letter(col), row) for _, col, _, _ in links]

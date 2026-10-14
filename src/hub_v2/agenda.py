@@ -215,6 +215,32 @@ def plain(cell):
                    for run in cell.get("textFormatRuns") or [])
 
 
+def manual_material_links(cell):
+    """A manually entered material link, rather than a derived link control.
+
+    A pasted URL or explicitly linked label can replace an older hidden URL.
+    Formula controls that refer to another cell still use that backing cell;
+    a literal HYPERLINK URL is itself an explicit material choice.
+    """
+    cell = cell or {}
+    formula = (cell.get("userEnteredValue") or {}).get("formulaValue") or ""
+    if formula:
+        literal = re.fullmatch(
+            r'\s*=\s*HYPERLINK\(\s*"(https://[^"]+)"\s*(?:[,;]\s*"([^"]*)"\s*)?\)\s*',
+            formula, re.I)
+        return [(literal.group(1), literal.group(2) or "")] if literal else []
+    shown = text(cell).strip()
+    # A replaced plain URL can retain Sheets' older whole-cell link format.
+    if URL.fullmatch(shown):
+        return [(shown, "")]
+    return links(cell)
+
+
+def material_links(hidden, visible=None):
+    """Resolve the teacher's explicit visible edit before a hidden fallback."""
+    return manual_material_links(visible) or links(hidden) or links(visible)
+
+
 def build_lesson(cells, layout, row, edit_url):
     cols = layout["columns"]
 
@@ -230,7 +256,7 @@ def build_lesson(cells, layout, row, edit_url):
                                    ("folder_url", "folder", "Lesson folder"),
                                    ("second_deck", "second_deck_display", "2nd deck"),
                                    ("extra_url", None, "Extra material")):
-        found = links(cell(hidden)) or (links(cell(visible)) if visible else [])
+        found = material_links(cell(hidden), cell(visible) if visible else None)
         if found:
             materials.append({"label": label, "url": found[0][0]})
     for url, label in links(cell("activity")):
@@ -239,8 +265,10 @@ def build_lesson(cells, layout, row, edit_url):
     # Which text cells the dashboard may save: True, or False for a cell with a link or formula.
     editable = {key: plain(cells.get((row, c))) for key, c in field_columns(layout).items()}
     # The links the dashboard can change (see agenda_edit.LINKS), as the Agenda has them now.
-    current = {"deck": first_link(cell("teacher_url")) or first_link(cell("teacher_deck")),
-               "deck2": first_link(cell("second_deck")),
+    teacher = material_links(cell("teacher_url"), cell("teacher_deck"))
+    second = material_links(cell("second_deck"), cell("second_deck_display"))
+    current = {"deck": teacher[0][0] if teacher else "",
+               "deck2": second[0][0] if second else "",
                "activity": first_link(cell("extra_url")) or first_link(cell("activity")),
                "turnin": first_link(cell("turnin"), forms=True) or first_link(cell("turnin_url"), forms=True),
                "turnin2": first_link(cell("turnin2"), forms=True)}
