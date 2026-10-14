@@ -120,13 +120,24 @@ def parse_weeks(cells):
         return [], "The Weeks tab has no row with 'week' and 'Monday' headers."
     col = {v: c for c, v in header.items() if v}
     closures = next((c for v, c in col.items() if "closure" in v), None)
+    # Calendar annotations are not lesson identities. In particular, the
+    # winter-break handoff can point at the next Monday without being that
+    # teaching week. Keep its explicit takeover date only as an interval end.
+    takeover = col.get("takesoveron")
+    transitions = {day for row in range(r + 1, LAST_ROW + 1)
+                   if takeover and (day := parse_date(text(cells.get((row, takeover)))))}
     weeks = []
     for row in range(r + 1, LAST_ROW + 1):
-        label = text(cells.get((row, col["week"]))).strip()
+        shown = text(cells.get((row, col["week"]))).strip()
+        label = re.fullmatch(r"((?:Wk|Week)\s*\d{1,2}[a-z]?)(?:\s+[—–-]\s+.+)?", shown, re.I)
         monday = parse_date(text(cells.get((row, col["monday"]))))
         if label and monday:
-            weeks.append({"label": label, "monday": monday.isoformat(),
-                          "closures": text(cells.get((row, closures))).strip() if closures else ""})
+            week = {"label": label.group(1), "monday": monday.isoformat(),
+                    "closures": text(cells.get((row, closures))).strip() if closures else ""}
+            ends = [day for day in transitions if monday < day < monday + timedelta(days=7)]
+            if ends:
+                week["end"] = min(ends).isoformat()
+            weeks.append(week)
     return weeks, None
 
 
@@ -304,7 +315,8 @@ class Agenda:
     def week_for(self, day):
         for week in self.weeks:
             start = date.fromisoformat(week["monday"])
-            if start <= day < start + timedelta(days=7):
+            end = date.fromisoformat(week["end"]) if week.get("end") else start + timedelta(days=7)
+            if start <= day < end:
                 return week
         return None
 
@@ -341,15 +353,20 @@ class Agenda:
         if not entry["layout"]:
             return []
         dated = {norm(w["label"]): w for w in self.weeks}
-        options, seen = [], set()
+        options, grouped = [], {}
         for row, label in entry["layout"]["rows"]:
-            if norm(label) in seen:
-                continue
-            seen.add(norm(label))
             lesson = build_lesson(entry["cells"], entry["layout"], row, "")
-            week = dated.get(norm(label), {})
-            options.append({"label": label, "topic": lesson["topic"], "monday": week.get("monday"),
-                            "forms": len(lesson["forms"])})
+            key = norm(label)
+            if key not in grouped:
+                week = dated.get(key, {})
+                item = {"label": label, "topic": "", "monday": week.get("monday"), "forms": 0}
+                grouped[key] = (item, [], set())
+                options.append(item)
+            item, topics, forms = grouped[key]
+            if lesson["topic"] and lesson["topic"] not in topics:
+                topics.append(lesson["topic"])
+            forms.update(f["form_id"] or f["url"] for f in lesson["forms"])
+            item.update(topic=" / ".join(topics), forms=len(forms))
         return options
 
 
