@@ -315,19 +315,15 @@ function renderMorningCockpit(report, routineData) {
 function renderNeedsYou(report) {
   const items = [], unavailable = [];
   if (!report) return cockpitPanel('Run status', note('No receipt is available yet. IC results are not verified.', 'info'));
+  const routineOnly = report.items?.length && report.items.every(row => ['no_scores', 'excluded_week'].includes(row.code));
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
-    if (row.code === 'excluded_week') {
-      unavailable.push(el('p', {class: 'muted'}, el('strong', {text: morningContext(row) + ': '}), MORNING_EXCLUDED));
-      continue;
-    }
+    // Routine outcomes stay in What ran. Current source checks independently
+    // retain real source failures, even when a receipt has no eligible scores.
+    if (['excluded_week', 'no_scores'].includes(row.code)) continue;
     if (row.code === 'source_scores_held') {
       items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row)));
-      continue;
-    }
-    if (row.code === 'no_scores') {
-      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. This receipt does not identify a student source issue. Current source checks are shown separately.'));
       continue;
     }
     const review = morningRowReview(row);
@@ -347,7 +343,9 @@ function renderNeedsYou(report) {
   }
   return cockpitPanel('Rows the helper left unchanged',
     items.length ? el('ul', {class: 'attention-list'}, ...items)
-      : unavailable.length ? null : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
+      : unavailable.length ? null : routineOnly
+        ? el('p', {class: 'muted', text: 'No follow-up is identified by these routine results. What ran retains the record; no IC comparison is confirmed for these lessons. Current source checks appear separately.'})
+        : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
     ...unavailable,
     el('p', {class: 'muted', text: 'IC’s assignment roster determines which students belong in this run. Exempt rows do not require follow-up. The receipt contains counts; Student work gives the source details for the named class and assignment.'}));
 }

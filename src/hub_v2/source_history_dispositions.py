@@ -181,11 +181,20 @@ def current_basis(agenda, config, current_scope, found, row, roster_snapshot):
         raise ValueError('source history current target mapping unavailable')
     mapped = [t for m in maps if m.get('class_key') == cls and m.get('form_id') == current_scope['form_id']
               for t in m.get('targets', []) if t.get('section') == row['section']]
+    context = {'scope': current_scope, 'lessons': lessons,
+               'IC_assignment_map': [m for m in maps if m.get('class_key') == cls and m.get('form_id') == current_scope['form_id']],
+               'teacher_sources': work.form_teacher_sources(config, agenda, cls, current_scope['week'], current_scope['form_id'])}
+    legacy_context = deepcopy(context)
+    # resource_type is a derived link-rendering hint added after the first
+    # receipts. Keep both representations without relaxing any source operand.
+    for source in legacy_context['scope'].get('sources', []):
+        source.pop('resource_type', None)
+    context_hash = content_hash(context)
     return {'scope': {'agenda_id': agenda.spreadsheet_id, 'school_year': work._school_year(agenda, current_scope['week']),
                      'class_key': cls, 'week': current_scope['week'], 'form_id': current_scope['form_id'],
-                     'context_sha256': content_hash({'scope': current_scope, 'lessons': lessons,
-                         'IC_assignment_map': [m for m in maps if m.get('class_key') == cls and m.get('form_id') == current_scope['form_id']],
-                         'teacher_sources': work.form_teacher_sources(config, agenda, cls, current_scope['week'], current_scope['form_id'])})},
+                     'context_sha256': context_hash},
+            'scope_compatibility': {'current_context_sha256': context_hash,
+                                    'without_resource_type_sha256': content_hash(legacy_context)},
             'identity': {k: row[k] for k in ('first', 'last', 'section')},
             'email': str(row.get('email') or '').strip().lower(), 'roster_sha256': content_hash(roster_snapshot),
             'candidate_sha256': content_hash(candidates), 'original_events': originals, 'mapped_targets': mapped, 'expected_targets': mapped,
@@ -195,7 +204,11 @@ def current_basis(agenda, config, current_scope, found, row, roster_snapshot):
 def verify_current(value, basis, detail, metadata, *, now=None):
     value = validate(value)
     now = now or datetime.now(timezone.utc)
-    if (value['scope'] != basis['scope'] or any(value['identity'][k] != v for k, v in basis['identity'].items())
+    compatibility = basis.get('scope_compatibility') or {}
+    same_scope = value['scope'] == basis['scope'] or (
+        compatibility.get('current_context_sha256') == basis['scope']['context_sha256']
+        and value['scope'] == {**basis['scope'], 'context_sha256': compatibility.get('without_resource_type_sha256')})
+    if (not same_scope or any(value['identity'][k] != v for k, v in basis['identity'].items())
             or (basis['email'] and value['identity']['school_email'].lower() != basis['email'])
             or value['roster_sha256'] != basis['roster_sha256'] or value['candidate_sha256'] != basis['candidate_sha256']
             or value['issue_kind'] != detail.get('issue_kind') or value['issue_sha256'] != content_hash(detail['reason'])
