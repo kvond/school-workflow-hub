@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
-from . import system_notes
+from . import deck_repair, system_notes, weekly_packet, weekly_preflight
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -825,6 +825,8 @@ def application(environ, start_response, config=None):
         return system_notes_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda/move":
         return move_post(environ, respond, config)
+    if method == "POST" and path in WEEKLY_POSTS:
+        return weekly_preflight_post(environ, respond, config)
     if method not in ("GET", "HEAD"):
         return respond("405 Method Not Allowed", {"error": "This page only reads."},
                        extra=[("Allow", "GET, HEAD")])
@@ -875,8 +877,21 @@ def application(environ, start_response, config=None):
             raw, name = print_ready_email.packet_pdf(google.service_token(config), config, _one(query, 'id'))
             return respond('200 OK', raw, 'application/pdf',
                 [('Content-Disposition', 'attachment; filename="new-print-ready-forms.pdf"')])
+        if sub in ('api/weekly-preflight', 'api/weekly-preflight/packet.pdf'):
+            from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
+            try:
+                if sub == 'api/weekly-preflight/packet.pdf':
+                    if set(query) != {'id'}:
+                        raise ValueError()
+                    raw, name = weekly_packet.pdf(google.service_token(config), config, _one(query, 'id'))
+                    return respond('200 OK', raw, 'application/pdf',
+                        [('Content-Disposition', 'inline; filename="%s"' % name.encode('ascii', 'replace').decode())])
+                return respond('200 OK', weekly_preflight_get(query, config))
+            except (StoreUnavailable, Conflict):
+                return respond('503 Service Unavailable', {'error': 'The Hub\'s private state is unavailable. Nothing was checked or changed.'})
         body = api(sub, query, config)
-    except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held, print_ready_email.Held) as error:
+    except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held, print_ready_email.Held,
+            weekly_preflight.Held, weekly_packet.Held, deck_repair.Refused) as error:
         return respond('409 Conflict', {'error': str(error)})
     except ValueError:
         return respond("400 Bad Request", {"error": "That request wasn't understood."})
@@ -952,3 +967,91 @@ def tidy_post(environ, respond, config):
         return respond("502 Bad Gateway", {"error": str(error)})
     except Exception:
         return respond("500 Internal Server Error", {"error": "Something went wrong on the server. Nothing more was moved."})
+
+
+WEEKLY_POSTS = ('/v2/api/weekly-preflight/run', '/v2/api/weekly-preflight/review', '/v2/api/weekly-preflight/repair',
+                '/v2/api/weekly-preflight/packet', '/v2/api/weekly-preflight/deck-repair')
+
+
+def weekly_preflight_get(query, config):
+    """The stored week-ahead check and its saved packet; reads private state only."""
+    if not set(query) <= {'start', 'weeks'} or 'start' not in query:
+        raise ValueError('start')
+    reply = weekly_preflight.status(config, config.get('HUB_AGENDA_SPREADSHEET_ID', ''),
+                                    _one(query, 'start'), _one(query, 'weeks', False) or '1')
+    reply['packet'] = weekly_packet.saved(config, reply['start'], reply['weeks_requested'])
+    return reply
+
+
+def section_counts(token, config):
+    """{section: current roster count}; a section the roster can't read is left out."""
+    from collections import Counter
+    students, _ = work.roster.load(token, config)
+    counts = Counter(s['section'] for rows in students.values() for s in rows)
+    return {section: counts[section] for sections in work.roster.SECTIONS.values()
+            for section in sections if counts.get(section)}
+
+
+def weekly_preflight_post(environ, respond, config):
+    """Run the week-ahead check, save a review, repair one Agenda link, build the
+    Monday packet or repair a deck. Signed-in teacher, same-origin JSON only.
+    Repairs are dry runs unless dry_run is false."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
+    path = environ['PATH_INFO']
+    try:
+        payload = _json_body(environ, 20000)
+        actor = google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        token = google.service_token(config)
+        dry_run = payload.get('dry_run', True)
+        if not isinstance(dry_run, bool):
+            raise ValueError()
+        if path.endswith('/run') or path.endswith('/packet'):
+            if not set(payload) <= {'start', 'weeks'} or 'start' not in payload:
+                raise ValueError()
+            if path.endswith('/packet'):
+                return respond('200 OK', weekly_packet.build(token, google.service_token(config, write=True), config,
+                                                             payload['start'], payload.get('weeks', 1)))
+            agenda = load_agenda(token, config, fresh=True)
+            return respond('200 OK', weekly_preflight.run(token, config, agenda, payload['start'],
+                                                          payload.get('weeks', 1), section_counts(token, config)))
+        if path.endswith('/review'):
+            return respond('200 OK', weekly_preflight.save_review(
+                config, config.get('HUB_AGENDA_SPREADSHEET_ID', ''), payload, actor))
+        if path.endswith('/repair'):
+            if not set(payload) <= {'fingerprint', 'dry_run'}:
+                raise ValueError()
+            agenda = load_agenda(token, config, fresh=True)
+            result = weekly_preflight.repair_link(token, None if dry_run else google.service_token(config, write=True),
+                                                  config, agenda, payload.get('fingerprint'), dry_run=dry_run)
+            if result.get('changed'):
+                with _cache_lock:  # the next read shows the repaired link
+                    _cache['agenda'] = None
+            return respond('200 OK', result)
+        op = payload.get('op')
+        write_token = None if dry_run else google.service_token(config, write=True)
+        if op == 'replace_text' and set(payload) <= {'op', 'deck_id', 'expected_revision_id', 'replacements', 'dry_run'}:
+            result = deck_repair.replace_text(token, write_token, payload.get('deck_id'), payload.get('replacements'),
+                                              expected_revision_id=payload.get('expected_revision_id'), dry_run=dry_run)
+        elif op == 'sync_inventory' and set(payload) <= {'op', 'deck_id', 'expected_revision_id', 'dry_run'}:
+            result = deck_repair.sync_inventory(token, write_token, payload.get('deck_id'),
+                                                expected_revision_id=payload.get('expected_revision_id'), dry_run=dry_run)
+        else:
+            raise ValueError()
+        return respond('200 OK', result)
+    except (weekly_preflight.Held, weekly_packet.Held, deck_repair.Refused, daily_feedback_packet.Held) as error:
+        return respond('409 Conflict', {'error': str(error)})
+    except agenda_edit.Changed as changed:
+        return respond('409 Conflict', {'error': str(changed)})
+    except (Conflict, StoreUnavailable):
+        return respond('503 Service Unavailable', {'error': 'The Hub\'s private state is unavailable or busy. '
+                                                            'Saved checks are kept; try again.'})
+    except google.GoogleError as error:
+        return respond('502 Bad Gateway', {'error': str(error)})
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return respond('400 Bad Request', {'error': 'That week-ahead request was not understood.'})
+    except Exception:
+        return respond('500 Internal Server Error', {'error': 'The week-ahead request did not finish. '
+                                                              'Finished checks are saved; run it again to resume.'})

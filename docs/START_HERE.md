@@ -73,6 +73,14 @@ sources omitted from the Hub's current Agenda lesson links as a separate link
 discrepancy. This read-only check does not change scoring, assignment selection,
 embedded codes or distributed student copies.
 
+## Weekly lesson-readiness preflight
+
+Today's collapsible **Week ahead** section checks 1–4 upcoming weeks against
+the Weeks-tab calendar, the Agenda's link cells, each lesson's sources, deck
+codes, print list and supplies, and builds a private Monday packet. It is
+fixture-tested only; it adds no schedule and never reads submissions. See
+[Weekly preflight](WEEKLY_PREFLIGHT.md).
+
 ## October 8 student records
 
 The teacher-facing Drive layout uses private class/section/student folders

@@ -2,8 +2,9 @@
 dashboard's service account.
 
 Everything reads, except move_item, rename_item, prefix_name, trash_item and
-create_folder (the Tidy button) and append_rows (the teacher's own "Scores entered" sheet),
-which use a separate write token. Every call has a short
+create_folder (the Tidy button), append_rows (the teacher's own "Scores entered" sheet)
+and slides_batch_update (the weekly preflight's guarded deck repair), which use a
+separate write token. Every call has a short
 timeout. Errors carry a short sentence a teacher can act on, never a token or a
 response body.
 """
@@ -527,18 +528,49 @@ def batch_update(token, spreadsheet_id, requests):
                     token, method="POST", body={"requests": requests}, timeout=60)
 
 
-def folder_children(token, folder_id):
-    """Every item directly inside a Drive folder, trashed items excluded."""
+SHORTCUT = "application/vnd.google-apps.shortcut"
+LISTING_PAGES = 20
+
+
+def folder_listing(token, folder_id, max_pages=LISTING_PAGES):
+    """(items, complete) for one Drive folder, trashed items excluded.
+
+    complete is False when the page limit is reached while Drive still offers
+    another page: the caller holds the listing rather than treating it as all.
+    A shortcut keeps its own ID and names its target in "target"; the target
+    itself is not read here.
+    """
     items, cursor = [], None
-    for _ in range(20):
+    for _ in range(max_pages):
         params = {"q": "'%s' in parents and trashed = false" % folder_id.replace("'", ""),
-                  "fields": "nextPageToken,files(%s)" % FILE_FIELDS, "pageSize": 1000,
-                  "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
+                  "fields": "nextPageToken,files(%s,shortcutDetails(targetId,targetMimeType))" % FILE_FIELDS,
+                  "pageSize": 1000, "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"}
         if cursor:
             params["pageToken"] = cursor
         page = get_json("https://www.googleapis.com/drive/v3/files", token, params)
-        items.extend(as_read(item) for item in page.get("files", []) or [])
+        for item in page.get("files", []) or []:
+            if item.get("trashed"):
+                continue
+            details = item.get("shortcutDetails") or {}
+            if item.get("mimeType") == SHORTCUT and details.get("targetId"):
+                item["target"] = {"id": details["targetId"], "mimeType": details.get("targetMimeType", "")}
+            items.append(as_read(item))
         cursor = page.get("nextPageToken")
         if not cursor:
-            break
-    return items
+            return items, True
+    return items, False
+
+
+def folder_children(token, folder_id):
+    """Every item directly inside a Drive folder, trashed items excluded."""
+    return folder_listing(token, folder_id)[0]
+
+
+def slides_batch_update(token, presentation_id, requests, required_revision_id):
+    """Apply Slides requests only to the exact revision just read: Slides
+    refuses the whole batch when the deck has changed since."""
+    if not isinstance(required_revision_id, str) or not required_revision_id:
+        raise GoogleError("A deck change needs the deck's current revision.")
+    return get_json("https://slides.googleapis.com/v1/presentations/%s:batchUpdate" % quote(presentation_id, safe=""),
+                    token, method="POST", timeout=30,
+                    body={"requests": requests, "writeControl": {"requiredRevisionId": required_revision_id}})
