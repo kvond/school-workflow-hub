@@ -1,0 +1,49 @@
+# Copy to config.yaml (kept out of git) and fill in your IDs.
+agenda_id: "YOUR_AGENDA_SPREADSHEET_ID"   # "Agenda 26-27 CLEAN"
+school_year_start: 2026
+lms_name: Schoology
+output_folder_id: ""      # Drive folder for "Preflight — Wk NN" + the print packet PDF
+gcs_bucket: ""            # remembers each deck's VT skeleton between runs
+schoology_domain: ""      # e.g. redclay.schoology.com (informational)
+llm_review: false         # true = ask Claude on Vertex AI to review each deck's VT design
+vertex_project: ""
+vertex_region: global
+
+courses:
+  - name: Forensics
+    tab: "🔬 Forensics"
+    meets: [Mon, Wed]
+    friday_side: A
+    marker_prefix: F
+    students: 0           # print counts; 0 prints "1 per student"
+    groups: 0
+    sections: []          # Schoology section ids
+    drive_root: ""        # folder that holds the "Week NN - ..." folders
+  - name: A&P
+    tab: "🫀 A&P"
+    meets: [Tue, Thu]
+    friday_side: B
+    marker_prefix: A
+    students: 0
+    groups: 0
+    sections: []
+    drive_root: ""
+  - name: Biology
+    tab: "🌿 Biology"
+    meets: [Mon, Wed]
+    friday_side: A
+    marker_prefix: C
+    students: 0
+    groups: 0
+    sections: []
+    drive_root: ""
+
+pacing:
+  block_minutes: 90
+  overhead_minutes: 10
+  over_tolerance: 10
+  under_minutes: 50
+  minutes_per_response_box: 3
+  minutes_per_bank_term: 1
+  minutes_per_content_slide: 1.5
+  minutes_per_external_activity: 12
