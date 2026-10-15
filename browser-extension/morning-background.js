@@ -27,17 +27,18 @@
  }
  async function authorize(message,sender){
   const s=await read(),t=M.clock();
-  if(!active||!s.enabled||s.day!==t.day||!t.weekday||t.minutes<420||t.minutes>=720||sender.id!==chrome.runtime.id||sender.frameId!==0||sender.tab?.id!==active.tab||sender.url!==active.url||message.run_id!==active.run_id||message.nonce!==active.nonce)return {ok:false,code:'disabled'};
+  if(!active||!s.enabled||s.day!==t.day||!t.weekday||(!active.manualNow&&(t.minutes<420||t.minutes>=720))||sender.id!==chrome.runtime.id||sender.frameId!==0||sender.tab?.id!==active.tab||sender.url!==active.url||message.run_id!==active.run_id||message.nonce!==active.nonce)return {ok:false,code:'disabled'};
   const tab=await chrome.tabs.get(active.tab);
   return {ok:tab.url===active.url};
  }
  async function usable(tab,url){
   await chrome.tabs.update(tab,{url,active:true});
+  const actionable=new Set(['ic_not_saved','unsupported_gradebook','unsupported_points_scale','signed_out']);
   const end=Date.now()+30000;
   while(Date.now()<end){
    const current=await chrome.tabs.get(tab);
    if(current.status==='complete'&&current.url===url){
-    try{const r=await chrome.tabs.sendMessage(tab,{type:'morning_probe'},{frameId:0});if(r?.ok)return;if(r?.code==='signed_out')throw Error('signed_out');}catch(e){if(e.message==='signed_out')throw e;}
+    try{const r=await chrome.tabs.sendMessage(tab,{type:'morning_probe'},{frameId:0});if(r?.ok)return;if(actionable.has(r?.code))throw Error(r.code);}catch(e){if(actionable.has(e.message))throw e;}
    }
    await new Promise(r=>setTimeout(r,250));
   }
@@ -54,11 +55,44 @@
    &&Array.isArray(s.report.items)&&(s.report.items.length===0||neverExecuted&&untouched)&&!s.blocked&&!s.inflight
    &&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }
- async function run(manual=false){
+ const preflightCodes=new Set(['hub_unavailable','ic_unavailable','panel_unusable','unsupported_gradebook']);
+ const completedCodes=new Set(['read_back','nothing_to_enter']);
+ const completedRecheckCodes=new Set(['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores']);
+ const zeroCounts=i=>['filled','raised','kept','left'].every(k=>i[k]===0);
+ function safePreflightRepeat(s,t){
+  const items=s.report?.items;
+  return s.manual_run_day===t.day&&s.manual_run_retry_day!==t.day&&s.report?.day===t.day
+   &&preflightCodes.has(s.report?.code)&&Array.isArray(items)
+   &&(items.length===0?s.execution_started===false:items.some(i=>i.code===s.report.code&&zeroCounts(i))
+    &&items.every(i=>completedCodes.has(i.code)||(i.code===s.report.code&&zeroCounts(i))));
+ }
+ function manualNowAllowed(s,t=M.clock()){
+  const cleanMissedRun=s.report?.code==='missed_noon'&&s.execution_started===false
+   &&Array.isArray(s.report.items)&&s.report.items.length===0;
+  const verifiedRecovery=s.verified?.run_id===s.report?.run_id;
+  // A finished receipt can be explicitly rechecked once later that weekday.
+  // The new pass rereads every source and destination; uncertain writes remain blocked.
+  const completedRun=s.report?.code==='finished'&&s.finished_recheck_day!==t.day&&Array.isArray(s.report.items)
+   &&s.report.items.every(i=>completedRecheckCodes.has(i.code));
+  // A shipped helper fix may need one fresh, full-source pass on the same day.
+  // Keep it distinct from uncertain-write recovery; the pass still re-reads all
+  // Hub and IC values and the keep-higher plan prevents duplicate/lower scores.
+  const updatedCodeRun=s.report?.code==='finished'&&Array.isArray(s.report.items)
+   &&s.report.items.every(i=>completedRecheckCodes.has(i.code))
+   &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
+  const repeat=safePreflightRepeat(s,t);
+  const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
+  return s.enabled&&t.weekday&&s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat)
+   &&!s.blocked&&!s.inflight&&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
+ }
+ async function run(manual=false,manualNow=false){
   if(busy)return;busy=true;
   try{
    let s=await read();
    if(manual&&!retryable(s))return;
+   const requestedAt=M.clock();
+   const preflightRepeat=manualNow&&safePreflightRepeat(s,requestedAt);
+   if(manualNow&&!manualNowAllowed(s,requestedAt))return;
    const hubs=await chrome.tabs.query({url:C.HUB_ORIGIN+'/*'});
    s.outbox=s.outbox||[];
    for(const day of M.missed(s)){
@@ -71,11 +105,17 @@
    }
    // Summary delivery may retry; no IC operation is repeated.
    if(s.report_pending&&hubs.length===1)await publish(s,hubs[0].id);
-   const due=manual?{day:M.clock().day,skip:false}:M.due(s);if(!due)return;
+   const due=manual?{day:M.clock().day,skip:false}:manualNow?{day:requestedAt.day,skip:false}:M.due(s);if(!due)return;
    if(s.report_pending&&s.report)s.outbox.push(s.report);
    if(s.outbox.length>10)s.outbox=s.outbox.slice(-10);
    if(s.blocked&&!s.blocked_run_id){s.blocked_run_id=s.report?.run_id;s.blocked_assignments=s.report?.items?.filter(i=>['readback_incomplete','save_unconfirmed','readback_mismatch'].includes(i.code)).map(i=>i.assignment)||[];}
    s.day=due.day;
+   if(manualNow){
+    s.manual_run_day=due.day;
+   if(s.report?.code==='finished'&&Array.isArray(s.report.items)&&s.report.items.every(i=>completedRecheckCodes.has(i.code)))s.finished_recheck_day=due.day;
+    if(s.report?.code==='finished'&&Array.isArray(s.report.items)&&s.report.items.every(i=>completedRecheckCodes.has(i.code)))s.updated_recheck_version=chrome.runtime.getManifest().version;
+    if(preflightRepeat)s.manual_run_retry_day=due.day;
+   }
    s.report={day:due.day,run_id:crypto.randomUUID(),code:due.skip?'missed_noon':s.blocked?'uncertain_blocked':'running',roster:'unavailable',items:[]};
    s.report_pending=true;s.execution_started=false;
    // A durable stamp BEFORE any network or tab action enforces once per day.
@@ -98,7 +138,16 @@
     for(const entry of catalog.assignments){
      const at=M.clock(),setting=await read();
      if(!setting.enabled)throw Error('disabled');
-     if(at.day!==s.day||at.minutes>=720)throw Error('missed_noon');
+     if(at.day!==s.day||(!manualNow&&at.minutes>=720))throw Error('missed_noon');
+     const skipped=M.skipByYear(entry,Date.parse(`${s.day}T12:00:00Z`));
+     if(skipped){
+      const assignment=skipped==='week_1_intentionally_skipped'
+       ?'Week 1 (intentionally skipped)'
+       :`${entry.assignment} (intentionally skipped this school year)`;
+      const summary=item(assignment,'nothing_to_enter');
+      s.report.items.push(summary);
+      continue;
+     }
      const scope={class:entry.class,week:entry.week,form:entry.form};
      const summary=item(entry.assignment,'running');
      let initial;
@@ -116,7 +165,7 @@
       const fresh=await hub(source,'list',scope);
       if(fresh.code!=='ready'||!initial.revision||fresh.revision!==initial.revision||JSON.stringify(fresh.list.rows)!==JSON.stringify(list.rows)||JSON.stringify(fresh.targets)!==JSON.stringify(initial.targets))throw Error('source_changed');
       await usable(destination,binding.url);
-      active={run_id:s.report.run_id,nonce:crypto.randomUUID(),tab:destination,url:binding.url};
+      active={run_id:s.report.run_id,nonce:crypto.randomUUID(),tab:destination,url:binding.url,manualNow};
       // Mark potentially uncertain BEFORE sending a write-capable request.
       s.blocked=true;s.blocked_run_id=s.report.run_id;s.blocked_assignments=[summary.assignment];s.inflight=true;s.execution_started=true;await write(s);
       let response;
@@ -151,7 +200,7 @@
   if(m?.type==='morning_keepalive'&&busy&&sender.id===chrome.runtime.id&&sender.frameId===0&&sender.tab?.id===sourceTab){reply({ok:true});return;}
   if(m?.type==='morning_authorize'){authorize(m,sender).then(reply,()=>reply({ok:false}));return true;}
   const popup=sender.id===chrome.runtime.id&&sender.url===chrome.runtime.getURL('popup.html')&&!sender.tab;
-  if(!popup||!['morning_status','morning_setting','morning_clear','morning_retry'].includes(m?.type))return;
+  if(!popup||!['morning_status','morning_setting','morning_clear','morning_retry','morning_run_now'].includes(m?.type))return;
   locked(async()=>{
    const s=await read();
    if(m.type==='morning_setting'&&typeof m.enabled==='boolean'){const enabling=m.enabled&&!s.enabled;s.enabled=m.enabled;await chrome.storage.local.set({morning_enabled:m.enabled,...(enabling?{morning_enabled_day:M.clock().day}:{})});await ensureAlarm();}
@@ -172,7 +221,8 @@
     }catch{recovery_error='Verification could not be saved. The block remains. Keep one signed-in Hub tab open and try again.';}
    }
    if(m.type==='morning_retry'&&!busy&&retryable(s))run(true).catch(()=>{});
-   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s)};
+   if(m.type==='morning_run_now'&&!busy&&manualNowAllowed(s))run(false,true).catch(()=>{});
+   return {enabled:s.enabled,blocked:s.blocked,report:s.report||null,busy,verified:s.verified||null,recovery_error,can_retry:!busy&&retryable(s),can_run_now:!busy&&manualNowAllowed(s)};
   }).then(reply,()=>reply({error:true}));return true;
  });
  globalThis.HubMorningStatus=async()=>{

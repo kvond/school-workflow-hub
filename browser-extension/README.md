@@ -1,5 +1,20 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Weekday batch and missing-work zeros (0.5.13)
+
+The opted-in weekday run processes all exact mapped assignments in one batch,
+without an assignment-by-assignment approval popup. It fills blank scores and
+raises lower scores only, then saves, reloads, and verifies each assignment.
+The Hub proposes 0 for verified missing work after the two-week window that
+starts with the first roster student's submission (never before that lesson's
+Agenda week). A later in-window submission can replace the 0 by raising it.
+An IC `Missing` marker does not block writing this Hub-verified numeric zero;
+the helper leaves the marker unchanged. Other IC flags still require review.
+Receipt directions use IC as the roster authority: Hub-only names are stale
+candidates absent from the current IC roster; IC-only names are current IC
+students absent from the Hub list. These are roster differences, not missing
+assignments. The helper leaves unmatched students unscored until reconciled.
+
 This Chrome/Edge extension enters grades in Infinite Campus from the teacher's
 own signed-in school browser. Since 0.3.0 its main job is the Teaching Hub
 v2's IC list (below). The older Page 2 path is documented after it. The v2
@@ -211,11 +226,13 @@ The implementation is in [ic-adapter.js](ic-adapter.js), especially `surface`,
 of the rendered browser UI, not permission to query private IC APIs:
 
 - The current Score panel is `ic-multiscore` inside the same-origin
-  `iframe#main-workspace`. IC also gives its bulk-fill field the class
-  `multiscore__simple-score--input`. Select only per-student inputs with
-  `id^="as_alignmentMultiScore_"`, and require the complete numeric
-  `as_alignmentMultiScore_<score-group>-<row-index>` grammar. The bulk-fill box
-  is never a grade destination; a row index is never a student ID.
+  `iframe#main-workspace`. Select per-student inputs by the explicit
+  `as_alignmentMultiScore_<score-group>-<row-index>` ID grammar and accessible
+  score label; do not depend on a CSS class that IC may change. The bulk-fill
+  box has no per-row ID and is never a grade destination; a row index is never
+  a student ID. A live 0.5.1 diagnostic reported `score_input_count` on a
+  mapped assignment, which prompted this class-independent selector and its
+  regression test.
 - Whitespace in rendered `aria-label` values varies. Store and compare the same
   whitespace-normalized complete label at snapshot and fill time. The observed
   shape is `<assignment-code> MP: Marking Period Score input for <display-name>`.
@@ -431,6 +448,16 @@ and [Edge local extension testing](https://learn.microsoft.com/en-us/microsoft-e
 ### Retry before any assignment starts (0.4.1)
 
 The popup offers **Retry interrupted morning** only for today's stopped attempt before any assignment was processed, while morning entry is enabled and it is 7 a.m.–noon Eastern on a weekday. The previous report must be delivered, with no outstanding report, in-flight action, pending grade review or uncertainty block. The explicit popup action starts a new attributed report and repeats all source, mapping and destination checks. Automatic attempts remain once per day. Partially processed or uncertain runs cannot use this retry.
+
+### Run now and safe preflight recovery (0.5.9)
+
+After a clean **missed noon** report proves no write-capable request started, after a teacher verifies the exact interrupted item and the private recovery receipt clears its hold, or after a fully **finished** pass has been delivered, the popup can offer **Run all mapped assignments now** for one fresh full-catalog check that weekday, including outside the morning window. The finished-pass recheck is separate from both the automatic weekday attempt and the missed-run/recovery action, so an already-used run-now does not hide this final verification pass. It rereads current Hub lists and exact IC destinations, fills blanks or raises lower values only, saves, reloads, and verifies each panel. Uncertain, partial, or failed save states remain blocked until the existing verification path is completed. The button is unavailable unless weekday entry is enabled, receipts are delivered, no action is in flight, and no finished-pass recheck has already been used that day. Scheduled runs remain limited to one automatic attempt per weekday.
+
+A single additional same-day full-catalog recheck may follow a preflight failure when the receipt is delivered, the failing item has zero counts, and every earlier item is a complete `read_back` or `nothing_to_enter` result. This rechecks fresh Hub and IC state, so previously verified writes are kept instead of repeated; any uncertain, partial, or unverified save remains blocked. If the failed run has no assignment items, durable state must prove no write-capable request was sent. IC panel discovery waits up to 60 seconds for the current assignment fields to render.
+
+### Same-day finished-run catch-up and 2026–27 exclusions (0.5.12)
+
+The automatic catalog skips the Week 1 item when its assignment label is a raw Google Forms URL, and skips the established Forensics assignment **Inductive and Deductive Reasoning**. Both appear in the counts-only receipt as `nothing to enter` with an explicit intentional-skip label; the first is labeled `Week 1 (intentionally skipped)` so its Form URL is not copied into the receipt. Rules are bounded to school year 2026–27 and do not store a Form ID or student data. Other catalog assignments continue through the normal fresh-source, exact-mapping, keep-higher, save and readback checks.
 
 ### IC navigation readiness (0.4.2)
 

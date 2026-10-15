@@ -123,7 +123,11 @@
    item.value=value;
    if(ic.other!==null)return leave(`IC shows “${ic.other}”: check by hand`);
    if(ic.score!==null&&ic.score>=value-1e-9)return Object.assign(item,{action:'keep',why:ic.score>value?'IC is higher':'same'});
-   if(ic.flags.length)return leave(`IC flag (${ic.flags.join(', ')}): check by hand`);
+   // Missing work has an explicit zero in the Hub after the two-week window.
+   // IC's Missing marker does not block entering that numeric zero; leave the
+   // marker itself untouched. Other flags still require teacher review.
+   if(ic.flags.length&&!(hub.kind==='zero'&&ic.flags.every(flag=>flag==='Missing')))
+    return leave(`IC flag (${ic.flags.join(', ')}): check by hand`);
    return Object.assign(item,{action:ic.score===null?'fill':'raise',why:''});
   });
   const found=new Set(matched.map(m=>m.row));

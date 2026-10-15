@@ -152,7 +152,7 @@ function renderNeedsYou(report, releaseRows) {
     const reasons = Object.entries(row.reasons || {}).filter(([, n]) => n);
     if (!row.left && !reasons.length) continue;
     items.push(el('li', {}, el('strong', {text: row.assignment + ': '}),
-      reasons.length ? reasons.map(([reason, n]) => `${n} ${reason.replaceAll('_', ' ')}`).join(' · ') : `${row.left} left`));
+      reasons.length ? reasons.map(([reason, n]) => `${n} ${reason === 'missing' ? 'Hub-only names absent from the IC roster' : reason === 'name' ? 'IC-only names absent from the Hub list' : reason.replaceAll('_', ' ')}`).join(' · ') : `${row.left} left`));
   }
   for (const row of releaseRows.filter(row => row.release.status !== 'READY')) {
     items.push(el('li', {}, el('strong', {text: `${row.className} · ${row.week} · ${row.topic}: `}),
@@ -161,7 +161,7 @@ function renderNeedsYou(report, releaseRows) {
   return cockpitPanel('Needs you',
     items.length ? el('ul', {class: 'attention-list'}, ...items)
       : el('p', {class: 'ok', text: '✓ No grade-review exception or current deck-release problem is recorded.'}),
-    el('p', {class: 'muted', text: 'Excused/flagged rows, name mismatches, changed IC values and uncertain readback remain teacher decisions; ordinary blanks and raises do not.'}));
+    el('p', {class: 'muted', text: 'Infinite Campus is the roster authority. “Hub-only” and “IC-only” counts are roster differences, not missing assignments; reconcile them before treating the run as complete. Verified missing work is entered as 0 after its two-week window. An IC Missing marker stays unchanged; other flags, unresolved identities and uncertain readback need review.'}));
 }
 
 function renderTodayLessons(day, audits) {
@@ -984,12 +984,12 @@ function entryPrompt(items) {
     const sections = [...new Set(need.map(([section]) => section))];
     return `${i + 1}. "${formName(form, lesson)}" — ${sections.map(section => `${section}: ${need.filter(([s]) => s === section).map(([, column]) => column === 'notes' ? '(F) = Notes' : '(S) = Revision').join(', ')}`).join('; ')}`;
   });
-  return `Please enter these Hub scores in Infinite Campus (IC) with the Chrome helper, in this Chrome window. I'm here and will review before anything is saved.
+  return `Enter these Hub scores in Infinite Campus (IC) with the Chrome helper as one batch. The weekday helper authorization covers eligible mapped scores; I will review the gradebook after the batch.
 
 RULES
 - This prompt replaces anything you remember about this routine. Follow it.
 - If IC or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password.
-- Never type scores yourself. The Chrome helper (the green "Hub helper" button in IC) enters them: it keeps the higher score, fills blanks and raises only, and leaves IC flags alone.
+- Never type scores yourself. The weekday Chrome helper enters all exact mapped assignments in one run: it keeps the higher score, fills blanks and raises only. For Hub-verified missing-work zeros after the two-week window, an IC Missing marker does not block the numeric zero; the marker remains unchanged. Other flags remain held.
 - Don't change anything else in IC: no flags, due dates or new assignments.
 - The Hub has already sent these lists to the helper (${when(new Date().toISOString())}).
 
@@ -997,10 +997,9 @@ ASSIGNMENTS — ${cls}, ${work.week}
 ${lines.join('\n')}
 
 STEPS
-1. In IC, for each assignment and section above, open the assignment named like it (by name, not week number; (F) or (S) as listed) so its score panel shows, and click "Hub helper" at the bottom right. Check that its "Hub list" is this assignment and its column is right (fix them in its panel if not), note its counts and every row it leaves with the reason, and don't tick its box yet. If an assignment isn't in IC, list it; don't create it.
-2. Show me one list: for each assignment, section and column, the counts, each raise old → new, and each row left with the reason. Then stop and wait for my OK. I may approve only some.
-3. After my OK: for each approved one, open its score panel, click "Hub helper", tick its box and click "Enter … and Save". Wait until it says "Saved and checked after reloading". If it says it stopped or couldn't confirm, tell me exactly what it says and don't try again.
-4. Tell me what was entered, raised and left. For students the helper lists as new students, tell me so I can mark them Exempt.`;
+1. Run the mapped-assignment batch once from the weekday helper. Do not open and approve assignments one at a time.
+2. Wait for the full run receipt and IC reload/readback for every mapped assignment. If any assignment stops or readback is uncertain, do not retry; report its exact class, assignment and component.
+3. Show one consolidated list of assignments entered, raised, kept and held. I will inspect the gradebook after the run; no grade should be reported as saved without its readback.`;
 }
 
 async function sendWeek(status, promptBox) {
@@ -1525,40 +1524,6 @@ async function missingWorkSheets() {
 }
 
 // ---------- Routine: what runs on its own, and what you do ----------
-// The Monday prompt: pasted into the Claude extension in the teacher's own
-// Chrome (signed in to IC and the Hub). It prepares, waits for her OK, then
-// saves. Nothing here runs it on a timer.
-const mondayPrompt = () => `Please do my "Monday grades and roster" check now, in this Chrome window. I'm here and will review before anything is saved.
-
-GROUND RULES
-- This prompt replaces anything you remember about this routine from earlier weeks. Where your memory differs, follow this prompt.
-- If Infinite Campus (IC) or the Teaching Hub shows a sign-in page, stop and tell me. Never type a password or choose a sign-in for me.
-- Nothing is saved in IC or in my roster sheet until I say OK. Prepare everything, show me one review list, and wait.
-- Never type scores into IC yourself. The Chrome helper ("Hub helper" in IC) enters them: it keeps the higher score (fills blanks and raises lower scores, never lowers one), leaves IC flags alone, and after Save reloads IC and checks every score. If the Hub has no "Send to the Chrome helper" button, the helper isn't installed in this Chrome: stop and tell me.
-- Never delete anything, never create an IC assignment, and never change a due date that isn't on the list I approve.
-- Never type in the "Scores entered (On Dashboard)" sheet. The Hub adds its rows itself.
-- My sections: A2 Forensics and A3 Forensics (class: Forensics), A4 Biology (Biology), B3 A&P (A&P).
-
-PART A — ROSTER CHECK (read only)
-1. In IC, list each section's students as Last, First.
-2. Open my Google Sheet named "Rosters" (one tab per section). For each section list: students in IC but not in the tab, students in the tab but not in IC, and names spelled differently.
-3. In the Teaching Hub (${location.origin}/v2/#work), open Student work for each class and note anything its "Roster check" box flags.
-
-PART B — SCORES (read only)
-4. Check today's week and the three weeks before it in each class, with Section set to "All sections". Only work on assignments whose two weeks are still open, or closed within the last 8 days.
-5. For each of those assignments, wait until "Scoring N of M…" is gone and read its line that starts with "IC:". Skip it if it says "IC: final scores entered …" or has no "IC:" line. Otherwise click "Scores are ready to enter in IC", then "Send to the Chrome helper".
-6. In IC, find that assignment by its name, not its week number. For each section, open its (F) assignment (Notes) and its (S) assignment (Revision) so the score panel shows, and click "Hub helper" at the bottom right. Check the helper picked the right Hub lesson and column (fix them in its panel if not), but don't tick its box yet. Note its counts (to enter, raises, kept, left) and every row it leaves, with the reason. If an assignment isn't in IC at all, list it; don't create it. Also compare IC's due date with the Hub's "open until" or "closed" date and list any difference, old → new.
-
-PART C — REVIEW (STOP)
-7. Show me one list: roster additions, students who may have left, and spelling differences; for each section and assignment, the helper's counts, each raise old → new, and each row it leaves with the reason; and each due-date change. Then stop and wait for my OK. I may approve only some items.
-
-PART D — SAVE WHAT I APPROVE
-8. Roster: add only the students I approve, as new rows in the same format, with today's date (MM/DD/YYYY) in the tab's "Added" column. If the tab has no "Added" column, type Added in the first empty cell of row 1 to the right of the names. Don't delete rows or change other cells.
-9. IC: for each approved assignment and section, open its score panel, click "Hub helper", tick its box and click "Enter … and Save". Wait for it to say it saved and checked the scores. If it says it stopped or couldn't confirm, tell me exactly what it says and don't try again. For students it lists as new students, mark the assignment Exempt in IC. Enter approved due dates and click Save.
-10. The Hub notes "Entered in IC" by itself once the helper has done every section and column of an assignment. If an assignment doesn't show "✓ Entered in IC" afterward, tell me which.
-
-PART E — LOG
-11. Make a Google Doc named "Monday run — ${todayISO()}" at the top of 00 REAL ALL TURN IN with the roster changes made, what the helper entered, raised and left per section and assignment, anything that didn't read back, and a short note on anything confusing or slow.`;
 
 const ROUTINE = {
   // How a completion score gets from a student's deck into IC, in order.
@@ -1573,7 +1538,7 @@ const ROUTINE = {
      what: 'Checks rosters and tidies verified student work into each lesson’s turn-in folder before 7:00.',
      needs: 'Nothing to click.'},
     {when: '7:00 a.m. weekdays', who: 'Chrome helper',
-     what: 'Enters eligible scores in IC and checks them. Roster additions and removals still need review.',
+     what: 'Checks the current IC roster against Hub, then enters eligible scores for verified roster matches. IC is authoritative; roster differences remain visible for reconciliation.',
      needs: 'The Mac awake, school Chrome open with the Hub and IC tabs signed in, and the helper’s morning setting on.'},
     {when: '7:30 a.m. weekdays', who: 'School ChatGPT (Codex)',
      what: 'Writes feedback for the latest closed lesson, saves it privately and adds it to the feedback checklist. Then reads the class growth summaries and writes a one-page Lesson opener: what students are tending to miss, plus information and questions to bring up at the start of the next lesson.',
@@ -1613,14 +1578,14 @@ const ROUTINE = {
   ],
   // Only when an automatic run didn't do its job. Where to go, what to click.
   manual: [
+    {need: 'A weekday run stopped or a score was not confirmed',
+     steps: 'Read the Hub morning summary for the exact class, assignment, section and component. Open that assignment in IC and compare the affected scores with the Hub. Correct and save only if IC is wrong, then reload and verify. Use the helper popup’s “Mark verified” control only after the gradebook is checked; the scheduled run will not retry uncertain saves.'},
     {need: 'Enter scores now, without waiting for 7:00',
      steps: 'Hub tab → Student work → pick class and week → under the assignment, open “If manual is needed” → “Scores are ready to enter in IC” → “Send to the Chrome helper”. Then IC tab, in front → that class → Curriculum → click the assignment’s TITLE (not the “Scored” number) → Score → green “Hub helper” at the bottom right → tick its box → Enter and Save. Do the (F) Notes assignment and the Revision assignment, in each section.'},
-    {need: 'Let Claude do the score entry instead',
-     steps: 'Copy the Monday prompt below → Chrome, IC tab in front → Claude extension side panel → paste → review its list → reply OK.'},
     {need: 'You typed scores into IC yourself',
      steps: 'Hub tab → Student work → class and week → “I entered these in IC”. Skip this if the helper did it; the Hub notes it by itself.'},
     {need: 'IC said a save was not confirmed',
-     steps: 'Check that assignment in IC. Then Chrome toolbar → puzzle-piece icon → School Workflow Hub → tick the recovery box → “Allow future mornings”.'},
+     steps: 'Use the exact assignment and component named in the Hub morning summary. Compare its affected scores in IC; correct/save only if IC is wrong, then reload to verify. Use the helper popup’s verification control only after checking. The run does not retry uncertain saves.'},
     {need: 'Turn the 7:00 run on or off',
      steps: 'Chrome toolbar → puzzle-piece icon → School Workflow Hub → “Enter automatically on weekday mornings”.'},
     {need: 'Feedback by hand',
@@ -1633,18 +1598,6 @@ const ROUTINE = {
 };
 
 const routine = {seq: 0};
-
-function routineStatus(key, data) {
-  const found = data?.[key];
-  if (found?.problem) return note(found.problem);
-  if (key === 'monday_run') {
-    if (!found) return el('p', {class: 'muted', text: 'No “Monday run” Doc yet.'});
-    const days = (Date.now() - new Date(found.at)) / 86400000;
-    return el('p', {class: days > 8 ? 'note warn' : 'muted'}, `Last run: ${when(found.at)}. `, link(found.name + ' ↗', found.url),
-      days > 8 ? ' That’s more than a week ago: run the Monday prompt.' : '');
-  }
-  return null;
-}
 
 function renderRoutine(data) {
   const body = $('routine-body');
@@ -1660,9 +1613,7 @@ function renderRoutine(data) {
     ROUTINE.scheduled.map(t => el('div', {class: 'routine-item'},
       el('p', {class: 'routine-when'}, el('strong', {text: t.when}), ` · ${t.who}`),
       el('p', {text: t.what}),
-      el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs),
-      t.key ? routineStatus(t.key, data) : null)));
-  const copied = el('span', {class: 'muted'});
+      el('p', {class: 'routine-needs'}, el('strong', {text: 'Needs: '}), t.needs))));
   const manual = el('details', {class: 'routine', open: store.get('routine-manual-open') === '1',
     ontoggle: e => store.set('routine-manual-open', e.target.open ? '1' : '0')},
     el('summary', {}, el('h2', {text: 'If manual is needed'})),
@@ -1671,11 +1622,7 @@ function renderRoutine(data) {
       el('thead', {}, el('tr', {}, ['When you need to', 'Where and what to click'].map(h => el('th', {text: h})))),
       el('tbody', {}, ROUTINE.manual.map(m => el('tr', {}, el('td', {class: 'routine-when', text: m.need}),
         el('td', {text: m.steps})))))),
-    el('div', {class: 'action-row'},
-      el('button', {type: 'button', onclick: () => copyText(mondayPrompt(), copied)}, 'Copy Monday prompt (Claude extension)'),
-      copied),
-    el('details', {}, el('summary', {text: 'Show the prompt'}), el('pre', {class: 'prompt-text', text: mondayPrompt()})),
-    data ? routineStatus('monday_run', data) : null);
+    null);
   const embed = data?.embed_prompt;
   const embedCopied = el('span', {class: 'muted'});
   const planning = el('section', {class: 'routine'}, el('h2', {text: 'Lesson planning (before Friday, or Sunday night)'}),
@@ -1841,7 +1788,7 @@ async function loadMorningSummary() {
     box.replaceChildren(el('h2', {text: 'Morning score entry'}));
     if (!reports.length) { box.append(note('No morning run recorded yet. Enable weekday mornings in the Chrome helper on your home Mac after its assignment mappings are verified.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
-    box.append(note('Roster additions and removals still need review; automatic roster sync is not available.', 'info'));
+    box.append(note('IC is the authoritative active roster. IC-only and Hub-only names are roster differences, not missing assignments. The Hub does not update roster records automatically.', 'info'));
     reports.forEach((report, i) => {
       const lines = el('ul', {}, report.items.map(row => el('li', {}, el('strong', {text: row.assignment + ': '}),
         `${row.filled} entered, ${row.raised} raised, ${row.kept} kept, ${row.left} left — ${words(row.code)}. `,

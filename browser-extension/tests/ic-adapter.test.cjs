@@ -12,14 +12,14 @@ function matchesCompound(node,part){const m=/^([a-zA-Z0-9-]*)((?:[#.[][^#.[\]]*\
 function matches(node,selector){return selector.split(',').some(part=>matchesCompound(node,part));}
 function walk(node,out){for(const child of node.children){out.push(child);walk(child,out);}return out;}
 function dress(node,doc){node.ownerDoc=doc;node.getClientRects=()=>node.attrs.hidden!==undefined?[]:[1];node.closest=sel=>{let cur=node;while(cur){if(matches(cur,sel))return cur;cur=cur.parent;}return null;};node.querySelectorAll=sel=>walk(node,[]).filter(n=>matches(n,sel));node.contains=other=>{let cur=other;while(cur){if(cur===node)return true;cur=cur.parent;}return false;};node.getAttribute=name=>node.attrs[name]??null;node.id=node.attrs.id||'';Object.defineProperty(node,'textContent',{get(){return node.text+node.children.map(c=>c.textContent).join('');}});Object.defineProperty(node,'firstElementChild',{get(){return node.children[0]||null;}});for(const child of node.children)dress(child,doc);return node;}
-function panelFixture({zombie=true,extraHeading=false}={}){
+function panelFixture({zombie=true,extraHeading=false,scoreClass='multiscore__simple-score--input'}={}){
  const origin='https://fictional-school.test';
  const inner=origin+'/campus/sis/control-center/classroom/curriculum/resource/301/view(secondaryRouteOutlet:multiscore/assignmentEditor/sectionID/101/objectSectionID/301/calendarID/7/structureID/7)?classroomSectionID=101&classroomTermID=501';
  const outer=origin+'/campus/sis/x?classroomSectionID=101&classroomTermID=501&year=2001&schoolID=9&calendarID=7';
  const scoreChildren=[
   el('h2',{},[],'Fictional assignment'),
   el('th',{},[],'MP (10 pts)'),
-  el('input',{class:'multiscore__simple-score--input','aria-label':'EX1 MP: Marking Period Score input for Fictional learner',id:'as_alignmentMultiScore_401-0'}),
+  el('input',{class:scoreClass,'aria-label':'EX1 MP: Marking Period Score input for Fictional learner',id:'as_alignmentMultiScore_401-0'}),
   el('input',{class:'multiscore__simple-score--input multiscore__simple-score-fill--input','aria-label':'Fill score input',id:'text-fill-401'}),
   el('button',{title:'All scores have been saved.'},[],'Save')];
  if(zombie)scoreChildren.push(el('div',{role:'dialog'},[el('h2',{},[],'Student Summary Go to Student Information'),el('button',{},[],'Close')]));
@@ -36,11 +36,30 @@ function panelFixture({zombie=true,extraHeading=false}={}){
  frame.contentWindow={location:{href:inner}};
  return {document:topDoc,location:{origin,href:outer}};
 }
-function withDom(dom,run){const had={document:globalThis.document,location:globalThis.location};globalThis.document=dom.document;globalThis.location=dom.location;try{return run();}finally{globalThis.document=had.document;globalThis.location=had.location;}}
+function withDom(dom,run){const had={document:globalThis.document,location:globalThis.location};globalThis.document=dom.document;globalThis.location=dom.location;const restore=()=>{globalThis.document=had.document;globalThis.location=had.location;};try{const result=run();if(result&&typeof result.then==='function')return result.finally(restore);restore();return result;}catch(error){restore();throw error;}}
 test('surface accepts the score panel despite the bulk-fill input and a lingering Student Summary dialog',()=>{
  // inspect() runs surface() and reports destination_unverified only on success.
  const outcome=withDom(panelFixture(),()=>A.inspect());
  return outcome.then(value=>assert.equal(value.code,'destination_unverified'));
+});
+test('surface accepts per-student rows when IC changes the score input CSS class',()=>{
+ const outcome=withDom(panelFixture({scoreClass:'ic-score-entry-v2'}),()=>A.inspect());
+ return outcome.then(value=>assert.equal(value.code,'destination_unverified'));
+});
+test('waitSurface tolerates score rows that render after the assignment route',async()=>{
+ const dom=panelFixture(),input=walk(dom.document.querySelectorAll('iframe#main-workspace')[0].contentDocument.querySelectorAll('ic-multiscore')[0],[]).find(n=>n.tag==='input'&&n.attrs.id?.startsWith('as_alignmentMultiScore_'));
+ input.attrs.hidden='';
+ const outcome=withDom(dom,async()=>{
+  setTimeout(()=>{delete input.attrs.hidden;},150);
+  const s=await A.panel.waitSurface(1000);
+  assert.equal(s.inputs.length,1);
+ });
+ await outcome;
+});
+test('waitSurface still rejects a persistently unsupported score panel without writing',async()=>{
+ const dom=panelFixture(),input=walk(dom.document.querySelectorAll('iframe#main-workspace')[0].contentDocument.querySelectorAll('ic-multiscore')[0],[]).find(n=>n.tag==='input'&&n.attrs.id?.startsWith('as_alignmentMultiScore_'));
+ input.attrs.hidden='';
+ await withDom(dom,async()=>assert.rejects(A.panel.waitSurface(120),/^Error: unsupported_gradebook$/));
 });
 test('surface still rejects a second assignment heading that is not a Student Summary overlay',()=>{
  const outcome=withDom(panelFixture({extraHeading:true}),()=>A.inspect());
