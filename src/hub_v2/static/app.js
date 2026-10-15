@@ -994,9 +994,10 @@ function renderTodayFeedback(data) {
       el('ul', {}, ...dates.map(item => el('li', {}, link(`${item.date} · ${item.pages} pages`, item.pdf_url))))) : null].filter(Boolean);
   if (historical) {
     const requested = data.requested_date || todayISO();
-    panel.append(...[el('p', {text: recordedPrinted ? 'No pending printing for these exact report versions. Historical PDFs remain available.'
-      : timedOut ? `New feedback for ${requested} was not checked because the source check timed out. Earlier dated feedback remains available to reprint.`
+    panel.append(...[el('p', {text: timedOut ? `New feedback for ${requested} was not checked because the source check timed out. Earlier dated feedback remains available to reprint.`
       : checking ? `Checking current feedback for ${requested}… Earlier dated feedback remains available to reprint.`
+      : data.source_problem ? `Current feedback for ${requested} could not be checked. Earlier dated feedback remains available to reprint.`
+      : recordedPrinted ? `Saved feedback dated ${data.date} is recorded Printed. Historical PDFs remain available.`
       : `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${requested}. Earlier dated feedback remains available to reprint.`}), deliveryNotice,
       sourceNotice,
       checklist ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
