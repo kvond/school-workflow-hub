@@ -3,8 +3,9 @@ the lesson's turn-in folders.
 
 The Form link(s) in the lesson's Agenda row name the assignments. Each response
 says who submitted (their school email) and which files they uploaded. The
-lesson's turn-in folders in 00 ALL TURN IN / <class> (any folder named for the
-lesson's week, and each Form's own '(File responses)' folder) also hold files
+lesson's turn-in folders in both sibling sources, 'Turn it in AGENDA Links'
+and 'Turn it in_Google Forms' (any folder named for the lesson's week, each
+Form's own '(File responses)' folder, and its renamed upload folder) also hold files
 that arrived another way, such as uploads moved from an earlier Form; those
 are matched to students by file name and shown as found in the folder.
 
@@ -206,7 +207,13 @@ def folder_week(name):
 
 def _upload_folder(name, numbers):
     name = str(name or "")
-    return name.endswith("(File responses)") or folder_week(name) in _weeks(numbers)
+    # The teacher renamed the assignment-level Google Forms upload folder.
+    # norm() intentionally removes underscores, spaces and punctuation, so
+    # this matches "Turn it in_Google Forms" and spacing/case variants. Form
+    # response upload folders are still discovered through their verified
+    # response parent chain; they are never searched as an unscoped source.
+    forms_upload = norm(name) == "turnitingoogleforms"
+    return forms_upload or name.endswith("(File responses)") or folder_week(name) in _weeks(numbers)
 
 
 def assignment_title(label):
@@ -237,7 +244,7 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
     title names another lesson of the class is never taken for its week number
     alone. The same holds inside each section folder ('A2 Forensics').
     """
-    root = config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "")
+    root = str(config.get("HUB_SUBMISSIONS_ROOT_FOLDER", "") or "").strip()
     roots = {folder_id: "" for folder_id in response_folders}
     if not root:
         return roots, "No turn-in root folder is configured, so only Form uploads were read."
@@ -256,30 +263,63 @@ def lesson_folders(token, config, class_name, week_label, form_names, response_f
             return True
         return number is not None and folder_week(name) == number and not titled(name, others)
     section_names = {norm(s) for s in sections}
+    source_names = {"turnitinagendolinks", "turnitingoogleforms"}
     try:
-        classes = [f for f in google.folder_children(token, root)
-                   if f.get("mimeType") == google.FOLDER and norm(f["name"]) == norm(class_name)]
-        if len(classes) != 1:
-            return roots, "No single '%s' folder in the turn-in root, so only Form uploads were read." % class_name
-        children = [f for f in google.folder_children(token, classes[0]["id"]) if f.get("mimeType") == google.FOLDER]
-        for f in children:
-            if f["name"] in wanted or (norm(f["name"]) not in section_names and ours(f["name"])):
-                roots[f["id"]] = f["name"]
-        for section in [f for f in children if norm(f["name"]) in section_names]:
-            for f in google.folder_children(token, section["id"]):
-                if f.get("mimeType") == google.FOLDER and (
-                        ours(f["name"]) or _lesson_folder_title(f["name"]) in wanted_titles):
+        # The configured Agenda Links source and the Google Forms source are
+        # siblings. Resolve the second by exact name under the configured root's
+        # verified parent, so unrelated folders elsewhere in Drive are excluded.
+        root_info = google.drive_file(token, root)
+        parents = root_info.get("parents") or []
+        if len(parents) != 1:
+            return roots, "The configured assignment folder has no single parent to locate both submission sources."
+        siblings = [f for f in google.folder_children(token, parents[0])
+                    if f.get("mimeType") == google.FOLDER and norm(f.get("name")) in source_names]
+        by_name = {}
+        for folder in siblings:
+            by_name.setdefault(norm(folder.get("name")), []).append(folder)
+        configured_name = norm(root_info.get("name"))
+        if configured_name not in source_names:
+            return roots, "The configured folder is not one of the recognized assignment sources."
+        if len(by_name.get(configured_name, [])) != 1:
+            return roots, "The configured assignment source could not be uniquely confirmed."
+        other_name = next(name for name in source_names if name != configured_name)
+        if by_name.get(other_name) and len(by_name[other_name]) != 1:
+            return roots, "The second assignment source has duplicate folders with the same name; review is needed."
+        sources = [by_name[configured_name][0]]
+        if by_name.get(other_name):
+            sources.append(by_name[other_name][0])
+        else:
+            # Keep assignments readable when a configured source is the only
+            # accessible sibling, but make the missing source visible.
+            missing_source = True
+        for source in sources:
+            classes = [f for f in google.folder_children(token, source["id"])
+                       if f.get("mimeType") == google.FOLDER and norm(f["name"]) == norm(class_name)]
+            if len(classes) != 1:
+                return roots, "No single '%s' folder in %s, so assignment discovery is incomplete." % (
+                    class_name, source.get("name", "a submission source"))
+            children = [f for f in google.folder_children(token, classes[0]["id"])
+                        if f.get("mimeType") == google.FOLDER]
+            for f in children:
+                if f["name"] in wanted or (norm(f["name"]) not in section_names and ours(f["name"])):
                     roots[f["id"]] = f["name"]
-        # A Form's upload folder may also sit inside another week's folder.
-        inside = {classes[0]["id"]} | {f["id"] for f in children}
-        for name in wanted - set(roots.values()):
-            for f in google.folders_named(token, name):
-                if set(f.get("parents") or []) & inside:
-                    roots[f["id"]] = f["name"]
+            for section in [f for f in children if norm(f["name"]) in section_names]:
+                for f in google.folder_children(token, section["id"]):
+                    if f.get("mimeType") == google.FOLDER and (
+                            ours(f["name"]) or _lesson_folder_title(f["name"]) in wanted_titles):
+                        roots[f["id"]] = f["name"]
+            # A Form's upload folder may also sit inside another week's folder.
+            inside = {classes[0]["id"]} | {f["id"] for f in children}
+            for name in wanted - set(roots.values()):
+                for f in google.folders_named(token, name):
+                    if set(f.get("parents") or []) & inside:
+                        roots[f["id"]] = f["name"]
     except google.GoogleError as error:
         return roots, "The %s turn-in folder couldn't be read (%s)." % (class_name, error)
     if not roots:
         return roots, "No turn-in folder for %s %s was found in %s." % (class_name, week_label, class_name)
+    if 'missing_source' in locals() and missing_source:
+        return roots, "The second assignment source folder could not be found; results may be incomplete."
     return roots, None
 
 
@@ -774,7 +814,8 @@ def lesson_work(token, config, agenda, class_key, week_label):
     outer_ids = {p for info in holders.values() if info.get("name", "").endswith("(File responses)")
                  for p in info.get("parents") or []} - set(holders)
     outer = {fid: info for fid, info in _metadata(token, outer_ids).items()
-             if info.get("name", "").endswith("(File responses)")}
+             if info.get("name", "").endswith("(File responses)")
+             or norm(info.get("name", "")) == "turnitingoogleforms"}
     upload_folders = {**holders, **outer}
     response_folders = set(upload_folders)
 
@@ -786,7 +827,7 @@ def lesson_work(token, config, agenda, class_key, week_label):
         items, parents = list_tree(token, roots)
     except google.GoogleError as error:
         items, parents = [], {}
-        folder_note = "The turn-in folders couldn't be read (%s), so only Form uploads were read." % error
+        folder_note = "One or both assignment folders couldn't be read (%s); folder discovery may be incomplete." % error
     for fid, info in list(known.items()) + list(upload_folders.items()):
         if fid not in parents and info.get("parents"):
             parents[fid] = info["parents"][0]
