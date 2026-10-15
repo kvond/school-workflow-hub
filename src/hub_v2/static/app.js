@@ -1230,6 +1230,8 @@ async function loadToday(force = false) {
   invalidateReviewPanel(visibleReviewPanels.today);
   invalidateReviewPanel(visibleReviewPanels.routine);
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
+  $('today-next-agenda').replaceChildren();
+  $('lesson-readiness-body').replaceChildren(el('p', {class: 'muted', text: 'Checking embedded codes in current and upcoming lessons…'}));
   if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
     const packet = cockpit.feedbackData.daily_packet;
     cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet, checking: true};
@@ -1252,6 +1254,7 @@ async function loadToday(force = false) {
     ]);
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
+    renderLessonReadiness(audits);
     const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
     const nextAgenda = renderNextLessons(audits, null, undefined, day.week?.label);
     visibleReviewPanels.today = currentSourceReviewPanel(true, {teacherActionsOnly: true, onSummary: summary => {
@@ -1261,38 +1264,33 @@ async function loadToday(force = false) {
       el('div', {class: 'cockpit-grid'},
         renderMorningCockpit(report, routineData),
         renderNeedsYou(report)),
-      visibleReviewPanels.today,
-      nextAgenda);
+      visibleReviewPanels.today);
+    $('today-next-agenda').replaceChildren(nextAgenda);
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
     setStatus('today-status', error.message, true);
     $('today-body').replaceChildren();
+    $('lesson-readiness-body').replaceChildren(note('Deck readiness could not be checked: ' + error.message));
   }
 }
 
-async function loadLessonReadiness(force = false) {
+function renderLessonReadiness(audits) {
   const box = $('lesson-readiness-body');
   if (!box) return;
-  box.replaceChildren(el('p', {class: 'muted', text: 'Checking embedded codes in current and upcoming lessons…'}));
-  try {
-    const audits = await loadAudits(force);
-    const rows = allReleaseRows(audits);
-    if (!rows.length) {
-      box.replaceChildren(note('No current/upcoming lesson code check is available yet.', 'info'));
-      return;
-    }
-    box.replaceChildren(
-      el('p', {class: 'muted', text: 'Linked lesson’s embedded codes; submitted copies are verified before grading.'}),
-      el('div', {class: 'release-row'}, ...rows.map(row =>
-        el('div', {class: 'release-item'},
-          el('span', {text: `${row.className} · ${row.week}`}),
-          lessonReviewBadge(row),
-          renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
-          renderAgendaSourceDiscrepancy(row)))));
-  } catch (error) {
-    box.replaceChildren(note('Deck readiness could not be checked: ' + error.message));
+  const rows = allReleaseRows(audits);
+  if (!rows.length) {
+    box.replaceChildren(note('No current/upcoming lesson code check is available yet.', 'info'));
+    return;
   }
+  box.replaceChildren(
+    el('p', {class: 'muted', text: 'Linked lesson’s embedded codes; submitted copies are verified before grading.'}),
+    el('div', {class: 'release-row'}, ...rows.map(row =>
+      el('div', {class: 'release-item'},
+        el('span', {text: `${row.className} · ${row.week}`}),
+        lessonReviewBadge(row),
+        renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
+        renderAgendaSourceDiscrepancy(row)))));
 }
 
 // ---------- Lesson plans ----------
@@ -3087,17 +3085,14 @@ function showTab() {
   if (current === 'today') loadToday();
   else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
   else if (current === 'routine') loadRoutine();
-  else {
-    loadLessonReadiness();
-    refreshVisiblePlans();
-  }
+  else refreshVisiblePlans();
 }
 
 fillSelect($('work-class'), CLASSES, work.cls);
 $('prev-week').addEventListener('click', () => loadPlans(addDays(plans.date, -7)));
 $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7)));
 $('today').addEventListener('click', () => loadPlans(todayISO()));
-$('reload-plans').addEventListener('click', () => { loadLessonReadiness(true); loadPlans(plans.date, true); });
+$('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
 $('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
