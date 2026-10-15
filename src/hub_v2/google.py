@@ -42,6 +42,11 @@ class GoogleError(Exception):
         self.reason = reason
 
 
+def read_timed_out(error):
+    """A typed read-only GET timeout from get_json, never inferred from message text."""
+    return isinstance(error, GoogleError) and error.status is None and error.reason == "read_timeout"
+
+
 class SignInRequired(Exception):
     pass
 
