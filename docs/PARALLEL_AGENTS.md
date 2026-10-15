@@ -33,8 +33,7 @@ the school day easier; tasks that don't are dropped.
 ## Definition of done (every PR)
 
 1. `scripts/check.sh` passes (Python unittest + Node UI tests).
-2. No new failing tests; the known baseline failure is listed in the check
-   output until its own task fixes it.
+2. No failing tests. `main` is green, so any failure is the PR's to fix.
 3. Only claimed files changed, or the PR explains the exception.
 4. No credentials, school URLs/IDs, student records or private inputs
    (`AGENTS.md` → Standing limits).
