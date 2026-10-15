@@ -1,0 +1,31 @@
+name: Checks
+
+# Authorized 2026-10-15 (docs/PARALLEL_AGENTS.md). Synthetic tests only:
+# read-only token, no secrets, no deployment, no schedule.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q -r requirements-testing.txt
+      - name: Run scripts/check.sh
+        run: PATH="$PWD/.venv/bin:$PATH" ./scripts/check.sh

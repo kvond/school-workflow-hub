@@ -6,13 +6,18 @@ agent; this document adds the working model only.
 
 ## Roles
 
-| Role | Who | Does | Does not |
-|---|---|---|---|
-| Owner | Katherine | States goals, approves task batches, merges to `main` | — |
-| Architect | Claude | Turns a goal into independent task issues, names files each may touch, sets acceptance checks and merge order | Routine implementation |
-| Worker | Codex (cloud) | Implements one task issue on its own branch, opens a draft PR | Touch files outside its task's claim without saying so in the PR |
-| Integration reviewer | Claude | Reviews the open PRs together for collisions, duplicated fixes and cross-component breakage; recommends merge order | Merge to `main` |
-| Hard debugging / reliability | Claude | Failures spanning several components; tests, checks and "done" definitions | Button-and-field changes |
+| Role | Who | Does |
+|---|---|---|
+| Owner | Katherine | States goals, approves task batches, merges to `main` |
+| Direction | ChatGPT (Slack) | Decides what is worth building, sets priorities, writes the backlog as task issues, and stops work that would not make the school day easier |
+| Workers | Codex (cloud) | Implements one task issue per branch, opens a draft PR, does routine review of ordinary PRs |
+| Engineering specialist | Claude Code | Hard debugging, failures that cross components (IC helper, Cloud Run, auth, mismatched records), architecture second opinions, and review where several PRs or systems interact |
+| Record | GitHub | Issues, branches, PRs, test results: the permanent code truth |
+| Command center | Slack #parallel-agents | Direction and history in plain language |
+
+Claude is called in for a specific problem, not kept running as another worker.
+Before a batch is dispatched, the question is whether each task actually makes
+the school day easier; tasks that don't are dropped.
 
 ## One task = one issue = one branch = one PR
 
@@ -37,16 +42,20 @@ agent; this document adds the working model only.
 
 ## Cycle
 
-1. Owner states a goal (Slack or chat).
-2. Architect posts a batch of task issues with claims, dependencies and merge
-   order, and summarizes it in #parallel-agents.
-3. Owner approves the batch; workers pick up issues.
-4. When the batch's PRs are open, the integration reviewer reviews them
-   together and posts a merge order.
-5. Owner merges.
+1. Owner states a goal in #parallel-agents.
+2. ChatGPT decides whether it is worth doing and writes task issues (Agent task
+   template) with claims, dependencies and merge order.
+3. Owner approves; Codex workers pick up issues and open draft PRs.
+4. The `Checks` workflow runs `scripts/check.sh` on every PR.
+5. Codex reviews ordinary PRs. Claude reviews when PRs interact or touch IC,
+   grades, rosters, browser runs or deployment.
+6. Owner merges.
 
 ## What stays outside this model
 
-Cloud deployment, Actions workflows, enable variables, billing and schedules
-belong to the separate deployment owner named in `AGENTS.md`. School writes and
+Cloud deployment, enable variables, billing and schedules belong to the
+separate deployment owner named in `AGENTS.md`. On 2026-10-15 the owner
+authorized one Actions change: the `Checks` workflow, which runs synthetic
+tests on pull requests and pushes to `main` with read-only permissions, no
+secrets and no deployment. School writes and
 browser runs keep their existing authorizations; no task here widens them.
