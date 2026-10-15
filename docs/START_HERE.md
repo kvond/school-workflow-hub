@@ -64,6 +64,19 @@ it must not create student-identity questions from a provider failure. The exact
 teacher-controlled Form title determines the Photosynthesis exception when a
 weekly Agenda row contains several lesson topics; student filenames never do.
 
+A teacher-account Form respondent does not prove that the uploaded artifact is
+teacher material: a teacher may submit on behalf of a student absent from a stale
+roster. These rows retain the existing identity/source checks until exact material
+evidence is verified. Teacher-upload informational rendering remains compatible
+with verified records, but the reader never excludes work on email alone.
+
+A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
+review discovery or the Today feedback catalog is repeated once, only within the
+first 20 seconds of the request. A timeout that remains returns `read_failure`
+(review) or `source_check.status == "timed_out"` (feedback): Today shows "Check
+timed out — retry" with a teacher-pressed Retry, does not count the scope as
+read, and draws no missing-work, identity, new-feedback or printed conclusion.
+
 Current/upcoming Agenda readiness checks each registered Turn-in Form against
 its own exact teacher-source collection and current folder metadata. Separate
 Forms do not borrow decks, native-read access or a teacher hold from one another.

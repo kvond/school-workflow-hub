@@ -7,6 +7,7 @@ remain separate. A durable call reservation prevents duplicate AI billing.
 """
 import json
 import re
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -949,18 +950,53 @@ def _select_daily_sources(available, day):
     return selected
 
 
+# The source catalog is read-only, so a typed read timeout may repeat it once,
+# and only early enough to finish inside the 60-second request limit.
+SOURCE_READ_ATTEMPTS = 2
+SOURCE_RETRY_BUDGET_SECONDS = 20
+
+
+def _read_feedback_sources(token, config):
+    """(catalog, None) or (None, (error, attempts)) after a bounded timeout repeat."""
+    started = time.monotonic()
+    for attempt in range(1, SOURCE_READ_ATTEMPTS + 1):
+        try:
+            return _feedback_files(token, config), None
+        except Held as error:
+            return None, (error, attempt)
+        except google.GoogleError as error:
+            if (not google.read_timed_out(error) or attempt == SOURCE_READ_ATTEMPTS
+                    or time.monotonic() - started >= SOURCE_RETRY_BUDGET_SECONDS):
+                return None, (error, attempt)
+
+
 def today_files(token, config, *, date_et=None):
     """The latest feedback date and its durable daily report, without relabelling old sources."""
     from . import daily_feedback_packet
     day = daily_feedback_packet.date_value(date_et or datetime.now(ZoneInfo('America/New_York')).date().isoformat())
-    try:
-        available = _feedback_files(token, config)
-    except (Held, google.GoogleError) as error:
-        previous = daily_feedback_packet.status(token, config)
-        if previous.get('status') != 'ready':
-            raise
-        return {'configured': True, 'date': previous['date'], 'requested_date': day,
-                'files': [], 'problem': None, 'source_problem': str(error), 'daily_packet': previous}
+    available, failure = _read_feedback_sources(token, config)
+    if failure:
+        error, attempts = failure
+        if not google.read_timed_out(error):
+            previous = daily_feedback_packet.status(token, config)
+            if previous.get('status') != 'ready':
+                raise error
+            return {'configured': True, 'date': previous['date'], 'requested_date': day,
+                    'files': [], 'problem': None, 'source_problem': str(error), 'daily_packet': previous}
+        # A timed-out read says nothing about new, pending or printed feedback.
+        # Keep any saved document reprintable and ask for a retry instead.
+        try:
+            previous = daily_feedback_packet.status(token, config)
+        except (Held, daily_feedback_packet.Held, google.GoogleError, StoreUnavailable):
+            previous = None
+        ready = bool(previous and previous.get('status') == 'ready')
+        return {'configured': True, 'date': previous['date'] if ready else day, 'requested_date': day,
+                'files': [], 'problem': None, 'current_sources_verified': False,
+                'source_check': {'status': 'timed_out', 'reason': 'read_timeout', 'attempts': attempts, 'retry': True},
+                'source_problem': ('The feedback source check timed out (%d attempt%s). Retry it; new, pending and '
+                                   'printed feedback are not known until it finishes.'
+                                   % (attempts, '' if attempts == 1 else 's')),
+                'daily_packet': previous}
     if not available['configured']:
         return {**available, 'date': day}
     files = [item for item in available['files'] if item.get('feedback_day', item['created_day']) <= day]
@@ -1018,6 +1054,8 @@ def print_today(token, config, file_ids, *, date_et=None):
     current = today_files(token, config, date_et=date_et)
     if not current['configured']:
         raise Held(current['problem'])
+    if (current.get('source_check') or {}).get('status') == 'timed_out':
+        raise Held('The feedback source check timed out. Retry it on Today before printing; nothing was printed.')
     by_id = {item['id']: item for item in current['files'] + current.get('pending_files', [])}
     if any(file_id not in by_id for file_id in file_ids):
         raise Held('The feedback list changed. Refresh Today before printing.')

@@ -992,6 +992,12 @@ def shared_folder_reviews(forms, roots, parents):
     return sorted(reviews, key=lambda item: item["folder_name"])
 
 
+def _unreadable(error):
+    if error.status in (403, 404):
+        return {"problem": "The dashboard can't open this file, but you can."}
+    return {"problem": str(error), **({"read_timeout": True} if google.read_timed_out(error) else {})}
+
+
 def describe_files(token, submissions_list, known):
     """Fill in each file's Drive name, type, trash state and link, reusing
     metadata already read from the folder listing."""
@@ -1002,9 +1008,7 @@ def describe_files(token, submissions_list, known):
         try:
             return google.drive_file(token, file_id)
         except google.GoogleError as error:
-            if error.status in (403, 404):
-                return {"problem": "The dashboard can't open this file, but you can."}
-            return {"problem": str(error)}
+            return _unreadable(error)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         details = {**known, **dict(zip(missing, pool.map(fetch, missing)))}
@@ -1015,6 +1019,10 @@ def describe_files(token, submissions_list, known):
         f["mime"] = info.get("mimeType") or f["mime"]
         f["trashed"] = bool(info.get("trashed"))
         f["problem"] = info.get("problem")
+        if info.get("read_timeout"):
+            f["read_timeout"] = True  # a transient read, never a missing or unavailable original
+        else:
+            f.pop("read_timeout", None)
         f["url"] = ("https://docs.google.com/presentation/d/%s/edit" % f["id"]
                     if f["mime"] == "application/vnd.google-apps.presentation"
                     else "https://drive.google.com/open?id=%s" % f["id"])
@@ -1042,9 +1050,7 @@ def _metadata(token, file_ids):
         try:
             return google.drive_file(token, file_id)
         except google.GoogleError as error:
-            if error.status in (403, 404):
-                return {"problem": "The dashboard can't open this file, but you can."}
-            return {"problem": str(error)}
+            return _unreadable(error)
     ids = sorted(set(file_ids))
     with ThreadPoolExecutor(max_workers=8) as pool:
         return dict(zip(ids, pool.map(fetch, ids)))
@@ -1060,6 +1066,7 @@ def read_form(token, form, account):
         item["found"] = submissions(google.form_responses(token, form["form_id"]), form["form_id"])
     except google.GoogleError as error:
         item["problem"] = form_problem(error, account)
+        item["read_timeout"] = google.read_timed_out(error)
         return item
     item["responses"] = len(item["found"])
     try:
@@ -1330,6 +1337,9 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     students = by_class.get(class_key, [])
     domains = {d.strip().lower() for d in config.get("HUB_SCHOOL_EMAIL_DOMAINS", "").split(",") if d.strip()}
     prefix = config.get("HUB_EMAIL_USERNAME_PREFIX", "s.")
+    # Typed read-only GET timeouts, so a review can say "timed out, retry"
+    # instead of treating a slow provider as missing or unavailable work.
+    read_timeouts = set()
     account = google.service_account(config)
     class_name = agenda.classes[class_key]["name"]
     lessons = agenda.lessons(class_key, week_label)
@@ -1400,6 +1410,8 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
             folder_note = None
         except google.GoogleError as error:
             folder_note = "The linked Forms' declared upload folders couldn't be verified (%s). Only readable Form uploads were read." % error
+            if google.read_timed_out(error):
+                read_timeouts.add("declared_upload_folders")
     try:
         items, parents = list_tree(token, roots, require_complete=bool(declared))
         if declared:
@@ -1416,6 +1428,8 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     except google.GoogleError as error:
         items, parents = [], {}
         folder_note = "The turn-in folders couldn't be read (%s), so only Form uploads were read." % error
+        if google.read_timed_out(error):
+            read_timeouts.add("turn_in_folders")
         if declared:
             roots, declared, declared_members = {}, {}, {}
     for fid, info in list(known.items()) + list(upload_folders.items()):
@@ -1639,6 +1653,8 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                    set(_ancestors(fid, parents)) & set(roots))
                    and not (str(name).startswith("_") and fid not in holding)]
     check = None if review_only else roster_check(token, config, by_class, class_key, result, other_rows, domains, prefix)
+    if any(f.get("read_timeout") for f in forms):
+        read_timeouts.add("form_responses")
     folder_reviews = shared_folder_reviews(forms, roots, parents)
     # Read-only grading context is separate from discovery/filing eligibility.
     # It also covers an empty Form, where no score_file call could block zeros.
@@ -1660,4 +1676,5 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
             "shared_form": {"configured": bool(config.get("HUB_TURNIN_FORM_ID")), "submissions": len(shared),
                             "problem": shared_note},
             "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students),
-            "problems": problems}
+            "problems": problems,
+            **({"read_timeouts": sorted(read_timeouts)} if read_timeouts else {})}

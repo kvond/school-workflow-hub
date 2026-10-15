@@ -31,7 +31,7 @@ const data = overrides => ({date: '2032-01-20', requested_date: '2032-01-21', fi
 
 test('recorded exact versions are compact historical reprints, unknown delivery remains visible pending', () => {
   const ui = renderer(), known = ui.renderTodayFeedback(data());
-  assert.match(known.textContent, /No pending printing for these exact report versions/);
+  assert.match(known.textContent, /Saved feedback dated 2032-01-20 is recorded Printed/);
   assert.match(known.textContent, /recorded Printed.*1 are recorded Handed/);
   assert.equal(nodes(known).filter(n => n.tagName === 'button')[0].textContent, 'Reprint saved feedback — 2032-01-20');
   assert.ok(nodes(known).some(n => n.tagName === 'a' && n.href.includes('/daily/pdf')));

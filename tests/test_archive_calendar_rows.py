@@ -55,8 +55,9 @@ class CalendarFilingTests(unittest.TestCase):
 
     def test_duplicate_week_still_scans_real_form_and_files_work_beside_calendar_row(self):
         source, data, calls = self.scan("Wk 01")
-        # The existing menu's first-row forms count must not skip the week.
-        self.assertEqual(source.week_options("anatomy")[0]["forms"], 0)
+        # Same-week rows now contribute to one menu count; the calendar row
+        # must not hide the actual Form or skip its archive discovery.
+        self.assertEqual(source.week_options("anatomy")[0]["forms"], 1)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0].args[1], "FICTIONALFORMID1234567890abc")
         timing, lesson = data["lessons"]

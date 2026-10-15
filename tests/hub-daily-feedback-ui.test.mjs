@@ -176,7 +176,7 @@ test('a source-read failure stays visible above collapsed historical feedback', 
   const problem = 'Fictional course source access needs review.';
   const rendered = ui.renderTodayFeedback({date: DAY, requested_date: '2026-10-09', files: [],
     daily_packet: packet, source_problem: problem});
-  assert.match(rendered.textContent, /No new feedback confirmed for 2026-10-09/);
+  assert.match(rendered.textContent, /Current feedback for 2026-10-09 could not be checked/);
   const visible = rendered.children.find(node => node instanceof Element && node.tagName !== 'details' && node.textContent.includes(problem));
   assert.ok(visible, 'The source failure must be visible without opening history.');
   const history = rendered.children.find(node => node instanceof Element && node.tagName === 'details');
