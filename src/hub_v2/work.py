@@ -137,21 +137,6 @@ def identify(submission, students, domains, prefix):
     return None, None
 
 
-def teacher_emails(config):
-    """The teacher's own sign-in accounts, from the existing HUB_ALLOWED_EMAILS."""
-    return frozenset(e.strip().lower() for e in str(config.get("HUB_ALLOWED_EMAILS", "") or "").split(",")
-                     if "@" in e)
-
-
-def teacher_submission(submission, students, domains, prefix, teachers):
-    """A Form upload whose authenticated respondent is the teacher's own account
-    and that names no roster student (by email, file name or typed name). It is
-    teacher material, not a student submission; folder files carry no identity."""
-    return bool(teachers and submission.get("source") == "form"
-                and str(submission.get("email") or "").strip().lower() in teachers
-                and not identify(submission, students, domains, prefix)[0])
-
-
 def student_key(student):
     return (student["section"], roster.plain(student["last"]), roster.plain(student["first"]))
 
@@ -161,13 +146,11 @@ def _usable(submission):
         not f.get("trashed") and not f.get("other_week") for f in submission["files"])
 
 
-def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missing=True, cutoff=None, teachers=()):
+def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missing=True, cutoff=None):
     """([one row per student], [roster students with nothing yet]).
 
     With a cutoff, work turned in after it is late: a student's current work is
-    their latest on-time version, and a row is late only when all of it is.
-    An unmatched row from the teacher's own Form account (teachers) is marked
-    teacher_upload so the caller can keep it apart from student work."""
+    their latest on-time version, and a row is late only when all of it is."""
     for submission in found:
         moment = when(submission["submitted_at"])
         submission["late"] = bool(cutoff and moment and moment > cutoff)
@@ -200,10 +183,6 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
                                   "email": s['email'], "matched_by": identify(s, students, domains, prefix)[1],
                                   "late": s["late"]}
                                  for s in sorted(items[1:], key=lambda s: s["submitted_at"], reverse=True)]})
-        # Unmatched rows are grouped by respondent email, so every version here
-        # shares the teacher account; the key appears only on teacher rows.
-        if not student and all(teacher_submission(s, students, domains, prefix, teachers) for s in items):
-            rows[-1]["teacher_upload"] = True
     rows.sort(key=lambda r: (not r["matched"], r["section"], roster.plain(r["last"]),
                              roster.plain(r["first"]), r["email"], r["files"][0]["name"] if r["files"] else ""))
     if not with_missing:
@@ -1358,7 +1337,6 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     students = by_class.get(class_key, [])
     domains = {d.strip().lower() for d in config.get("HUB_SCHOOL_EMAIL_DOMAINS", "").split(",") if d.strip()}
     prefix = config.get("HUB_EMAIL_USERNAME_PREFIX", "s.")
-    teachers = teacher_emails(config)
     # Typed read-only GET timeouts, so a review can say "timed out, retry"
     # instead of treating a slow provider as missing or unavailable work.
     read_timeouts = set()
@@ -1614,11 +1592,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     earliest = min(opened, key=lambda w: w["at"]) if opened else None
     describe_files(token, other, known)
     other_rows, _ = group(other, students, domains, prefix, numbers, with_missing=False,
-                          cutoff=earliest["at"] if earliest else None, teachers=teachers)
-    # The teacher's own uploads stay listed as teacher material, never as an
-    # unsorted or unmatched student file. Nothing is moved, renamed or dropped.
-    teacher_other = [r for r in other_rows if r.get("teacher_upload")]
-    other_rows = [r for r in other_rows if not r.get("teacher_upload")]
+                          cutoff=earliest["at"] if earliest else None)
     unsorted = {(r["section"], roster.plain(r["last"]), roster.plain(r["first"])) for r in other_rows if r["matched"]}
     result, index = [], 0
     for lesson in lessons:
@@ -1627,9 +1601,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                                   windows[index:index + len(lesson["forms"])]):
             describe_files(token, form["found"], known)
             rows, missing = group(form["found"], students, domains, prefix, numbers,
-                                  cutoff=open_for["at"] if open_for else None, teachers=teachers)
-            teacher_rows = [r for r in rows if r.get("teacher_upload")]
-            rows = [r for r in rows if not r.get("teacher_upload")]
+                                  cutoff=open_for["at"] if open_for else None)
             for m in missing:
                 m["unsorted"] = (m["section"], roster.plain(m["last"]), roster.plain(m["first"])) in unsorted
             began = school_day(open_for["from"]) if open_for else None
@@ -1637,20 +1609,9 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
             moved = form.get("moved_out", []) + form.get("held_elsewhere", [])
             describe_files(token, [m["submission"] for m in moved], known)
             elsewhere = []
-            current_forms = {f["form_id"] for f in forms if f["form_id"]}
             for m in moved:
                 student, _ = identify(m["submission"], students, domains, prefix)
                 first = m["submission"]["files"][0] if m["submission"]["files"] else {}
-                if teacher_submission(m["submission"], students, domains, prefix, teachers):
-                    # A current destination lists it there; otherwise keep it visible here.
-                    if m.get("assignment_form_id") not in current_forms:
-                        sub = m["submission"]
-                        teacher_rows.append({"matched": False, "teacher_upload": True, "last": "", "first": "",
-                                             "section": "", "matched_by": None, "email": sub["email"], "typed": sub["typed"],
-                                             "source": sub["source"], "submitted_at": sub["submitted_at"],
-                                             "files": sub["files"], "late": bool(sub.get("late")), "earlier": [],
-                                             "to": m["to"]})
-                    continue
                 elsewhere.append({"who": "%s, %s" % (student["last"], student["first"]) if student else
                                   (m["submission"]["email"] or first.get("name", "")),
                                   "section": student["section"] if student else "", "to": m["to"],
@@ -1674,8 +1635,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                               "window": {"opened": open_for["opened"], "label": open_for["label"],
                                          "from": open_for["from"].strftime("%Y-%m-%dT%H:%M:%SZ"),
                                          "at": open_for["at"].strftime("%Y-%m-%dT%H:%M:%SZ")}
-                              if open_for else None,
-                              **({"teacher_uploads": teacher_rows} if teacher_rows else {})})
+                              if open_for else None})
         index += len(lesson["forms"])
         result.append({"row": lesson["row"], "topic": lesson["topic"], "edit_url": lesson["edit_url"],
                        "calendar_only": _calendar_only(lesson),
@@ -1717,5 +1677,4 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                             "problem": shared_note},
             "sections": list(roster.SECTIONS[class_key]), "roster_size": len(students),
             "problems": problems,
-            **({"teacher_uploads": teacher_other} if teacher_other else {}),
             **({"read_timeouts": sorted(read_timeouts)} if read_timeouts else {})}

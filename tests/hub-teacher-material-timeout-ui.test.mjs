@@ -214,3 +214,16 @@ test('Student work lists teacher uploads as teacher material with their links', 
   assert.ok(nodes(rendered).some(node => node.tagName === 'a' && node.href === 'https://drive.google.com/open?id=FICTIONALTEACHER1'));
   assert.doesNotMatch(rendered.textContent, /Not on roster|not matched to the roster/);
 });
+
+for (const failure of [{checking: true}, {source_problem: 'Permission read unavailable'},
+  {source_problem: 'Timeout', source_check: {status: 'timed_out'}}]) {
+  test('current-source availability precedes an old Printed packet: ' + JSON.stringify(failure), () => {
+    const {today} = bootToday(() => null);
+    const delivery = {status: 'verified', pending_file_ids: [], handed_file_ids: ['old']};
+    const rendered = today.renderTodayFeedback({date: DAY, requested_date: '2026-10-15', files: [],
+      daily_packet: {...packet, delivery}, ...failure});
+    assert.doesNotMatch(rendered.textContent, /No pending printing|No new feedback|No print-ready/);
+    assert.match(rendered.textContent, /Checking current feedback|could not be checked|source check timed out/);
+    assert.match(rendered.textContent, /Open saved daily feedback/);
+  });
+}

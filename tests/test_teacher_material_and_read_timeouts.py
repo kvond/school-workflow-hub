@@ -1,7 +1,6 @@
 """Teacher's own Form uploads and timed-out source reads, on fictional data only.
 
-A teacher-account upload is teacher material, never a missing, unmatched or
-unidentified student. A typed provider read timeout is repeated once while the
+A teacher-account upload preserves the normal student identity/source checks. A typed provider read timeout is repeated once while the
 request has time, then reported as "timed out, retry", never as missing work.
 No Google call, model call, grade write or Drive move is made.
 """
@@ -33,92 +32,44 @@ def teacher_row(**extra):
             **extra}
 
 
-class TeacherUploadTests(unittest.TestCase):
-    def setUp(self):
-        self.students, _ = roster.parse_tab(ROSTER, 'forensics', 'A2 Forensics')
-        self.teachers = work.teacher_emails(CONFIG)
+class TeacherOriginSafetyTests(unittest.TestCase):
+    def test_teacher_upload_for_a_new_or_ambiguous_student_keeps_identity_checks(self):
+        students, _ = roster.parse_tab(ROSTER, 'forensics', 'A2 Forensics')
+        for typed in [('New Student Not Yet Mirrored',), ('Ana',), ('kvd',), ()]:
+            submitted = work.submissions([response(TEACHER, '2026-10-13T15:38:00Z',
+                ('FICTIONAL_UPLOAD', 'Example deck'), typed=typed)])
+            rows, _ = work.group(submitted, students, {'school.example'})
+            self.assertEqual(len(rows), 1)
+            self.assertFalse(rows[0]['matched'])
+            self.assertFalse(rows[0].get('teacher_upload'))
+            self.assertEqual(rows[0]['files'][0]['id'], 'FICTIONAL_UPLOAD')
 
-    def test_teacher_identity_reuses_the_existing_sign_in_allowlist(self):
-        self.assertEqual(self.teachers, {TEACHER, 'home.teacher@fictional.example'})
-        self.assertEqual(work.teacher_emails({}), frozenset())
+    def test_a_teacher_submission_for_an_identified_student_is_preserved(self):
+        students, _ = roster.parse_tab(ROSTER, 'forensics', 'A2 Forensics')
+        submitted = work.submissions([response(TEACHER, '2026-10-13T15:38:00Z',
+            ('FICTIONAL_UPLOAD', 'Deck'), typed=('Ana Rivera',))])
+        rows, _ = work.group(submitted, students, {'school.example'})
+        self.assertTrue(rows[0]['matched'])
+        self.assertEqual(rows[0]['last'], 'Rivera')
+        self.assertFalse(rows[0].get('teacher_upload'))
 
-    def test_only_an_unmatched_form_upload_from_the_teacher_account_is_teacher_material(self):
-        found_work = work.submissions([
-            response(TEACHER, '2026-10-13T15:38:00Z', ('TEACHER1', 'Example deck - Teacher'), typed=('kvd',)),
-            response(TEACHER, '2026-10-13T15:40:00Z', ('TEACHER2', 'Example deck v2 - Teacher')),
-            # Submitted for a named student: still that student's work.
-            response(TEACHER, '2026-10-13T15:45:00Z', ('FORANA', 'Deck'), typed=('Ana Rivera',)),
-            response('s.ana.rivera@school.example', '2026-10-13T16:00:00Z', ('ANA', 'Deck - Ana Rivera')),
-            response('visitor@school.example', '2026-10-13T16:05:00Z', ('VISITOR', 'Deck')),
-        ])
-        found_work.append(work.folder_submission({'id': 'LOOSE', 'name': 'Deck - Teacher', 'createdTime': '2026-10-13T12:00:00Z'}))
-        rows, missing = work.group(found_work, self.students, {'school.example'}, teachers=self.teachers)
-        teacher = [r for r in rows if r.get('teacher_upload')]
-        self.assertEqual(len(teacher), 1)
-        self.assertEqual(teacher[0]['files'][0]['id'], 'TEACHER2')
-        self.assertEqual(teacher[0]['earlier'][0]['files'][0]['id'], 'TEACHER1')
-        ana = next(r for r in rows if r['last'] == 'Rivera')
-        self.assertEqual({ana['files'][0]['id']} | {f['id'] for e in ana['earlier'] for f in e['files']}, {'ANA', 'FORANA'})
-        # A real unknown student and an unidentified folder file stay visible as unmatched work.
-        self.assertEqual({r['files'][0]['id'] for r in rows if not r['matched'] and not r.get('teacher_upload')},
-                         {'VISITOR', 'LOOSE'})
-        self.assertNotIn('Rivera', [m['last'] for m in missing])
-        # Without a configured teacher identity nothing changes.
-        plain, _ = work.group(deepcopy(found_work), self.students, {'school.example'})
-        self.assertFalse(any('teacher_upload' in r for r in plain))
 
-    def lesson(self, responses):
-        with patch.object(work.roster, 'load', return_value=({'forensics': self.students}, [])), \
-                patch.object(google, 'form_responses', side_effect=lambda t, form_id: responses
-                             if form_id == 'FICTIONALFORMID1234567890abc' else []), \
+    def test_allowed_teacher_email_does_not_remove_an_unknown_learner_from_discovery(self):
+        students, _ = roster.parse_tab(ROSTER, 'forensics', 'A2 Forensics')
+        uploaded = response(TEACHER, '2026-09-22T14:00:00Z', ('NEW_LEARNER', 'Deck'),
+                            typed=('New Student Not Yet Mirrored',))
+        with patch.object(work.roster, 'load', return_value=({'forensics': students}, [])), \
+                patch.object(google, 'form_responses', side_effect=lambda t, fid: [uploaded]
+                             if fid == 'FICTIONALFORMID1234567890abc' else []), \
                 patch.object(google, 'drive_file', return_value={'name': 'Deck', 'trashed': False, 'mimeType': SLIDES}), \
                 patch.object(work, '_now', return_value=datetime(2026, 9, 24, 12, tzinfo=timezone.utc)):
-            return work.lesson_work('token', CONFIG, fixture(), 'forensics', 'Wk 04')
-
-    def test_lesson_work_lists_teacher_material_apart_from_students_counts_and_roster_flags(self):
-        result = self.lesson([response(TEACHER, '2026-09-22T14:00:00Z', ('TEACHER1', 'Example - Teacher'), typed=('kvd',)),
-                              response('visitor@school.example', '2026-09-22T14:05:00Z', ('VISITOR', 'Deck')),
-                              response('s.ana.rivera@school.example', '2026-09-22T14:10:00Z', ('ANA', 'Deck - Ana Rivera'))])
+            result = work.lesson_work('token', CONFIG, fixture(), 'forensics', 'Wk 04')
         form = result['lessons'][0]['forms'][0]
-        self.assertEqual([r['files'][0]['id'] for r in form['teacher_uploads']], ['TEACHER1'])
-        listed = form['students'] + form['late']
-        self.assertNotIn('TEACHER1', [f['id'] for r in listed for f in r['files']])
-        self.assertIn('VISITOR', [f['id'] for r in listed if not r['matched'] for f in r['files']])
-        self.assertEqual([(f['kind'], f['who']) for f in result['roster_check']['flags']],
-                         [('no_roster', 'visitor@school.example')])
-        self.assertNotIn(TEACHER, str(result['roster_check']))
-        self.assertEqual(result['other_files'], [])
-        # A form without teacher uploads keeps its original shape.
-        self.assertNotIn('teacher_uploads', result['lessons'][0]['forms'][1])
-        self.assertNotIn('teacher_uploads', result)
-
-    def test_teacher_only_upload_waits_for_students_and_never_asks_for_a_student_identity(self):
-        source = found([])
-        source['lessons'][0]['forms'][0]['teacher_uploads'] = [teacher_row()]
-        result = rc.build(scope(), source)
-        self.assertEqual((result['status'], result['notices'], result['teacher_actionable']), ('waiting', [], False))
-        self.assertEqual(result['intake_status'], 'waiting')
-        self.assertEqual(result['source_selection']['submitted_originals'], 0)
-        material = result['teacher_material']
-        self.assertEqual(len(material), 1)
-        self.assertEqual((material[0]['kind'], material[0]['affected_scope'], material[0]['issue_kind']),
-                         ('teacher_material', 'lesson', 'teacher_material'))
-        self.assertEqual(material[0]['student'], {'first': '', 'last': '', 'section': '', 'verified': False})
-        self.assertNotIn('next_action', material[0])
-        self.assertEqual(material[0]['sources'][0]['file_id'], 'FICTIONAL_TEACHER_EXAMPLE_1')
-        self.assertNotIn('Confirm the student', str(result))
-        self.assertNotIn(TEACHER, str(result))
-
-    def test_real_unknown_student_upload_still_needs_review_beside_teacher_material(self):
-        unknown = row(matched=False, email='visitor@school.example', first='', last='', section='')
-        source = found([unknown])
-        source['teacher_uploads'] = [teacher_row()]
-        result = rc.build(scope(), source)
-        self.assertEqual(result['status'], 'review')
-        self.assertTrue(result['teacher_actionable'])
-        self.assertEqual([n['issue_kind'] for n in result['notices']], ['identity_unverified'])
-        self.assertIn('student’s name and class section', result['notices'][0]['next_action'])
-        self.assertEqual(len(result['teacher_material']), 1)
+        self.assertEqual([r['files'][0]['id'] for r in form['students']], ['NEW_LEARNER'])
+        self.assertFalse(form['students'][0]['matched'])
+        self.assertNotIn('teacher_uploads', form)
+        self.assertEqual(result['roster_check']['flags'][0]['kind'], 'no_roster')
+        self.assertIsNone(form['window'])
 
 
 class ReviewTimeoutTests(unittest.TestCase):

@@ -64,13 +64,11 @@ it must not create student-identity questions from a provider failure. The exact
 teacher-controlled Form title determines the Photosynthesis exception when a
 weekly Agenda row contains several lesson topics; student filenames never do.
 
-A Form upload whose authenticated respondent is one of the teacher's own
-`HUB_ALLOWED_EMAILS` accounts, and that names no roster student by email, file
-name or typed name, is teacher material. It is listed with its links as
-`teacher_uploads` (Student work) and `teacher_material` (review context), never
-as a student, an unmatched or unsorted file, a roster flag, a filing hold or a
-missing-work input. Folder files carry no respondent identity and are unchanged;
-nothing is moved, renamed or deleted.
+A teacher-account Form respondent does not prove that the uploaded artifact is
+teacher material: a teacher may submit on behalf of a student absent from a stale
+roster. These rows retain the existing identity/source checks until exact material
+evidence is verified. Teacher-upload informational rendering remains compatible
+with verified records, but the reader never excludes work on email alone.
 
 A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
 review discovery or the Today feedback catalog is repeated once, only within the
