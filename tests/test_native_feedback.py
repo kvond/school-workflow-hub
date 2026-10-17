@@ -33,6 +33,65 @@ def report():
 
 
 class NativeFeedbackTests(unittest.TestCase):
+    def test_course_question_prompt_uses_actual_revisions_and_exact_course_context(self):
+        self.model.stop()
+        for course, focus in [('anatomy', 'structure/function'), ('forensics', 'observation versus inference'), ('biology', None)]:
+            data = inputs(); data['scope']['class'] = course
+            with self.subTest(course=course), patch.object(fb.assessment_provider, '_call', return_value=('{}', {})) as provider:
+                fb._call(OPENAI_CONFIG, data)
+                policy, user = provider.call_args.args[1:3]
+                payload = json.loads(user)
+                self.assertEqual(payload['aspects'], data['aspects'])
+                self.assertEqual(payload['printed_lesson_reference'], data['reference']['text'])
+                if focus:
+                    self.assertIn(focus, policy)
+                    self.assertIn('actual supplied\nrevised answer', policy)
+                    self.assertIn('Do not invent a misconception', policy)
+                    self.assertEqual(payload['course_context']['class'], course)
+                    self.assertEqual(payload['course_context']['assignment'], data['assignment'])
+                else:
+                    self.assertEqual(policy, fb.POLICY + '\nCURRENT TEACHER POLICY:\n' + data['prompt'])
+                    self.assertNotIn('course_context', payload)
+
+    def test_new_course_question_policy_is_cached_without_another_call(self):
+        for course in ('anatomy', 'forensics'):
+            data = inputs(); data['scope']['class'] = course
+            draft = fb.generate(OPENAI_CONFIG, data)
+            value = fb.get_saved(OPENAI_CONFIG, draft['id']).value
+            self.assertEqual(value['question_policy_version'], fb.QUESTION_POLICY_VERSION)
+            self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], draft['id'])
+        self.assertEqual(self.call.call_count, 2)
+
+    def test_prior_course_policy_draft_and_uncertain_call_are_preserved(self):
+        data = inputs(); data['scope']['class'] = 'anatomy'
+        with patch.object(fb, '_policy', return_value=fb.POLICY):
+            old = fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], old['id'])
+        self.assertEqual(self.call.call_count, 1)
+
+        data['source']['sha256'] = 'c' * 64
+        with patch.object(fb, '_policy', return_value=fb.POLICY), \
+                patch.object(fb, '_call', side_effect=RuntimeError('interrupted')):
+            with self.assertRaises(fb.Held): fb.generate(OPENAI_CONFIG, data)
+        with self.assertRaisesRegex(fb.Held, 'No duplicate AI call'):
+            fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(self.call.call_count, 1)
+
+    def test_course_question_upgrade_retains_capture_bound_original_event(self):
+        from tests.test_source_repair_provenance import case
+        data, _, _ = case()
+        data['scope']['class'] = 'forensics'
+        with patch.object(fb, '_policy', return_value=fb.POLICY):
+            old = fb.generate(OPENAI_CONFIG, data)
+        again = fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(again['id'], old['id'])
+        self.assertTrue(again['cached'])
+        changed = deepcopy(data)
+        changed['source']['raw_sha256'] = 'f' * 64
+        with self.assertRaises(fb.Held):
+            fb.generate(OPENAI_CONFIG, changed)
+        self.assertEqual(self.call.call_count, 1)
+
     def test_learning_report_handoff_does_not_need_source_reads_and_rejects_external_links(self):
         with patch.object(google, 'service_token', side_effect=AssertionError('unnecessary source access')):
             self.assertEqual(app.api('api/learning-report', {}, {}), {'configured': False})
@@ -67,7 +126,6 @@ class NativeFeedbackTests(unittest.TestCase):
             self.assertEqual(saved['saved_at'], again['saved_at'])
             self.assertEqual(self.call.call_count, 1)
             value = fb.get_saved(OPENAI_CONFIG, saved['id']).value
-            self.assertNotIn('student_presentation_version', value)
             from pypdf import PdfReader
             pdf = PdfReader(io.BytesIO(feedback_pdf.render(value)))
             self.assertEqual(len(pdf.pages), 1)
@@ -114,43 +172,6 @@ class NativeFeedbackTests(unittest.TestCase):
         self.assertEqual(self.call.call_count, 1)
         self.assertEqual(self.port.read(['fictional-delivery-state']).documents['fictional-delivery-state'].value, delivery)
         delivery_write.assert_not_called()
-
-    def test_new_course_presentations_are_bound_and_filed_without_reassessment(self):
-        from hub_v2 import student_archive
-        for course in ('anatomy', 'forensics'):
-            with self.subTest(course=course):
-                data = inputs()
-                data['scope']['class'] = course
-                draft = fb.generate(OPENAI_CONFIG, data)
-                value = fb.get_saved(OPENAI_CONFIG, draft['id']).value
-                self.assertEqual(value['student_presentation_version'],
-                                 feedback_pdf.STUDENT_PRESENTATION_RENDER_VERSION)
-                artifact = {'status': 'verified', 'feedback_id': draft['id'],
-                            'class_key': course, 'drive_file_id': 'FictionalPdf',
-                            'student_folder_id': 'FictionalFolder'}
-                with patch.object(student_archive, 'enabled', return_value=True), \
-                        patch.object(student_archive, 'file_feedback', return_value=artifact) as filing, \
-                        patch.object(feedback_pdf, 'render_student_presentation', return_value=b'%PDF-rich') as renderer:
-                    fb.save(OPENAI_CONFIG, draft['id'], data, token='read', write_token='write')
-                    self.assertEqual(filing.call_args.args[4], b'%PDF-rich')
-                    renderer.assert_called_once()
-                self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], draft['id'])
-        self.assertEqual(self.call.call_count, 2)
-
-    def test_cached_legacy_course_report_retains_original_format_without_provider_call(self):
-        data = inputs()
-        data['scope']['class'] = 'anatomy'
-        draft = fb.generate(OPENAI_CONFIG, data)
-        stored = self.port.read([draft['id']]).documents[draft['id']]
-        legacy = deepcopy(stored.value)
-        legacy.pop('student_presentation_version')
-        self.port.commit({draft['id']: (legacy, stored.version)})
-        with patch.object(feedback_pdf, 'render_student_presentation', side_effect=AssertionError('legacy format changed')):
-            reused = fb.generate(OPENAI_CONFIG, data)
-            value = fb.get_saved(OPENAI_CONFIG, reused['id']).value
-            self.assertNotIn('student_presentation_version', value)
-            self.assertTrue(feedback_pdf.render(value).startswith(b'%PDF'))
-        self.assertEqual(self.call.call_count, 1)
 
     def test_enabled_filing_missing_writer_or_held_identity_preserves_saved_feedback_and_never_rebills(self):
         from hub_v2 import student_archive
@@ -622,23 +643,3 @@ class NativeFeedbackRouteTests(unittest.TestCase):
             self.assertEqual(seen['headers']['Cache-Control'], 'no-store')
             self.assertEqual(seen['headers']['Content-Type'], 'application/pdf')
             self.assertTrue(pdf.startswith(b'%PDF'))
-
-    def test_saved_course_presentation_download_uses_bound_renderer(self):
-        for course in ('anatomy', 'forensics'):
-            with self.subTest(course=course):
-                port = MemoryCAS()
-                data = inputs()
-                data['scope']['class'] = course
-                with patch.object(fb, 'configured_store', return_value=port), \
-                        patch.object(fb, '_call', return_value=(json.dumps(report()), {})) as provider, \
-                        patch.object(google, 'verify_teacher', return_value='teacher'):
-                    draft = fb.generate(OPENAI_CONFIG, data)
-                    fb.save(OPENAI_CONFIG, draft['id'], data)
-                    with patch.object(feedback_pdf, 'render_student_presentation', return_value=b'%PDF-rich') as renderer:
-                        seen, pdf = self.request('/v2/api/feedback/pdf', query='id=' + draft['id'])
-                    self.assertEqual(seen['status'], '200 OK')
-                    self.assertEqual(seen['headers']['Cache-Control'], 'no-store')
-                    self.assertEqual(pdf, b'%PDF-rich')
-                    self.assertEqual(renderer.call_args.args[0]['student_presentation_version'],
-                                     feedback_pdf.STUDENT_PRESENTATION_RENDER_VERSION)
-                    provider.assert_called_once()
