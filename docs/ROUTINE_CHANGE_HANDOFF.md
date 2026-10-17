@@ -29,7 +29,6 @@ Replace the Monday, Thursday and Friday rows in the `mine` list with the teacher
 | 7:30 a.m. weekdays | School ChatGPT (Codex) | Student feedback in the same private student folder; growth records, class summaries and notes in separate private class teacher-report folders. | Verified new reports appear in the class-matrix checklist. |
 | Whenever a new lesson starts, at school | You | Open the class checklist tab, print and hand out the latest verified Made reports, and tick Printed and Handed out separately. | The class matrix preserves delivery history. |
 | At school | You | Maintain the Agenda. | The Hub finds each lesson's deck, Form and handed-out copy. |
-| Thursday or Friday, for the next week | You | Open the Hub's **Next week** page, work its Fix before Monday list, then print its packet and supply list (see `WEEKLY_PREFLIGHT.md`). | The week starts with its plans, decks, links, prints and lab supplies already checked. |
 | Any time | Codex | Upgrades to the dashboard. | |
 
 Keep the rows that still apply: 1st Monday (Prompt 3), copying a prompt to GitHub, installing the helper, and the helper instructions.

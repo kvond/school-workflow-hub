@@ -278,26 +278,6 @@ def lesson_forms(visible, hidden, second=None):
     return forms
 
 
-def parse_worksheets(cells):
-    """The Worksheets tab: [{course, week, topic, document, type, url, file_id}] by header name."""
-    header = {norm(text(cells.get((1, c)))): c for c in range(1, 12)}
-    if "course" not in header or "document" not in header:
-        return []
-    out = []
-    for r in range(2, 400):
-        course = text(cells.get((r, header["course"]))).strip()
-        if not course:
-            continue
-        link_cell = cells.get((r, header["link"])) if "link" in header else None
-        out.append({"course": course, "week": text(cells.get((r, header.get("wk", 0)))).strip(),
-                    "topic": text(cells.get((r, header.get("topic", 0)))).strip(),
-                    "document": text(cells.get((r, header["document"]))).strip(),
-                    "type": text(cells.get((r, header.get("type", 0)))).strip(),
-                    "url": first_link(link_cell),
-                    "file_id": text(cells.get((r, header.get("fileid", 0)))).strip()})
-    return out
-
-
 class Agenda:
     def __init__(self, spreadsheet_id, title, tabs, grids):
         self.spreadsheet_id, self.title, self.problems = spreadsheet_id, title, []
@@ -309,8 +289,6 @@ class Agenda:
                 self.problems.append(problem)
         else:
             self.problems.append("The Agenda has no 'Weeks' tab, so dates can't be matched to weeks.")
-        worksheets_tab = find_tab(tabs, "Worksheets")
-        self.worksheets = parse_worksheets(grids.get(worksheets_tab, {})) if worksheets_tab else []
         self.classes = {}
         for key, name in CLASSES:
             tab = find_tab(tabs, name)
@@ -379,7 +357,5 @@ def load(token, spreadsheet_id):
     title, tabs = google.sheet_tabs(token, spreadsheet_id)
     wanted = [t for t in [find_tab(tabs, "Weeks")] + [find_tab(tabs, name) for _, name in CLASSES] if t]
     ranges = ["'%s'!A1:Z%d" % (t.replace("'", "''"), LAST_ROW) for t in wanted]
-    if find_tab(tabs, "Worksheets"):
-        ranges.append("'%s'!A1:G400" % find_tab(tabs, "Worksheets").replace("'", "''"))
     grids = google.sheet_grid(token, spreadsheet_id, ranges) if ranges else {}
     return Agenda(spreadsheet_id, title, tabs, grids)

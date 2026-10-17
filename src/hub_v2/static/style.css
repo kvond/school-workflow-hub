@@ -227,20 +227,3 @@ button[disabled] { opacity: 0.6; cursor: default; }
   .cockpit-grid { grid-template-columns: 1fr; }
   .readiness-head { display: block; }
 }
-
-/* Next-week preflight */
-a.button { display: inline-block; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; text-decoration: none; }
-a.button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.preflight-section { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; margin: 0 0 14px; }
-.preflight-section h2 { font-size: 17px; margin: 0 0 8px; }
-.preflight-list { list-style: none; margin: 0; padding: 0; }
-.preflight-list li { padding: 8px 0; border-top: 1px solid var(--line); }
-.preflight-list li:first-child { border-top: 0; }
-.preflight-list .what { font-weight: 600; }
-.preflight-list .fix-it { color: var(--muted); }
-.preflight-tag { display: inline-block; min-width: 72px; font-size: 12px; font-weight: 700; color: var(--muted); }
-.preflight-tag.biology { color: var(--biology); } .preflight-tag.forensics { color: var(--forensics); } .preflight-tag.anatomy { color: var(--anatomy); }
-.preflight-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.preflight-table th, .preflight-table td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
-.preflight-table th { color: var(--muted); font-weight: 600; border-top: 0; }
-.preflight-clear { color: var(--muted); margin: 0; }

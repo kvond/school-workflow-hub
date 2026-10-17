@@ -291,21 +291,6 @@
         "browser_report_save_and_reload_readback",
         "grading_status_read"
       ]
-    },
-    {
-      "id": "weekly_preflight",
-      "state": "read_only_preflight_implemented",
-      "live_verified": false,
-      "evidence_files": [
-        "src/hub_v2/preflight.py",
-        "src/hub_v2/agenda.py",
-        "tests/test_hub_preflight.py",
-        "docs/WEEKLY_PREFLIGHT.md"
-      ],
-      "remaining": [
-        "The checks were exercised on one exported real week (Wk 08) outside the Hub; run it once through the Hub's own service account and confirm the decks, folders and Forms it reads are shared with that account",
-        "Schoology has no reader; the preflight lists the exact student links to post instead of verifying them"
-      ]
     }
   ]
 }
