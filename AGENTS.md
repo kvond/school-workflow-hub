@@ -101,6 +101,16 @@ and reporting workflows carry a live-model-call counter that the tests assert
 stays at zero. Keep it that way, and see `docs/ROSTER_SYNC_INTEGRATION.md` for
 the worked example of the boundary.
 
+## Asking the teacher for approval
+
+- Batch work on her Mac or other remote machines into one command per action.
+  Before it runs, show a one-look plan (what it reads, what it writes and where,
+  and what makes it stop) so one approval covers it. Run long jobs in the
+  background with a log and report the result once; don't spread one job across
+  many small prompts.
+- Read-only Remote Desktop Commander tools are pre-allowed in
+  `.claude/settings.json`; commands and writes still ask.
+
 ## Document retirement
 
 Status and handoff documents accumulate at the rate of sessions rather than at
