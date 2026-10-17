@@ -507,7 +507,12 @@ def generate(config, inputs):
     if inputs.get('submission_receipt'):
         value['submission_receipt'] = dict(inputs['submission_receipt'])
     # Layout validation happens before the draft is offered to the teacher.
-    from .feedback_pdf import render
+    from .feedback_pdf import render, STUDENT_PRESENTATION_RENDER_VERSION
+    # Presentation is bound only when constructing a new draft. Cached reports
+    # above keep their exact saved format, source assessment and provider-call
+    # identity; a visual upgrade must never rebill or replace an earlier PDF.
+    if value['scope']['class'] in ('anatomy', 'forensics'):
+        value['student_presentation_version'] = STUDENT_PRESENTATION_RENDER_VERSION
     render(value)
     _commit_checked(port, ident, value, None)
     _point_to(port, inputs['scope'], ident)

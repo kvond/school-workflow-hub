@@ -261,6 +261,11 @@ def render_science_writing(saved):
 
 
 def render(saved):
+    version = saved.get('student_presentation_version')
+    if version is not None:
+        if version != STUDENT_PRESENTATION_RENDER_VERSION:
+            raise Held('The saved student presentation version is unsupported.')
+        return render_student_presentation(saved)
     from reportlab.pdfgen import canvas
     from reportlab.lib.colors import HexColor
     from reportlab.lib.styles import ParagraphStyle
@@ -353,3 +358,105 @@ def render(saved):
     c.showPage()
     c.save()
     return stream.getvalue()
+
+
+STUDENT_PRESENTATION_RENDER_VERSION = 'native-student-presentation/v1'
+
+
+def render_student_presentation(saved):
+    """Render the explicit presentation version on a newly generated course draft.
+
+    The native generator stamps new Anatomy/Forensics drafts; render(saved)
+    dispatches only on that saved version. Unversioned cached drafts and historical
+    PDFs retain their original rendering and archive identities.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+        KeepTogether, HRFlowable,
+    )
+    course = saved.get('scope', {}).get('class')
+    names = {'anatomy': 'ANATOMY & PHYSIOLOGY', 'forensics': 'FORENSICS'}
+    if course not in names:
+        raise Held('The expanded student presentation needs an exact Anatomy or Forensics course binding.')
+    ink, muted, accent, pale = [colors.HexColor(value) for value in
+                              ('#17384B', '#526575', '#087EA4', '#EFF5F7')]
+    styles = {
+        name: ParagraphStyle(name, fontName=font, fontSize=size, leading=leading,
+                             textColor=ink, spaceAfter=6)
+        for name, font, size, leading in (
+            ('title', 'Helvetica-Bold', 21, 25), ('heading', 'Helvetica-Bold', 13, 17),
+            ('body', 'Helvetica', 10.5, 14), ('small', 'Helvetica', 9, 12),
+            ('label', 'Helvetica-Bold', 9, 12),
+        )}
+    def p(value, kind='body'):
+        return Paragraph(escape(str(value)), styles[kind])
+    story = []
+    stamp = datetime.fromisoformat(saved['created_at'].replace('Z', '+00:00'))
+    date = stamp.astimezone(ZoneInfo('America/New_York')).date() if stamp.tzinfo else stamp.date()
+    story += [p(names[course] + ' / ' + saved['person']['section'], 'label'),
+              p(saved['person']['name'], 'title'),
+              p(saved['assignment']['assignment_title'], 'heading'),
+              p('Prepared ' + str(date) + ' | Current lesson evidence', 'small'),
+              HRFlowable(width='100%', thickness=2, color=accent), Spacer(1, 14),
+              p('What your work shows', 'heading'), p(saved['report']['student_summary']),
+              p('Read each card from your words to the feedback. The level describes this answer; '
+                'one report does not establish a growth trend.', 'small')]
+    for index, aspect in enumerate(saved['report']['aspects'], 1):
+        level = aspect['current_level']
+        if level not in LEVELS:
+            raise Held('The student presentation needs the saved understanding scale.')
+        blocks = [p('%d. %s' % (index, aspect['name']), 'heading'),
+                  p('Current understanding: ' + level, 'label')]
+        cells = [[p(('%s %s' % ('[X]' if level == label else '[ ]', label)), 'small')
+                  for label in LEVELS[:4]]]
+        scale = Table(cells, colWidths=[124] * 4)
+        scale.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, 0), colors.HexColor('#F7E3E8')),
+            ('BACKGROUND', (1, 0), (1, 0), colors.HexColor('#FAEDCF')),
+            ('BACKGROUND', (2, 0), (2, 0), colors.HexColor('#DDF1E5')),
+            ('BACKGROUND', (3, 0), (3, 0), colors.HexColor('#DEE9FC')),
+            ('BOX', (0, 0), (-1, -1), .7, muted),
+            ('INNERGRID', (0, 0), (-1, -1), .4, muted),
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ]))
+        blocks += [scale, Spacer(1, 8),
+                   HRFlowable(width='100%', thickness=1.5, color=accent), Spacer(1, 8)]
+        if level == 'Evidence unavailable':
+            blocks += [p('Your words: no attributable revised-answer evidence is available.', 'small')]
+        else:
+            blocks += [p('YOUR WORDS / ' + aspect['question_id'], 'label'),
+                       p('"' + aspect['quote'] + '"')]
+        blocks += [p('WHAT THIS SHOWS', 'label'), p(aspect['explanation']), Spacer(1, 12)]
+        story.append(KeepTogether(blocks))
+    story += [p('Reading the level band', 'heading'),
+              p('A checked box marks the saved level. Empty boxes are other levels, not missing scores. '
+                'Evidence unavailable has no checked box and is not a zero. '
+                'Labels and checked boxes carry the same information when printed in black and white.', 'small'),
+              PageBreak(), p('Think it through', 'title'),
+              p(saved['assignment']['assignment_title'], 'small'),
+              p('One question to think about', 'heading'), p(saved['report']['question'])]
+    def writing_lines(count):
+        for _ in range(count):
+            story.extend([Spacer(1, 23), HRFlowable(width='100%', thickness=.5, color=muted)])
+    writing_lines(4)
+    story += [Spacer(1, 22), p("What I understand now that I didn't before", 'heading'), p(HAND_BACK)]
+    writing_lines(4)
+    story += [Spacer(1, 22), p('How I can improve my responses next time', 'heading')]
+    writing_lines(3)
+    raw = BytesIO()
+    def footer(canvas, doc):
+        canvas.saveState()
+        canvas.setFont('Helvetica', 8); canvas.setFillColor(muted)
+        canvas.drawString(44, 24, 'Current saved evidence | Conceptual feedback is not a grade')
+        canvas.drawRightString(568, 24, str(doc.page))
+        canvas.restoreState()
+    document = SimpleDocTemplate(raw, pagesize=(612, 792), leftMargin=44, rightMargin=44,
+                                 topMargin=40, bottomMargin=44, invariant=1,
+                                 title='Student feedback presentation - ' + saved['person']['name'],
+                                 author='School Workflow Hub')
+    document.build(story, onFirstPage=footer, onLaterPages=footer)
+    return raw.getvalue()

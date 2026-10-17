@@ -212,6 +212,16 @@ review; it is not silently regenerated. ZIP intake and longitudinal growth
 remain separate, unverified work. Deployment and a real saved/printed draft
 must still be verified separately from these implementation tests.
 
+October 17 report presentation: newly created Anatomy and Forensics drafts
+explicitly bind `native-student-presentation/v1`. Their PDFs include each saved
+critical-aspect quotation and explanation, labeled color level bands that also
+read in black and white, and a separate response/reflection page. Long supported
+content flows onto additional pages without shrinking text or dropping evidence.
+Cached unversioned reports and Biology rendering retain their existing format;
+a presentation change never triggers reassessment or another provider call.
+This implementation is tested synthetically; deployment and a live new-course
+report save/download remain separate acceptance checks.
+
 Morning status must show incomplete or failed receipts as unresolved. An active
 schedule and a ready browser companion do not establish a completed run.
 
