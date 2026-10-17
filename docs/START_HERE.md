@@ -212,6 +212,15 @@ review; it is not silently regenerated. ZIP intake and longitudinal growth
 remain separate, unverified work. Deployment and a real saved/printed draft
 must still be verified separately from these implementation tests.
 
+October 17 feedback direction: Biology keeps the approved source-comparison
+format with four writing-area graphics and source-based practice. Anatomy and
+Forensics keep concise student reports; their next feedback question should
+further the student's actual revision using the supplied lesson relationship,
+contrast or transfer case. The course-specific provider guidance applies to new
+work only. It does not regenerate saved reports, create another charge for an
+existing submission, add rubric criteria, or change any assessment or delivery
+record. Deployment and live acceptance of that guidance remain separate checks.
+
 Morning status must show incomplete or failed receipts as unresolved. An active
 schedule and a ready browser companion do not establish a completed run.
 

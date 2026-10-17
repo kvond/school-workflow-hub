@@ -33,6 +33,65 @@ def report():
 
 
 class NativeFeedbackTests(unittest.TestCase):
+    def test_course_question_prompt_uses_actual_revisions_and_exact_course_context(self):
+        self.model.stop()
+        for course, focus in [('anatomy', 'structure/function'), ('forensics', 'observation versus inference'), ('biology', None)]:
+            data = inputs(); data['scope']['class'] = course
+            with self.subTest(course=course), patch.object(fb.assessment_provider, '_call', return_value=('{}', {})) as provider:
+                fb._call(OPENAI_CONFIG, data)
+                policy, user = provider.call_args.args[1:3]
+                payload = json.loads(user)
+                self.assertEqual(payload['aspects'], data['aspects'])
+                self.assertEqual(payload['printed_lesson_reference'], data['reference']['text'])
+                if focus:
+                    self.assertIn(focus, policy)
+                    self.assertIn('actual supplied\nrevised answer', policy)
+                    self.assertIn('Do not invent a misconception', policy)
+                    self.assertEqual(payload['course_context']['class'], course)
+                    self.assertEqual(payload['course_context']['assignment'], data['assignment'])
+                else:
+                    self.assertEqual(policy, fb.POLICY + '\nCURRENT TEACHER POLICY:\n' + data['prompt'])
+                    self.assertNotIn('course_context', payload)
+
+    def test_new_course_question_policy_is_cached_without_another_call(self):
+        for course in ('anatomy', 'forensics'):
+            data = inputs(); data['scope']['class'] = course
+            draft = fb.generate(OPENAI_CONFIG, data)
+            value = fb.get_saved(OPENAI_CONFIG, draft['id']).value
+            self.assertEqual(value['question_policy_version'], fb.QUESTION_POLICY_VERSION)
+            self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], draft['id'])
+        self.assertEqual(self.call.call_count, 2)
+
+    def test_prior_course_policy_draft_and_uncertain_call_are_preserved(self):
+        data = inputs(); data['scope']['class'] = 'anatomy'
+        with patch.object(fb, '_policy', return_value=fb.POLICY):
+            old = fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], old['id'])
+        self.assertEqual(self.call.call_count, 1)
+
+        data['source']['sha256'] = 'c' * 64
+        with patch.object(fb, '_policy', return_value=fb.POLICY), \
+                patch.object(fb, '_call', side_effect=RuntimeError('interrupted')):
+            with self.assertRaises(fb.Held): fb.generate(OPENAI_CONFIG, data)
+        with self.assertRaisesRegex(fb.Held, 'No duplicate AI call'):
+            fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(self.call.call_count, 1)
+
+    def test_course_question_upgrade_retains_capture_bound_original_event(self):
+        from tests.test_source_repair_provenance import case
+        data, _, _ = case()
+        data['scope']['class'] = 'forensics'
+        with patch.object(fb, '_policy', return_value=fb.POLICY):
+            old = fb.generate(OPENAI_CONFIG, data)
+        again = fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(again['id'], old['id'])
+        self.assertTrue(again['cached'])
+        changed = deepcopy(data)
+        changed['source']['raw_sha256'] = 'f' * 64
+        with self.assertRaises(fb.Held):
+            fb.generate(OPENAI_CONFIG, changed)
+        self.assertEqual(self.call.call_count, 1)
+
     def test_learning_report_handoff_does_not_need_source_reads_and_rejects_external_links(self):
         with patch.object(google, 'service_token', side_effect=AssertionError('unnecessary source access')):
             self.assertEqual(app.api('api/learning-report', {}, {}), {'configured': False})

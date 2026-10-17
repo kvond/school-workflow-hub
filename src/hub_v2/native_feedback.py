@@ -67,6 +67,27 @@ FEEDBACK_FOLDERS = {
     'anatomy': '🫀 A&P — Private feedback',
 }
 FEEDBACK_COURSE_NAMES = {'biology': 'Biology', 'forensics': 'Forensics', 'anatomy': 'A&P'}
+QUESTION_POLICY_VERSION = 'course-revision-question/v1'
+REVISION_QUESTION_POLICY = """
+Make the one thinking question intentional: ground it in an actual supplied
+revised answer and its unresolved relationship, contradiction or limit. Ask one
+conceptual transfer or contrast question that helps the student further that
+revision; do not answer it. Use only supplied lesson concepts and evidence.
+Do not invent a misconception, rubric, new criterion or activity. If revised
+evidence is unavailable, do not pretend an answer exists: ground the question
+in a supplied critical aspect and its lesson reference instead.
+"""
+
+
+def _policy(inputs):
+    course = inputs['scope']['class']
+    guidance = {
+        'anatomy': 'Explore structure/function or a causal mechanism only when the supplied lesson supports it.',
+        'forensics': 'Explore observation versus inference, evidence, or an alternative explanation only when the supplied lesson supports it.',
+    }.get(course)
+    return POLICY + REVISION_QUESTION_POLICY + guidance if guidance else POLICY
+
+
 FEEDBACK_FOLDER_CONFIG = 'HUB_FEEDBACK_DRIVE_FOLDERS'
 FEEDBACK_ROOT_CONFIG = 'HUB_FEEDBACK_DRIVE_ROOT_ID'
 PRINTABLE_MIMES = {'application/pdf', 'application/vnd.google-apps.document'}
@@ -379,7 +400,9 @@ def _call(config, inputs):
             'teacher_dimensions': list(TEACHER_DIMENSIONS),
             'student_submission': inputs['source']['text'],
             'printed_lesson_reference': inputs['reference']['text']}
-    return assessment_provider._call(config, POLICY + '\nCURRENT TEACHER POLICY:\n' + inputs['prompt'],
+    if inputs['scope']['class'] in ('anatomy', 'forensics'):
+        user['course_context'] = {'class': inputs['scope']['class'], 'assignment': inputs['assignment']}
+    return assessment_provider._call(config, _policy(inputs) + '\nCURRENT TEACHER POLICY:\n' + inputs['prompt'],
                                      json.dumps(user), schema=SCHEMA)
 
 
@@ -393,8 +416,8 @@ def generate(config, inputs):
         raise Held('The feedback provider is not configured.')
     port = configured_store(config)
     decision = None
-    basis = content_hash([POLICY, source_repair_provenance.analysis_basis(
-        inputs, assessment_provider.model_name(config))])
+    source_basis = source_repair_provenance.analysis_basis(inputs, assessment_provider.model_name(config))
+    basis = content_hash([_policy(inputs), source_basis])
     # Live evidence carries an authenticated exact-file Form event. A changed
     # source from that same event must not automatically become new writing,
     # another provider charge or a new growth point after a technical repair.
@@ -406,7 +429,8 @@ def generate(config, inputs):
             prior = _read(port, prior_ref.value['id'])
             if not prior or prior.value.get('schema') != VERSION:
                 raise Held('The previous feedback source could not be verified. Its saved PDF remains available.')
-            decision = source_repair_provenance.classify(port, inputs['scope'], prior.value, inputs, basis)
+            prior_basis = basis if prior.value.get('question_policy_version') else content_hash([POLICY, source_basis])
+            decision = source_repair_provenance.classify(port, inputs['scope'], prior.value, inputs, prior_basis)
             if decision.get('reuse_saved'):
                 # Serve the immutable historical report. Its old source bytes,
                 # source date, archive and Printed/Handed states remain intact.
@@ -463,6 +487,17 @@ def generate(config, inputs):
         _point_to(port, inputs['scope'], ident)
         return reply(stored.value, cached=True)
     call_id = key('feedbackcall', fingerprint)
+    # Exhaust the earlier policy's saved draft and reservation before selecting
+    # the new question policy. An interrupted or returned old call is never
+    # permission to bill again merely because guidance changed.
+    if not legacy_call and _policy(inputs) != POLICY and not _read(port, call_id):
+        fingerprint = {**fingerprint, 'prompt': content_hash([_policy(inputs), inputs['prompt']])}
+        ident = key('feedbackdraft', fingerprint)
+        stored = _read(port, ident)
+        if stored:
+            _point_to(port, inputs['scope'], ident)
+            return reply(stored.value, cached=True)
+        call_id = key('feedbackcall', fingerprint)
     if event and event.value.get('call_id') != call_id:
         raise Held('This Form event already has another feedback-call reservation. Review it before another assessment.')
     call = _read(port, call_id)
@@ -497,6 +532,10 @@ def generate(config, inputs):
              'prompt_sha256': content_hash(inputs['prompt']), 'prompt_url': inputs['prompt_url'],
              'saved_at': None}
     value['analysis_basis_sha256'] = basis
+    if fingerprint['prompt'] == content_hash([_policy(inputs), inputs['prompt']]) and _policy(inputs) != POLICY:
+        value['question_policy_version'] = QUESTION_POLICY_VERSION
+    else:
+        value['analysis_basis_sha256'] = content_hash([POLICY, source_basis])
     for field in ('raw_sha256', 'metadata_sha256'):
         if field in inputs['source']:
             value['source'][field] = inputs['source'][field]
