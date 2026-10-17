@@ -67,6 +67,48 @@ def _aspect_key(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
+_NUMBERED = re.compile(r"^\s*(\d+)\s*(?:[.)]|[-—–])\s*(.+)$")
+_ASPECT_STOP = (
+    "week question", "case study", "standard", "scored for completion",
+    "not scored", "[[marker-inventory:",
+)
+
+
+def critical_aspects(text: str) -> list[dict]:
+    """The CRITICAL ASPECT(S) list of a teacher reference, in listed order.
+
+    Each entry is {"number": int | None, "name": str}, where name is the line
+    after its number exactly as written. Biology numbers aspects within the
+    lesson ("1. Name"); A&P numbers them within the unit ("3. Name — gloss")
+    and uses the singular heading. Once numbered lines start, the first
+    unnumbered line ends the list; an unnumbered list ends at the known
+    headings that follow it.
+    """
+    # Names keep their exact spacing (saved feedback joins on them); only the
+    # comparisons below use normalized text.
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    start = next(
+        (i for i, line in enumerate(lines)
+         if " ".join(line.split()).casefold() in {"critical aspect", "critical aspects"}),
+        None,
+    )
+    if start is None:
+        return []
+    out, numbered = [], False
+    for line in lines[start + 1:]:
+        if any(" ".join(line.split()).casefold().startswith(word) for word in _ASPECT_STOP):
+            break
+        match = _NUMBERED.match(line)
+        if match:
+            numbered = True
+            out.append({"number": int(match.group(1)), "name": match.group(2).strip()})
+        elif numbered:
+            break
+        else:
+            out.append({"number": None, "name": line.strip()})
+    return out
+
+
 def derive_teacher_contract(slides: tuple[str, ...]) -> dict:
     """Read the authoritative compact contract from a teacher-reference slide."""
     reference = ""
@@ -79,23 +121,11 @@ def derive_teacher_contract(slides: tuple[str, ...]) -> dict:
         return {}
 
     lines = _lines(reference)
-    start = next(
-        (i for i, line in enumerate(lines)
-         if line.casefold() in {"critical aspect", "critical aspects"}),
-        None,
-    )
     aspects = []
-    if start is not None:
-        stop_words = (
-            "week question", "case study", "standard", "scored for completion",
-            "not scored", "[[marker-inventory:",
-        )
-        for line in lines[start + 1:]:
-            if any(line.casefold().startswith(word) for word in stop_words):
-                break
-            key = _aspect_key(line)
-            if key and key not in aspects:
-                aspects.append(key)
+    for entry in critical_aspects(reference):
+        key = _aspect_key(entry["name"])
+        if key and key not in aspects:
+            aspects.append(key)
 
     question = ""
     for i, line in enumerate(lines):

@@ -452,6 +452,47 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
              patch.object(fb.feedback, 'load_prompt', return_value=('Live policy', 'policy-url')):
             return fb.evidence('signed', 'token', {}, {}, self.scope, self.found)
 
+    def reference(self, text, drafts):
+        self.captures[1]['text'] = text
+        self.score['items'] = [{'category': 'DRAFT', 'id': qid, 'status': 'done', 'answer': qid, 'slide': n}
+                               for n, qid in enumerate(drafts, 2)]
+
+    def test_unit_numbered_singular_heading_pairs_by_order(self):
+        # A&P teacher references number the aspect within the unit and use the
+        # singular heading; the deck's own revision box is still CA1.
+        self.reference('TEACHER REFERENCE — do not project\nCRITICAL ASPECT\n'
+                       '3.  Structure fits function — why a tissue is built the way it is\n'
+                       'WEEK QUESTION\nIf you could see the cells, could you predict the job?\n'
+                       '[[MARKER-INVENTORY:A07]]', ['CA1-MASTERY'])
+        aspects = self.read()['aspects']
+        self.assertEqual([(a['question_id'], a['name']) for a in aspects],
+                         [('CA1-MASTERY', 'Structure fits function — why a tissue is built the way it is')])
+
+    def test_numbers_that_match_revision_boxes_pair_by_number(self):
+        self.reference('CRITICAL ASPECTS\n1. Storing energy\n2. Releasing energy\n[[MARKER-INVENTORY:C09]]',
+                       ['CA2-MASTERY', 'CA1-MASTERY'])
+        aspects = self.read()['aspects']
+        self.assertEqual([(a['question_id'], a['name'], a['answer']) for a in aspects],
+                         [('CA1-MASTERY', 'Storing energy', 'CA1-MASTERY'),
+                          ('CA2-MASTERY', 'Releasing energy', 'CA2-MASTERY')])
+
+    def test_aspects_without_one_revision_box_each_still_refuse(self):
+        self.reference('CRITICAL ASPECT\n3. Structure fits function\n4. Layers protect\n[[MARKER-INVENTORY:A07]]',
+                       ['CA1-MASTERY'])
+        with self.assertRaisesRegex(fb.Held, 'revised-answer field'):
+            self.read()
+
+    def test_partly_matching_numbers_refuse_instead_of_guessing(self):
+        self.reference('CRITICAL ASPECTS\n1. Storing energy\n2. Releasing energy\n[[MARKER-INVENTORY:C09]]',
+                       ['CA1-MASTERY', 'CA3-MASTERY'])
+        with self.assertRaisesRegex(fb.Held, 'revised-answer field'):
+            self.read()
+
+    def test_missing_list_still_refuses(self):
+        self.reference('TEACHER REFERENCE\nWEEK QUESTION\nWhy?', ['CA1-MASTERY'])
+        with self.assertRaisesRegex(fb.Held, 'numbered critical-aspects list'):
+            self.read()
+
     def test_exact_agenda_deck_registry_and_live_prompt_bind_feedback(self):
         result = self.read()
         self.assertEqual(result['aspects'][0]['answer'], 'Carbon moves.')
