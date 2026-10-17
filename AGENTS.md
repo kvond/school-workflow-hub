@@ -1,5 +1,9 @@
 # Cloud repository boundaries
 
+- Parallel agents (Codex workers, Claude specialist, ChatGPT direction): read
+  `docs/PARALLEL_AGENTS.md`. Every PR must pass `scripts/check.sh`; the
+  `Checks` workflow (authorized 2026-10-15) runs it on pull requests.
+
 - September 16 reconciliation: start with `docs/PYTHON_INTEGRATION_20260916.md`
   and `docs/CLOUD_READINESS.md`. September 15 records verify hosted Agenda reads,
   authentication and fictional Firestore persistence/claim acceptance. Older

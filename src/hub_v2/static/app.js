@@ -49,8 +49,10 @@ async function getJSON(url) {
   let body = null;
   try { body = await response.json(); } catch { /* not JSON */ }
   if (!response.ok) {
-    throw new Error(body?.error || (response.status === 401 || response.status === 403
+    const error = new Error(body?.error || (response.status === 401 || response.status === 403
       ? 'Please sign in again: reload this page.' : `The server returned an error (${response.status}).`));
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
@@ -65,7 +67,8 @@ function showAgendaLink(agenda) {
 const cockpit = {seq: 0, audits: null, auditsAt: 0, feedbackData: null, learningData: null};
 
 function cockpitPanel(title, ...children) {
-  return el('section', {class: 'cockpit-panel'}, el('h2', {text: title}), ...children);
+  return el('details', {class: 'cockpit-panel cockpit-details', open: true},
+    el('summary', {}, el('h2', {text: title})), ...children);
 }
 
 function cockpitDetails(title, context, ...children) {
@@ -103,7 +106,7 @@ function releaseBadge(release) {
 async function loadAudits(force = false) {
   if (!force && cockpit.audits && Date.now() - cockpit.auditsAt < 60_000) return cockpit.audits;
   const entries = await Promise.all(CLASSES.map(async ([key, name]) => {
-    try { return [key, name, await getJSON(`api/audit?class=${encodeURIComponent(key)}`)]; }
+    try { return [key, name, await getJSON(`api/audit?class=${encodeURIComponent(key)}${force ? '&fresh=1' : ''}`)]; }
     catch (error) { return [key, name, {rows: [], flags: [], problem: error.message}]; }
   }));
   cockpit.audits = Object.fromEntries(entries.map(([key, name, data]) => [key, {name, data}]));
@@ -314,19 +317,15 @@ function renderMorningCockpit(report, routineData) {
 function renderNeedsYou(report) {
   const items = [], unavailable = [];
   if (!report) return cockpitPanel('Run status', note('No receipt is available yet. IC results are not verified.', 'info'));
+  const routineOnly = report.items?.length && report.items.every(row => ['no_scores', 'excluded_week'].includes(row.code));
   const problem = morningProblem(report);
   if (problem) items.push(el('li', {text: problem}));
   for (const row of report?.items || []) {
-    if (row.code === 'excluded_week') {
-      unavailable.push(el('p', {class: 'muted'}, el('strong', {text: morningContext(row) + ': '}), MORNING_EXCLUDED));
-      continue;
-    }
+    // Routine outcomes stay in What ran. Current source checks independently
+    // retain real source failures, even when a receipt has no eligible scores.
+    if (['excluded_week', 'no_scores'].includes(row.code)) continue;
     if (row.code === 'source_scores_held') {
       items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), morningSourceHold(row)));
-      continue;
-    }
-    if (row.code === 'no_scores') {
-      items.push(el('li', {}, el('strong', {text: morningContext(row) + ': '}), 'No eligible Hub scores were available; IC was not compared. This receipt does not identify a student source issue. Current source checks are shown separately.'));
       continue;
     }
     const review = morningRowReview(row);
@@ -346,7 +345,9 @@ function renderNeedsYou(report) {
   }
   return cockpitPanel('Rows the helper left unchanged',
     items.length ? el('ul', {class: 'attention-list'}, ...items)
-      : unavailable.length ? null : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
+      : unavailable.length ? null : routineOnly
+        ? el('p', {class: 'muted', text: 'No follow-up is identified by these routine results. What ran retains the record; no IC comparison is confirmed for these lessons. Current source checks appear separately.'})
+        : el('p', {class: 'ok', text: '✓ No grade rows need attention from this receipt.'}),
     ...unavailable,
     el('p', {class: 'muted', text: 'IC’s assignment roster determines which students belong in this run. Exempt rows do not require follow-up. The receipt contains counts; Student work gives the source details for the named class and assignment.'}));
 }
@@ -392,7 +393,9 @@ function reviewSourceURL(source) {
 function renderSourceReviewNotice(notice, scope, includeContext = true, retained = false, matchedOther = false, formerWork = false) {
   const student = notice.student || {};
   const name = [student.last, student.first].filter(value => typeof value === 'string' && value.trim()).join(', ');
-  const identity = notice.kind === 'lesson' || notice.affected_scope === 'lesson' ? 'Lesson-wide source check · no individual student'
+  const teacherMaterial = notice.kind === 'teacher_material';
+  const identity = teacherMaterial ? 'Teacher’s own upload · not a student submission'
+    : notice.kind === 'lesson' || notice.affected_scope === 'lesson' ? 'Lesson-wide source check · no individual student'
     : formerWork ? `${name} · Former student`
     : student.verified === true && student.last && student.first
     ? name : name ? `${name} (identity unverified)` : 'Student identity not verified';
@@ -414,27 +417,39 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
     return el('li', {}, url ? link(source.label || 'Open exact source', url) : el('span', {text: 'Source link unavailable'}),
       url && hasSlides && where ? ' · ' + where : null);
   });
-  return el('div', {class: retained ? 'source-history-entry' : formerWork ? 'former-source-entry' : matchedOther ? 'matched-source-entry' : 'source-review'},
+  const informational = retained || matchedOther || formerWork || teacherMaterial;
+  return el('div', {class: retained ? 'source-history-entry' : formerWork ? 'former-source-entry' : matchedOther ? 'matched-source-entry'
+      : teacherMaterial ? 'teacher-material-entry' : 'source-review'},
     includeContext ? el('strong', {text: `${context} · ${identity}`}) : el('strong', {text: identity}),
     retained ? el('p', {}, 'Saved verification as of ', el('time', {datetime: notice.verified_at,
       text: new Date(notice.verified_at).toLocaleString('en-US', {timeZone: TZ, year: 'numeric', month: 'short',
         day: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short'})})) : null,
-    el('p', {text: `${retained || matchedOther || formerWork ? '' : 'Reason: '}${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
+    el('p', {text: `${informational ? '' : 'Reason: '}${typeof notice.reason === 'string' && notice.reason ? notice.reason : 'Exact reason unavailable.'}`}),
     sourceLines.length ? el('ul', {class: 'files'}, ...sourceLines)
       : el('p', {class: 'muted', text: 'Source link unavailable'}),
-    retained || matchedOther || formerWork ? null : el('p', {}, el('strong', {text: 'Next action: '}),
+    informational ? null : el('p', {}, el('strong', {text: 'Next action: '}),
       typeof notice.next_action === 'string' && notice.next_action ? notice.next_action : 'No exact next action was returned.'));
+}
+
+function timedOutRead(data) {
+  return data?.status === 'unavailable' && data.read_failure?.reason === 'read_timeout';
 }
 
 function renderSourceReviewContext(data, expected, options = {}) {
   const retained = data?.retained_history ?? [];
   const matchedOther = data?.matched_other_lessons ?? [];
   const former = data?.former_student_work ?? [];
+  const teacher = data?.teacher_material ?? [];
   if (data?.schema !== 'hub-source-review-context/v1' || !sameReviewScope(data.scope, expected)
       || typeof data.scope.class_name !== 'string' || !data.scope.class_name
       || typeof data.scope.lesson !== 'string' || !data.scope.lesson
       || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
       || !Array.isArray(data.notices) || !Array.isArray(data.limitations) || !Array.isArray(retained) || !Array.isArray(matchedOther) || !Array.isArray(former)
+      || !Array.isArray(teacher)
+      || teacher.some(entry => !entry || entry.kind !== 'teacher_material' || entry.affected_scope !== 'lesson'
+        || typeof entry.reason !== 'string' || !entry.reason || entry.student?.verified !== false
+        || ['first', 'last', 'section'].some(key => entry.student[key]) || 'next_action' in entry
+        || !Array.isArray(entry.sources) || !entry.sources.length || !entry.sources.every(reviewSourceURL))
       || matchedOther.some(entry => !entry || entry.kind !== 'matched_other_lesson' || entry.affected_scope !== 'student'
         || typeof entry.reason !== 'string' || !entry.reason || entry.student?.verified !== true
         || !['first', 'last', 'section'].every(key => typeof entry.student[key] === 'string' && entry.student[key])
@@ -461,6 +476,19 @@ function renderSourceReviewContext(data, expected, options = {}) {
   const limitations = data.limitations.filter(value => typeof value === 'string' && value
     && (!options.limitationsSeen || !options.limitationsSeen.has(value)));
   if (options.limitationsSeen) limitations.forEach(value => options.limitationsSeen.add(value));
+  if (timedOutRead(data)) {
+    // A slow provider read is a retry, never missing work or a finished check.
+    const box = el('div', {},
+      note('Check timed out — retry. A timed-out read is not missing student work; nothing was concluded about these submissions and the saved helper receipt is unchanged.', 'info'),
+      ...limitations.map(value => note(value, 'info')));
+    const scope = reviewScope(expected);
+    if (scope) {
+      const button = el('button', {type: 'button'}, 'Retry this check');
+      button.onclick = () => loadSourceReviewContext(box, scope, {current: options.current});
+      box.append(el('div', {class: 'action-row'}, button));
+    }
+    return box;
+  }
   if (data.status === 'unavailable') return el('div', {},
     note('Current source context is unavailable. No student identity decision is requested from this failed read; the saved helper receipt is unchanged.', 'info'),
     ...limitations.map(value => note(value, 'info')));
@@ -471,7 +499,7 @@ function renderSourceReviewContext(data, expected, options = {}) {
     el('p', {class: 'muted', text: `Current source context · checked ${when(data.checked_at)}. Read separately from the saved helper receipt.`}),
     data.notices.length ? el('ul', {class: 'attention-list'}, ...data.notices.map(notice =>
       el('li', {}, renderSourceReviewNotice(notice, data.scope))))
-      : retained.length || matchedOther.length || former.length ? null : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
+      : retained.length || matchedOther.length || former.length || teacher.length ? null : el('p', {class: 'muted', text: options.compactEmpty ? empty : 'No current source review notices were returned for this exact lesson. This does not establish complete coverage or a successful IC run.'}),
     retained.length ? el('section', {class: 'source-history'},
       el('h4', {text: 'Verified entry · source history retained'}),
       ...retained.map(entry => renderSourceReviewNotice(entry, data.scope, true, true))) : null,
@@ -483,6 +511,9 @@ function renderSourceReviewContext(data, expected, options = {}) {
     former.length ? el('section', {class: 'former-source-history'},
       el('h4', {text: 'Former student work · history retained'}),
       ...former.map(entry => renderSourceReviewNotice(entry, data.scope, true, false, false, true))) : null,
+    teacher.length ? el('section', {class: 'teacher-material'},
+      el('h4', {text: 'Teacher material · not student work'}),
+      ...teacher.map(entry => renderSourceReviewNotice(entry, data.scope))) : null,
     ...limitations.map(value => note(value, 'info')));
 }
 
@@ -529,59 +560,87 @@ function currentSourceReviewPanel(active = true, options = {}) {
       : 'Current source details are read separately from historical helper counts. This view does not score work; an empty review is not completed assessment or complete coverage.'}), body);
   reviewPanels.set(panel, {body, progress});
   if (!active) { progress.textContent = 'Current source checks are read when this page is opened.'; return panel; }
-  const seq = nextReviewRequest(panel);
-  getJSON('api/review-context').then(data => {
-    if (reviewRequests.get(panel) !== seq) return;
-    if (data.schema !== 'hub-source-review-context-summary/v1' || !['current', 'unavailable'].includes(data.status)
-        || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
-        || !Array.isArray(data.reviews) || data.reviews.length > 300 || !Array.isArray(data.limitations))
-      throw new Error('The shared current source response could not be confirmed.');
-    const scopes = data.reviews.map(review => ({review, scope: reviewScope(review.scope)}));
-    if (scopes.some(item => !item.scope) || new Set(scopes.map(item => JSON.stringify(item.scope))).size !== scopes.length)
-      throw new Error('Exact lesson scopes could not be confirmed.');
-    // Filtering informational rows must not turn a malformed scope response
-    // into proof of empty intake or suppress its availability limitation.
-    if (options.teacherActionsOnly) scopes.forEach(({review, scope}) => renderSourceReviewContext(review, scope));
-    const limitationsSeen = new Set();
-    const unavailableReview = review => review.status === 'unavailable';
-    const rendered = scopes.filter(({review}) => !options.teacherActionsOnly || unavailableReview(review)
-      || (review.teacher_actionable !== false && !['waiting', 'excluded'].includes(review.status) && review.notices.length))
-      .map(({review, scope}) => {
-        const displayed = options.teacherActionsOnly ? {...review, retained_history: [], matched_other_lessons: [], former_student_work: [],
-          ...(unavailableReview(review) ? {status: 'unavailable', notices: []} : {})} : review;
-        return {review: displayed, detail: renderSourceReviewContext(displayed, scope, {compactEmpty: true, limitationsSeen})};
-      });
-    if (data.status === 'unavailable') {
-      progress.textContent = 'Current source checks are unavailable; no named review is issued.';
-      body.replaceChildren(note('The shared source read could not be verified. No student identity decision is requested from this failed read; the saved helper receipt is unchanged.', 'info'),
-        ...[...data.limitations, ...data.reviews.flatMap(review => review.limitations)].filter(value => typeof value === 'string' && value)
-          .filter((value, index, all) => all.indexOf(value) === index).map(value => note(value, 'info')));
-      options.onSummary?.(data);
-      return;
-    }
-    let unassessed = false, unavailable = 0;
-    for (const {review, detail} of rendered) {
-      const label = [review.scope.class_name, review.scope.week, review.scope.lesson].join(' · ');
-      if (!review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length && !review.former_student_work?.length && review.status === 'not_assessed') { unassessed = true; continue; }
-      if (!review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length && !review.former_student_work?.length && ['waiting', 'excluded'].includes(review.status)) {
-        body.append(el('p', {class: 'muted', text: `${label}: ${review.status === 'waiting'
-          ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
-      } else {
-        if (review.status === 'unavailable') unavailable++;
-        body.append(el('section', {}, el('h3', {text: label}), detail));
+  // One explicit, teacher-pressed reread of the same overview; never automatic.
+  const retryButton = () => {
+    const button = el('button', {type: 'button'}, 'Retry source checks');
+    button.onclick = () => {
+      progress.textContent = 'Reading shared current source context…';
+      body.replaceChildren();
+      run();
+    };
+    return el('div', {class: 'action-row'}, button);
+  };
+  const run = () => {
+    const seq = nextReviewRequest(panel);
+    getJSON('api/review-context').then(data => {
+      if (reviewRequests.get(panel) !== seq) return;
+      if (data.schema !== 'hub-source-review-context-summary/v1' || !['current', 'unavailable'].includes(data.status)
+          || typeof data.checked_at !== 'string' || !Number.isFinite(Date.parse(data.checked_at))
+          || !Array.isArray(data.reviews) || data.reviews.length > 300 || !Array.isArray(data.limitations))
+        throw new Error('The shared current source response could not be confirmed.');
+      const scopes = data.reviews.map(review => ({review, scope: reviewScope(review.scope)}));
+      if (scopes.some(item => !item.scope) || new Set(scopes.map(item => JSON.stringify(item.scope))).size !== scopes.length)
+        throw new Error('Exact lesson scopes could not be confirmed.');
+      // Filtering informational rows must not turn a malformed scope response
+      // into proof of empty intake or suppress its availability limitation.
+      if (options.teacherActionsOnly) scopes.forEach(({review, scope}) => renderSourceReviewContext(review, scope));
+      const limitationsSeen = new Set();
+      const unavailableReview = review => review.status === 'unavailable';
+      const rendered = scopes.filter(({review}) => !options.teacherActionsOnly || unavailableReview(review)
+        || (review.teacher_actionable !== false && !['waiting', 'excluded'].includes(review.status) && review.notices.length))
+        .map(({review, scope}) => {
+          const displayed = options.teacherActionsOnly ? {...review, retained_history: [], matched_other_lessons: [], former_student_work: [], teacher_material: [],
+            ...(unavailableReview(review) ? {status: 'unavailable', notices: []} : {})} : review;
+          return {review: displayed, detail: renderSourceReviewContext(displayed, scope, {compactEmpty: true, limitationsSeen})};
+        });
+      if (data.status === 'unavailable') {
+        const timedOut = data.read_failure?.reason === 'read_timeout';
+        progress.textContent = timedOut ? 'Check timed out — retry; no named review is issued.'
+          : 'Current source checks are unavailable; no named review is issued.';
+        body.replaceChildren(note(timedOut
+            ? 'The shared source check timed out. A timed-out read is not missing student work; no student identity decision is requested and the saved helper receipt is unchanged.'
+            : 'The shared source read could not be verified. No student identity decision is requested from this failed read; the saved helper receipt is unchanged.', 'info'),
+          ...[...data.limitations, ...data.reviews.flatMap(review => review.limitations)].filter(value => typeof value === 'string' && value)
+            .filter((value, index, all) => all.indexOf(value) === index).map(value => note(value, 'info')),
+          retryButton());
+        options.onSummary?.(data);
+        return;
       }
-    }
-    if (unassessed) body.append(note('Some original submissions have no current verified assessment details. This view did not score them; complete coverage or IC completion is not established.', 'info'));
-    if (options.teacherActionsOnly && !rendered.length) body.append(el('p', {class: 'muted',
-      text: 'No current teacher action was returned. This does not establish complete assessment or an IC run.'}));
-    body.append(...data.limitations.filter(value => typeof value === 'string' && value && !limitationsSeen.has(value)).map(value => note(value, 'info')));
-    const notices = rendered.reduce((count, {review}) => count + (review.status === 'unavailable' ? 0 : review.notices.length), 0);
-    progress.textContent = scopes.length ? `${scopes.length} exact lesson scopes read${unavailable ? `; ${unavailable} unavailable` : ''} · ${notices} ${options.teacherActionsOnly ? 'teacher action' : 'current source notice'}${notices === 1 ? '' : 's'}. Checked ${when(data.checked_at)}.`
-      : 'No exact current lesson scopes were returned; coverage is not established.';
-    options.onSummary?.(data);
-  }).catch(error => {
-    if (reviewRequests.get(panel) === seq) { progress.textContent = 'Unavailable; no named review is issued.'; body.replaceChildren(note('Current source checks are unavailable: ' + error.message + ' No student identity decision is requested from a failed read; the saved helper receipt is unchanged.', 'info')); }
-  });
+      let unassessed = false, unavailable = 0, timedOut = 0;
+      for (const {review, detail} of rendered) {
+        const label = [review.scope.class_name, review.scope.week, review.scope.lesson].join(' · ');
+        const quiet = !review.notices.length && !review.retained_history?.length && !review.matched_other_lessons?.length
+          && !review.former_student_work?.length && !review.teacher_material?.length;
+        if (quiet && review.status === 'not_assessed') { unassessed = true; continue; }
+        if (quiet && ['waiting', 'excluded'].includes(review.status)) {
+          body.append(el('p', {class: 'muted', text: `${label}: ${review.status === 'waiting'
+            ? 'Waiting for original submissions; no student-copy repair is requested.' : 'Excluded from this current source review.'}`}));
+        } else {
+          if (timedOutRead(review)) timedOut++;
+          else if (review.status === 'unavailable') unavailable++;
+          body.append(el('section', {}, el('h3', {text: label}), detail));
+        }
+      }
+      if (unassessed) body.append(note('Some original submissions have no current verified assessment details. This view did not score them; complete coverage or IC completion is not established.', 'info'));
+      if (options.teacherActionsOnly && !rendered.length) body.append(el('p', {class: 'muted',
+        text: 'No current teacher action was returned. This does not establish complete assessment or an IC run.'}));
+      body.append(...data.limitations.filter(value => typeof value === 'string' && value && !limitationsSeen.has(value)).map(value => note(value, 'info')));
+      const notices = rendered.reduce((count, {review}) => count + (review.status === 'unavailable' ? 0 : review.notices.length), 0);
+      // A timed-out scope was not read; never count it toward a finished check.
+      const read = timedOut ? `${scopes.length - timedOut} of ${scopes.length} exact lesson scopes read; ${timedOut} timed out — retry below`
+        : `${scopes.length} exact lesson scopes read`;
+      progress.textContent = scopes.length ? `${read}${unavailable ? `; ${unavailable} unavailable` : ''} · ${notices} ${options.teacherActionsOnly ? 'teacher action' : 'current source notice'}${notices === 1 ? '' : 's'}. Checked ${when(data.checked_at)}.`
+        : 'No exact current lesson scopes were returned; coverage is not established.';
+      options.onSummary?.(data);
+    }).catch(error => {
+      if (reviewRequests.get(panel) !== seq) return;
+      const timedOut = error.status === 504;
+      progress.textContent = timedOut ? 'Check timed out — retry; no named review is issued.' : 'Unavailable; no named review is issued.';
+      body.replaceChildren(note((timedOut ? 'Current source checks timed out: ' : 'Current source checks are unavailable: ') + error.message
+        + ' No student identity decision is requested from a failed read; the saved helper receipt is unchanged.', 'info'), retryButton());
+    });
+  };
+  run();
   return panel;
 }
 
@@ -718,6 +777,7 @@ function agendaIntakeStatus(row, summary) {
     {class_key: row.classKey, week: row.week, form_id: form})));
   if (matches.some(items => items.length !== 1)) return null;
   const reviews = matches.map(items => items[0]);
+  if (reviews.some(timedOutRead)) return 'timed_out';
   if (reviews.some(review => review.status === 'unavailable')) return 'unavailable';
   if (reviews.some(review => review.status === 'review' && review.teacher_actionable !== false && review.notices?.length)) return null;
   if (reviews.some(review => review.intake_status === 'unavailable')) return 'unreviewed';
@@ -751,15 +811,17 @@ function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails(
       el('td', {text: row.topic}),
       el('td', {}, intake ? el('span', {class: 'release-badge neutral', text: intake === 'waiting'
         ? 'Waiting for submissions' : intake === 'excluded' ? 'Excluded from grading review'
-          : intake === 'planned' ? 'Upcoming lesson' : intake === 'unreviewed' ? 'Intake not verified' : 'Intake unavailable'}) : lessonReviewBadge(row)),
+          : intake === 'planned' ? 'Upcoming lesson' : intake === 'unreviewed' ? 'Intake not verified'
+            : intake === 'timed_out' ? 'Check timed out' : 'Intake unavailable'}) : lessonReviewBadge(row)),
       el('td', {}, planningOnly ? el('p', {text: intake === 'waiting'
         ? 'Waiting for digital submissions. Lesson planning remains available.' : intake === 'planned'
           ? 'Upcoming lesson planning. Digital intake has not been checked.' : intake === 'unreviewed'
             ? 'Digital intake status is not established. Lesson planning remains available.' : 'Excluded from current grading review. Lesson planning remains available.'})
+        : intake === 'timed_out' ? note('The intake check timed out. Retry it in Current source checks; no missing work is inferred from a timed-out read.', 'info')
         : intake === 'unavailable' ? note('Current intake could not be verified. The read limitation is in Current source checks.', 'info')
         : ready ? el('p', {text: 'Linked lesson source is ready. Student copies are checked separately.'})
         : renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
-        planningOnly || intake === 'unavailable' ? null : renderAgendaSourceDiscrepancy(row),
+        planningOnly || intake === 'unavailable' || intake === 'timed_out' ? null : renderAgendaSourceDiscrepancy(row),
         el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
   });
   const table = el('table', {class: 'cockpit-table'},
@@ -835,8 +897,24 @@ async function printTodayFeedback(data, status, button) {
   } finally { button.disabled = false; }
 }
 
+// Rereads only the feedback sources; never prints, records delivery or retries by itself.
+function retryFeedbackButton() {
+  const button = el('button', {type: 'button'}, 'Retry feedback check');
+  button.onclick = () => {
+    button.disabled = true;
+    if (cockpit.feedbackData) {
+      const {source_problem, source_check, error, timed_out, ...kept} = cockpit.feedbackData;
+      cockpit.feedbackData = error ? null : {...kept, checking: true};
+    }
+    loadTodayFeedback(cockpit.seq);
+  };
+  return el('div', {class: 'action-row'}, button);
+}
+
 function renderTodayFeedback(data) {
-  if (data.error) return cockpitPanel('Feedback ready to print', note(data.error, 'info'));
+  if (data.error) return cockpitPanel('Feedback ready to print', note(data.timed_out
+    ? 'Feedback source check timed out — retry. Nothing is concluded about new, pending or printed feedback: ' + data.error
+    : data.error, 'info'), retryFeedbackButton());
   if (data.problem) return cockpitPanel('Feedback ready to print', note(data.problem, 'info'));
   const files = data.files || [];
   const packet = data.daily_packet;
@@ -856,10 +934,16 @@ function renderTodayFeedback(data) {
   const pendingCount = deliveryVerified ? (delivery.pending_file_ids || []).length : null;
   const recordedPrinted = deliveryVerified && pendingCount === 0;
   const historical = recordedPrinted || (data.date && data.date < (data.requested_date || todayISO()) && !pending.length);
-  const sourceNotice = data.source_problem ? note('Current feedback sources could not be fully checked. ' +
-    (packet?.status === 'ready' ? 'This saved dated document remains available: ' : '') + data.source_problem, 'info') : null;
+  // A timed-out or still-running source read never reads as "nothing new".
+  const timedOut = data.source_check?.status === 'timed_out';
+  const checking = data.checking === true && !data.source_problem;
+  const sourceNotice = data.source_problem ? el('div', {}, note((timedOut ? 'Feedback source check timed out — retry. '
+    : 'Current feedback sources could not be fully checked. ') +
+    (packet?.status === 'ready' ? 'This saved dated document remains available: ' : '') + data.source_problem, 'info'),
+    retryFeedbackButton()) : null;
   if (!files.length && packet?.status !== 'ready') {
-    panel.append(sourceNotice || note('No print-ready feedback documents were found in the connected course folders.', 'info'));
+    panel.append(sourceNotice || (checking ? note('Checking current feedback sources…', 'info')
+      : note('No print-ready feedback documents were found in the connected course folders.', 'info')));
     return panel;
   }
   const counts = packet?.report_counts;
@@ -909,7 +993,12 @@ function renderTodayFeedback(data) {
     dates.length ? el('details', {}, el('summary', {text: 'Other saved feedback dates'}),
       el('ul', {}, ...dates.map(item => el('li', {}, link(`${item.date} · ${item.pages} pages`, item.pdf_url))))) : null].filter(Boolean);
   if (historical) {
-    panel.append(...[el('p', {text: recordedPrinted ? 'No pending printing for these exact report versions. Historical PDFs remain available.' : `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${data.requested_date || todayISO()}. Earlier dated feedback remains available to reprint.`}), deliveryNotice,
+    const requested = data.requested_date || todayISO();
+    panel.append(...[el('p', {text: timedOut ? `New feedback for ${requested} was not checked because the source check timed out. Earlier dated feedback remains available to reprint.`
+      : checking ? `Checking current feedback for ${requested}… Earlier dated feedback remains available to reprint.`
+      : data.source_problem ? `Current feedback for ${requested} could not be checked. Earlier dated feedback remains available to reprint.`
+      : recordedPrinted ? `Saved feedback dated ${data.date} is recorded Printed. Historical PDFs remain available.`
+      : `No new feedback ${data.current_sources_verified ? 'for' : 'confirmed for'} ${requested}. Earlier dated feedback remains available to reprint.`}), deliveryNotice,
       sourceNotice,
       checklist ? el('p', {}, link('Open feedback checklist · Made / Printed / Handed to student', checklist)) : null,
       el('details', {}, el('summary', {text: `Earlier feedback · latest saved ${data.date}`}), ...contents)].filter(Boolean));
@@ -939,18 +1028,201 @@ async function loadTodayFeedback(seq) {
   const packet = await getJSON('api/feedback/daily').catch(error => ({error: error.message}));
   if (seq !== cockpit.seq) return;
   if (packet.status === 'ready') {
-    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet};
+    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet, checking: true};
   } else if (!cockpit.feedbackData) {
-    cockpit.feedbackData = packet.error ? {error: packet.error} : {date: packet.date, files: [], daily_packet: packet};
+    cockpit.feedbackData = packet.error ? {error: packet.error} : {date: packet.date, files: [], daily_packet: packet, checking: true};
   }
   renderTodayFeedbackArea(seq);
-  const data = await getJSON('api/feedback/today').catch(error => ({error: error.message}));
+  // A gateway timeout is a timed-out check, not a missing or empty feedback list.
+  const data = await getJSON('api/feedback/today').catch(error => ({error: error.message, timed_out: error.status === 504}));
   if (seq !== cockpit.seq) return;
   const problem = data.error || data.problem;
   const saved = cockpit.feedbackData?.daily_packet;
   cockpit.feedbackData = problem && saved?.status === 'ready'
-    ? {date: saved.date, files: [], daily_packet: saved, source_problem: problem} : data;
+    ? {date: saved.date, files: [], daily_packet: saved, source_problem: problem,
+       ...(data.timed_out ? {source_check: {status: 'timed_out'}} : {})} : data;
   renderTodayFeedbackArea(seq);
+}
+
+// ---------- Week ahead: lesson preflight ----------
+// One collapsible Today section. It reads the last saved check; "Check now"
+// rereads the Agenda and lesson sources. Only unresolved, actionable items are
+// listed; the machine evidence for each stays inside its own details.
+const weekAhead = {seq: 0, data: null, busy: '', error: '', supplies: false, prints: false, repairs: {}, packet: null};
+const WEEK_AHEAD_STATUS = {ready: 'Ready', needs_decision: 'Needs decisions', incomplete: 'Check incomplete',
+  inaccessible: 'Source unavailable', repaired_and_verified: 'Repaired and verified', not_checked: 'Not checked yet'};
+
+function weekAheadStart() {
+  const saved = store.get('weekAheadStart');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(saved || '') && saved >= mondayOf(todayISO())) return saved;
+  const today = todayISO();
+  return at(today).getDay() >= 5 || at(today).getDay() === 0 ? addDays(mondayOf(today), 7) : mondayOf(today);
+}
+function weekAheadWeeks() {
+  const n = Number(store.get('weekAheadWeeks') || 1);
+  return n >= 1 && n <= 4 ? n : 1;
+}
+
+function weekAheadItem(item, data) {
+  const where = [item.class + (item.sections?.length ? ' · ' + item.sections.join(', ') : ''),
+    item.date ? `${FULL_DAY[new Date(item.date + 'T12:00:00').toLocaleDateString('en-US', {weekday: 'short'})] || ''} ${item.date}`.trim() : item.week,
+    item.lesson, item.slides?.length ? `slide${item.slides.length > 1 ? 's' : ''} ${item.slides.join(', ')}` : ''].filter(Boolean);
+  const repair = weekAhead.repairs[item.fingerprint];
+  return el('li', {},
+    el('strong', {text: where.join(' · ')}), el('br'),
+    item.reason, ' ', el('em', {text: 'Next: ' + item.next_action}), ' ',
+    item.source_url ? link('Open source ↗', item.source_url) : null,
+    item.status === 'repairable' ? el('div', {class: 'action-row'},
+      el('button', {type: 'button', disabled: repair?.busy, onclick: () => weekAheadRepair(item, !repair?.plan)},
+        repair?.plan ? 'Apply this repair' : 'Preview repair'),
+      repair?.plan ? el('span', {class: 'muted', text: ` Writes ${repair.plan.writes || repair.plan.formula} into ${repair.plan.cell} only.`}) : null,
+      repair?.message ? el('span', {class: 'muted', text: ' ' + repair.message}) : null) : null,
+    el('details', {}, el('summary', {class: 'muted', text: 'Evidence'}),
+      el('pre', {text: JSON.stringify({kind: item.kind, status: item.status, blocking: item.blocking,
+        fingerprint: item.fingerprint, first_seen: item.first_seen, evidence: item.evidence}, null, 1)})));
+}
+
+function weekAheadSupplies(data) {
+  const rows = data?.supplies || [];
+  if (!rows.length) return note('No supplies are listed for these weeks.', 'info');
+  return el('table', {class: 'cockpit-table'},
+    el('thead', {}, el('tr', {}, ...['Item', 'Status', 'Quantity', 'Lesson', 'Use dates', 'Prep by'].map(h => el('th', {text: h})))),
+    el('tbody', {}, ...rows.map(s => el('tr', {},
+      el('td', {text: s.item + (s.also_named?.length ? ` (also: ${s.also_named.join(', ')})` : '')}),
+      el('td', {text: s.status}), el('td', {text: s.quantity}), el('td', {text: s.lessons.join('; ')}),
+      el('td', {text: s.use_dates.join(', ') || 'not stated'}), el('td', {text: s.prep_by || ''})))));
+}
+
+// The print list: each item's matched file, or the web page it prints from.
+function weekAheadPrints(data) {
+  const rows = data?.print_items || [];
+  if (!rows.length) return note('No print items are listed for these weeks.', 'info');
+  const quantity = p => Object.keys(p.per_section || {}).length
+    ? Object.entries(p.per_section).map(([s, n]) => `${s}: ${n ?? '?'}`).join(', ') + ` (${p.basis})` : p.basis;
+  const where = p => {
+    const url = p.web?.url || '';
+    if (url) return el('span', {}, 'Print from web: ', /^https?:\/\//.test(url) ? link(url, url) : url);
+    if (!p.file) return 'No file';
+    return p.file.name + (p.file.pages ? ` · ${p.file.pages} page${p.file.pages > 1 ? 's' : ''}, ${p.file.sides}`
+      : p.file.print_from_folder ? ' · Word file: print it from the lesson folder' : '');
+  };
+  return el('table', {class: 'cockpit-table'},
+    el('thead', {}, el('tr', {}, ...['Item', 'Lesson', 'Quantity', 'File or instruction'].map(h => el('th', {text: h})))),
+    el('tbody', {}, ...rows.map(p => el('tr', {},
+      el('td', {text: p.text + (p.optional ? ' (optional)' : '') + (p.teacher_only ? ' · TEACHER ONLY' : '')}),
+      el('td', {text: `${p.class} · ${p.lesson}`}), el('td', {text: quantity(p)}), el('td', {}, where(p))))));
+}
+
+function renderWeekAhead() {
+  const box = $('today-week-ahead');
+  if (!box) return;
+  const data = weekAhead.data;
+  const checkedAt = Object.fromEntries((data?.weeks || []).map(w => [w.label, w.checked_at]));
+  const open = (data?.exceptions || []).filter(e => e.status !== 'repaired_and_verified');
+  // A blocking problem, or anything first seen in this check, always shows.
+  const shownItems = open.filter(e => e.blocking || e.first_seen === checkedAt[e.week]);
+  const quiet = open.filter(e => !shownItems.includes(e));
+  const resolved = (data?.exceptions || []).length - open.length;
+  const status = data?.status ? (WEEK_AHEAD_STATUS[data.status] || data.status) : 'Not loaded';
+  const packet = weekAhead.packet || data?.packet;
+  const start = el('input', {type: 'date', value: weekAheadStart(), 'aria-label': 'First week (Monday)'});
+  const weeks = el('select', {'aria-label': 'Weeks'}, ...[1, 2, 3, 4].map(n =>
+    el('option', {value: String(n), selected: n === weekAheadWeeks()}, n === 1 ? '1 week' : `${n} weeks`)));
+  const choose = () => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(start.value)) store.set('weekAheadStart', mondayOf(start.value));
+    store.set('weekAheadWeeks', weeks.value);
+    loadWeekAhead();
+  };
+  start.addEventListener('change', choose);
+  weeks.addEventListener('change', choose);
+  const details = el('details', {class: 'cockpit-panel cockpit-details', id: 'week-ahead', open: store.get('weekAheadOpen') === '1'},
+    el('summary', {}, el('h2', {text: 'Week ahead'}),
+      el('span', {class: 'cockpit-summary-context muted',
+        text: `${status}${open.length ? ` · ${shownItems.length} to resolve` : ''}${data?.last_successful_check ? ' · last successful check ' + when(data.last_successful_check) : ''}`})),
+    el('div', {class: 'controls'}, el('label', {}, 'From ', start), el('label', {}, 'For ', weeks),
+      el('button', {type: 'button', disabled: !!weekAhead.busy, onclick: runWeekAhead}, 'Check now'),
+      packet?.status === 'ready' ? link('Open Monday packet (PDF)', packet.pdf_url) : null,
+      el('button', {type: 'button', disabled: !!weekAhead.busy || !data || ['not_checked', 'incomplete'].includes(data.status),
+        onclick: buildWeekPacket}, packet?.status === 'ready' ? 'Rebuild packet if changed' : 'Prepare Monday packet'),
+      el('button', {type: 'button', onclick: () => { weekAhead.prints = !weekAhead.prints; renderWeekAhead(); }},
+        weekAhead.prints ? 'Hide print list' : 'Print list'),
+      el('button', {type: 'button', onclick: () => { weekAhead.supplies = !weekAhead.supplies; renderWeekAhead(); }},
+        weekAhead.supplies ? 'Hide supply list' : 'Supply list')),
+    el('p', {class: 'muted', text: `Last successful check: ${data?.last_successful_check ? when(data.last_successful_check) : 'none for these weeks'}. ` +
+      'Access is checked with the Hub’s account only; student access is not verified.'}),
+    weekAhead.busy ? note(weekAhead.busy, 'info') : null,
+    weekAhead.error ? note(weekAhead.error) : null,
+    data?.status === 'incomplete' ? note('This check did not finish, so nothing in it counts as ready. Check now resumes where it stopped.') : null,
+    weekAhead.prints ? weekAheadPrints(data) : null,
+    weekAhead.supplies ? weekAheadSupplies(data) : null,
+    shownItems.length ? el('ul', {class: 'attention-list'}, ...shownItems.map(item => weekAheadItem(item, data)))
+      : data && data.status !== 'not_checked' ? el('p', {class: 'ok', text: '✓ Nothing unresolved in these weeks.'}) : null,
+    quiet.length ? el('details', {}, el('summary', {class: 'muted', text: `Earlier notes, unchanged (${quiet.length})`}),
+      el('ul', {class: 'attention-list'}, ...quiet.map(item => weekAheadItem(item, data)))) : null,
+    resolved ? el('p', {class: 'muted', text: `${resolved} repaired and read back.`}) : null,
+    data?.lessons?.length ? el('details', {}, el('summary', {class: 'muted', text: 'Lessons checked'}),
+      el('ul', {}, ...data.lessons.map(l => el('li', {},
+        `${l.class} · ${l.week} · ${l.topic}: ${WEEK_AHEAD_STATUS[l.status] || l.status}`,
+        l.reviews && Object.keys(l.reviews).some(k => k.startsWith('meeting_flow:') && l.reviews[k].state === 'verified')
+          ? ' · flow reviewed' : ' · flow not yet reviewed')))) : null);
+  details.addEventListener('toggle', () => store.set('weekAheadOpen', details.open ? '1' : '0'));
+  box.replaceChildren(details);
+}
+
+async function loadWeekAhead() {
+  const seq = ++weekAhead.seq;
+  weekAhead.error = '';
+  try {
+    const data = await getJSON(`api/weekly-preflight?start=${encodeURIComponent(weekAheadStart())}&weeks=${weekAheadWeeks()}`);
+    if (seq !== weekAhead.seq) return;
+    weekAhead.data = data; weekAhead.packet = null;
+  } catch (error) {
+    if (seq !== weekAhead.seq) return;
+    weekAhead.error = 'The week-ahead check could not be read: ' + error.message;
+  }
+  renderWeekAhead();
+}
+
+async function runWeekAhead() {
+  const seq = ++weekAhead.seq;
+  weekAhead.busy = 'Checking the Agenda and each lesson’s sources… Finished checks are saved as it goes.';
+  weekAhead.error = ''; renderWeekAhead();
+  try {
+    const data = await postJSON('api/weekly-preflight/run', {start: weekAheadStart(), weeks: weekAheadWeeks()});
+    if (seq !== weekAhead.seq) return;
+    weekAhead.data = {...data, packet: weekAhead.data?.packet}; weekAhead.repairs = {};
+  } catch (error) {
+    if (seq === weekAhead.seq) weekAhead.error = error.message;
+  }
+  if (seq !== weekAhead.seq) return;
+  weekAhead.busy = ''; renderWeekAhead();
+}
+
+async function buildWeekPacket() {
+  weekAhead.busy = 'Preparing the Monday packet from the last finished check…'; weekAhead.error = ''; renderWeekAhead();
+  try {
+    weekAhead.packet = await postJSON('api/weekly-preflight/packet', {start: weekAheadStart(), weeks: weekAheadWeeks()});
+  } catch (error) {
+    weekAhead.error = error.message;
+  }
+  weekAhead.busy = ''; renderWeekAhead();
+}
+
+async function weekAheadRepair(item, preview) {
+  const state = weekAhead.repairs[item.fingerprint] = {...weekAhead.repairs[item.fingerprint], busy: true, message: ''};
+  renderWeekAhead();
+  try {
+    const result = await postJSON('api/weekly-preflight/repair', {fingerprint: item.fingerprint, dry_run: preview});
+    if (preview && result.status === 'planned') state.plan = result;
+    else {
+      state.plan = null;
+      state.message = result.status === 'repaired_and_verified' ? 'Repaired and read back. Check now to refresh the list.'
+        : result.message || 'Nothing was written.';
+    }
+  } catch (error) {
+    state.plan = null; state.message = error.message;
+  }
+  state.busy = false; renderWeekAhead();
 }
 
 async function loadToday(force = false) {
@@ -960,10 +1232,11 @@ async function loadToday(force = false) {
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
     const packet = cockpit.feedbackData.daily_packet;
-    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet};
+    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet, checking: true};
     renderTodayFeedbackArea(seq);
   }
   loadTodayFeedback(seq);
+  loadWeekAhead();
   getJSON('api/learning-report').catch(() => ({configured: false})).then(data => {
     if (seq !== cockpit.seq) return;
     cockpit.learningData = data;
@@ -1023,7 +1296,18 @@ async function loadLessonReadiness(force = false) {
 }
 
 // ---------- Lesson plans ----------
-const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, started: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
+const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, refreshing: false, data: null, editing: null, focusRow: null, weeks: {}, weeksLoading: {}};
+
+async function refreshVisiblePlans() {
+  if (location.hash.slice(1).split('/')[0] !== 'plans' || document.visibilityState === 'hidden'
+      || plans.editing || plans.refreshing) return;
+  // Returning from the Agenda must not keep an indefinitely old lesson. An
+  // active editor retains its original revision and draft for guarded saving.
+  plans.refreshing = true;
+  plans.weeks = {};
+  try { await loadPlans(plans.date, true); }
+  finally { plans.refreshing = false; }
+}
 
 function renderDays(date) {
   if (date < plans.calendarMonday || date > addDays(plans.calendarMonday, 27)) plans.calendarMonday = mondayOf(date);
@@ -1044,7 +1328,7 @@ function renderDays(date) {
 }
 
 async function loadPlans(date, fresh = false) {
-  plans.started = true; plans.date = date; $('date').value = date; renderDays(date);
+  plans.date = date; $('date').value = date; renderDays(date);
   const seq = ++plans.seq;
   plans.data = null;
   $('week-label').textContent = at(date).toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric', year: 'numeric'});
@@ -1070,21 +1354,21 @@ function renderNextWeekNotes(data) {
   const box = $('next-week-notes');
   if (!box) return;
   const monday = addDays(data.week?.monday || mondayOf(plans.date), 7);
-  const heading = `Notes for next week · ${weekRange(monday)}`;
   const classes = data.classes || [];
-  box.replaceChildren(el('h2', {text: heading}),
-    el('p', {class: 'muted', text: 'Private notes saved in this browser. One note per class.'}),
+  box.replaceChildren(el('details', {class: 'next-week-notes notes-panel'},
+    el('summary', {}, el('h2', {text: 'Notes'})),
+    el('p', {class: 'muted', text: `Next week · ${weekRange(monday)}. Private notes saved in this browser. One note per class.`}),
     ...classes.map(cls => {
       const key = `next-week-note:${cls.key}:${monday}`;
-      const textarea = el('textarea', {rows: 2, 'aria-label': `${cls.name} notes for next week`, placeholder: `${cls.name}: what needs planning?`});
+      const textarea = el('textarea', {rows: 12, 'aria-label': `${cls.name} notes`, placeholder: `${cls.name}: what needs planning?`});
       textarea.value = store.get(key) || '';
       const status = el('small', {class: 'muted', text: ''});
       textarea.addEventListener('input', () => {
         store.set(key, textarea.value);
-        status.textContent = 'Saved in this browser';
+        status.textContent = store.get(key) === textarea.value ? 'Saved in this browser' : 'Not saved: this browser’s storage is unavailable. Keep this page open and copy your notes.';
       });
-      return el('label', {class: 'next-week-note'}, el('strong', {text: cls.name}), textarea, status);
-    }));
+      return el('details', {class: 'next-week-note'}, el('summary', {text: cls.name}), textarea, status);
+    })));
 }
 
 function block(label, text) {
@@ -1092,11 +1376,11 @@ function block(label, text) {
 }
 
 function renderLesson(cls, lesson, weekday) {
-  const box = el('div', {class: 'lesson', id: `lesson-${cls.key}-${lesson.row}`, tabindex: '-1'}, el('h3', {text: lesson.topic || 'Untitled lesson'}));
+  const box = el('details', {class: 'lesson', open: true, id: `lesson-${cls.key}-${lesson.row}`, tabindex: '-1'},
+    el('summary', {}, el('h3', {text: lesson.today ? `${FULL_DAY[weekday]} plan` : 'Lesson plan'})));
   const today = lesson.today;
   if (today) {
     box.append(el('div', {class: 'today'},
-      el('p', {class: 'label', text: FULL_DAY[weekday] + ' plan'}),
       el('p', {class: 'plan', text: today.plan || 'No plan written for this day yet.'}),
       today.note ? el('p', {class: 'teacher-note'}, el('strong', {text: 'Note: '}), today.note) : null));
   } else if (weekday === 'Sat' || weekday === 'Sun') {
@@ -1104,6 +1388,7 @@ function renderLesson(cls, lesson, weekday) {
   } else {
     box.append(note(`No ${FULL_DAY[weekday]} plan column: ${cls.name} doesn't meet on ${FULL_DAY[weekday]}s.`, 'info'));
   }
+  box.append(block('Agenda topic', lesson.topic || 'Untitled lesson'));
   if (lesson.todo) box.append(block('To-do', lesson.todo));
   if (lesson.prep) box.append(block('Lab / prep', lesson.prep));
   if (lesson.materials.length) {
@@ -1157,7 +1442,7 @@ function lessonEditor(cls, lesson) {
     const input = key === 'topic' || key.startsWith('link:') || key.startsWith('label:')
       ? el('input', {id, type: key.startsWith('link:') ? 'url' : 'text', disabled: locked || edit.busy,
                      placeholder: key.startsWith('link:') ? 'Paste a link, or leave empty' : ''})
-      : el('textarea', {id, rows: key.startsWith('plan:') ? 4 : 2, disabled: locked || edit.busy});
+      : el('textarea', {id, rows: key.startsWith('note:') ? 10 : 4, disabled: locked || edit.busy});
     input.value = edit.draft[key];
     input.addEventListener('input', () => { edit.draft[key] = input.value; });
     form.append(...[el('label', {class: 'field', for: id, text: fieldLabel(key)}), input,
@@ -1276,10 +1561,10 @@ function renderPlans(data) {
   plans.data = data;
   const editing = plans.editing;
   if (editing && !data.classes.some(cls => cls.lessons.some(l => `${cls.key}|${l.row}` === editing.key))) plans.editing = null;
-  $('week-label').textContent = data.week ? `${data.week.label} · ${weekRange(data.week.monday)}` : 'No Agenda week for this date';
+  $('week-label').textContent = data.week ? `Agenda ${data.week.label} · ${weekRange(data.week.monday)}` : 'No Agenda week for this date';
   $('week-closures').textContent = data.week?.closures || '';
   const cards = data.classes.map(cls => {
-    const card = el('article', {class: 'card ' + cls.key}, el('h2', {text: cls.name}));
+    const card = el('details', {class: 'card ' + cls.key, open: true}, el('summary', {}, el('h2', {text: cls.name})));
     if (cls.problem) card.append(note(cls.problem));
     cls.lessons.forEach(lesson => card.append(plans.editing?.key === `${cls.key}|${lesson.row}`
       ? lessonEditor(cls, lesson) : renderLesson(cls, lesson, data.weekday)));
@@ -1289,7 +1574,12 @@ function renderPlans(data) {
   if (plans.focusRow) {
     const target = document.getElementById('lesson-' + plans.focusRow.replace('|', '-'));
     plans.focusRow = null;
-    if (target) requestAnimationFrame(() => { target.scrollIntoView({behavior: 'smooth', block: 'center'}); target.focus?.(); });
+    if (target) requestAnimationFrame(() => {
+      for (let ancestor = target; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+      }
+      target.scrollIntoView({behavior: 'smooth', block: 'center'}); target.focus?.();
+    });
   }
 }
 
@@ -2239,11 +2529,21 @@ function studentRow(row, scores, formId) {
     el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores, formId));
 }
 
+// The teacher's own Form uploads: visible, linked and left out of every
+// student list, count, missing-work check and score. Nothing is moved.
+function teacherMaterialList(rows) {
+  return el('details', {class: 'teacher-material'},
+    el('summary', {text: `Teacher material — not student work (${rows.length})`}),
+    el('p', {class: 'muted', text: 'Uploaded from your own school account, so it is not counted as a student submission, a missing student or an unmatched student. The originals stay where they are. If one was meant for a student, resubmit it with that student’s name.'}),
+    el('ul', {}, rows.map(r => el('li', {},
+      el('small', {class: 'muted', text: when(r.submitted_at) + (r.to ? ` · ${r.to}` : '')}), fileList(r.files || [])))));
+}
+
 function renderForm(form, lesson) {
   const section = work.section;
   const inSection = r => section === 'all' || r.section === section;
-  const box = el('section', {class: 'form-work'},
-    el('div', {class: 'form-head'}, el('h3', {text: form.label}), link('Open Form ↗', form.url, 'chip')));
+  const box = el('details', {class: 'form-work', open: true},
+    el('summary', {class: 'form-head'}, el('h3', {text: form.label})), link('Open Form ↗', form.url, 'chip'));
   if (form.problem) box.append(note(form.problem));
   if (!form.form_id || (form.problem && !form.students.length)) return box;
   const recheck = closedRecheck(form);
@@ -2332,8 +2632,9 @@ function renderForm(form, lesson) {
       el('tbody', {}, listed.map(r => studentRow(r, scores, form.form_id))))));
   } else {
     box.append(note(recheck && late.length ? 'Current selected submissions are listed below; their original response history is retained.'
-      : late.length ? 'No on-time responses.' : 'No responses yet.', 'info'));
+      : late.length ? 'No on-time responses.' : form.teacher_uploads?.length ? 'No student responses yet.' : 'No responses yet.', 'info'));
   }
+  if (form.teacher_uploads?.length) box.append(teacherMaterialList(form.teacher_uploads));
   if (late.length) {
     box.append(el('div', {class: 'late'}, el('h4', {text: `${recheck ? 'Late submissions — retained for recheck' : 'Late — not graded'} (${late.length})`}),
       el('p', {class: 'muted', text: `Turned in after ${form.window?.label}. ${recheck ? 'Matched submitted files can be reconsidered once source checks are clear; the original submission date and Late label are preserved.' : 'Tidy moves these into the week’s “⏰ Late — not graded” folder.'}`}),
@@ -2379,8 +2680,9 @@ function renderWork() {
   if (data.folder_reviews?.length) {
     parts.push(el('section', {class: 'folder-review'},
       el('h3', {text: 'Check this shared lesson folder'}),
-      ...data.folder_reviews.map(review => el('p', {class: 'note info'},
-        review.message, ' ', link(review.folder_name + ' ↗', review.folder_url)))));
+      el('details', {open: true}, el('summary', {text: `Folder checks (${data.folder_reviews.length})`}),
+        ...data.folder_reviews.map(review => el('p', {class: 'note info'},
+          review.message, ' ', link(review.folder_name + ' ↗', review.folder_url))))));
   }
   for (const lesson of data.lessons) {
     parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week})));
@@ -2392,10 +2694,12 @@ function renderWork() {
     parts.push(el('section', {class: 'form-work'},
       el('div', {class: 'form-head'}, el('h3', {text: 'Confirm these submission matches'})),
       note(`These ${other.length === 1 ? 'file is' : 'files are'} already in the ${data.week} turn-in folders. The Hub couldn’t safely match ${other.length === 1 ? 'it' : 'them'} to one assignment, so scoring is held until the match is clear. Open the linked work and confirm the assignment; nothing was moved.`, 'info'),
-      el('div', {class: 'table-wrap'}, el('table', {},
-        el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
-        el('tbody', {}, other.map(r => studentRow(r)))))));
+      el('details', {open: true}, el('summary', {text: `Submission matches to check (${other.length})`}),
+        el('div', {class: 'table-wrap'}, el('table', {},
+          el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
+          el('tbody', {}, other.map(r => studentRow(r))))))));
   }
+  if (data.teacher_uploads?.length) parts.push(el('section', {class: 'form-work'}, teacherMaterialList(data.teacher_uploads)));
   const entry = weekEntryBox();
   if (entry) parts.push(entry);
   $('work-body').replaceChildren(...parts);
@@ -2418,8 +2722,9 @@ function renderRosterCheck(check) {
     no_roster: f => [el('strong', {text: f.who}), ' isn’t on any class roster', f.assignment ? ` (${f.assignment})` : '', '. New, left, or a visitor?'],
     twice: f => [el('strong', {text: f.who}), ` is listed twice (${f.section}).`],
   };
-  box.append(el('ul', {class: 'flags'}, flags.map(f => el('li', {}, ...say[f.kind](f),
-    f.url ? [' ', link('Open ↗', f.url)] : []))));
+  box.append(el('details', {open: true}, el('summary', {text: `Roster flags to check (${flags.length})`}),
+    el('ul', {class: 'flags'}, flags.map(f => el('li', {}, ...say[f.kind](f),
+      f.url ? [' ', link('Open ↗', f.url)] : [])))));
   return box;
 }
 
@@ -2442,17 +2747,20 @@ function renderTidy(box, p) {
     m.from_name ? el('small', {class: 'muted', text: ' — from ' + m.from_name}) : null);
   const toWeek = p.moves.filter(m => m.to !== 'late'), toLate = p.moves.filter(m => m.to === 'late');
   if (toWeek.length) {
-    parts.push(el('p', {class: 'label', text: `Move into it (${toWeek.length})`}), el('ul', {class: 'files'}, toWeek.map(item)));
+    parts.push(el('details', {open: true}, el('summary', {text: `Move into it (${toWeek.length})`}),
+      el('ul', {class: 'files'}, toWeek.map(item))));
   }
   if (toLate.length) {
-    parts.push(el('p', {class: 'label', text: `Move into “${p.create_late || p.late_folder?.name}” inside it (${toLate.length}) — turned in after their assignment’s two weeks`}),
-      el('ul', {class: 'files'}, toLate.map(item)));
+    parts.push(el('details', {open: true},
+      el('summary', {text: `Move into “${p.create_late || p.late_folder?.name}” inside it (${toLate.length}) — turned in after their assignment’s two weeks`}),
+      el('ul', {class: 'files'}, toLate.map(item))));
   }
   if (p.empty_after.length) {
     parts.push(el('p', {class: 'muted', text: (p.can_trash
-      ? 'Then these emptied extra folders go to the Drive trash (you can restore them): '
-      : 'Then these emptied extra folders get “_” in front of their names so you know to skip them: ')
-      + p.empty_after.map(e => e.name).join(', ')}));
+      ? 'Then these emptied extra folders go to the Drive trash (you can restore them).'
+      : 'Then these emptied extra folders get “_” in front of their names so you know to skip them.')}),
+      el('details', {open: true}, el('summary', {text: `Emptied extra folders (${p.empty_after.length})`}),
+        el('ul', {class: 'files'}, p.empty_after.map(e => el('li', {text: e.name})))));
   }
   if (renames.length) {
     // Name and lesson first, so a Drive search by a student's name finds their work.
@@ -2623,10 +2931,70 @@ async function missingWorkSheets() {
   }
 }
 
+// ---------- Shared System notes ----------
+// Navigation/Refresh must never erase a draft. A reload compares the latest
+// saved copy, and a save is confirmed only by the server's private readback.
+const systemNotes = {loaded: false, loading: false, busy: false, dirty: false,
+  text: '', revision: '', updatedAt: null, message: '', error: false, comparison: null};
+
+function renderSystemNotes() {
+  const state = systemNotes, box = $('system-notes-body');
+  if (!box) return;
+  const input = el('textarea', {rows: 14, maxlength: 30000, 'aria-label': 'System notes',
+    disabled: !state.loaded || state.busy, placeholder: 'What needs attention? Add the class or lesson and a link when useful.'});
+  input.value = state.text;
+  const status = el('p', {class: 'status' + (state.error ? ' error' : ''), role: 'status',
+    text: state.message || (state.updatedAt ? `Saved in the Hub · ${when(state.updatedAt)}` : state.loading ? 'Reading saved notes…' : '')});
+  const save = el('button', {type: 'button', class: 'primary', disabled: !state.loaded || !state.dirty || state.busy,
+    onclick: saveSystemNotes}, state.busy ? 'Saving…' : 'Save notes');
+  input.addEventListener('input', () => {
+    state.text = input.value; state.dirty = true; state.message = 'Unsaved changes'; state.error = false;
+    status.textContent = state.message; status.className = 'status'; save.disabled = state.busy;
+  });
+  box.replaceChildren(...[input, el('div', {class: 'action-row'}, save,
+    el('button', {type: 'button', disabled: state.loading || state.busy, onclick: () => loadSystemNotes(true)},
+      'Reload saved notes')), status,
+    state.comparison !== null ? el('details', {open: true}, el('summary', {text: 'Saved notes from another tab'}),
+      el('p', {class: 'plan', text: state.comparison || '(empty)'}),
+      el('p', {class: 'muted', text: 'Your draft is still above. Combine anything you need before saving.'}),
+      el('button', {type: 'button', onclick: () => {
+        state.text = state.comparison; state.comparison = null; state.dirty = false;
+        state.message = 'Showing saved notes'; state.error = false; renderSystemNotes();
+      }}, 'Use saved notes')) : null].filter(Boolean));
+}
+
+async function loadSystemNotes(force = false) {
+  const state = systemNotes;
+  if (state.loading || state.busy || (state.loaded && !force)) { renderSystemNotes(); return; }
+  state.loading = true; state.message = 'Reading saved notes…'; state.error = false; renderSystemNotes();
+  try {
+    const saved = await getJSON('api/system/notes');
+    const hadDraft = state.loaded && state.dirty && state.text !== saved.text;
+    state.comparison = hadDraft ? saved.text : null;
+    if (!hadDraft) { state.text = saved.text; state.dirty = false; }
+    state.loaded = true; state.revision = saved.revision; state.updatedAt = saved.updated_at;
+    state.message = hadDraft ? 'Saved notes reloaded. Your unsaved draft is preserved above; compare the saved copy below.'
+      : saved.updated_at ? `Saved in the Hub · ${when(saved.updated_at)}` : 'No saved notes yet.';
+  } catch (error) { state.message = error.message; state.error = true; }
+  finally { state.loading = false; renderSystemNotes(); }
+}
+
+async function saveSystemNotes() {
+  const state = systemNotes;
+  if (!state.loaded || !state.dirty || state.busy || state.loading) return;
+  state.busy = true; state.message = 'Saving notes…'; state.error = false; renderSystemNotes();
+  try {
+    const saved = await postJSON('api/system/notes', {text: state.text, revision: state.revision});
+    state.text = saved.text; state.revision = saved.revision; state.updatedAt = saved.updated_at;
+    state.dirty = false; state.comparison = null; state.message = `Saved in the Hub · ${when(saved.updated_at)}`;
+  } catch (error) { state.message = error.message; state.error = true; }
+  finally { state.busy = false; renderSystemNotes(); }
+}
+
 // ---------- Routine: the morning score handoff ----------
 function renderRoutine() {
-  $('routine-body').replaceChildren(el('section', {class: 'routine routine-morning'},
-    el('h2', {text: 'Morning score check'}),
+  $('routine-body').replaceChildren(el('details', {class: 'routine routine-morning'},
+    el('summary', {}, el('h2', {text: 'Morning score check'})),
     el('ol', {},
       el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
       el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, including Study Hall. Verified submitted work is filed as dated copies in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
@@ -2705,6 +3073,7 @@ async function runLinkCheck() {
 
 function loadRoutine() {
   renderRoutine();
+  loadSystemNotes();
   loadMorningSummary();
   window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 }
@@ -2720,7 +3089,7 @@ function showTab() {
   else if (current === 'routine') loadRoutine();
   else {
     loadLessonReadiness();
-    if (!plans.started) loadPlans(plans.date);
+    refreshVisiblePlans();
   }
 }
 
@@ -2743,6 +3112,8 @@ $('reload-work').addEventListener('click', async () => {
 $('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
 $('missing-sheets').addEventListener('click', missingWorkSheets);
 window.addEventListener('hashchange', showTab);
+window.addEventListener('focus', refreshVisiblePlans);
+document.addEventListener('visibilitychange', refreshVisiblePlans);
 showTab();
 
 let morningReports = [], morningRecovery = [];
@@ -2782,7 +3153,7 @@ async function loadMorningSummary() {
     if (seq !== morningSummarySeq) return;
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
-    box.replaceChildren(el('h2', {text: 'Morning helper review'}));
+    box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review'})));
     visibleReviewPanels.routine = currentSourceReviewPanel($('page-routine')?.hidden !== true);
     box.append(visibleReviewPanels.routine);
     if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The weekday helper runs at 7:00 when enabled. An enabled schedule is not proof of entry; Today shows the saved-and-reloaded results when a receipt arrives.', 'info')); return; }
@@ -2805,6 +3176,6 @@ async function loadMorningSummary() {
       const emptyResult = report.items.length ? null : el('p', {text: morningProblem(report)});
       box.append(el('details', {open: i === 0}, el('summary', {text: `${report.day}: ${words(report.code)}`}), emptyResult, lines, ...details));
     });
-  } catch { if (seq === morningSummarySeq) box.replaceChildren(el('h2', {text: 'Morning helper review'}), note('The morning summary could not be read. No successful IC save is confirmed.')); }
+  } catch { if (seq === morningSummarySeq) box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review · unavailable'})), note('The morning summary could not be read. No successful IC save is confirmed.')); }
 }
 loadMorningSummary();

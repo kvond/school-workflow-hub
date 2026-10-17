@@ -55,12 +55,19 @@ h4 { font-size: 14px; margin: 12px 0 6px; }
 .days button small { color: var(--muted); }
 .days button[aria-current="date"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .days button[aria-current="date"] small { color: inherit; }
-.next-week-notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 12px;
+.next-week-notes {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 10px; }
-.next-week-notes h2, .next-week-notes > p { grid-column: 1 / -1; margin: 0; }
-.next-week-note { display: grid; gap: 3px; font-size: 13px; }
-.next-week-note textarea { width: 100%; min-height: 54px; resize: vertical; }
+.next-week-note { margin-top: 12px; font-size: 15px; }
+.next-week-note > summary { font-weight: 600; }
+.notes-panel textarea { display: block; width: 100%; min-height: 280px; resize: vertical; font: inherit;
+  color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 10px; }
 .next-week-note small { min-height: 1em; }
+details > summary { cursor: pointer; }
+details > summary h2, details > summary h3 { display: inline; margin: 0; }
+details[open] > summary { margin-bottom: 10px; }
+details > summary:focus-visible { outline: 2px solid var(--link); outline-offset: 4px; border-radius: 2px; }
+.calendar-picker { margin: 0 0 12px; }
+.form-work > .form-head { display: list-item; }
 .manual-tools { margin: 18px 0; }
 .manual-tools > summary { cursor: pointer; color: var(--muted); }
 .manual-tools .controls { margin-top: 8px; }
@@ -200,6 +207,8 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .cockpit-label { margin: 5px 0 10px; color: var(--muted); }
 .attention-list { margin: 6px 0 10px; padding-left: 20px; }
 .attention-list li { margin: 7px 0; }
+#week-ahead .controls { margin: 4px 0 10px; }
+#week-ahead pre { white-space: pre-wrap; font-size: 12px; margin: 4px 0; }
 .needs { color: var(--warn-ink); font-weight: 600; }
 .release-badge { display: inline-block; flex: 0 0 auto; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 750; letter-spacing: .02em; }
 .release-badge.ready { background: #e8f4ed; color: #25643d; }

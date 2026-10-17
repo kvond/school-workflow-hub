@@ -120,13 +120,24 @@ def parse_weeks(cells):
         return [], "The Weeks tab has no row with 'week' and 'Monday' headers."
     col = {v: c for c, v in header.items() if v}
     closures = next((c for v, c in col.items() if "closure" in v), None)
+    # Calendar annotations are not lesson identities. In particular, the
+    # winter-break handoff can point at the next Monday without being that
+    # teaching week. Keep its explicit takeover date only as an interval end.
+    takeover = col.get("takesoveron")
+    transitions = {day for row in range(r + 1, LAST_ROW + 1)
+                   if takeover and (day := parse_date(text(cells.get((row, takeover)))))}
     weeks = []
     for row in range(r + 1, LAST_ROW + 1):
-        label = text(cells.get((row, col["week"]))).strip()
+        shown = text(cells.get((row, col["week"]))).strip()
+        label = re.fullmatch(r"((?:Wk|Week)\s*\d{1,2}[a-z]?)(?:\s+[—–-]\s+.+)?", shown, re.I)
         monday = parse_date(text(cells.get((row, col["monday"]))))
         if label and monday:
-            weeks.append({"label": label, "monday": monday.isoformat(),
-                          "closures": text(cells.get((row, closures))).strip() if closures else ""})
+            week = {"label": label.group(1), "monday": monday.isoformat(),
+                    "closures": text(cells.get((row, closures))).strip() if closures else ""}
+            ends = [day for day in transitions if monday < day < monday + timedelta(days=7)]
+            if ends:
+                week["end"] = min(ends).isoformat()
+            weeks.append(week)
     return weeks, None
 
 
@@ -204,6 +215,32 @@ def plain(cell):
                    for run in cell.get("textFormatRuns") or [])
 
 
+def manual_material_links(cell):
+    """A manually entered material link, rather than a derived link control.
+
+    A pasted URL or explicitly linked label can replace an older hidden URL.
+    Formula controls that refer to another cell still use that backing cell;
+    a literal HYPERLINK URL is itself an explicit material choice.
+    """
+    cell = cell or {}
+    formula = (cell.get("userEnteredValue") or {}).get("formulaValue") or ""
+    if formula:
+        literal = re.fullmatch(
+            r'\s*=\s*HYPERLINK\(\s*"(https://[^"]+)"\s*(?:[,;]\s*"([^"]*)"\s*)?\)\s*',
+            formula, re.I)
+        return [(literal.group(1), literal.group(2) or "")] if literal else []
+    shown = text(cell).strip()
+    # A replaced plain URL can retain Sheets' older whole-cell link format.
+    if URL.fullmatch(shown):
+        return [(shown, "")]
+    return links(cell)
+
+
+def material_links(hidden, visible=None):
+    """Resolve the teacher's explicit visible edit before a hidden fallback."""
+    return manual_material_links(visible) or links(hidden) or links(visible)
+
+
 def build_lesson(cells, layout, row, edit_url):
     cols = layout["columns"]
 
@@ -219,7 +256,7 @@ def build_lesson(cells, layout, row, edit_url):
                                    ("folder_url", "folder", "Lesson folder"),
                                    ("second_deck", "second_deck_display", "2nd deck"),
                                    ("extra_url", None, "Extra material")):
-        found = links(cell(hidden)) or (links(cell(visible)) if visible else [])
+        found = material_links(cell(hidden), cell(visible) if visible else None)
         if found:
             materials.append({"label": label, "url": found[0][0]})
     for url, label in links(cell("activity")):
@@ -228,8 +265,10 @@ def build_lesson(cells, layout, row, edit_url):
     # Which text cells the dashboard may save: True, or False for a cell with a link or formula.
     editable = {key: plain(cells.get((row, c))) for key, c in field_columns(layout).items()}
     # The links the dashboard can change (see agenda_edit.LINKS), as the Agenda has them now.
-    current = {"deck": first_link(cell("teacher_url")) or first_link(cell("teacher_deck")),
-               "deck2": first_link(cell("second_deck")),
+    teacher = material_links(cell("teacher_url"), cell("teacher_deck"))
+    second = material_links(cell("second_deck"), cell("second_deck_display"))
+    current = {"deck": teacher[0][0] if teacher else "",
+               "deck2": second[0][0] if second else "",
                "activity": first_link(cell("extra_url")) or first_link(cell("activity")),
                "turnin": first_link(cell("turnin"), forms=True) or first_link(cell("turnin_url"), forms=True),
                "turnin2": first_link(cell("turnin2"), forms=True)}
@@ -304,7 +343,8 @@ class Agenda:
     def week_for(self, day):
         for week in self.weeks:
             start = date.fromisoformat(week["monday"])
-            if start <= day < start + timedelta(days=7):
+            end = date.fromisoformat(week["end"]) if week.get("end") else start + timedelta(days=7)
+            if start <= day < end:
                 return week
         return None
 
@@ -341,15 +381,20 @@ class Agenda:
         if not entry["layout"]:
             return []
         dated = {norm(w["label"]): w for w in self.weeks}
-        options, seen = [], set()
+        options, grouped = [], {}
         for row, label in entry["layout"]["rows"]:
-            if norm(label) in seen:
-                continue
-            seen.add(norm(label))
             lesson = build_lesson(entry["cells"], entry["layout"], row, "")
-            week = dated.get(norm(label), {})
-            options.append({"label": label, "topic": lesson["topic"], "monday": week.get("monday"),
-                            "forms": len(lesson["forms"])})
+            key = norm(label)
+            if key not in grouped:
+                week = dated.get(key, {})
+                item = {"label": label, "topic": "", "monday": week.get("monday"), "forms": 0}
+                grouped[key] = (item, [], set())
+                options.append(item)
+            item, topics, forms = grouped[key]
+            if lesson["topic"] and lesson["topic"] not in topics:
+                topics.append(lesson["topic"])
+            forms.update(f["form_id"] or f["url"] for f in lesson["forms"])
+            item.update(topic=" / ".join(topics), forms=len(forms))
         return options
 
 

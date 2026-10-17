@@ -66,8 +66,8 @@ class FormAuditReadinessTests(unittest.TestCase):
              patch.object(completion, 'score_file', side_effect=AssertionError('audit must not assess student work')), \
              patch.object(google, 'append_rows', side_effect=AssertionError('audit must not write')), \
              patch.object(google, 'update_cells', side_effect=AssertionError('audit must not write')), \
-             patch.object(audit, 'date') as clock:
-            clock.today.return_value = date(2026, 9, 23)
+             patch.object(audit, 'school_today') as clock:
+            clock.return_value = date(2026, 9, 23)
             if check_hold:
                 with patch.object(audit.completion_holds, 'check', side_effect=check_hold):
                     result = audit.check('readonly', self.agenda, 'forensics', self.config if configured else {})

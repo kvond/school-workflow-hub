@@ -1,5 +1,45 @@
 # School Workflow Hub — start here
 
+## System notes and compact pages
+
+Agenda week dates come from the explicit Weeks Monday and takeover cells.
+Descriptive suffixes do not change week identity; break handoffs are not teaching
+weeks, and Wk16b stays distinct. Same-week lesson rows and Forms are preserved.
+Source checks use the current Eastern date. The dated plan and Agenda topic are
+shown separately so a changed daily plan does not imply that its topic was edited.
+Returning to Lessons or bringing its browser tab back into view rereads the
+selected date from the Agenda. An active lesson editor keeps its original save
+basis and unsaved draft. Explicit readiness refresh also bypasses the server's
+Agenda cache; it cannot reuse the older lesson behind a newly refreshed plan.
+An explicit visible material URL or linked label takes precedence over its old
+hidden URL slot. Formula-derived controls continue to use their backing cells;
+literal HYPERLINK edits remain explicit choices. Hub saves update corresponding
+manual visible links too, and refuse ambiguous multi-link or literal-formula
+replacement. This leaves separate Forms, dates, plans and explicit teacher-source
+registrations intact; it does not merge assignments or rewrite Agenda content.
+
+Long Today panels, class/lesson plans, assignment work tables and System reports
+have keyboard-accessible collapsible headings. Lesson planning Notes keeps its
+existing class/next-week browser storage and now offers a full-width, resizable
+editor. Those notes remain local to that browser; they are not silently moved or
+merged into another store.
+
+System → Notes is shared through the existing private Hub store, scoped to the
+configured Agenda. Authenticated GET `/v2/api/system/notes` returns `text`,
+`revision` and `updated_at`. Same-origin teacher JSON POST to the same endpoint
+accepts exactly `text` and the last-read `revision` (empty for an absent record),
+up to 30,000 characters. A save atomically preserves the new current text and an
+immutable history record, then verifies both. Concurrent changes return 409;
+unavailable or uncertain storage returns 503. The editor retains the unsaved
+draft and can show a freshly read saved copy for comparison. Refresh/navigation
+does not silently replace that draft.
+
+The authorized daily maintenance worker should read these notes with Today and
+System status, investigate concrete reported problems and record verified
+resolution evidence. Notes alone do not grant new permissions or confirm a
+repair. They never change grades, delivery marks, student work, external access
+or schedules. A stored note and a configured daily task are not completed checks.
+
 ## Teacher review context
 
 Every request to review submitted work must identify the class/section,
@@ -24,6 +64,19 @@ it must not create student-identity questions from a provider failure. The exact
 teacher-controlled Form title determines the Photosynthesis exception when a
 weekly Agenda row contains several lesson topics; student filenames never do.
 
+A teacher-account Form respondent does not prove that the uploaded artifact is
+teacher material: a teacher may submit on behalf of a student absent from a stale
+roster. These rows retain the existing identity/source checks until exact material
+evidence is verified. Teacher-upload informational rendering remains compatible
+with verified records, but the reader never excludes work on email alone.
+
+A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
+review discovery or the Today feedback catalog is repeated once, only within the
+first 20 seconds of the request. A timeout that remains returns `read_failure`
+(review) or `source_check.status == "timed_out"` (feedback): Today shows "Check
+timed out — retry" with a teacher-pressed Retry, does not count the scope as
+read, and draws no missing-work, identity, new-feedback or printed conclusion.
+
 Current/upcoming Agenda readiness checks each registered Turn-in Form against
 its own exact teacher-source collection and current folder metadata. Separate
 Forms do not borrow decks, native-read access or a teacher hold from one another.
@@ -32,6 +85,14 @@ match. The display lists each Form's readiness separately and identifies verifie
 sources omitted from the Hub's current Agenda lesson links as a separate link
 discrepancy. This read-only check does not change scoring, assignment selection,
 embedded codes or distributed student copies.
+
+## Weekly lesson-readiness preflight
+
+Today's collapsible **Week ahead** section checks 1–4 upcoming weeks against
+the Weeks-tab calendar, the Agenda's link cells, each lesson's sources, deck
+codes, print list and supplies, and builds a private Monday packet. It is
+fixture-tested only; it adds no schedule and never reads submissions. See
+[Weekly preflight](WEEKLY_PREFLIGHT.md).
 
 ## October 8 student records
 
