@@ -5,6 +5,8 @@ import unittest
 import zipfile
 
 from school_workflow_hub.workflows.deck_release import (
+    critical_aspects,
+    derive_teacher_contract,
     fingerprint,
     pptx_slide_texts,
     validate_release,
@@ -146,6 +148,43 @@ class DeckReleaseTests(unittest.TestCase):
             archive.writestr("ppt/slides/slide2.xml", slide_xml("Second"))
             archive.writestr("ppt/slides/slide1.xml", slide_xml("First"))
         self.assertEqual(pptx_slide_texts(raw.getvalue()), ("First", "Second"))
+
+
+
+class CriticalAspectsTests(unittest.TestCase):
+    """One reader for both course formats (shared with native feedback)."""
+
+    def test_biology_lesson_numbering(self):
+        self.assertEqual(critical_aspects(
+            "TO PRINT\nCA1 worksheet\nCRITICAL ASPECTS\n1. Storing energy\n2. Releasing energy\n"
+            "[[MARKER-INVENTORY:C09]] NOTES=4"),
+            [{"number": 1, "name": "Storing energy"}, {"number": 2, "name": "Releasing energy"}])
+
+    def test_anatomy_unit_numbering_and_singular_heading(self):
+        reference = ("TEACHER REFERENCE — do not project\nCRITICAL ASPECT\n"
+                     "3.  Structure fits function — why a tissue is built the way it is\n"
+                     "WEEK QUESTION\nCould you predict the job?")
+        self.assertEqual(critical_aspects(reference), [
+            {"number": 3, "name": "Structure fits function — why a tissue is built the way it is"}])
+        self.assertEqual(derive_teacher_contract((reference,))["critical_aspects"],
+                         ["structure fits function"])
+
+    def test_names_keep_their_exact_spacing(self):
+        self.assertEqual(critical_aspects("CRITICAL ASPECTS\n1.  Two  spaces  kept\n")[0]["name"],
+                         "Two  spaces  kept")
+
+    def test_dash_numbering_and_unnumbered_lists(self):
+        self.assertEqual(critical_aspects("CRITICAL ASPECTS\n1 — Permeability: what crosses\nWEEK QUESTION\nWhy?"),
+                         [{"number": 1, "name": "Permeability: what crosses"}])
+        self.assertEqual(critical_aspects("Critical aspects\nPermeability\nGradients\nNOT SCORED\nBank"),
+                         [{"number": None, "name": "Permeability"}, {"number": None, "name": "Gradients"}])
+
+    def test_numbered_list_ends_at_the_first_unnumbered_line(self):
+        self.assertEqual([a["name"] for a in critical_aspects(
+            "CRITICAL ASPECTS\n1. Storing energy\nWATCH FOR\nCommon errors")], ["Storing energy"])
+
+    def test_no_heading_means_no_list(self):
+        self.assertEqual(critical_aspects("Critical aspect: storing energy\n1. Not a list"), [])
 
 
 if __name__ == "__main__":

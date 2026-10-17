@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from . import completion, feedback, google, source_repair_provenance, work
 from school_workflow_hub.adapters import assessment_provider, assessment_save, grading_records
 from school_workflow_hub.adapters.firestore_state import configured_store
+from school_workflow_hub.workflows import deck_release
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, key
 from school_workflow_hub.core.runs import content_hash
 
@@ -222,13 +223,29 @@ def _receipt_date(receipt, scope, submitted_at):
 
 
 def _aspects(reference, score):
-    block = re.search(r'(?im)^CRITICAL ASPECTS\s*\n((?:\d+\.\s*[^\n]+\n?){1,4})', reference)
-    if not block:
+    """Pair each listed critical aspect with its one revised-answer field.
+
+    Aspect N pairs with CA<N>-MASTERY when every listed number has that field
+    (Biology numbers aspects within the lesson). A&P numbers them within the
+    unit ("3.") while the deck's field is CA1-MASTERY, so when no listed number
+    has its field the list pairs in order with the deck's CA fields, if the
+    counts match. A partial match is a coding error and refuses."""
+    listed = [a for a in deck_release.critical_aspects(reference) if a['number'] is not None][:4]
+    if not listed:
         raise Held('The lesson needs a readable, numbered critical-aspects list.')
-    names = dict(re.findall(r'(?m)^(\d+)\.\s*([^\n]+)', block[1]))
+    drafts = {item['id'] for item in score['items'] if item['category'] == 'DRAFT'}
+    by_number = ['CA%d-MASTERY' % a['number'] for a in listed]
+    matched = [qid in drafts for qid in by_number]
+    if any(matched) and not all(matched):
+        raise Held('A critical aspect does not have one identifiable revised-answer field.')
+    if not all(matched) or len(set(by_number)) != len(by_number):
+        fields = sorted((qid for qid in drafts if re.fullmatch(r'CA\d+-MASTERY', qid)),
+                        key=lambda qid: int(qid[2:-8]))
+        if len(fields) != len(listed):
+            raise Held('A critical aspect does not have one identifiable revised-answer field.')
+        by_number = fields
     result = []
-    for number, name in names.items():
-        qid = 'CA' + number + '-MASTERY'
+    for qid, name in zip(by_number, (a['name'] for a in listed)):
         rows = [item for item in score['items'] if item['category'] == 'DRAFT' and item['id'] == qid]
         if len(rows) != 1:
             raise Held('A critical aspect does not have one identifiable revised-answer field.')
