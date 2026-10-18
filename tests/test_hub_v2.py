@@ -60,6 +60,18 @@ def fixture(drop=()):
     return agenda.Agenda("FICTIONALSHEET", "Fictional Agenda", tabs, grids)
 
 
+def single_assignment_agenda():
+    """Scoring scenarios model one assignment; preserve the shared routing fixture."""
+    from copy import deepcopy
+    result = fixture()
+    lessons = result.lessons('forensics', 'Wk 04')
+    for lesson in lessons:
+        lesson['forms'] = [f for f in lesson['forms']
+                           if f.get('form_id') == 'FICTIONALFORMID1234567890abc']
+    result.lessons = lambda cls, week: deepcopy(lessons)
+    return result
+
+
 class LinkTests(unittest.TestCase):
     def test_rich_text_links_keep_their_labels(self):
         found = agenda.links(fixture().classes["forensics"]["cells"][5, 20])
@@ -1458,7 +1470,6 @@ class ScoreFileTests(unittest.TestCase):
     FORM = "FICTIONALFORMID1234567890abc"
 
     def agenda(self):
-        from test_completion_readiness import single_assignment_agenda
         return single_assignment_agenda()
 
     def work_result(self, late=False):
@@ -2506,7 +2517,6 @@ class RealDeckShapeTests(unittest.TestCase):
         self.assertEqual(completion.original_title("Deck"), "")
 
     def test_a_deck_shared_only_by_link_is_found_beside_the_linked_deck(self):
-        from test_completion_readiness import single_assignment_agenda
         completion._templates.clear()
         completion._results.clear()
         completion._folders.clear()
@@ -2530,7 +2540,6 @@ class RealDeckShapeTests(unittest.TestCase):
         self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})
 
     def test_the_handed_out_deck_is_found_in_its_actual_folder_when_agenda_links_another(self):
-        from test_completion_readiness import single_assignment_agenda
         completion._templates.clear()
         completion._results.clear()
         decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(NOTES_ID="The bobtail squid"),
