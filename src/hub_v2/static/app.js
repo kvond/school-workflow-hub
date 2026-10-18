@@ -356,7 +356,6 @@ function renderNeedsYou(report) {
 // become morning receipt fields, helper-list fields or persisted browser state.
 const reviewRequests = new WeakMap();
 const reviewPanels = new WeakMap();
-const visibleReviewPanels = {today: null, routine: null};
 let morningSummarySeq = 0;
 
 function reviewScope(value) {
@@ -1249,7 +1248,6 @@ async function weekAheadRepair(item, preview) {
 
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
-  invalidateReviewPanel(visibleReviewPanels.today);
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   $('today-next-agenda').replaceChildren();
   $('lesson-readiness-body').replaceChildren(el('p', {class: 'muted', text: 'Checking embedded codes in current and upcoming lessons…'}));
@@ -1278,14 +1276,10 @@ async function loadToday(force = false) {
     renderLessonReadiness(audits);
     const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
     const nextAgenda = renderNextLessons(audits, null, undefined, day.week?.label);
-    visibleReviewPanels.today = currentSourceReviewPanel(true, {teacherActionsOnly: true, onSummary: summary => {
-      if (seq === cockpit.seq) renderNextLessons(audits, summary, nextAgenda, day.week?.label);
-    }});
     $('today-body').replaceChildren(
       el('div', {class: 'cockpit-grid'},
         renderMorningCockpit(report, routineData),
-        renderNeedsYou(report)),
-      visibleReviewPanels.today);
+        renderNeedsYou(report)));
     $('today-next-agenda').replaceChildren(nextAgenda);
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
@@ -3172,15 +3166,12 @@ async function loadMorningSummary() {
   const box = $('morning-summary');
   if (!box) return;
   const seq = ++morningSummarySeq;
-  invalidateReviewPanel(visibleReviewPanels.routine);
   try {
     const data = await getJSON('api/morning/reports');
     if (seq !== morningSummarySeq) return;
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
     box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review'})));
-    visibleReviewPanels.routine = currentSourceReviewPanel($('page-today')?.hidden !== true);
-    box.append(visibleReviewPanels.routine);
     if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The weekday helper runs at 7:00 when enabled. An enabled schedule is not proof of entry; Today shows the saved-and-reloaded results when a receipt arrives.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
     box.append(note('IC is the roster source of truth. The Hub has not synced roster changes for this run; normal additions and departures should not be treated as student-work exceptions.', 'info'));
