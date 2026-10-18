@@ -57,10 +57,16 @@ extension storage. Keep morning receipts counts-only and the IC list contract
 unchanged. Exempt flags and zero-denominator N/A components do not create a
 teacher review. Not-yet-submitted work is waiting for submissions.
 
-Today and Routine use one review overview request. Discovery reuses one roster
-snapshot and one scan per class/week, then rereads the roster and Agenda before
-publishing names. A failed read or changed roster/Agenda discards named details;
-it must not create student-identity questions from a provider failure. The exact
+Submitted student files and named source-review details remain in Student work,
+using its exact current class/week/Form review route. Today and its Hub tools do
+not request or display the student source overview. Today retains lesson-focused
+VT readiness and feedback-code checks, Week ahead, Next from Agenda, morning
+receipts and feedback printing/delivery. Lesson-source readiness does not verify
+submitted student copies or completed grading.
+
+Current source discovery rereads the roster and Agenda before publishing named
+details. A failed read or changed roster/Agenda discards those details; it must
+not create student-identity questions from a provider failure. The exact
 teacher-controlled Form title determines the Photosynthesis exception when a
 weekly Agenda row contains several lesson topics; student filenames never do.
 
@@ -85,6 +91,37 @@ match. The display lists each Form's readiness separately and identifies verifie
 sources omitted from the Hub's current Agenda lesson links as a separate link
 discrepancy. This read-only check does not change scoring, assignment selection,
 embedded codes or distributed student copies.
+
+## VT readiness repair loop
+
+Katherine's October 18 workflow starts with a fresh read of the current exact
+Agenda lesson, Form and teacher-source checks. Keep separate assignments scoped
+to their own sources under [Lesson pages and turn-in folders](#lesson-pages-and-turn-in-folders).
+For a newly observed problem, first find its existing GitHub task; update that
+task or create one bounded Agent task with file claims under
+[Parallel agents](PARALLEL_AGENTS.md). GitHub records the reproducible technical
+problem and verification, without student data or private source IDs.
+
+Inspect and repair the existing native VT deck within the authorized scope,
+using the current `vt-bio-skill` shipping/renewal standards (§16–17) and
+`renew-lesson-slides` instructions rather than inventing a second standard.
+Preserve original lesson material, graphics/media, source IDs, student answers,
+submission dates and assessment history. Then verify the existing lesson links
+and connections (Agenda, lesson page, Form and source routing) under their
+existing setup and access authorizations.
+
+Identity, teaching-content or new-access decisions go in one compact `#kathy`
+thread with exact class/lesson/week, affected scope, concrete reason, verified
+links and slide numbers when available, and the smallest next action. State
+what is unverified. This routing applies to a decision that needs Katherine;
+it does not turn every routine repair into a new approval step.
+
+After repair, reread the native deck and refresh the Hub's exact lesson checks.
+Record the actual readback and any remaining hold. Marker/inventory `READY`
+confirms only that bounded code check; full curriculum/renewal release still
+requires the existing shipping standard, content, media, links and access
+verification. This loop adds no automation, schedule, grading permission or
+blanket permission to publish decks.
 
 ## Weekly lesson-readiness preflight
 
