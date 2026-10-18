@@ -48,6 +48,59 @@ class StudentFeedbackChecklistTests(unittest.TestCase):
     def record(self):
         return self.port.rows[archive.key("archivefeedbackchecklist", [ROOT, self.student_key])].value
 
+    def test_display_only_omits_unsupported_lesson_decoration_and_preserves_supported_text(self):
+        supported = "José Muñoz — β → ✔ & <lesson>"
+        self.assertEqual(checklist.display_text(supported), supported)
+        self.assertEqual(checklist.display_text(supported, decorative=True), supported)
+        self.assertEqual(checklist.display_text("📤 Energy flow 👩‍🔬", decorative=True), "Energy flow")
+        self.assertEqual(checklist.display_text("⚖️ Evidence", decorative=True), "Evidence")
+        # Unknown spelling is never guessed or erased, including in a title.
+        self.assertEqual(checklist.display_text("李 Ж"), "[U+674E] [U+0416]")
+        self.assertEqual(checklist.display_text("李", decorative=True), "[U+674E]")
+
+    def test_display_repair_keeps_original_rows_stable_file_history_and_link_targets(self):
+        from pypdf import PdfReader
+        legacy = self.legacy_report()
+        self.port.rows[legacy["record_key"]].value["assignment"] = "📤 Energy flow & trophic pyramids"
+        # Reproduce the previous renderer, then refresh only its presentation.
+        with patch.object(checklist, "display_text", side_effect=lambda value, **kwargs: value):
+            old = self.refresh()
+        self.assertEqual(old["status"], "verified", old)
+        record = deepcopy(self.record())
+        file_id, rows = record["drive_file_id"], deepcopy(record["confirmed"]["rows"])
+        result = self.refresh()
+        self.assertEqual(result["status"], "verified", result)
+        self.assertEqual(result["updated"], 1)
+        self.assertEqual(self.record()["drive_file_id"], file_id)
+        self.assertEqual(self.record()["confirmed"]["rows"], rows)
+        self.assertNotEqual(self.record()["confirmed"]["sha256"], record["confirmed"]["sha256"])
+        histories = [doc.value for doc in self.port.rows.values()
+                     if doc.value.get("drive_file_id") == file_id and "rows" in doc.value]
+        self.assertEqual(len(histories), 2)
+        pdf = PdfReader(BytesIO(self.drive.contents[file_id]))
+        text = " ".join(page.extract_text() for page in pdf.pages)
+        self.assertIn("Energy flow & trophic pyramids", text)
+        self.assertNotIn("■", text)
+        links = [annotation.get_object()["/A"]["/URI"] for page in pdf.pages
+                 for annotation in page.get("/Annots", [])]
+        self.assertEqual(links, [row["url"] for row in rows])
+        self.assertEqual(self.refresh()["unchanged"], 1)
+
+    def test_already_readable_render_bytes_unchanged_and_non_latin_fallback_visible(self):
+        from pypdf import PdfReader
+        student = {"name": "José Muñoz"}
+        rows = [{"date": "2026-10-18", "type_label": "Critical aspects", "version": 1,
+                 "historical": False, "lesson": "Énergie — β →", "url": "https://example.invalid/report"}]
+        original = deepcopy((student, rows))
+        with patch.object(checklist, "display_text", side_effect=lambda value, **kwargs: value):
+            old = checklist.render(student, rows)
+        self.assertEqual(checklist.render(student, rows), old)
+        student["name"] = "李 Ж"
+        pdf = PdfReader(BytesIO(checklist.render(student, rows)))
+        self.assertIn("[U+674E] [U+0416]", pdf.pages[0].extract_text())
+        self.assertEqual(student["name"], "李 Ж")
+        self.assertEqual(rows, original[1])
+
     def second_report(self, report_type="science_writing"):
         # Seed an already verified saved version, with the same real archive contract.
         run = archive._Run("read", "write", self.config, "biology")
