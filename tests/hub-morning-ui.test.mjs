@@ -63,29 +63,19 @@ const matchedOtherLesson = overrides => {
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-test('refreshing Hub tools preserves the visible Today source checks', async () => {
-  const {ui, context} = boot([]);
-  context.fetch = async url => ({ok: true, json: async () => url === 'api/review-context'
-    ? sourceSummary([sourceContext()]) : {reports: []}});
-  context.todayPanel = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true});
-  vm.runInContext('visibleReviewPanels.today = todayPanel;', context);
-  await tick();
-  const before = context.todayPanel.textContent;
-  assert.match(before, /Forensics/);
+test('Today and Hub tools refresh keep receipt counts without fetching or rendering student source files', async () => {
+  const {ui, context, document} = boot([row()]);
+  const requests = [];
+  context.fetch = async url => {
+    requests.push(url);
+    if (url === 'api/review-context') throw new Error('Student overview must stay in Student work');
+    return {ok: true, json: async () => url === 'api/morning/reports' ? {reports: [report([row()])]} : {}};
+  };
   await ui.loadMorningSummary();
-  await tick();
-  assert.equal(context.todayPanel.textContent, before);
-});
-
-test('refreshing Today preserves the visible Hub tools source checks', async () => {
-  const {ui, context, document} = boot([]);
-  context.fetch = async url => ({ok: true, json: async () => url === 'api/review-context'
-    ? sourceSummary([sourceContext()]) : {reports: []}});
-  await ui.loadMorningSummary();
-  await tick();
   const morningPanel = document.getElementById('morning-summary');
   const before = morningPanel.textContent;
-  assert.match(before, /Forensics/);
+  assert.match(before, /Morning helper review.*Biology.*unchanged/);
+  assert.doesNotMatch(before, /Current source checks|FICTIONAL_SOURCE|Fictional Student/);
   const today = source.slice(source.indexOf('async function loadToday('), source.indexOf('// ---------- Lesson plans ----------'));
   vm.runInContext(`
     function loadTodayFeedback() {}
@@ -99,7 +89,10 @@ test('refreshing Today preserves the visible Hub tools source checks', async () 
   await context.refreshToday(true);
   await tick();
   assert.equal(morningPanel.textContent, before);
-  assert.match(document.getElementById('today-body').textContent, /Forensics/);
+  assert.match(document.getElementById('today-body').textContent, /What ran.*Run status/);
+  assert.doesNotMatch(document.getElementById('today-body').textContent, /Current source checks|Fictional Student/);
+  assert.equal(requests.filter(url => url === 'api/review-context').length, 0);
+  assert.match(document.getElementById('lesson-readiness-body').textContent, /No current\/upcoming/);
 });
 
 test('source context renders full current identity/reason/action and verified source slides as literal text', () => {

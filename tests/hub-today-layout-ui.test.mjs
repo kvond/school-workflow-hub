@@ -86,8 +86,9 @@ test('Today shares one audit result between readiness and the separate Agenda pa
   assert.match(agenda.textContent, /Next from Agenda.*Fictional ecosystems/);
   assert.doesNotMatch(app.document.getElementById('today-body').textContent, /Next from Agenda/);
   assert.equal(app.requests.filter(({url}) => url.startsWith('api/audit?')).length, 3);
-  app.summaries[0]({status: 'unavailable'});
-  assert.match(agenda.textContent, /Fictional ecosystems/);
+  assert.equal(app.summaries.length, 0);
+  assert.equal(app.requests.filter(({url}) => url === 'api/review-context').length, 0);
+  assert.doesNotMatch(app.document.getElementById('today-body').textContent, /Current source checks/);
   await app.ui.loadToday(true);
   assert.equal(agenda.children.length, 1);
   assert.deepEqual(app.requests.filter(({url}) => url.startsWith('api/audit?') && url.includes('fresh=1')).map(({url}) => url), [
