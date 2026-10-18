@@ -6,6 +6,7 @@ listed; source PDFs, teacher marks and feedback generation are untouched.
 from datetime import datetime, timezone
 import hashlib
 import re
+import unicodedata
 from html import escape
 from io import BytesIO
 from urllib.parse import quote
@@ -176,6 +177,35 @@ def _snapshot(run, student_key):
     return student, rows, proof
 
 
+def display_text(value, *, decorative=False):
+    """Font-safe display only; callers retain the untouched source rows.
+
+    Use the same built-in fonts as Paragraph, keeping every supported glyph.
+    Unsupported letters retain explicit codepoint evidence, never a guessed
+    spelling. Only lesson decoration may be omitted.
+    """
+    from reportlab.pdfbase import pdfmetrics
+    font = pdfmetrics.getFont("Helvetica")
+    encodings = [item.encName for item in [font] + font.substitutionFonts]
+    parts, omitted = [], False
+    for character in str(value):
+        for encoding in encodings:
+            try:
+                character.encode(encoding)
+                parts.append(character)
+                break
+            except UnicodeEncodeError:
+                continue
+        else:
+            if decorative and (unicodedata.category(character) in {"So", "Sk"}
+                               or character in "\u200d\ufe0e\ufe0f"):
+                omitted = True
+            else:
+                parts.append("[U+%04X]" % ord(character))
+    text = "".join(parts)
+    return re.sub(r" {2,}", " ", text).strip() if omitted else text
+
+
 def render(student, rows):
     """Large readable rows and clickable report links; deterministic PDF bytes."""
     from reportlab.lib.styles import ParagraphStyle
@@ -184,14 +214,15 @@ def render(student, rows):
     out = BytesIO()
     style = ParagraphStyle("checklist", fontName="Helvetica", fontSize=13, leading=19, spaceAfter=9)
     heading = ParagraphStyle("heading", parent=style, fontName="Helvetica-Bold", fontSize=19, leading=24)
-    story = [Paragraph("Feedback created", heading), Paragraph(escape(student["name"]), style),
+    story = [Paragraph("Feedback created", heading), Paragraph(escape(display_text(student["name"])), style),
              Paragraph("A checked item means the report was made and its saved file was verified. "
                        "It does not mean printed, sent or handed to the student.", style), Spacer(1, 10)]
     for row in rows:
         date_label = ("Source file date: " if row.get("date_basis") == "file_created" else "") + row["date"]
         label = "[x] %s — %s — version %s%s" % (date_label, row["type_label"], row["version"],
                                               " (previous version)" if row["historical"] else "")
-        story.append(KeepTogether([Paragraph(escape(label), style), Paragraph(escape(row["lesson"]), style),
+        story.append(KeepTogether([Paragraph(escape(display_text(label)), style),
+            Paragraph(escape(display_text(row["lesson"], decorative=True)), style),
             Paragraph('<link href="%s" color="#1457a6">Open saved feedback</link>' % escape(row["url"], quote=True), style),
             Spacer(1, 12)]))
     if not rows:
