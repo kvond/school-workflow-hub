@@ -15,7 +15,11 @@ class Element {
 const walk = n => [n, ...n.children.filter(c => c instanceof Element).flatMap(walk)];
 const DAY = '2032-01-05';
 function boot() {
-  const context = vm.createContext({Node: Element, document: {createElement: tag => new Element(tag)}});
+  class Clock extends Date {
+    constructor(...args) { super(...(args.length ? args : ['2032-01-06T03:00:00Z'])); }
+    static now() { return new Date('2032-01-06T03:00:00Z').getTime(); }
+  }
+  const context = vm.createContext({Date: Clock, Node: Element, document: {createElement: tag => new Element(tag)}});
   vm.runInContext(source.slice(0, source.indexOf('function issueAction(')).replace(/const todayISO = .*?;\n/, `const todayISO = () => '${DAY}';\n`) +
     source.slice(source.indexOf('const TEACHER_AGENDA_CHOICES'), source.indexOf('async function printTodayFeedback(')) +
     source.slice(source.indexOf('function renderTodayFeedback('), source.indexOf('function renderFeedbackTools(')) +
@@ -49,6 +53,17 @@ test('fresh technical-only results do not make a teacher repair checklist', () =
   const ui = boot();
   assert.match(ui.renderNextLessons({}, null, undefined, null, {...report, exceptions: report.exceptions.slice(0, 2)}).textContent,
     /Nothing needs your decision.*Technical checks and link repairs are handled by the repair worker/);
+});
+test('freshness uses Eastern dates, rejects malformed or future timestamps, and retains Friday decisions', () => {
+  const ui = boot();
+  const friday = {...report.exceptions[2], kind: 'calendar_friday_unknown', next_action: 'Confirm whether Friday is an A or B day.'};
+  const fresh = {...report, last_successful_check: '2032-01-06T02:00:00Z', exceptions: [friday]};
+  assert.match(ui.renderNextLessons({}, null, undefined, null, fresh).textContent, /Your action: Confirm whether Friday is an A or B day/);
+  for (const timestamp of ['2032-01-05T03:00:00Z', '2032-01-06T04:00:00Z', 'invalid', null]) {
+    const rendered = ui.renderNextLessons({}, null, undefined, null, {...fresh, last_successful_check: timestamp});
+    assert.match(rendered.textContent, /Teacher-action check pending/);
+    assert.doesNotMatch(rendered.textContent, /Nothing needs your decision|Your action/);
+  }
 });
 test('daily feedback has exactly one list link and update status, never delivery or print controls', () => {
   const ui = boot(), data = {requested_date: DAY, date: DAY, current_sources_verified: true, files: [{id: 'report1'}],

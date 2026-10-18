@@ -833,7 +833,12 @@ function renderAgendaDiagnostics(audits, sourceSummary = null, panel = cockpitDe
 
 // Only unresolved teaching choices belong in the teacher's Agenda action list.
 // Technical/read failures retain their full evidence in Week ahead / Hub tools.
-const TEACHER_AGENDA_CHOICES = new Set(['needs_content', 'calendar_conflict', 'print_item_ambiguous']);
+const TEACHER_AGENDA_CHOICES = new Set(['needs_content', 'calendar_conflict', 'calendar_friday_unknown', 'print_item_ambiguous']);
+function freshAgendaCheck(value) {
+  const checked = new Date(value);
+  return typeof value === 'string' && Number.isFinite(checked.getTime()) && checked.getTime() <= Date.now()
+    && new Intl.DateTimeFormat('en-CA', {timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit'}).format(checked) === todayISO();
+}
 function agendaTeacherChoices(data) {
   if (!data || ['not_checked', 'incomplete'].includes(data.status)) return [];
   return (data.exceptions || []).filter(item => item.status === 'needs_decision'
@@ -842,7 +847,7 @@ function agendaTeacherChoices(data) {
 }
 function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails('Next from Agenda'), currentWeek = null,
   preflight = typeof weekAhead === 'undefined' ? null : weekAhead.data) {
-  const stale = !preflight?.last_successful_check || preflight.last_successful_check.slice(0, 10) !== todayISO();
+  const stale = !freshAgendaCheck(preflight?.last_successful_check);
   const unavailable = !preflight || ['not_checked', 'incomplete'].includes(preflight.status)
     || (typeof weekAhead !== 'undefined' && !!weekAhead.error);
   const items = stale || unavailable ? [] : agendaTeacherChoices(preflight);
