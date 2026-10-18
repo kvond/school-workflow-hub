@@ -947,6 +947,9 @@ def match_file(line, files):
     by_id = {}
     explicit = {item["id"]: item for item in files if item.get("agenda_extra_material")}
     for item in files:
+        # Rank the current Agenda name, not a stale shortcut/folder alias of
+        # that same file. An alias must not manufacture a winning exact tie.
+        item = explicit.get(item["id"], item)
         have = set(_tokens(item.get("name", "")))
         inter = len(want & have)
         if not inter:
@@ -964,8 +967,7 @@ def match_file(line, files):
     tied = [candidate for candidate in ranked if candidate[:3] == ranked[0][:3]]
     bound = [candidate for candidate in tied if candidate[4] in explicit]
     best = bound[0] if len(bound) == 1 else ranked[0]
-    # Same-ID aliases do not override the current Agenda source's metadata.
-    return explicit.get(best[4], best[5]), round(-best[0], 2), len(tied) > 1 and len(bound) != 1
+    return best[5], round(-best[0], 2), len(tied) > 1 and len(bound) != 1
 
 
 def match_link(line, links):

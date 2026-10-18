@@ -1182,6 +1182,36 @@ class PrintSourcePreferenceTests(Base):
         item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
         self.assertEqual(item['file']['id'], HANDOUT)
 
+    def test_stale_same_id_folder_alias_cannot_promote_a_worse_current_agenda_source(self):
+        self.extra(title='Cycle 06 — CER worksheet teacher answer key', parent=BIO_FOLDER)
+        before = deepcopy(self.src.files)
+
+        def stale_listing(token, ident):
+            items, complete = self.src.folder_listing(token, ident)
+            for item in items:
+                if item['id'] == self.EXTRA:
+                    item['name'] = 'Cycle 06 — CER worksheet'
+            return items, complete
+
+        with patch.object(google, 'folder_listing', side_effect=stale_listing):
+            result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual(item['file']['id'], HANDOUT)
+        self.assertFalse([e for e in self.exceptions(result, 'biology', 5) if e['kind'] == 'print_item_ambiguous'])
+        self.assertEqual(self.src.calls['pdf:' + self.EXTRA], 0, 'the stale alias must not trigger an export of the wrong handout')
+        self.assertEqual(self.src.files, before)
+        self.assertEqual(self.writes, [])
+
+    def test_explicit_current_name_controls_matching_before_alias_deduplication_in_either_order(self):
+        correct = {'id': HANDOUT, 'name': 'CER worksheet'}
+        alias = {'id': self.EXTRA, 'name': 'CER worksheet'}
+        for current_name in ('CER worksheet teacher answer key', 'Lab safety teacher notes'):
+            explicit = {'id': self.EXTRA, 'name': current_name, 'agenda_extra_material': True}
+            for files in ([alias, correct, explicit], [explicit, correct, alias]):
+                with self.subTest(current_name=current_name, explicit_first=files[0] == explicit):
+                    best, score, ambiguous = wp.match_file('CER worksheet', files)
+                    self.assertEqual((best['id'], score, ambiguous), (HANDOUT, 1.0, False))
+
     def test_multiple_explicit_choices_and_folder_only_ties_remain_ambiguous(self):
         one = {'id': self.EXTRA, 'name': 'CER worksheet', 'agenda_extra_material': True}
         two = {'id': self.COPY, 'name': 'CER worksheet', 'agenda_extra_material': True}

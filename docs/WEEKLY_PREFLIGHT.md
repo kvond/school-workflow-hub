@@ -98,7 +98,9 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   matched to folder PDFs and Google Docs by name, with page counts and sides.
   When equally best candidates tie, the unique exact extra-material reference
   in that current Agenda row wins over folder-only copies. Same-ID references
-  count as one file. A better folder match is unchanged; multiple explicit
+  count as one file, ranked using the current Agenda metadata before matching;
+  a stale same-ID folder/shortcut title cannot promote a worse current source.
+  A better folder match is unchanged; multiple explicit
   choices or remaining ties still need resolution. The selected file still
   goes through normal metadata/page reads; a failure never chooses another
   copy. Both originals and teacher-controlled printing marks are preserved.
