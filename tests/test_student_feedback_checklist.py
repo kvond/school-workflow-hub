@@ -63,13 +63,14 @@ class StudentFeedbackChecklistTests(unittest.TestCase):
             run.finish({"status": "verified"})
         return artifact
 
-    def legacy_report(self, *, native_document=False):
+    def legacy_report(self, *, native_document=False, docx_document=False):
         run = archive._Run("read", "write", self.config, "biology")
         student = archive._read(self.port, self.student_key).value
         feedback_id = "feedbacksource_" + "e" * 64
         source_id, revision, source_hash = "FictionalLegacySource001", "7", "f" * 64
-        ranges = ({"native_doc_indices": [10, 250], "pdf_pages_1_based": None}
-                  if native_document else {"pdf_pages_1_based": [2, 3]})
+        ranges = ({"docx_paragraph_indices": [0, 28], "pdf_pages_1_based": None} if docx_document else
+                  {"native_doc_indices": [10, 250], "pdf_pages_1_based": None} if native_document else
+                  {"pdf_pages_1_based": [2, 3]})
         ident = archive.key("archivelegacyfeedback", [ROOT, "biology", source_id, revision, source_hash, ranges, feedback_id])
         artifact = run.create(ident, "Fictional legacy excerpt.pdf", self.student_folder, archive.PDF,
             pdf=b"%PDF already audited legacy excerpt", attributes={"kind": "feedback", "date": "2026-09-18",
@@ -111,6 +112,83 @@ class StudentFeedbackChecklistTests(unittest.TestCase):
         result = self.refresh()
         self.assertEqual(result["status"], "verified", result)
         self.assertEqual(len(self.record()["confirmed"]["rows"]), 2)
+
+    def test_legacy_docx_span_accepts_zero_start_and_exclusive_end(self):
+        artifact = self.legacy_report(docx_document=True)
+        result = self.refresh()
+        self.assertEqual(result["status"], "verified", result)
+        run = Mock(root=ROOT); run.cls = "biology"
+        for indices in ([0, 0], [-1, 28], [28, 0], [0], [False, 28]):
+            bad = deepcopy(artifact)
+            bad["source_ranges"] = bad["source_span"] = {"docx_paragraph_indices": indices, "pdf_pages_1_based": None}
+            bad["record_key"] = archive.key("archivelegacyfeedback", [ROOT, "biology", bad["source_document_id"],
+                bad["source_revision"], bad["source_sha256"], bad["source_ranges"], bad["feedback_id"]])
+            with self.subTest(indices=indices), self.assertRaises(archive.Held):
+                checklist._legacy_feedback_identity(run, bad)
+
+    def selected_legacy_report(self, *, joint=False):
+        cls = "forensics" if joint else "biology"
+        run = archive._Run("read", "write", self.config, cls)
+        if joint:
+            identity = {**saved()["archive_identity"], "section": "A2 Forensics"}
+            student = run.student(archive._identity(self.config, cls, identity))
+        else:
+            student = archive._read(self.port, self.student_key).value
+        source, raw, stamp = "FictionalSelectedSource001", b"%PDF audited selected report", "2026-09-20T12:00:00Z"
+        digest = hashlib.sha256(raw).hexdigest()
+        fid = (archive.key("feedbacksource", [source, digest, stamp]) if joint else "feedbacksource_" + "2" * 64)
+        ranges = ({"pages_1_based": [1, 2], "joint": True} if joint else
+                  {"pages_1_based": [3, 4], "native_start_index": 12, "native_end_index": 250})
+        attributes = {"kind": "feedback", "class_key": cls, "student_key": student["student_key"],
+            "feedback_id": fid, "date": "2026-09-20", "saved_at": stamp, "date_basis": "file_created",
+            "source_document_id": source, "source_file_id": source, "source_revision": "11", "source_sha256": digest,
+            "source_ranges": ranges, "source_span": ranges, "identity_status": "identity_unverified",
+            "identity_basis": "Previously audited student span", "feedback_origin": "legacy_packet",
+            "source_kind": "audited_legacy_student_copy"}
+        if joint:
+            attributes.update(shared_source_key=archive.key("sharedfeedbacksource", [source, digest, stamp]),
+                shared_source_document_id=source, shared_pdf_sha256=digest,
+                covered_by_packet_manifest="feedbackpacketmanifest_" + "3" * 64,
+                covered_by_packet_id="FictionalPrivatePacket001", teacher_joint_attribution=True)
+        ident = archive.key("archiveselectedfeedback", [ROOT, cls, source, digest, student["student_key"], fid])
+        artifact = run.create(ident, "Audited selected feedback.pdf", student["drive_file_id"], archive.PDF,
+            pdf=raw, attributes=attributes)
+        run.attach(student, artifact)
+        with patch.object(checklist, "refresh_run", return_value={"status": "deferred"}):
+            run.finish({"status": "verified"})
+        return artifact, student
+
+    def test_selected_native_copy_uses_its_original_student_bound_key(self):
+        artifact, student = self.selected_legacy_report()
+        result = self.refresh()
+        self.assertEqual(result["status"], "verified", result)
+        self.assertEqual(len(self.record()["confirmed"]["rows"]), 2)
+        self.assertTrue(any(r["record_key"] == artifact["record_key"] for r in self.record()["confirmed"]["rows"]))
+        self.port.rows[self.student_key].value["items"].pop(artifact["record_key"])
+        held = self.refresh()
+        self.assertEqual(held["status"], "held")
+        self.assertIn("unattached feedback", held["held"][0]["problem"])
+
+    def test_teacher_attributed_joint_copy_checks_all_recorded_source_proofs(self):
+        artifact, student = self.selected_legacy_report(joint=True)
+        result = checklist.refresh("read", "write", self.config, "forensics", student_keys=[student["student_key"]])
+        self.assertEqual(result["status"], "verified", result)
+        self.assertEqual(result["checklists"][0]["reports"], 1)
+        run = Mock(root=ROOT); run.cls = "forensics"
+        changes = [{"teacher_joint_attribution": False}, {"shared_source_document_id": "DifferentSource"},
+            {"shared_source_key": "sharedfeedbacksource_" + "4" * 64}, {"shared_pdf_sha256": "4" * 64},
+            {"covered_by_packet_manifest": "missing"}, {"feedback_id": "feedbacksource_" + "4" * 64},
+            {"student_key": "different-student"}]
+        for change in changes:
+            with self.subTest(change=change), self.assertRaises(archive.Held):
+                checklist._legacy_feedback_identity(run, {**artifact, **change})
+        # The original selected-copy recipe binds each student's own history;
+        # it does not globally deduplicate a teacher-attributed shared report.
+        second = {**artifact, "student_key": "FictionalSecondStudent"}
+        second["record_key"] = archive.key("archiveselectedfeedback", [ROOT, "forensics", second["source_document_id"],
+            second["source_sha256"], second["student_key"], second["feedback_id"]])
+        checklist._legacy_feedback_identity(run, second)
+        self.assertNotEqual(second["record_key"], artifact["record_key"])
 
     def test_legacy_source_identity_span_and_student_corruption_never_publish(self):
         legacy = self.legacy_report()

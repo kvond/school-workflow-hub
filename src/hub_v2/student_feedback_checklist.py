@@ -34,7 +34,7 @@ def _legacy_feedback_identity(run, artifact):
     feedback_id = artifact.get("feedback_id")
     aliases = artifact.get("source_alias_ids", [])
     if (artifact.get("feedback_origin") != "legacy_packet"
-            or artifact.get("source_kind") != "legacy_student_excerpt"
+            or artifact.get("source_kind") not in {"legacy_student_excerpt", "audited_legacy_student_copy"}
             or artifact.get("date_basis") != "file_created"
             or artifact.get("identity_status") != "identity_unverified"
             or not isinstance(artifact.get("identity_basis"), str) or not artifact["identity_basis"].strip()
@@ -49,22 +49,51 @@ def _legacy_feedback_identity(run, artifact):
             or artifact.get("supersedes_report_id") or artifact.get("superseded_by")
             or artifact.get("presentation_version", 1) != 1):
         raise archive.Held("A legacy feedback excerpt no longer matches its audited import provenance.")
-    pages, indices = ranges.get("pdf_pages_1_based"), ranges.get("native_doc_indices")
-    if (not ranges or set(ranges) - {"pdf_pages_1_based", "native_doc_indices"}
-            or (pages is None and indices is None)
-            or (pages is not None and (not isinstance(pages, list) or not pages
-                or any(type(page) is not int or page < 1 for page in pages) or sorted(set(pages)) != pages))
-            or (indices is not None and (not isinstance(indices, list) or len(indices) != 2
-                or any(type(index) is not int or index < 0 for index in indices) or indices[1] <= indices[0]))):
-        raise archive.Held("A legacy feedback excerpt has no exact verified PDF pages or document index range.")
-    expected = key("archivelegacyfeedback", [run.root, run.cls, source_id, revision, source_hash, ranges, feedback_id])
+    def pages_valid(pages):
+        return (isinstance(pages, list) and bool(pages)
+                and all(type(page) is int and page >= 1 for page in pages) and sorted(set(pages)) == pages)
+
+    def indices_valid(indices):
+        # Both recovered readers use zero-based half-open [start, end) ranges.
+        return (isinstance(indices, list) and len(indices) == 2
+                and all(type(index) is int and index >= 0 for index in indices) and indices[1] > indices[0])
+
+    if artifact["source_kind"] == "legacy_student_excerpt":
+        pages = ranges.get("pdf_pages_1_based")
+        native, docx = ranges.get("native_doc_indices"), ranges.get("docx_paragraph_indices")
+        if (set(ranges) - {"pdf_pages_1_based", "native_doc_indices", "docx_paragraph_indices"}
+                or sum(value is not None for value in (pages, native, docx)) != 1
+                or (pages is not None and not pages_valid(pages))
+                or any(indices is not None and not indices_valid(indices) for indices in (native, docx))):
+            raise archive.Held("A legacy feedback excerpt has no exact verified page or paragraph/index range.")
+        expected = key("archivelegacyfeedback", [run.root, run.cls, source_id, revision, source_hash, ranges, feedback_id])
+    else:
+        # The later audited selected-copy importer bound the existing student
+        # folder explicitly. It used a different recipe, never the native key.
+        if not pages_valid(ranges.get("pages_1_based")):
+            raise archive.Held("The selected historical feedback has no exact verified source pages.")
+        if ranges.get("joint") is True:
+            if (set(ranges) != {"pages_1_based", "joint"} or run.cls != "forensics"
+                    or artifact.get("teacher_joint_attribution") is not True
+                    or artifact.get("shared_source_document_id") != source_id
+                    or artifact.get("shared_pdf_sha256") != artifact.get("pdf_sha256")
+                    or artifact.get("shared_pdf_sha256") != source_hash
+                    or artifact.get("shared_source_key") != key("sharedfeedbacksource", [source_id, source_hash, artifact.get("saved_at")])
+                    or feedback_id != key("feedbacksource", [source_id, source_hash, artifact.get("saved_at")])
+                    or not re.fullmatch(r"feedbackpacketmanifest_[a-f0-9]{64}", str(artifact.get("covered_by_packet_manifest") or ""))
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", str(artifact.get("covered_by_packet_id") or ""))):
+                raise archive.Held("The shared historical feedback no longer matches its teacher-attributed source and packet proof.")
+        elif (set(ranges) != {"pages_1_based", "native_start_index", "native_end_index"}
+                or not indices_valid([ranges.get("native_start_index"), ranges.get("native_end_index")])):
+            raise archive.Held("The selected historical feedback has no exact verified native source span.")
+        expected = key("archiveselectedfeedback", [run.root, run.cls, source_id, source_hash, artifact["student_key"], feedback_id])
     if artifact.get("record_key") != expected:
         raise archive.Held("A legacy feedback excerpt's identity does not match its exact source revision and span.")
 
 
 def _feedback_identity(run, artifact):
     ident, report_id = artifact["record_key"], artifact.get("feedback_id")
-    if artifact.get("feedback_origin") == "legacy_packet" or ident.startswith("archivelegacyfeedback_"):
+    if artifact.get("feedback_origin") == "legacy_packet" or ident.startswith(("archivelegacyfeedback_", "archiveselectedfeedback_")):
         _legacy_feedback_identity(run, artifact)
     elif not report_id or ident != key("archivefeedback", [run.root, report_id]):
         raise archive.Held("A feedback version has no unique, verified archive identity.")
@@ -89,7 +118,7 @@ def _snapshot(run, student_key):
     if (metadata[student["drive_file_id"]].get("properties") or {}).get(archive.TAG) != student_key:
         raise archive.Held("The checklist's student folder no longer matches its private archive identity.")
     children = google.folder_children(run.token, student["drive_file_id"])
-    if any(str((item.get("properties") or {}).get(archive.TAG, "")).startswith(("archivefeedback_", "archivelegacyfeedback_"))
+    if any(str((item.get("properties") or {}).get(archive.TAG, "")).startswith(("archivefeedback_", "archivelegacyfeedback_", "archiveselectedfeedback_"))
            and (item.get("properties") or {})[archive.TAG] not in items for item in children):
         raise archive.Held("An unattached feedback artifact needs archive verification before refreshing the checklist.")
     rows, report_ids = [], set()
