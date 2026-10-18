@@ -131,3 +131,32 @@ test('the print list shows a web page as a print instruction with its link', asy
   assert.match(box.textContent, /Fictional CER worksheet\.pdf · 1 page, single-sided/);
   assert.ok(find('Hide print list'));
 });
+
+test('the print list has one row per lesson, each file linked, and one link to the lesson folder', async () => {
+  const folder = 'https://drive.google.com/drive/folders/FictionalLessonFolder';
+  const fileURL = 'https://drive.google.com/file/d/FictionalWorksheet/view';
+  const lesson = {class_key: 'biology', class: 'Biology', week: 'Wk 09', row: 12, topic: 'Fictional respiration', status: 'ready',
+    reviews: {}, sources: [{id: 'FictionalLessonFolder', roles: ['folder'], accessible: true, trashed: false, url: folder}]};
+  const other = {class_key: 'forensics', class: 'Forensics', week: 'Wk 09', row: 7, topic: 'Fictional fibers', status: 'ready',
+    reviews: {}, sources: []};
+  const base = {class_key: 'biology', class: 'Biology', week: 'Wk 09', row: 12, lesson: 'Fictional respiration',
+    dates: ['2032-01-06'], per_section: {'A4 Biology': 22}, basis: '1 per student (current roster)', optional: false, teacher_only: false};
+  const prints = [
+    {...base, text: 'CER worksheet', file: {name: 'Fictional CER worksheet.pdf', url: fileURL, pages: 2, sides: 'double-sided'}},
+    {...base, text: 'Answer key', teacher_only: true, file: {name: 'Fictional key.docx', url: fileURL, print_from_folder: true}},
+    {...base, class_key: 'forensics', class: 'Forensics', row: 7, lesson: 'Fictional fibers', text: 'Fiber chart', file: null}];
+  const {ui, document} = boot(() => ({...reply, lessons: [lesson, other], print_items: prints}));
+  await ui.loadWeekAhead();
+  const box = document.getElementById('today-week-ahead');
+  await walk(box).find(node => node.tagName === 'button' && node.textContent === 'Print list').listeners.click();
+  const table = walk(box).find(node => node.className === 'cockpit-table print-list');
+  const rows = walk(table).filter(node => node.tagName === 'tr').slice(1);
+  assert.equal(rows.length, 2);
+  assert.match(rows[0].textContent, /Biology · Fictional respiration/);
+  assert.match(rows[0].textContent, /CER worksheet — A4 Biology: 22 \(1 per student \(current roster\)\) — Fictional CER worksheet\.pdf · 2 pages, double-sided/);
+  assert.match(rows[0].textContent, /Answer key · TEACHER ONLY/);
+  assert.ok(walk(rows[0]).some(node => node.tagName === 'a' && node.href === fileURL && node.textContent === 'Fictional CER worksheet.pdf'));
+  assert.ok(walk(rows[0]).some(node => node.tagName === 'a' && node.href === folder && /Open folder/.test(node.textContent)));
+  assert.match(rows[1].textContent, /Fiber chart — .*No file in the lesson folder/);
+  assert.match(rows[1].textContent, /No lesson folder linked/);
+});

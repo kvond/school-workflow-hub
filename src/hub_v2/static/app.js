@@ -670,7 +670,7 @@ function issueAction(release) {
   const issue = release?.issues?.[0];
   if (release?.status === 'READY') return release.scope === 'linked_deck'
     ? 'The linked deck’s embedded codes are ready. Student copies are checked separately before grading.' : 'No fix needed. Teach this lesson.';
-  if (!issue) return 'No exact cause was returned. Open this lesson in Lessons / VT and run the link check.';
+  if (!issue) return 'No exact cause was returned. Open this lesson in Lessons and run the link check.';
   if (issue === 'missing_teacher_reference_contract' || issue === 'teacher_reference_has_no_critical_aspects'
       || issue === 'teacher_reference_has_no_week_question') return 'Refresh to check this lesson’s embedded codes. Teacher reference contracts are not a completion-grading requirement.';
   if (issue === 'marker_inventory_missing_or_duplicated') return 'In the teacher deck, keep one complete embed-coding marker inventory and remove or repair any duplicate; then recheck readiness.';
@@ -682,13 +682,13 @@ function issueAction(release) {
   if (issue === 'concept_bank_heading_missing') return 'In the teacher deck, add the required “Define these in your own words” heading above the concept bank; then recheck readiness.';
   if (issue === 'required_what_if_missing') return 'In the teacher deck, add the required “What if?” prompt for the scored completion item; then recheck readiness.';
   if (issue === 'agenda_prompt_contract_unavailable') return 'The Agenda prompt details could not be read, so readiness cannot be verified. Restore access to the linked Agenda prompts, then recheck.';
-  if (issue === 'deck_release_unreadable') return 'Open the teacher deck from Lessons / VT and confirm the link opens; if not, correct that deck link in the Agenda.';
+  if (issue === 'deck_release_unreadable') return 'Open the teacher deck from Lessons and confirm the link opens; if not, correct that deck link in the Agenda.';
   if (issue.startsWith('critical_aspect_block_missing:')) return `In the teacher deck, add the lesson section for ${issue.slice('critical_aspect_block_missing:'.length)}; then recheck readiness.`;
   if (issue.startsWith('critical_aspect_phase_missing:')) {
     const [, aspect, phase] = issue.split(':');
     return `In the teacher deck, add the ${String(phase || '').replaceAll('_', ' ')} section for ${aspect}; then recheck readiness.`;
   }
-  return `${releaseIssue(issue)}. Open this exact lesson in Lessons / VT, follow the issue shown there, then recheck readiness.`;
+  return `${releaseIssue(issue)}. Open this exact lesson in Lessons, follow the issue shown there, then recheck readiness.`;
 }
 
 const MISSING_CODE_ADVISORIES = new Set(['marker_inventory_missing_or_duplicated', 'marker_inventory_counts_unparsed',
@@ -794,7 +794,7 @@ function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails(
     return panel;
   };
   if (!rows.length) return populate(el('span', {class: 'cockpit-summary-context muted', text: 'No current/upcoming checks available'}),
-    note('No current/upcoming lesson code check is available. Open Lessons / VT to inspect the Agenda and links.', 'info'));
+    note('No current/upcoming lesson code check is available. Open Lessons to inspect the Agenda and links.', 'info'));
   const bodyRows = rows.map(row => {
     const agendaRows = audits?.[row.classKey]?.data?.rows || [];
     const currentRows = agendaRows.filter(item => item.week === currentWeek);
@@ -822,7 +822,7 @@ function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails(
         : ready ? el('p', {text: 'Linked lesson source is ready. Student copies are checked separately.'})
         : renderSourceReviewNotice(lessonReviewNotice(row), {class_name: row.className, week: row.week, lesson: row.topic}),
         planningOnly || intake === 'unavailable' || intake === 'timed_out' ? null : renderAgendaSourceDiscrepancy(row),
-        el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons / VT')));
+        el('button', {type: 'button', onclick: () => openAgendaLesson(row.classKey, row.week, row.row)}, 'Open this lesson in Lessons')));
   });
   const table = el('table', {class: 'cockpit-table'},
     el('thead', {}, el('tr', {}, ...['Class', 'Week', 'Lesson', 'Release', 'Next'].map(text => el('th', {text})))),
@@ -1093,24 +1093,46 @@ function weekAheadSupplies(data) {
       el('td', {text: s.use_dates.join(', ') || 'not stated'}), el('td', {text: s.prep_by || ''})))));
 }
 
-// The print list: each item's matched file, or the web page it prints from.
+// The print list: one row per lesson. Each printable item links to its matched
+// file (or the web page it prints from); the lesson folder is one link at the end.
 function weekAheadPrints(data) {
   const rows = data?.print_items || [];
   if (!rows.length) return note('No print items are listed for these weeks.', 'info');
   const quantity = p => Object.keys(p.per_section || {}).length
     ? Object.entries(p.per_section).map(([s, n]) => `${s}: ${n ?? '?'}`).join(', ') + ` (${p.basis})` : p.basis;
+  const httpLink = (text, url) => /^https?:\/\//.test(url || '') ? link(text, url) : text;
   const where = p => {
     const url = p.web?.url || '';
-    if (url) return el('span', {}, 'Print from web: ', /^https?:\/\//.test(url) ? link(url, url) : url);
-    if (!p.file) return 'No file';
-    return p.file.name + (p.file.pages ? ` · ${p.file.pages} page${p.file.pages > 1 ? 's' : ''}, ${p.file.sides}`
-      : p.file.print_from_folder ? ' · Word file: print it from the lesson folder' : '');
+    if (url) return el('span', {}, 'Print from web: ', httpLink(url, url));
+    if (!p.file) return 'No file in the lesson folder';
+    return el('span', {}, httpLink(p.file.name, p.file.url),
+      p.file.pages ? ` · ${p.file.pages} page${p.file.pages > 1 ? 's' : ''}, ${p.file.sides}`
+        : p.file.print_from_folder ? ' · Word file: print it from the lesson folder' : '');
   };
-  return el('table', {class: 'cockpit-table'},
-    el('thead', {}, el('tr', {}, ...['Item', 'Lesson', 'Quantity', 'File or instruction'].map(h => el('th', {text: h})))),
-    el('tbody', {}, ...rows.map(p => el('tr', {},
-      el('td', {text: p.text + (p.optional ? ' (optional)' : '') + (p.teacher_only ? ' · TEACHER ONLY' : '')}),
-      el('td', {text: `${p.class} · ${p.lesson}`}), el('td', {text: quantity(p)}), el('td', {}, where(p))))));
+  const lessons = data?.lessons || [];
+  const lessonOf = p => lessons.find(l => l.class_key && l.class_key === p.class_key && l.week === p.week && l.row === p.row)
+    || lessons.find(l => l.class === p.class && l.topic === p.lesson && (!p.week || l.week === p.week));
+  const groups = new Map();
+  for (const p of rows) {
+    const key = [p.class_key || p.class, p.week || '', p.row ?? p.lesson].join('|');
+    if (!groups.has(key)) groups.set(key, {first: p, items: [], lesson: lessonOf(p)});
+    groups.get(key).items.push(p);
+  }
+  const folderOf = lesson => (lesson?.sources || []).find(n => (n.roles || []).includes('folder')
+    && n.accessible !== false && !n.trashed && /^https?:\/\//.test(n.url || ''));
+  return el('table', {class: 'cockpit-table print-list'},
+    el('thead', {}, el('tr', {}, ...['Lesson', 'Print', 'Lesson folder'].map(h => el('th', {text: h})))),
+    el('tbody', {}, ...[...groups.values()].map(({first, items, lesson}) => {
+      const dates = first.dates?.length ? first.dates.join(', ') : '';
+      const folder = folderOf(lesson);
+      return el('tr', {},
+        el('td', {}, el('strong', {text: `${first.class} · ${first.lesson}`}),
+          first.week || dates ? el('div', {class: 'muted', text: [first.week, dates].filter(Boolean).join(' · ')}) : null),
+        el('td', {}, el('ul', {}, ...items.map(p => el('li', {},
+          el('strong', {text: p.text + (p.optional ? ' (optional)' : '') + (p.teacher_only ? ' · TEACHER ONLY' : '')}),
+          ' — ', quantity(p), ' — ', where(p))))),
+        el('td', {}, folder ? link('Open folder ↗', folder.url) : 'No lesson folder linked'));
+    })));
 }
 
 function renderWeekAhead() {
@@ -1356,7 +1378,7 @@ function renderNextWeekNotes(data) {
   const monday = addDays(data.week?.monday || mondayOf(plans.date), 7);
   const classes = data.classes || [];
   box.replaceChildren(el('details', {class: 'next-week-notes notes-panel'},
-    el('summary', {}, el('h2', {text: 'Notes'})),
+    el('summary', {}, el('h2', {text: 'Next week notes · this browser'})),
     el('p', {class: 'muted', text: `Next week · ${weekRange(monday)}. Private notes saved in this browser. One note per class.`}),
     ...classes.map(cls => {
       const key = `next-week-note:${cls.key}:${monday}`;
@@ -2588,12 +2610,9 @@ function renderForm(form, lesson) {
   const scores = weekAssessmentHold() || recheckSelectionHold(form) ? null : work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
   const scoredAll = scores && !ui.progress && !sourceMatchesHeld();
-  box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => openPanel(form, 'feedback')},
-    ui.open === 'feedback' ? 'Hide feedback' : 'Student feedback')));
-  if (ui.open === 'feedback') box.append(feedbackPanel(form));
   box.append(...[
     ui.progress ? el('p', {class: 'muted', text: ui.progress}) : null,
-    scoredAll ? el('details', {class: 'manual', open: Boolean(ui.open)},
+    scoredAll ? el('details', {class: 'manual', open: ui.open === 'ic' || ui.open === 'answers'},
       el('summary', {text: 'If manual is needed'}),
       el('div', {class: 'action-row'},
         el('button', {type: 'button', class: 'primary', onclick: () => openPanel(form, 'ic')},
@@ -2662,7 +2681,17 @@ function renderForm(form, lesson) {
       el('ul', {}, missing.map(m => el('li', {}, `${m.last}, ${m.first}${section === 'all' ? ' · ' + m.section : ''}`,
         m.unsorted ? el('span', {class: 'badge warn', text: 'Submission awaiting a lesson match — scoring held'}) : null)))));
   }
+  // Per-student feedback is the backup to the printed packet: closed, at the end.
+  box.append(feedbackBackup(form, ui));
   return box;
+}
+
+function feedbackBackup(form, ui) {
+  const shown = ui.open === 'feedback';
+  return el('details', {class: 'manual feedback-backup', open: shown},
+    el('summary', {onclick: event => { event.preventDefault(); openPanel(form, 'feedback'); }},
+      'Student feedback · backup to the printed packet'),
+    shown ? feedbackPanel(form) : null);
 }
 
 function renderWork() {
@@ -3071,23 +3100,24 @@ async function runLinkCheck() {
   button.disabled = false;
 }
 
+// The former System page now lives in Today → Hub tools; its Notes live in Lessons.
 function loadRoutine() {
   renderRoutine();
-  loadSystemNotes();
   loadMorningSummary();
   window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 }
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  const current = ['today', 'plans', 'work', 'routine'].includes(tab) ? tab : 'today';
-  for (const name of ['today', 'plans', 'work', 'routine']) $('page-' + name).hidden = name !== current;
+  // An old #routine bookmark opens Today, where the Hub tools now are.
+  const current = ['today', 'plans', 'work'].includes(tab) ? tab : 'today';
+  for (const name of ['today', 'plans', 'work']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
-  if (current === 'today') loadToday();
+  if (current === 'today') { loadToday(); loadRoutine(); }
   else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
-  else if (current === 'routine') loadRoutine();
   else {
+    loadSystemNotes();
     loadLessonReadiness();
     refreshVisiblePlans();
   }
@@ -3154,7 +3184,7 @@ async function loadMorningSummary() {
     const reports = data.reports || [];
     morningReports = reports; morningRecovery = data.recovery || []; renderMorningAlert();
     box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review'})));
-    visibleReviewPanels.routine = currentSourceReviewPanel($('page-routine')?.hidden !== true);
+    visibleReviewPanels.routine = currentSourceReviewPanel($('page-today')?.hidden !== true);
     box.append(visibleReviewPanels.routine);
     if (!reports.length) { box.append(note('No score-entry receipt is recorded yet. The weekday helper runs at 7:00 when enabled. An enabled schedule is not proof of entry; Today shows the saved-and-reloaded results when a receipt arrives.', 'info')); return; }
     const words = value => String(value).replaceAll('_', ' ');
