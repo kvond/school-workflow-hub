@@ -20,12 +20,16 @@ const weekAhead = source.slice(source.indexOf('// ---------- Week ahead: lesson 
 const walk = node => [node, ...(node.children || []).filter(child => child instanceof Element).flatMap(walk)];
 
 function boot(responses) {
+  class Clock extends Date {
+    constructor(...args) { super(...(args.length ? args : ['2032-01-05T18:00:00Z'])); }
+    static now() { return new Date('2032-01-05T18:00:00Z').getTime(); }
+  }
   const nodes = new Map(), requests = [];
   const document = {createElement: tag => new Element(tag), getElementById: id => {
     if (!nodes.has(id)) nodes.set(id, new Element('div'));
     return nodes.get(id);
   }};
-  const context = vm.createContext({document, Node: Element, fetch: async (url, options) => {
+  const context = vm.createContext({Date: Clock, document, Node: Element, fetch: async (url, options) => {
     requests.push({url, options});
     return {ok: true, json: async () => responses(url, options)};
   }});
@@ -52,6 +56,51 @@ const reply = {status: 'needs_decision', start: '2032-01-05', last_successful_ch
   supplies: [{item: 'Active dry yeast', also_named: ['yeast'], status: 'on order (not verified in hand)', quantity: 'quantity not stated',
               lessons: ['Fictional respiration'], use_dates: ['2032-01-05'], prep_by: null}],
   packet: {status: 'ready', pdf_url: '/v2/api/weekly-preflight/packet.pdf?id=weeklylessonpacket_' + 'f'.repeat(64)}};
+
+test('technical-only Week ahead findings name worker repairs and checks, not teacher decisions', async () => {
+  const data = {...reply, exceptions: reply.exceptions.filter(e => e.kind !== 'calendar_conflict')};
+  const before = JSON.stringify(data);
+  const {ui, document} = boot(() => data);
+  await ui.loadWeekAhead();
+  const box = document.getElementById('today-week-ahead');
+  assert.match(box.children[0].children[0].textContent, /Week ahead3 repairs or checks pending/);
+  assert.doesNotMatch(box.textContent, /Needs decisions|teacher decision|Nothing unresolved/);
+  assert.match(document.getElementById('today-next-agenda').textContent, /Nothing needs your decision/);
+  assert.equal(JSON.stringify(data), before, 'classification does not change source evidence or exception status');
+});
+
+test('mixed Week ahead findings count teacher choices separately from worker repairs and checks', async () => {
+  const {ui, document} = boot(() => reply);
+  await ui.loadWeekAhead();
+  const heading = document.getElementById('today-week-ahead').children[0].children[0].textContent;
+  assert.match(heading, /1 teacher decision · 3 repairs or checks pending/);
+  assert.doesNotMatch(heading, /Needs decisions|to resolve/);
+});
+
+test('incomplete, stale, failed and running checks keep teacher-action status unknown', async () => {
+  for (const overrides of [{status: 'incomplete'}, {last_successful_check: '2032-01-04T12:00:00Z'},
+    {error: 'Source read failed'}, {busy: 'Checking the Agenda…'}]) {
+    const data = {...reply, exceptions: [], ...overrides};
+    const {ui, document} = boot(() => data);
+    await ui.loadWeekAhead();
+    if (overrides.error || overrides.busy) {
+      Object.assign(ui.weekAhead, overrides);
+      ui.renderWeekAhead();
+    }
+    const box = document.getElementById('today-week-ahead');
+    assert.match(box.children[0].children[0].textContent, /teacher actions not confirmed/);
+    assert.doesNotMatch(box.children[0].children[0].textContent, /Ready|\d+ teacher decision|repairs or checks pending/);
+    assert.doesNotMatch(box.textContent, /Nothing unresolved/);
+  }
+});
+
+test('a fresh complete check with no unresolved items may say Ready', async () => {
+  const {ui, document} = boot(() => ({...reply, status: 'ready', exceptions: [reply.exceptions[3]]}));
+  await ui.loadWeekAhead();
+  const box = document.getElementById('today-week-ahead');
+  assert.match(box.children[0].children[0].textContent, /Week aheadReady/);
+  assert.match(box.textContent, /Nothing unresolved in these weeks/);
+});
 
 test('only unresolved actionable items show; unchanged notes collapse; resolved items are only counted', async () => {
   const {ui, document, requests} = boot(() => reply);

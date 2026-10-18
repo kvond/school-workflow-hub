@@ -1097,8 +1097,23 @@ async function loadTodayFeedback(seq) {
 // rereads the Agenda and lesson sources. Only unresolved, actionable items are
 // listed; the machine evidence for each stays inside its own details.
 const weekAhead = {seq: 0, data: null, busy: '', error: '', supplies: false, prints: false, repairs: {}, packet: null};
-const WEEK_AHEAD_STATUS = {ready: 'Ready', needs_decision: 'Needs decisions', incomplete: 'Check incomplete',
+const WEEK_AHEAD_STATUS = {ready: 'Ready', needs_decision: 'Checks to resolve', incomplete: 'Check incomplete',
   inaccessible: 'Source unavailable', repaired_and_verified: 'Repaired and verified', not_checked: 'Not checked yet'};
+
+function weekAheadSummary(data) {
+  const unknown = text => ({verified: false, text: text + ' · teacher actions not confirmed'});
+  if (weekAhead.error) return unknown('Check unavailable');
+  if (weekAhead.busy) return unknown('Check in progress');
+  if (!data || data.status === 'not_checked') return unknown('Not checked yet');
+  if (data.status === 'incomplete') return unknown('Check incomplete');
+  if (!freshAgendaCheck(data.last_successful_check)) return unknown('Check out of date');
+  if (!['ready', 'needs_decision'].includes(data.status)) return unknown('Check status unknown');
+  const decisions = agendaTeacherChoices(data).length;
+  const repairs = (data.exceptions || []).filter(item => item.status !== 'repaired_and_verified').length - decisions;
+  const parts = [decisions ? `${decisions} teacher decision${decisions === 1 ? '' : 's'}` : '',
+    repairs ? `${repairs} repair${repairs === 1 ? '' : 's'} or check${repairs === 1 ? '' : 's'} pending` : ''].filter(Boolean);
+  return {verified: true, text: parts.join(' · ') || 'Ready'};
+}
 
 function weekAheadStart() {
   const saved = store.get('weekAheadStart');
@@ -1193,7 +1208,7 @@ function renderWeekAhead() {
   const shownItems = open.filter(e => e.blocking || e.first_seen === checkedAt[e.week]);
   const quiet = open.filter(e => !shownItems.includes(e));
   const resolved = (data?.exceptions || []).length - open.length;
-  const status = data?.status ? (WEEK_AHEAD_STATUS[data.status] || data.status) : 'Not loaded';
+  const summary = weekAheadSummary(data);
   const packet = weekAhead.packet || data?.packet;
   const start = el('input', {type: 'date', value: weekAheadStart(), 'aria-label': 'First week (Monday)'});
   const weeks = el('select', {'aria-label': 'Weeks'}, ...[1, 2, 3, 4].map(n =>
@@ -1208,7 +1223,7 @@ function renderWeekAhead() {
   const details = el('details', {class: 'cockpit-panel cockpit-details', id: 'week-ahead', open: store.get('weekAheadOpen') === '1'},
     el('summary', {}, el('h2', {text: 'Week ahead'}),
       el('span', {class: 'cockpit-summary-context muted',
-        text: `${status}${open.length ? ` · ${shownItems.length} to resolve` : ''}${data?.last_successful_check ? ' · last successful check ' + when(data.last_successful_check) : ''}`})),
+        text: `${summary.text}${data?.last_successful_check ? ' · last successful check ' + when(data.last_successful_check) : ''}`})),
     el('div', {class: 'controls'}, el('label', {}, 'From ', start), el('label', {}, 'For ', weeks),
       el('button', {type: 'button', disabled: !!weekAhead.busy, onclick: runWeekAhead}, 'Check now'),
       packet?.status === 'ready' ? link('Open Monday packet (PDF)', packet.pdf_url) : null,
@@ -1226,7 +1241,7 @@ function renderWeekAhead() {
     weekAhead.prints ? weekAheadPrints(data) : null,
     weekAhead.supplies ? weekAheadSupplies(data) : null,
     shownItems.length ? el('ul', {class: 'attention-list'}, ...shownItems.map(item => weekAheadItem(item, data)))
-      : data && data.status !== 'not_checked' ? el('p', {class: 'ok', text: '✓ Nothing unresolved in these weeks.'}) : null,
+      : summary.verified && !open.length ? el('p', {class: 'ok', text: '✓ Nothing unresolved in these weeks.'}) : null,
     quiet.length ? el('details', {}, el('summary', {class: 'muted', text: `Earlier notes, unchanged (${quiet.length})`}),
       el('ul', {class: 'attention-list'}, ...quiet.map(item => weekAheadItem(item, data)))) : null,
     resolved ? el('p', {class: 'muted', text: `${resolved} repaired and read back.`}) : null,
