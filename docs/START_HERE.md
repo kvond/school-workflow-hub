@@ -377,6 +377,23 @@ verified section automatically. Fresh target checks protect drafts and saves fro
 stale lesson/section selections. Saved assessment histories remain intact. This
 is not a deployment or recovery-completion claim.
 
+### Lesson pages and turn-in folders
+
+Schoology pages and storage folders organize lessons; they are not assignment
+identities. Existing assignments may share a weekly turn-in folder without
+being merged, and sharing that parent alone does not require moving files.
+For new setup, use one Schoology assignment page and turn-in folder per lesson.
+A second assignment may be listed on the same lesson page, with each assessment
+retaining its exact Form binding or explicitly approved combined-component
+binding. Do not split a working page or create another folder just because a
+lesson has a second assignment.
+
+When the schedule changes, reuse the lesson's page, folder, Form and source IDs;
+update the dates and links and freshly verify the exact bindings. Do not recreate
+submissions, replace original submission dates, renumber grade history or infer
+new ownership from a week label. This setup policy does not establish that a
+changed live mapping has already been verified.
+
 Readiness, scoring and native feedback resolve teacher-source ownership for the
 exact Form before reading lesson sources. Separate Forms in one Agenda row do
 not inherit each other's decks. Existing exact teacher-source declarations or
