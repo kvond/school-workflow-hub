@@ -3,10 +3,13 @@
 - Parallel agents (Codex workers, Claude specialist, ChatGPT direction): read
   `docs/PARALLEL_AGENTS.md`. Every PR must pass `scripts/check.sh`; the
   `Checks` workflow (authorized 2026-10-15) runs it on pull requests.
-- The owner authorized the coordinating Codex agent to handle routine reviewed
-  merges for approved work on October 17, 2026. Katherine does not need to review
-  code or click Merge for those changes. Follow the exact-commit checks,
-  independent review and escalation limits in `docs/PARALLEL_AGENTS.md`.
+- The owner authorized delegated routine merges on October 17, 2026, and
+  clarified on October 18 that she reviews results after the fact. Routine
+  reversible work within her stated goals has standing authorization: implement,
+  independently review, test and merge without per-batch or per-PR teacher
+  approval. Katherine may reject a delivered result and request a correction or
+  revert. Follow the exact-commit checks, independent technical review, safe
+  correction process and escalation limits in `docs/PARALLEL_AGENTS.md`.
 
 - September 16 reconciliation: start with `docs/PYTHON_INTEGRATION_20260916.md`
   and `docs/CLOUD_READINESS.md`. September 15 records verify hosted Agenda reads,

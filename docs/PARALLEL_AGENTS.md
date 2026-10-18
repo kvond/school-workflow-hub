@@ -8,7 +8,7 @@ agent; this document adds the working model only.
 
 | Role | Who | Does |
 |---|---|---|
-| Owner | Katherine | States goals, approves task batches and resolves teaching decisions or new permissions |
+| Owner | Katherine | States goals, reviews delivered results afterward, may reject or request corrections, and resolves teaching decisions or new permissions |
 | Merge coordinator | Coordinating Codex agent | Obtains independent review, verifies current checks and dependencies, merges approved routine work to `main`, and verifies the existing deployment |
 | Direction | ChatGPT (Slack) | Decides what is worth building, sets priorities, writes the backlog as task issues, and stops work that would not make the school day easier |
 | Workers | Codex (cloud) | Implements one task issue per branch, opens a draft PR, does routine review of ordinary PRs |
@@ -45,12 +45,16 @@ the school day easier; tasks that don't are dropped.
 1. Owner states a goal in #parallel-agents.
 2. ChatGPT decides whether it is worth doing and writes task issues (Agent task
    template) with claims, dependencies and merge order.
-3. Owner approves; Codex workers pick up issues and open draft PRs.
+3. Codex workers carry out routine reversible work within the owner's stated
+   goals under standing authorization and open draft PRs. No per-batch or per-PR
+   teacher approval is needed; the escalation boundaries below still apply.
 4. The `Checks` workflow runs `scripts/check.sh` on every PR.
 5. Codex reviews ordinary PRs. Claude reviews when PRs interact or touch IC,
    grades, rosters, browser runs or deployment.
-6. The coordinating Codex agent merges routine approved work after independent
+6. The coordinating Codex agent merges routine authorized work after independent
    technical review and passing checks, following the delegation below.
+7. Report delivered behavior and verification in plain language. Katherine
+   reviews results afterward and may reject or request a correction or revert.
 
 ## Reviewed merge delegation
 
@@ -60,6 +64,13 @@ then-current Hub PRs. She approves goals and teaching decisions; she does not
 need to review code or click Merge for routine authorized changes. This replaces
 the earlier owner-only merge step, without changing GitHub permissions or
 security settings and without installing an auto-merge bot or schedule.
+
+On October 18, she clarified that routine reversible work within her stated
+goals should proceed without first approving each plan, task batch or PR. Her
+review is after delivery. Independent technical review is still required before
+merge; it is the engineering team's responsibility, not a request for teacher
+approval. Do not treat an old owner-only rule or a stale checkout as revoking
+this standing instruction: read the current rules before handing off work.
 
 Before merging, the coordinator must:
 
@@ -81,6 +92,13 @@ Before merging, the coordinator must:
   authorization does not authorize new student-data writes or policy changes.
 - Verify the resulting `main` commit and the existing deployment path. Report
   source/test status, merge, deployment and live acceptance as separate facts.
+
+If Katherine rejects a delivered result, handle it as engineering work: prepare
+a targeted correction or revert on a branch, independently review and test its
+latest commit, merge it under the same standing authority, and verify the
+result. Preserve repository history, sources, student work, grades and delivery
+records. Do not reset shared history or automatically undo student-data writes;
+those retain their separate authorization and reconciliation requirements.
 
 Ask Katherine only for a new teaching or grading policy, an unresolved source or
 student-identity decision requiring her judgment, new access or sharing,
