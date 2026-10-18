@@ -241,25 +241,114 @@ def _pdf(run, record):
     return meta, raw
 
 
+def _strong_etag(response, value):
+    etag = value.get("etag")
+    if (not isinstance(etag, str) or not re.fullmatch(r'"[^"\x00-\x20\x7f]+"', etag)
+            or response.headers.get("ETag", etag) != etag):
+        raise archive.Held("The checklist's exact conditional-write validator is unavailable.")
+    return etag
+
+
+def _file_validator(run, meta):
+    """Bind v2's actual ETag to the complete, ACL-enriched v3 snapshot."""
+    archive._private(meta)
+    if (meta.get("name") != NAME or meta.get("mimeType") != archive.PDF
+            or not re.fullmatch(r"archivefeedbackchecklist_[a-f0-9]{64}",
+                               (meta.get("properties") or {}).get(archive.TAG, ""))
+            or not re.fullmatch(r"[1-9][0-9]*", str(meta.get("version", "")))
+            or not re.fullmatch(r"[a-f0-9]{32}", str(meta.get("md5Checksum", "")))
+            or not re.fullmatch(r"[1-9][0-9]*", str(meta.get("size", "")))
+            or google.drive_file(run.token, meta["id"], archive.FIELDS) != meta):
+        raise archive.Held("The checklist changed before its conditional update.")
+    response = google._session().get("https://www.googleapis.com/drive/v2/files/" + quote(meta["id"]),
+        params={"fields": "id,etag,version,md5Checksum,fileSize,mimeType,labels(trashed),parents(id),title,headRevisionId",
+                "supportsAllDrives": "true"}, headers={"Authorization": "Bearer " + run.token},
+        timeout=(5, 20), allow_redirects=False)
+    if response.status_code != 200:
+        raise archive.Held("The checklist's exact file revision could not be read.")
+    value = response.json()
+    expected = {"id": meta["id"], "version": meta["version"], "md5Checksum": meta["md5Checksum"],
+        "fileSize": meta["size"], "mimeType": meta["mimeType"], "title": meta["name"],
+        "labels": {"trashed": False}, "parents": [{"id": parent} for parent in meta["parents"]]}
+    if (not isinstance(value, dict) or any(value.get(k) != v for k, v in expected.items())
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", str(value.get("headRevisionId", "")))):
+        raise archive.Held("The checklist's validator does not match its verified file revision.")
+    _strong_etag(response, value)
+    if google.drive_file(run.token, meta["id"], archive.FIELDS) != meta:
+        raise archive.Held("The checklist's file or private access changed during validator discovery.")
+    return value
+
+
+def _head_revision(run, file):
+    endpoint = "https://www.googleapis.com/drive/v2/files/%s/revisions/%s" % (quote(file["id"]), quote(file["headRevisionId"]))
+    response = google._session().get(endpoint,
+        params={"fields": "id,etag,pinned,md5Checksum,fileSize,mimeType"},
+        headers={"Authorization": "Bearer " + run.token}, timeout=(5, 20), allow_redirects=False)
+    if response.status_code != 200:
+        raise archive.Held("The checklist's previous PDF revision could not be verified.")
+    value = response.json()
+    expected = {"id": file["headRevisionId"], **{k: file[k] for k in ("md5Checksum", "fileSize", "mimeType")}}
+    if (not isinstance(value, dict) or any(value.get(k) != v for k, v in expected.items())
+            or type(value.get("pinned", False)) is not bool):
+        raise archive.Held("The checklist's previous revision does not match its verified PDF.")
+    _strong_etag(response, value)
+    return endpoint, value
+
+
 def _conditional_update(run, meta, raw):
-    """One conditional media PATCH; callers fence it durably before this call."""
-    endpoint = "https://www.googleapis.com/drive/v3/files/" + quote(meta["id"])
+    """Preserve the exact prior revision, then make one conditional media PUT.
+
+    The caller durably fences both operations. Only pre-mutation refusals are
+    typed Held; once either request starts, any unresolved result stays fenced.
+    """
+    attempted = False
     try:
-        response = google._session().get(endpoint, params={"fields": archive.FIELDS, "supportsAllDrives": "true"},
-            headers={"Authorization": "Bearer " + run.token}, timeout=(5, 20), allow_redirects=False)
-        if response.status_code != 200 or response.json() != meta or not response.headers.get("ETag"):
-            raise archive.Held("The checklist changed or its conditional-write revision is unavailable.")
+        file = _file_validator(run, meta)
+        prior_bytes = archive._work_bytes(run.token, meta, run.heartbeat)
+        if hashlib.md5(prior_bytes).hexdigest() != meta["md5Checksum"] or str(len(prior_bytes)) != meta["size"]:
+            raise archive.Held("The checklist's previous PDF bytes changed before preservation.")
+        endpoint, revision = _head_revision(run, file)
+        if _file_validator(run, meta) != file:
+            raise archive.Held("The checklist's file changed before preserving its previous revision.")
+        if revision.get("pinned") is not True:
+            run.heartbeat(force=True)
+            attempted = True
+            try:
+                google._session().patch(endpoint, json={"pinned": True},
+                    headers={"Authorization": "Bearer " + run.write_token, "If-Match": revision["etag"]},
+                    timeout=(5, 20), allow_redirects=False)
+            except Exception:
+                pass  # One exact readback can reconcile a lost reply; never repeat the pin.
+            if _head_revision(run, file)[1].get("pinned") is not True:
+                return None
+            fresh = google.drive_file(run.token, meta["id"], archive.FIELDS)
+            if ({k: v for k, v in fresh.items() if k != "version"}
+                    != {k: v for k, v in meta.items() if k != "version"}
+                    or not re.fullmatch(r"[1-9][0-9]*", str(fresh.get("version", "")))
+                    or int(fresh["version"]) < int(meta["version"])):
+                return None
+            rebound = _file_validator(run, fresh)
+            if (rebound["headRevisionId"] != file["headRevisionId"]
+                    or archive._work_bytes(run.token, fresh, run.heartbeat) != prior_bytes):
+                return None
+            file = rebound
         run.heartbeat(force=True)
-        response = google._session().patch("https://www.googleapis.com/upload/drive/v3/files/" + quote(meta["id"]),
-            params={"uploadType": "media", "supportsAllDrives": "true", "keepRevisionForever": "true"},
-            headers={"Authorization": "Bearer " + run.write_token, "If-Match": response.headers["ETag"],
+        attempted = True
+        response = google._session().put("https://www.googleapis.com/upload/drive/v2/files/" + quote(meta["id"]),
+            params={"uploadType": "media", "supportsAllDrives": "true", "newRevision": "true", "pinned": "true"},
+            headers={"Authorization": "Bearer " + run.write_token, "If-Match": file["etag"],
                      "Content-Type": archive.PDF}, data=raw, timeout=(5, 30), allow_redirects=False)
-        # Even a lost/failed reply is decided only by the exact readback below.
+        # Even a lost/failed reply is decided only by the caller's exact readback.
         return response.status_code
-    except archive.Held:
+    except (Conflict, StoreUnavailable):
         raise
+    except archive.Held:
+        if not attempted:
+            raise
     except Exception:
-        return None
+        if not attempted:
+            raise archive.Held("The checklist's conditional-update preflight is unavailable; no write was attempted.") from None
+    return None
 
 
 def _publish(run, student_key):
@@ -302,7 +391,7 @@ def _publish(run, student_key):
         try:
             _conditional_update(run, meta, raw)
         except archive.Held:
-            # This typed refusal occurs before PATCH. It is not an uncertain
+            # This typed refusal occurs before any preservation/media request. It is not an uncertain
             # provider write, so preserve the prior verified state unchanged.
             run.put(ident, {**record, "pending": None}, old)
             raise
