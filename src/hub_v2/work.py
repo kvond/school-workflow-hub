@@ -957,9 +957,17 @@ def _nearby_match_context(agenda, class_key, week, entries, target_index, submis
 
 
 def shared_folder_reviews(forms, roots, parents):
-    """Report, without moving files, when named lesson folders serve multiple Forms."""
+    """Review shared-folder ownership by exact assignment, never display label.
+
+    Distinct Forms may share a name; repeated references to one Form are one
+    assignment. Unverified Form entries stay separate and conservatively visible.
+    Parent sharing and teacher-source verification alone do not prove a submitted
+    artifact's identity or lesson allocation, so they cannot clear this review.
+    """
     found = {}
-    for form in forms:
+    for index, form in enumerate(forms):
+        form_id = form.get("form_id")
+        identity = ("form", form_id) if isinstance(form_id, str) and form_id else ("unverified", str(index))
         for submission in form.get("found", []):
             for file in submission.get("files", []):
                 file_id = file.get("id")
@@ -971,21 +979,23 @@ def shared_folder_reviews(forms, roots, parents):
                             or "(file responses)" in str(folder_name).lower()):
                         continue
                     if folder_id in ancestors:
-                        key = (folder_id, form.get("label", ""))
-                        found.setdefault(key, set()).add(file_id)
+                        key = (folder_id, identity)
+                        entry = found.setdefault(key, {"label": form.get("label") or "Turn in", "files": set()})
+                        entry["files"].add(file_id)
     by_folder = {}
-    for (folder_id, label), file_ids in found.items():
-        by_folder.setdefault(folder_id, {})[label] = file_ids
+    for (folder_id, identity), entry in found.items():
+        by_folder.setdefault(folder_id, {})[identity] = entry
     reviews = []
     for folder_id, assignments in by_folder.items():
         if len(assignments) < 2:
             continue
-        detail = ["%s (%d file%s)" % (assignment_title(label), len(file_ids),
-                                      "" if len(file_ids) == 1 else "s")
-                  for label, file_ids in sorted(assignments.items())]
+        ordered = sorted(assignments.items(), key=lambda item: (item[1]["label"], item[0]))
+        detail = ["%s (%d file%s)" % (assignment_title(entry["label"]), len(entry["files"]),
+                                      "" if len(entry["files"]) == 1 else "s")
+                  for _, entry in ordered]
         reviews.append({"folder_name": roots[folder_id],
                         "folder_url": "https://drive.google.com/drive/folders/" + folder_id,
-                        "assignments": [assignment_title(label) for label in sorted(assignments)],
+                        "assignments": [assignment_title(entry["label"]) for _, entry in ordered],
                         "message": ("This folder contains submitted work for multiple lessons: %s. "
                                     "Do both lessons belong in this folder? Files were left where they are."
                                     % "; ".join(detail))})
