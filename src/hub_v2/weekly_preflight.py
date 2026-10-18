@@ -46,6 +46,7 @@ import math
 import re
 import time
 from collections import Counter
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 
@@ -57,7 +58,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/3"
+RULES = "weekly-preflight-rules/4"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -699,11 +700,52 @@ def deck_summary(outline):
             "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes}
 
 
+def _native_teacher(node):
+    # These roles originate only in the current Agenda row's exact link cells.
+    return bool(set(node.get("roles", [])) & {"teacher_deck", "second_deck"})
+
+
+def _readiness_source(token, node):
+    expected = node.get("_source_metadata") or {}
+    if (expected.get("id") != node["id"] or expected.get("mimeType") not in DECKS
+            or expected.get("trashed") is not False or not expected.get("name")
+            or not expected.get("version") or not expected.get("modifiedTime")
+            or not isinstance(expected.get("parents"), list)):
+        raise completion.Unreadable("The exact Agenda deck has incomplete current source metadata; recheck its source.")
+    actual = google.drive_file(token, node["id"], NODE_FIELDS)
+    if actual != expected:
+        raise completion.Unreadable("The exact Agenda deck changed since source discovery; run the check again.")
+    return actual
+
+
+def _readiness_failure(error):
+    return {"status": "NOT_READY", "label": "Cannot read lesson", "revision": "",
+            "problem": str(error), "issues": ["deck_release_unreadable"],
+            "readability": {"stage": "metadata", "http_status": getattr(error, "status", None)}}
+
+
 def _readiness(token, node):
-    result = audit._release_deck(token, node["id"])
+    try:
+        before = _readiness_source(token, node)
+        native_teacher = _native_teacher(node)
+        result = audit._release_deck(token, node["id"], native_teacher=native_teacher)
+        _readiness_source(token, node)
+        if native_teacher and not result.get("readability"):
+            consumed = result.get("_teacher_source_metadata") or {}
+            if any(consumed.get(field) != before.get(field) for field in audit._NATIVE_METADATA):
+                raise completion.Unreadable("The exact teacher metadata consumed by the code check does not match its current source.")
+    except (google.GoogleError, completion.Unreadable) as error:
+        return _readiness_failure(error)
     keep = ("status", "label", "issues", "missing_ids", "extra_ids", "problem", "readability", "revision",
             "inventory_cycle", "counts", "declared_counts", "diagnostics")
     return {field: result.get(field) for field in keep if field in result}
+
+
+def _check_identity(kind, node):
+    # A teacher's export-403 fallback must not authorize a student-only link,
+    # even if both rows reference the same file and Drive revision.
+    scoped = "teacher_readiness" if kind == "readiness" and _native_teacher(node) else kind
+    return scoped, node["id"], node["revision"]
 
 
 def _outline(token, node):
@@ -1046,10 +1088,15 @@ class _Run:
     def check(self, kind, node, compute):
         """A cached result for this exact revision, a fresh one saved at once
         (the checkpoint), or None when the time budget has run out."""
-        ident = (kind, node["id"], node["revision"])
+        ident = _check_identity(kind, node)
         if ident not in self.looked:
             self._remember(ident, self.port.read([check_id(*ident)]).documents[check_id(*ident)])
         if ident in self.checks:
+            if kind == "readiness":
+                try:
+                    _readiness_source(self.token, node)
+                except (google.GoogleError, completion.Unreadable) as error:
+                    return _readiness_failure(error)
             return self.checks[ident]
         if time.monotonic() > self.deadline:
             self.counts["pending"] += 1
@@ -1064,7 +1111,7 @@ class _Run:
         self.checks[ident] = result
         # Only a completed read is kept: a failed download is tried again next run.
         if result.get("ok") if "ok" in result else not result.get("readability"):
-            record = {"schema": SCHEMA, "rules": RULES, "kind": kind, "source_id": node["id"],
+            record = {"schema": SCHEMA, "rules": RULES, "kind": ident[0], "source_id": node["id"],
                       "revision": node["revision"], "result": result, "checked_at": now()}
             try:
                 bounded_json(record)
@@ -1133,7 +1180,7 @@ def run(token, config, agenda, start, weeks, roster_counts, *, port=None, budget
         for lesson in week_plan["lessons"]:
             _resolve_sources(ctx, lesson)
     wanted = list(dict.fromkeys(
-        (kind, node["id"], node["revision"]) for week_plan in plans for lesson in week_plan["lessons"]
+        _check_identity(kind, node) for week_plan in plans for lesson in week_plan["lessons"]
         for node in lesson["sources"] if node.get("accessible") and not node.get("trashed")
         for kind in _content_kinds(node)))
     ctx.prefetch(wanted)
@@ -1407,6 +1454,7 @@ def _node(ctx, role, ident, url):
     node.update(accessible=True, trashed=bool(meta.get("trashed")), name=meta.get("name", ""),
                 mimeType=meta.get("mimeType", ""), parents=meta.get("parents") or [],
                 modifiedTime=meta.get("modifiedTime"), version=meta.get("version"), revision=revision(meta),
+                _source_metadata=deepcopy(meta),
                 url=_url(ident, meta.get("mimeType", "")) if role != "student_copy" else url)
     return node
 

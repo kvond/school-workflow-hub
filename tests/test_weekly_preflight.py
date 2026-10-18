@@ -183,9 +183,14 @@ def pdf_bytes(width, pages=1):
 
 
 def native(ident, slides, version):
-    return {'presentationId': ident, 'revisionId': 'rev-' + version, 'slides': [
+    return {'presentationId': ident, 'revisionId': 'rev-' + version,
+            'pageSize': {'width': {'magnitude': 900, 'unit': 'PT'},
+                         'height': {'magnitude': 600, 'unit': 'PT'}}, 'slides': [
         {'objectId': '%s_p%d' % (ident[-4:], n), 'pageElements': [
-            {'objectId': '%s_s%d_%d' % (ident[-4:], n, i), 'shape': {'text': {'textElements': [
+            {'objectId': '%s_s%d_%d' % (ident[-4:], n, i),
+             'size': {'width': {'magnitude': 900, 'unit': 'PT'}, 'height': {'magnitude': 50, 'unit': 'PT'}},
+             'transform': {'scaleX': 1, 'scaleY': 1, 'translateX': 0, 'translateY': 60 * i, 'unit': 'PT'},
+             'shape': {'text': {'textElements': [
                 {'textRun': {'content': line + '\n'}} for line in text.split('\n')]}}}
             for i, (_, text) in enumerate(shapes)]} for n, shapes in enumerate(slides, 1)]}
 
@@ -266,7 +271,9 @@ class Base(unittest.TestCase):
         self.config = {'HUB_AGENDA_SPREADSHEET_ID': SHEET, 'HUB_STATE_PROBE_ORIGINS': ORIGIN,
                        'HUB_ALLOWED_EMAILS': 'teacher@school.example'}
         self.writes = []
-        patches = [patch.object(google, 'drive_file', side_effect=self.src.drive_file),
+        patches = [patch.dict(completion._templates, {}, clear=True),
+                   patch.dict(completion._native_teacher_templates, {}, clear=True),
+                   patch.object(google, 'drive_file', side_effect=self.src.drive_file),
                    patch.object(google, 'folder_listing', side_effect=self.src.folder_listing),
                    patch.object(google, 'form_info', side_effect=self.src.form_info),
                    patch.object(google, 'native_presentation', side_effect=self.src.native_presentation),
@@ -487,6 +494,157 @@ class DeckTextTests(unittest.TestCase):
             {'slide': 3, 'count': 1, 'note': '[verify verbatim against the text]'},
             {'slide': 6, 'count': 2, 'note': '[TODO: add the graph]'}])
         self.assertEqual(summary['teacher_only_slides'], [4])
+
+
+class NativeReadinessTests(Base):
+    def context(self, role='teacher_deck', ident=AP_DECK):
+        ctx = wp._Run('read-token', self.port, float('inf'), lambda _: None)
+        return ctx, wp._node(ctx, role, ident, deck_url(ident))
+
+    def denied_export(self, token, ident, mime):
+        self.src.calls['export:' + ident] += 1
+        raise google.GoogleError('Export denied', 403)
+
+    def assert_unavailable(self, ctx, node, result):
+        self.assertEqual(result['status'], 'NOT_READY')
+        self.assertIn('readability', result)
+        cache_id = wp.check_id(*wp._check_identity('readiness', node))
+        self.assertIsNone(self.port.read([cache_id]).documents[cache_id])
+
+    def test_exact_agenda_teacher_and_second_deck_read_native_after_export_403(self):
+        denied = {AP_DECK, FOR_SECOND}
+
+        def export(token, ident, mime):
+            return (self.denied_export if ident in denied else self.src.deck_bytes)(token, ident, mime)
+
+        with patch.object(google, 'deck_bytes', side_effect=export):
+            result = self.run_check()
+            for cls, row, ident, role in (('anatomy', 5, AP_DECK, 'teacher_deck'),
+                                           ('forensics', 6, FOR_SECOND, 'second_deck')):
+                with self.subTest(role=role):
+                    node = next(n for n in self.lesson(result, cls, row)['sources'] if n['id'] == ident)
+                    self.assertIn(role, node['roles'])
+                    self.assertEqual(node['readiness']['status'], 'READY')
+                    cache_id = wp.check_id(*wp._check_identity('readiness', node))
+                    saved = self.port.read([cache_id]).documents[cache_id].value['result']
+                    self.assertEqual(saved['counts'], {'NOTES': 1, 'DRAFT': 1})
+                    self.assertEqual(node['readiness']['missing_ids'], [])
+                    self.assertEqual(node['readiness']['extra_ids'], [])
+                    self.assertEqual(self.src.calls['native:' + ident], 2, 'readiness and outline')
+                    self.assertNotIn('_source_metadata', node, 'private bookends are not report fields')
+            before = self.src.calls.copy()
+            self.run_check()
+            self.assertFalse(any(k.startswith(('native:', 'export:')) for k in self.src.calls - before))
+        self.assertEqual(self.src.calls['native:' + STRAY], 0, 'folder neighbours are not teacher authority')
+        self.assertEqual(result['external_writes'], 0)
+        self.assertEqual(self.writes, [])
+
+    def test_native_read_still_reports_actual_missing_and_extra_codes(self):
+        with patch.object(google, 'deck_bytes', side_effect=self.denied_export):
+            result = self.run_check()
+        node = next(n for n in self.lesson(result, 'biology', 5)['sources'] if n['id'] == BIO_DECK)
+        self.assertEqual(node['readiness']['status'], 'NOT_READY')
+        self.assertEqual(node['readiness']['missing_ids'], ['NOTES Q2'])
+        self.assertEqual(node['readiness']['extra_ids'], ['NOTES Q3'])
+        self.assertFalse(node['readiness']['readability'])
+        self.assertIn('needs_embedded_codes', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
+
+    def test_teacher_cache_cannot_authorize_same_revision_student_only_or_unrelated_link(self):
+        with patch.object(google, 'deck_bytes', side_effect=self.denied_export):
+            ctx, teacher = self.context()
+            self.assertEqual(ctx.check('readiness', teacher, wp._readiness)['status'], 'READY')
+            before = self.src.calls['native:' + AP_DECK]
+            for role in ('student_copy', 'extra_material'):
+                with self.subTest(role=role):
+                    ctx, node = self.context(role)
+                    result = ctx.check('readiness', node, wp._readiness)
+                    self.assert_unavailable(ctx, node, result)
+                    self.assertEqual(result['readability']['http_status'], 403)
+                    self.assertEqual(self.src.calls['native:' + AP_DECK], before)
+                    if role == 'extra_material':
+                        self.assertEqual(wp._content_kinds(node), [])
+
+    def test_non_403_export_failures_do_not_fall_back_to_native(self):
+        ctx, node = self.context()
+        with patch.object(google, 'deck_bytes', side_effect=google.GoogleError('Unavailable', 429)):
+            result = ctx.check('readiness', node, wp._readiness)
+        self.assert_unavailable(ctx, node, result)
+        self.assertEqual(result['readability']['http_status'], 429)
+        self.assertEqual(self.src.calls['native:' + AP_DECK], 0)
+
+    def test_incomplete_discovery_metadata_never_reads_or_caches_ready(self):
+        original = deepcopy(self.src.files[AP_DECK])
+        for field in ('id', 'name', 'mimeType', 'trashed', 'version', 'modifiedTime', 'parents'):
+            with self.subTest(field=field):
+                self.src.files[AP_DECK] = deepcopy(original)
+                self.src.files[AP_DECK].pop(field)
+                ctx, node = self.context()
+                result = ctx.check('readiness', node, wp._readiness)
+                self.assert_unavailable(ctx, node, result)
+                self.assertIn('incomplete current source metadata', result['problem'])
+        self.assertEqual(self.src.calls['export:' + AP_DECK], 0)
+        self.assertEqual(self.src.calls['native:' + AP_DECK], 0)
+
+    def test_changed_discovery_metadata_never_reads_or_caches_ready(self):
+        ctx, node = self.context()
+        self.src.bump(AP_DECK)
+        result = ctx.check('readiness', node, wp._readiness)
+        self.assert_unavailable(ctx, node, result)
+        self.assertIn('changed since source discovery', result['problem'])
+        self.assertEqual(self.src.calls['export:' + AP_DECK], 0)
+
+    def test_revision_name_and_parent_changes_during_native_read_are_not_cached(self):
+        original = deepcopy(self.src.files[AP_DECK])
+        for field, value in (('version', '2'), ('name', 'Changed teacher title'), ('parents', ['DifferentFolder'])):
+            with self.subTest(field=field):
+                self.src.files[AP_DECK] = deepcopy(original)
+                completion._native_teacher_templates.clear()
+                ctx, node = self.context()
+
+                def native_then_change(token, ident):
+                    response = self.src.native_presentation(token, ident)
+                    self.src.files[ident][field] = value
+                    return response
+
+                with patch.object(google, 'deck_bytes', side_effect=self.denied_export), \
+                        patch.object(google, 'native_presentation', side_effect=native_then_change):
+                    result = ctx.check('readiness', node, wp._readiness)
+                self.assert_unavailable(ctx, node, result)
+                self.assertIn('changed', result['problem'])
+
+    def test_the_consumed_teacher_metadata_must_match_the_discovered_source(self):
+        ctx, node = self.context()
+        meta, deck = completion._teacher_template('read-token', AP_DECK)
+        meta['parents'] = ['UnrelatedFolder']
+        with patch.object(completion, '_teacher_template', return_value=(meta, deck)):
+            result = ctx.check('readiness', node, wp._readiness)
+        self.assert_unavailable(ctx, node, result)
+        self.assertIn('consumed by the code check does not match', result['problem'])
+
+    def test_a_cached_ready_requires_a_fresh_source_bookend(self):
+        ctx, node = self.context()
+        self.assertEqual(ctx.check('readiness', node, wp._readiness)['status'], 'READY')
+        cached, same_node = self.context()
+        self.src.bump(AP_DECK)
+        result = cached.check('readiness', same_node, wp._readiness)
+        self.assertEqual(result['status'], 'NOT_READY')
+        self.assertIn('changed since source discovery', result['problem'])
+        self.assertEqual(self.src.calls['export:' + AP_DECK], 1, 'a stale cache is not recomputed against a new source')
+        current, current_node = self.context()
+        self.assertEqual(current.check('readiness', current_node, wp._readiness)['revision'], '2')
+
+    def test_native_identity_mismatch_or_incomplete_geometry_is_not_ready(self):
+        for defect in ('wrong_id', 'no_geometry'):
+            with self.subTest(defect=defect):
+                presentation = self.src.native_presentation('read-token', AP_DECK)
+                if defect == 'wrong_id':
+                    presentation['presentationId'] = STRAY
+                else:
+                    presentation.pop('pageSize')
+                ctx, node = self.context()
+                with patch.object(google, 'deck_bytes', side_effect=self.denied_export), \
+                        patch.object(google, 'native_presentation', return_value=presentation):
+                    self.assert_unavailable(ctx, node, ctx.check('readiness', node, wp._readiness))
 
 
 class PreflightRunTests(Base):

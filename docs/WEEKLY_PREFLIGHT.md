@@ -1,7 +1,8 @@
 # Weekly lesson-readiness preflight
 
-Status: implemented and fixture-tested. Not deployed or live-verified; no real
-Agenda, Drive folder, deck or packet has been checked by this code yet.
+Implementation and fixture tests cover the checks below. Deployment and live
+source acceptance are separate release checks; a local test pass is not evidence
+of current source or student access.
 
 ## What runs
 
@@ -65,6 +66,13 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   skip the Form checks only.
 - **Deck content.** Completion codes via `audit._release_deck` (non-ready
   results read "Needs embedded codes" with the missing/extra IDs and slides);
+  only exact teacher-deck and second-deck links in the current Agenda row may
+  use the existing native teacher reader after a Slides export returns HTTP
+  403. It checks the actual embedded codes and preserves missing/extra-code
+  failures. A student-only link, a folder neighbour, an extra-material link or
+  a similar title does not grant teacher-source authority. Native identity,
+  geometry and completeness requirements remain unchanged. Other export
+  failures remain unavailable;
   slide count, TEACHER REFERENCE / NAVIGATION slides, and their TO PRINT,
   BUY AHEAD, PREPARE and PUT OUT FOR STUDENTS blocks; the deck's web links
   (linked text, typed URLs, a URL under the line that names it). A bracketed
@@ -115,6 +123,16 @@ rules version, and saved as each finishes; a run that runs out of time is
 reviews, repair receipts and packet manifests use content-derived keys, so
 reruns write no duplicates.
 
+Readiness rules v4 discard earlier cached checks. Teacher readiness has a
+separate cache identity from ordinary/student-only readiness, even for the same
+file and revision. Before and after a new check, and before reusing cached
+readiness, fresh Drive metadata must match the complete source snapshot from
+the current run. A teacher read must also prove that its consumed source
+metadata matches that snapshot. Incomplete metadata or changed identity, name,
+parents, revision or modification time produces an unavailable check, never a
+cached current Ready. These checks read sources only; no source, code or grade
+is changed to make a lesson appear ready.
+
 ## Monday packet and email
 
 One PDF: cover (weeks, sections, generated time, source fingerprint), each
@@ -133,6 +151,5 @@ readback like `print_ready_email`); that is not built.
 
 ## No schedule
 
-No scheduler or recurring job was added. When the weekly check runs (for
-example Friday afternoon or Monday morning) is the teacher's decision; today
-it runs when she presses **Check now**.
+This module adds no scheduler or recurring job. Existing authorized routines
+can use the same check endpoint; **Check now** is the manual entry point.
