@@ -107,6 +107,43 @@ def _release_deck(token, deck_id, prompt0="", prompt2="", *, native_teacher=Fals
         }
 
 
+
+_NATIVE_METADATA = ("id", "name", "mimeType", "trashed", "version", "modifiedTime", "parents")
+
+
+def _ordinary_native_candidate(row):
+    forms = row["lesson"]["forms"]
+    teachers = [DECK.search(m.get("url", "")) for m in row["lesson"]["materials"]
+                if m.get("label") == "Teacher deck"]
+    return (len(forms) == 1 and bool(forms[0].get("form_id")) and not forms[0].get("problem")
+            and len(teachers) == 1 and teachers[0] is not None
+            and not row["week_policy"]["excluded"] and not row["week_policy"]["problem"])
+
+
+def _ordinary_native_proof(token, row):
+    """Exact ordinary teacher identity for this read-only audit, never grading."""
+    fields = google.FILE_FIELDS + ",version"
+    source = completion.lesson_sources(token, row["lesson"], metadata_fields=fields)
+    teachers = [DECK.search(m["url"]).group(1) for m in row["lesson"]["materials"]
+                if m.get("label") == "Teacher deck"]
+    if source["problem"] or source["stale_links"] or len(source["decks"]) != 1:
+        raise completion.Unreadable("The ordinary teacher collection is not exact.")
+    deck = source["decks"][0]
+    meta = deck["metadata"]
+    if (deck["id"] != teachers[0] or meta.get("id") != deck["id"]
+            or meta.get("mimeType") != completion.SLIDES or meta.get("trashed") is not False
+            or not meta.get("version") or not meta.get("modifiedTime")):
+        raise completion.Unreadable("The exact ordinary native teacher metadata is incomplete.")
+    folders = []
+    for folder in source["folders"]:
+        value = google.drive_file(token, folder["id"], fields)
+        if (value.get("id") != folder["id"] or value.get("mimeType") != google.FOLDER
+                or value.get("trashed") is not False or not value.get("version")
+                or not value.get("modifiedTime")):
+            raise completion.Unreadable("The ordinary teacher folder metadata is incomplete.")
+        folders.append(value)
+    return {"source": source, "folders": folders}
+
 def _published(token, form_ids):
     """{form id: (student-facing title, published id)} from the Forms API, so a
     published link (the kind Schoology uses) can be matched to its Form."""
@@ -192,6 +229,21 @@ def check(token, agenda, class_key, config=None):
                     if ordinary is None:
                         ordinary = completion.lesson_sources(token, r["lesson"])
                     unit["source"] = ordinary
+        if not has_binding and _ordinary_native_candidate(r):
+            fid = r["lesson"]["forms"][0]["form_id"]
+            if not completion_holds.check(config or {}, agenda, class_key, r["week"], fid)["held"]:
+                try:
+                    # A lone visible Form never overrides explicit ownership of
+                    # its linked teacher by another assignment or Form.
+                    completion.form_source_ownership(config or {}, agenda, class_key, r["week"], fid)
+                    proof = _ordinary_native_proof(token, r)
+                    units[0].update(source=proof["source"], ordinary_native_proof=proof)
+                    ordinary = proof["source"]
+                except (google.GoogleError, completion.Unreadable, KeyError, ValueError):
+                    pass  # Without exact proof retain the ordinary export/error contract.
+        for unit in units:
+            unit["native_read_mode"] = "bound" if unit["binding"] else (
+                "ordinary_exact" if unit.get("ordinary_native_proof") else "export")
         r["release_units"] = units
         r["form_collections"] = has_binding
         # This union is only for literal Agenda-link diagnostics. Readiness is
@@ -203,23 +255,23 @@ def check(token, agenda, class_key, config=None):
             "folders": list({f["id"]: f for source in verified for f in source["folders"]}.values()),
             "stale_links": [d for d in (ordinary or {}).get("stale_links", []) if d["id"] not in ids],
             "problem": None}
-    # A bound teacher's native fallback cannot be borrowed by an unbound Form
-    # which happens to link the same deck. Each read mode is a separate operand.
-    release_keys = list(dict.fromkeys((d["id"], bool(u["binding"])) for r in active_rows
+    # Bound, exact ordinary and unproven export reads are separate operands:
+    # one Form or row cannot borrow another scope's native-read eligibility.
+    release_keys = list(dict.fromkeys((d["id"], u["native_read_mode"]) for r in active_rows
                     for u in r["release_units"] if not u["source"]["problem"] for d in u["source"]["decks"]))
     releases = {}
     if release_keys:
         with ThreadPoolExecutor(max_workers=3) as pool:
             results = pool.map(lambda key: _release_deck(token, key[0], native_teacher=True)
-                                          if key[1] else _release_deck(token, key[0]), release_keys)
+                                          if key[1] != "export" else _release_deck(token, key[0]), release_keys)
             releases = dict(zip(release_keys, results))
 
     for r in active_rows:
         form_results = []
         for unit in r["release_units"]:
             binding, source, fid = unit["binding"], unit["source"], unit["form_id"]
-            checks = [releases[(d["id"], bool(binding))] for d in source["decks"]
-                      if (d["id"], bool(binding)) in releases] if not source["problem"] else []
+            checks = [releases[(d["id"], unit["native_read_mode"])] for d in source["decks"]
+                      if (d["id"], unit["native_read_mode"]) in releases] if not source["problem"] else []
             if binding and not source["problem"]:
                 templates = [(v["deck_id"], v["_teacher_source_metadata"], None)
                              for v in checks if "_teacher_source_metadata" in v]
@@ -230,6 +282,19 @@ def check(token, agenda, class_key, config=None):
                         source = {**source, "problem": str(error)}
                 elif not any(v["status"] != "READY" for v in checks):
                     source = {**source, "problem": "Not every exact registered teacher's consumed metadata could be verified."}
+            if unit.get("ordinary_native_proof"):
+                try:
+                    after = _ordinary_native_proof(token, r)
+                    if after != unit["ordinary_native_proof"]:
+                        raise completion.Unreadable("The exact ordinary teacher collection changed while its contents were read.")
+                    consumed = checks[0].get("_teacher_source_metadata") if len(checks) == 1 else None
+                    expected = source["decks"][0]["metadata"]
+                    if not consumed and all(v.get("status") == "READY" for v in checks):
+                        raise completion.Unreadable("The consumed ordinary teacher metadata could not be verified.")
+                    if consumed and any(consumed.get(k) != expected.get(k) for k in _NATIVE_METADATA):
+                        raise completion.Unreadable("The consumed ordinary teacher differs from its verified source metadata.")
+                except (google.GoogleError, completion.Unreadable, KeyError, ValueError) as error:
+                    source = {**source, "problem": str(error)}
             # Internal consumed metadata never appears in the UI response.
             checks = [{k: v for k, v in result.items() if k != "_teacher_source_metadata"} for result in checks]
             if source["problem"]:
