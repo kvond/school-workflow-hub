@@ -454,26 +454,200 @@ class StudentFeedbackChecklistTests(unittest.TestCase):
         self.assertIsNone(self.record()["pending"])
         self.assertEqual(self.refresh()["status"], "verified")
 
-    def test_http_update_uses_current_etag_once_and_retains_revisions(self):
-        # Test the actual network adapter separately from the in-memory updater.
-        original = checklist._conditional_update.side_effect
-        self.assertTrue(callable(original))
-        run = Mock(token="read", write_token="write")
-        meta = {"id": "FictionalChecklistFile"}
+    def network_update_fixture(self, *, pinned=True):
+        self.refresh()
+        meta = self.drive.metadata("read", self.record()["drive_file_id"])
+        state = {"pinned": pinned, "head": "FictionalRevision1"}
         session = Mock()
-        session.get.return_value = Mock(status_code=200, headers={"ETag": '"revision-1"'})
-        session.get.return_value.json.return_value = meta
-        session.patch.return_value.status_code = 200
+
+        def get(url, **kwargs):
+            current = self.drive.metadata("read", meta["id"])
+            if "/revisions/" in url:
+                value = {"id": state["head"], "etag": '"revision-%s"' % state["pinned"],
+                    "mimeType": current["mimeType"], "pinned": state["pinned"],
+                    "md5Checksum": current["md5Checksum"], "fileSize": current["size"]}
+            else:
+                self.assertIn("/drive/v2/files/", url)
+                value = {"id": current["id"], "etag": '"file-%s"' % current["version"],
+                    "version": current["version"], "headRevisionId": state["head"],
+                    "md5Checksum": current["md5Checksum"], "fileSize": current["size"],
+                    "mimeType": current["mimeType"], "labels": {"trashed": current["trashed"]},
+                    "parents": [{"id": parent} for parent in current["parents"]], "title": current["name"]}
+                # Real Shared Drive metadata omits the permissions enriched by
+                # google.drive_file. No v3 ETag header is available or required.
+                self.assertNotIn("permissions", value)
+            response = Mock(status_code=200, headers={"ETag": value["etag"]})
+            response.json.return_value = value
+            return response
+
+        def pin(url, **kwargs):
+            self.assertIn("/revisions/", url)
+            state["pinned"] = True
+            self.drive.items[meta["id"]]["version"] = str(int(self.drive.items[meta["id"]]["version"]) + 1)
+            return Mock(status_code=200)
+
+        session.get.side_effect = get
+        session.patch.side_effect = pin
+        session.put.return_value.status_code = 200
+        return meta, session, state
+
+    def test_http_update_uses_bound_v2_etag_and_keeps_pinned_revision_without_duplicate_pin(self):
+        meta, session, _ = self.network_update_fixture()
+        run = Mock(token="read", write_token="write")
         with patch.object(google, "_session", return_value=session):
             status = REAL_UPDATE(run, meta, b"%PDF checklist")
         self.assertEqual(status, 200)
-        self.assertEqual(session.patch.call_count, 1)
-        self.assertEqual(session.patch.call_args.kwargs["headers"]["If-Match"], '"revision-1"')
-        self.assertEqual(session.patch.call_args.kwargs["params"]["keepRevisionForever"], "true")
-        session.get.return_value.headers = {}
-        with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
-            REAL_UPDATE(run, meta, b"%PDF checklist")
-        self.assertEqual(session.patch.call_count, 1)
+        session.patch.assert_not_called()
+        self.assertEqual(session.put.call_count, 1)
+        self.assertIn("/upload/drive/v2/files/", session.put.call_args.args[0])
+        args = session.put.call_args.kwargs
+        self.assertEqual(args["headers"]["If-Match"], '"file-%s"' % meta["version"])
+        self.assertEqual(args["params"], {"uploadType": "media", "supportsAllDrives": "true",
+                                        "newRevision": "true", "pinned": "true"})
+        self.assertEqual(args["data"], b"%PDF checklist")
 
+    def test_unpinned_prior_revision_is_pinned_read_back_and_file_validator_rebound(self):
+        meta, session, state = self.network_update_fixture(pinned=False)
+        run = Mock(token="read", write_token="write")
+        with patch.object(google, "_session", return_value=session):
+            self.assertEqual(REAL_UPDATE(run, meta, b"%PDF checklist"), 200)
+        self.assertTrue(state["pinned"])
+        self.assertEqual(session.patch.call_count, 1)
+        self.assertEqual(session.patch.call_args.kwargs["json"], {"pinned": True})
+        self.assertEqual(session.patch.call_args.kwargs["headers"]["If-Match"], '"revision-False"')
+        self.assertEqual(session.put.call_args.kwargs["headers"]["If-Match"], '"file-%s"' % (int(meta["version"]) + 1))
+        self.assertEqual(session.put.call_count, 1)
+
+    def test_changed_or_missing_file_revision_and_weak_validators_refuse_before_writes(self):
+        for change in ({"etag": None}, {"etag": 'W/"weak"'}, {"etag": "*"}, {"version": "999"},
+                       {"md5Checksum": "f" * 32}, {"fileSize": "1"}, {"id": "OtherFile"},
+                       {"parents": [{"id": "OtherParent"}]}, {"headRevisionId": None}):
+            with self.subTest(change=change):
+                meta, session, _ = self.network_update_fixture()
+                real_get = session.get.side_effect
+                def changed(url, **kwargs):
+                    response = real_get(url, **kwargs)
+                    if "/revisions/" not in url:
+                        response.json.return_value.update(change)
+                        response.headers = {}
+                    return response
+                session.get.side_effect = changed
+                with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+                    REAL_UPDATE(Mock(token="read", write_token="write"), meta, b"%PDF checklist")
+                session.patch.assert_not_called(); session.put.assert_not_called()
+
+    def test_changed_shared_drive_acl_or_revision_refuses_before_preservation(self):
+        for scope in ("acl", "revision"):
+            with self.subTest(scope=scope):
+                meta, session, _ = self.network_update_fixture(pinned=False)
+                real_get = session.get.side_effect
+                def changed(url, **kwargs):
+                    response = real_get(url, **kwargs)
+                    if scope == "acl":
+                        self.drive.items[meta["id"]]["permissions"] = [{"type": "anyone"}]
+                    elif "/revisions/" in url:
+                        response.json.return_value["md5Checksum"] = "a" * 32
+                    return response
+                session.get.side_effect = changed
+                with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+                    REAL_UPDATE(Mock(token="read", write_token="write"), meta, b"%PDF checklist")
+                session.patch.assert_not_called(); session.put.assert_not_called()
+                self.drive.items[meta["id"]] = meta
+
+    def test_lost_pin_reply_reconciles_only_by_exact_revision_readback(self):
+        meta, session, _ = self.network_update_fixture(pinned=False)
+        pin = session.patch.side_effect
+        def lost(*args, **kwargs):
+            pin(*args, **kwargs)
+            raise TimeoutError("reply lost")
+        session.patch.side_effect = lost
+        with patch.object(google, "_session", return_value=session):
+            self.assertEqual(REAL_UPDATE(Mock(token="read", write_token="write"), meta, b"%PDF checklist"), 200)
+        self.assertEqual(session.patch.call_count, 1)
+        self.assertEqual(session.put.call_count, 1)
+
+    def test_real_conditional_adapter_completes_stable_file_refresh_and_exact_readback(self):
+        meta, session, state = self.network_update_fixture(pinned=False)
+        prior = deepcopy(self.record())
+        self.second_report()
+        def put(url, **kwargs):
+            self.assertTrue(state["pinned"])
+            self.update(None, meta, kwargs["data"])
+            state["head"] = "FictionalRevision2"
+            return Mock(status_code=200)
+        session.put.side_effect = put
+        with patch.object(google, "_session", return_value=session), patch.object(checklist, "_conditional_update", side_effect=REAL_UPDATE):
+            result = self.refresh()
+            self.assertEqual(result["status"], "verified", result)
+            self.assertEqual(result["updated"], 1)
+            self.assertEqual(self.refresh()["unchanged"], 1)
+        self.assertIsNone(self.record()["pending"])
+        self.assertEqual(self.record()["drive_file_id"], prior["drive_file_id"])
+        self.assertEqual(len(self.record()["confirmed"]["rows"]), 2)
+        self.assertEqual(session.patch.call_count, 1)
+        self.assertEqual(session.put.call_count, 1)
+
+    def test_unverified_pin_stays_durably_fenced_without_media_or_pin_retry(self):
+        meta, session, _ = self.network_update_fixture(pinned=False)
+        self.second_report()
+        session.patch.side_effect = TimeoutError("pin outcome unavailable")
+        with patch.object(google, "_session", return_value=session), patch.object(checklist, "_conditional_update", side_effect=REAL_UPDATE):
+            result = self.refresh()
+            self.assertEqual(result["status"], "held")
+            self.assertIsNotNone(self.record()["pending"])
+            self.assertEqual(self.refresh()["status"], "held")
+        self.assertEqual(session.patch.call_count, 1)
+        session.put.assert_not_called()
+        self.assertEqual(self.drive.metadata("read", meta["id"]), meta)
+
+    def test_pin_cannot_rebind_changed_content_head_or_privacy(self):
+        for change in ("head", "bytes", "privacy", "name", "parent", "modifiedTime"):
+            with self.subTest(change=change):
+                meta, session, state = self.network_update_fixture(pinned=False)
+                prior_meta, prior_bytes = deepcopy(meta), self.drive.contents[meta["id"]]
+                pin = session.patch.side_effect
+                def changed(*args, **kwargs):
+                    result = pin(*args, **kwargs)
+                    if change == "head":
+                        state["head"] = "ChangedHead"
+                    elif change == "bytes":
+                        self.drive.contents[meta["id"]] = b"changed bytes"
+                    elif change == "privacy":
+                        self.drive.items[meta["id"]]["permissions"] = [{"type": "anyone"}]
+                    else:
+                        field = "parents" if change == "parent" else change
+                        self.drive.items[meta["id"]][field] = ["ChangedParent"] if change == "parent" else "changed"
+                    return result
+                session.patch.side_effect = changed
+                with patch.object(google, "_session", return_value=session):
+                    self.assertIsNone(REAL_UPDATE(Mock(token="read", write_token="write"), meta, b"%PDF checklist"))
+                self.assertEqual(session.patch.call_count, 1); session.put.assert_not_called()
+                self.drive.items[meta["id"]] = prior_meta
+                self.drive.contents[meta["id"]] = prior_bytes
+
+    def test_media_precondition_failure_or_lost_response_never_retries(self):
+        for status in (412, 503, None):
+            with self.subTest(status=status):
+                meta, session, _ = self.network_update_fixture()
+                if status is None:
+                    session.put.side_effect = TimeoutError("reply lost")
+                else:
+                    session.put.return_value.status_code = status
+                with patch.object(google, "_session", return_value=session):
+                    self.assertEqual(REAL_UPDATE(Mock(token="read", write_token="write"), meta, b"%PDF checklist"), status)
+                self.assertEqual(session.put.call_count, 1)
+
+    def test_read_failure_is_prewrite_but_lost_lease_is_not_cleared_or_downgraded(self):
+        meta, session, _ = self.network_update_fixture(pinned=False)
+        session.get.side_effect = TimeoutError("read unavailable")
+        with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+            REAL_UPDATE(Mock(token="read", write_token="write"), meta, b"%PDF checklist")
+        session.patch.assert_not_called(); session.put.assert_not_called()
+        meta, session, _ = self.network_update_fixture(pinned=False)
+        run = Mock(token="read", write_token="write")
+        run.heartbeat.side_effect = Conflict("lease lost")
+        with patch.object(google, "_session", return_value=session), self.assertRaises(Conflict):
+            REAL_UPDATE(run, meta, b"%PDF checklist")
+        session.patch.assert_not_called(); session.put.assert_not_called()
 
 REAL_UPDATE = checklist._conditional_update
