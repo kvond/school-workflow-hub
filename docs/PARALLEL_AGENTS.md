@@ -8,7 +8,8 @@ agent; this document adds the working model only.
 
 | Role | Who | Does |
 |---|---|---|
-| Owner | Katherine | States goals, approves task batches, merges to `main` |
+| Owner | Katherine | States goals, approves task batches and resolves teaching decisions or new permissions |
+| Merge coordinator | Coordinating Codex agent | Obtains independent review, verifies current checks and dependencies, merges approved routine work to `main`, and verifies the existing deployment |
 | Direction | ChatGPT (Slack) | Decides what is worth building, sets priorities, writes the backlog as task issues, and stops work that would not make the school day easier |
 | Workers | Codex (cloud) | Implements one task issue per branch, opens a draft PR, does routine review of ordinary PRs |
 | Engineering specialist | Claude Code | Hard debugging, failures that cross components (IC helper, Cloud Run, auth, mismatched records), architecture second opinions, and review where several PRs or systems interact |
@@ -48,7 +49,46 @@ the school day easier; tasks that don't are dropped.
 4. The `Checks` workflow runs `scripts/check.sh` on every PR.
 5. Codex reviews ordinary PRs. Claude reviews when PRs interact or touch IC,
    grades, rosters, browser runs or deployment.
-6. Owner merges.
+6. The coordinating Codex agent merges routine approved work after independent
+   technical review and passing checks, following the delegation below.
+
+## Reviewed merge delegation
+
+On October 17, 2026, Katherine explicitly authorized the coordinating Codex agent
+to take over routine reviewed merges for work she has approved, including the
+then-current Hub PRs. She approves goals and teaching decisions; she does not
+need to review code or click Merge for routine authorized changes. This replaces
+the earlier owner-only merge step, without changing GitHub permissions or
+security settings and without installing an auto-merge bot or schedule.
+
+Before merging, the coordinator must:
+
+- Verify the latest exact PR commit, approved scope, dependencies and target
+  branch. Routine changes target `main`; any coordinated stack must reach
+  `main` in its reviewed order.
+- Require every applicable test and CI check to pass on that exact commit.
+  Do not merge failed or pending checks, bypass protections, or use an admin
+  override. Resolve merge conflicts and recheck changed code before merging.
+- Obtain independent technical review of the latest exact PR commit from
+  another agent or person, resolve actionable findings, and record the reviewed
+  commit and validation in the PR. Any later changes require independent review
+  and checks on the new commit before merging. Authors cannot supply their own
+  independent approval. Preserve the specialist review
+  requirements above for interacting PRs, IC, grades, rosters, browser runs and
+  deployment changes.
+- Preserve original sources, student work, grade/history records, exact
+  mappings, access boundaries and teacher-controlled delivery marks. Merge
+  authorization does not authorize new student-data writes or policy changes.
+- Verify the resulting `main` commit and the existing deployment path. Report
+  source/test status, merge, deployment and live acceptance as separate facts.
+
+Ask Katherine only for a new teaching or grading policy, an unresolved source or
+student-identity decision requiring her judgment, new access or sharing,
+billing/schedule changes, destructive changes, or scope beyond approved work.
+Technical failures remain engineering work to resolve or report with a concrete
+blocker; do not return a routine merge click to her. Existing explicit school
+write authorizations and the separate deployment/configuration ownership remain
+unchanged.
 
 ## What stays outside this model
 
