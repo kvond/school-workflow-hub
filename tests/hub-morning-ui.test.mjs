@@ -63,6 +63,45 @@ const matchedOtherLesson = overrides => {
 };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('refreshing Hub tools preserves the visible Today source checks', async () => {
+  const {ui, context} = boot([]);
+  context.fetch = async url => ({ok: true, json: async () => url === 'api/review-context'
+    ? sourceSummary([sourceContext()]) : {reports: []}});
+  context.todayPanel = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true});
+  vm.runInContext('visibleReviewPanels.today = todayPanel;', context);
+  await tick();
+  const before = context.todayPanel.textContent;
+  assert.match(before, /Forensics/);
+  await ui.loadMorningSummary();
+  await tick();
+  assert.equal(context.todayPanel.textContent, before);
+});
+
+test('refreshing Today preserves the visible Hub tools source checks', async () => {
+  const {ui, context, document} = boot([]);
+  context.fetch = async url => ({ok: true, json: async () => url === 'api/review-context'
+    ? sourceSummary([sourceContext()]) : {reports: []}});
+  await ui.loadMorningSummary();
+  await tick();
+  const morningPanel = document.getElementById('morning-summary');
+  const before = morningPanel.textContent;
+  assert.match(before, /Forensics/);
+  const today = source.slice(source.indexOf('async function loadToday('), source.indexOf('async function loadLessonReadiness('));
+  vm.runInContext(`
+    function loadTodayFeedback() {}
+    function loadWeekAhead() {}
+    function renderTodayFeedbackArea() {}
+    async function loadAudits() { return {}; }
+    function renderNextLessons() { return el('p', {text: 'Fictional lesson'}); }
+    ${today}
+    globalThis.refreshToday = loadToday;
+  `, context);
+  await context.refreshToday(true);
+  await tick();
+  assert.equal(morningPanel.textContent, before);
+  assert.match(document.getElementById('today-body').textContent, /Forensics/);
+});
+
 test('source context renders full current identity/reason/action and verified source slides as literal text', () => {
   const {ui} = boot([]);
   const reason = '<script>private literal</script> ' + 'A full source-specific reason. '.repeat(15);
