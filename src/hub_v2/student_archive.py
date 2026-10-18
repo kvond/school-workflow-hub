@@ -807,6 +807,8 @@ class _Run:
         self._renewed_at, self._lease_error = monotonic(), None
         self.index_key = key("archiveclass", [self.root, cls])
         self.student_records = None
+        self.feedback_students = set()
+        self.feedback_checklists = None
 
     def renew(self):
         if self._lease_error is not None:
@@ -831,6 +833,11 @@ class _Run:
         return _put(self.port, ident, value, old)
 
     def finish(self, result):
+        if result.get("status") == "verified" and self.feedback_students:
+            from . import student_feedback_checklist
+            self.feedback_checklists = student_feedback_checklist.refresh_run(self, sorted(self.feedback_students))
+            result["feedback_checklists"] = self.feedback_checklists
+            self.feedback_students.clear()
         self.heartbeat(force=True)
         try:
             self.cloud.finish(self.claim, records={"archive": result})
@@ -1339,6 +1346,8 @@ class _Run:
         if len(items) > MAX_ITEMS:
             raise Held("This student's archive exceeds its verified record limit.")
         self.put(ident, {**doc.value, "items": items}, doc)
+        if artifact["kind"] == "feedback":
+            self.feedback_students.add(ident)
 
 
 def _result(cls, **more):
@@ -1807,6 +1816,7 @@ def file_feedback(token, write_token, config, saved_value, pdf_bytes):
         run.attach(student, artifact)
         value = _feedback_metadata(artifact, student, run.course)
         run.finish({"status": "verified", "feedback_id": saved_value["id"], "drive_file_id": artifact["drive_file_id"]})
+        value["feedback_checklists"] = run.feedback_checklists
         value["index_sync"] = refresh_work_index(token, write_token, config)
         from . import print_ready_email
         value['email_outbox'] = print_ready_email.notify_ready(token, config, [saved_value['id']])
@@ -2189,6 +2199,7 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
             _feedback_successor(token, scope, run.course, owner.value, docs[prior_key].value, docs)
         run.finish({"status": "verified", "report_type": "science_writing", "feedback_id": saved_report["id"], "drive_file_id": artifact["drive_file_id"]})
         value = _feedback_metadata(artifact, student, run.course)
+        value["feedback_checklists"] = run.feedback_checklists
         value["index_sync"] = (refresh_work_index(token, write_token, config) if refresh_index else
             {"status": "deferred", "native_index_write": False, "problem": "The Root worker will verify the existing source rows before updating their feedback links."})
         from . import print_ready_email
