@@ -86,7 +86,7 @@ test('refreshing Today preserves the visible Hub tools source checks', async () 
   const morningPanel = document.getElementById('morning-summary');
   const before = morningPanel.textContent;
   assert.match(before, /Forensics/);
-  const today = source.slice(source.indexOf('async function loadToday('), source.indexOf('async function loadLessonReadiness('));
+  const today = source.slice(source.indexOf('async function loadToday('), source.indexOf('// ---------- Lesson plans ----------'));
   vm.runInContext(`
     function loadTodayFeedback() {}
     function loadWeekAhead() {}

@@ -148,7 +148,7 @@ const timedOutFeedback = {configured: true, date: DAY, requested_date: '2026-10-
   daily_packet: packet};
 
 function bootToday(handler) {
-  const today = source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('async function loadLessonReadiness('));
+  const today = source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('function renderLessonReadiness('));
   const requests = [], never = new Promise(() => {});
   const {ui, context: vmContext, document} = boot('function renderNextLessons() { return el("p", {text: "Deck readiness"}); }\n' + today +
     '\nglobalThis.today = {loadToday, renderTodayFeedback, cockpit};');

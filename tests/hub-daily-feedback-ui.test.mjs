@@ -226,7 +226,7 @@ function bootToday(handler) {
   }};
   const context = vm.createContext({document, Node: Element,
     fetch: (url, options) => { requests.push({url, options}); return handler(url, options) ?? never; }});
-  const today = source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('async function loadLessonReadiness('));
+  const today = source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('function renderLessonReadiness('));
   vm.runInContext(prefix + '\nfunction renderNextLessons() { return el("p", {text: "Deck readiness"}); }\n' + today +
     '\nglobalThis.ui = {loadToday, cockpit};', context);
   return {ui: context.ui, document, requests};
