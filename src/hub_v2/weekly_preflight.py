@@ -268,6 +268,9 @@ SAFE = re.compile(r'=IF\(\s*\$?([A-Z]{1,3})\{row\}\s*=\s*""\s*[,;]\s*"[^"{}]{0,4
 FORMULA_TARGET = re.compile(r'HYPERLINK\(\s*\$?([A-Z]{1,3})\$?(\d+)\s*[,;)]', re.I)
 FILE_ID = re.compile(r"/(?:presentation|document|spreadsheets|file|forms)/d/([A-Za-z0-9_-]{20,})"
                      r"|/folders/([A-Za-z0-9_-]{10,})|[?&]id=([A-Za-z0-9_-]{20,})")
+SECOND_DECK_URL = re.compile(r"https://docs\.google\.com/presentation/d/([A-Za-z0-9_-]{20,})"
+                             r"(?:/(?:edit|view|preview|copy))?(?:[?#][^\s]*)?")
+SECOND_DECK_PLACEHOLDERS = ("", "—", "–", "-")
 
 
 def file_id(url):
@@ -326,6 +329,46 @@ def _cell_url(agenda, entry, col, row):
         agenda.spreadsheet_id, entry.get("sheet_id", 0), column_letter(col), row)
 
 
+def _second_deck_target(cells, layout, row):
+    """One exact current second-deck column pair and one existing Slides URL."""
+    header = next((r for r in range(1, 8) if any(
+        norm(text(cells.get((r, c)))) == "topic" for c in range(1, 27))), None)
+    if not header:
+        return None
+    names = {c: next((name for r in range(header, 0, -1)
+                      if (name := norm(text(cells.get((r, c)))))), "") for c in range(1, 27)}
+    displays = [c for c, name in names.items() if name in ("2nddeck", "seconddeck")]
+    hidden = [c for c, name in names.items() if name in ("2nddeckurl", "seconddeckurl", "deck2url", "teacher2url")]
+    cols = layout["columns"]
+    if displays != [cols.get("second_deck_display")]:
+        return None
+    if hidden:
+        if hidden != [cols.get("second_deck")]:
+            return None
+    else:
+        teachers = [c for c, name in names.items() if name == "teacherurl"]
+        folders = [c for c, name in names.items() if name == "folderurl"]
+        own = cols.get("second_deck")
+        if not own or names.get(own) or teachers != [own - 1] or folders != [own + 1]:
+            return None
+    urls = links(cells.get((row, cols["second_deck"])))
+    match = SECOND_DECK_URL.fullmatch(urls[0][0]) if len(urls) == 1 else None
+    return match.group(1) if match else None
+
+
+def _second_deck_source(token, fix):
+    try:
+        meta = google.drive_file(token, fix["target_id"], NODE_FIELDS)
+    except google.GoogleError as error:
+        raise Held("The exact second-deck source could not be verified (%s)." % error) from None
+    if (meta.get("id") != fix["target_id"] or meta.get("mimeType") != completion.SLIDES
+            or meta.get("trashed") is not False or not meta.get("name")
+            or not meta.get("version") or not meta.get("modifiedTime")
+            or not isinstance(meta.get("parents"), list)):
+        raise Held("The exact second-deck target is not an untrashed Google Slides source with complete current metadata.")
+    return deepcopy(meta)
+
+
 def link_findings(agenda, class_key, rows):
     """Link problems for these lesson rows of one class tab, with a repair plan
     for each label that can be made clickable again."""
@@ -375,7 +418,15 @@ def link_findings(agenda, class_key, rows):
                     "reason": "The visible %s cell %s%d is plain text, so it can't be clicked, while its hidden "
                               "%s%d holds the link." % (role, column_letter(visible_col), row,
                                                         column_letter(hidden_col), row)}
-            if broken and template:
+            if visible_key == "second_deck_display" and shown_text in SECOND_DECK_PLACEHOLDERS:
+                target = _second_deck_target(cells, layout, row)
+                if target:
+                    item["plan"] = {"kind": "linked_label", "column": column_letter(visible_col), "row": row,
+                                    "label": "2nd deck ↗", "url": hidden_url, "target_id": target,
+                                    "source_check": "exact_second_deck", "pattern_from": "the exact second-deck role and hidden URL"}
+                else:
+                    item["reason"] += " Its second-deck columns or exact single Google Slides URL are unverified."
+            elif broken and template:
                 item["plan"] = {"kind": "formula", "column": column_letter(visible_col), "row": row,
                                 "formula": template.replace("{row}", str(row)), "label": label,
                                 "pattern_from": "other rows of column %s" % column_letter(visible_col)}
@@ -400,6 +451,32 @@ def link_findings(agenda, class_key, rows):
     return found
 
 
+def _link_repair_grid(token, agenda, entry, plan):
+    tab = "'%s'" % entry["tab"].replace("'", "''")
+    row = plan["row"]
+    try:
+        fresh = google.sheet_grid(token, agenda.spreadsheet_id, [
+            "%s!A1:Z7" % tab, "%s!A%d:Z%d" % (tab, row, row)]).get(entry["tab"], {})
+    except google.GoogleError as error:
+        raise Held("The Agenda could not be read again to verify the repair (%s)." % error) from None
+    layout, problem = agenda_module.parse_class_tab(fresh)
+    visible_key = next(v for v, h, role in LINK_PAIRS if role == plan["role"])
+    hidden_key = next(h for v, h, role in LINK_PAIRS if role == plan["role"])
+    old_cols = entry["layout"]["columns"]
+    if (problem or not layout or layout["columns"].get(visible_key) != old_cols.get(visible_key)
+            or layout["columns"].get(hidden_key) != old_cols.get(hidden_key)
+            or norm(dict(layout["rows"]).get(row, "")) != norm(plan["week"])):
+        raise Held("This Agenda row or its columns changed. Run the check again.")
+    return fresh, layout, old_cols[visible_key], old_cols[hidden_key]
+
+
+def _second_deck_row_basis(cells, row, visible_col):
+    header = next((r for r in range(1, 8) if any(
+        norm(text(cells.get((r, c)))) == "topic" for c in range(1, 27))), 0)
+    return {(r, c): value for (r, c), value in cells.items()
+            if (r <= header or r == row) and (r, c) != (row, visible_col)}
+
+
 def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True, port=None):
     """Make one plain-text Agenda label clickable again, by fingerprint.
 
@@ -409,6 +486,8 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
     plan saw. Only that one plain cell is written: with the formula the same
     column uses in its other rows, or, when the column shares no formula, as
     the same label text linked to the hidden URL (agenda_edit's linked cell).
+    An empty/dash second-deck placeholder may instead receive the neutral
+    role label, after exact same-row URL, column and Slides metadata bookends.
     It is read back afterwards. A second request finds nothing to do.
     """
     if not isinstance(fingerprint, str) or not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
@@ -428,36 +507,38 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
         raise Held("This link needs your decision; the Hub has no safe formula to restore for it.")
     fix = plan["plan"]
     linked = fix["kind"] == "linked_label"
+    guarded = fix.get("source_check") == "exact_second_deck"
     reply = {"status": "planned", "fingerprint": fingerprint, "dry_run": dry_run, "changed": False,
              "class_key": plan["class_key"], "week": plan["week"], "row": plan["row"],
              "cell": fix["column"] + str(plan["row"]), "formula": fix.get("formula"),
              "label": fix["label"] if linked else None, "url": fix["url"] if linked else None,
              "writes": "the label “%s” linked to %s" % (fix["label"], fix["url"]) if linked else fix["formula"],
              "source_url": plan["source_url"]}
-    if dry_run:
+    if dry_run and not guarded:
         return reply
     entry = agenda.classes[plan["class_key"]]
     tab = "'%s'" % entry["tab"].replace("'", "''")
     row = plan["row"]
-    header_last = 7  # parse_class_tab looks for its header in rows 1-7
-    try:
-        fresh = google.sheet_grid(token, agenda.spreadsheet_id, [
-            "%s!A1:Z%d" % (tab, header_last), "%s!A%d:Z%d" % (tab, row, row)]).get(entry["tab"], {})
-    except google.GoogleError as error:
-        raise Held("The Agenda couldn't be read again before the repair (%s). Nothing was written." % error) from None
-    layout, problem = agenda_module.parse_class_tab(fresh)
-    visible_key = next(v for v, h, role in LINK_PAIRS if role == plan["role"])
-    hidden_key = next(h for v, h, role in LINK_PAIRS if role == plan["role"])
-    old_cols = entry["layout"]["columns"]
-    if (problem or not layout or layout["columns"].get(visible_key) != old_cols.get(visible_key)
-            or layout["columns"].get(hidden_key) != old_cols.get(hidden_key)
-            or norm(dict(layout["rows"]).get(row, "")) != norm(plan["week"])):
-        raise Held("This Agenda row or its columns changed. Run the check again; nothing was written.")
-    visible_col, hidden_col = old_cols[visible_key], old_cols[hidden_key]
-    cell = fresh.get((row, visible_col))
-    if (not plain(cell) or _formula(cell) or text(cell).strip() != plan["visible_text"]
-            or first_link(fresh.get((row, hidden_col))) != plan["hidden_url"]):
-        raise Held("That cell changed since the check (it may already be fixed). Nothing was written.")
+    source = _second_deck_source(token, fix) if guarded else None
+    # The second row read bookends the source read, including every same-row
+    # lesson/Form/URL cell. Only this new placeholder repair needs that proof.
+    for pass_index in range(2 if guarded else 1):
+        fresh, layout, visible_col, hidden_col = _link_repair_grid(token, agenda, entry, plan)
+        cell = fresh.get((row, visible_col))
+        if (not plain(cell) or _formula(cell) or text(cell).strip() != plan["visible_text"]
+                or first_link(fresh.get((row, hidden_col))) != plan["hidden_url"]):
+            raise Held("That cell changed since the check (it may already be fixed). Nothing was written.")
+        if guarded:
+            if (_second_deck_target(fresh, layout, row) != fix["target_id"]
+                    or _second_deck_row_basis(fresh, row, visible_col)
+                    != _second_deck_row_basis(entry["cells"], row, visible_col)):
+                raise Held("The exact second-deck row, columns or hidden URL changed. Nothing was written.")
+            if pass_index == 0 and _second_deck_source(token, fix) != source:
+                raise Held("The exact second-deck source changed during verification. Nothing was written.")
+    if guarded:
+        reply["target_source"] = source
+    if dry_run:
+        return reply
     new_cell = _linked_cell(fix["label"], fix["url"]) if linked else {"userEnteredValue": {"formulaValue": fix["formula"]}}
     try:
         google.batch_update(write_token, agenda.spreadsheet_id, [{"updateCells": {
@@ -465,12 +546,25 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
             "fields": "userEnteredValue,textFormatRuns" if linked else "userEnteredValue"}}])
     except google.GoogleError as error:
         raise _write_error(config, error) from None
-    after = google.sheet_grid(token, agenda.spreadsheet_id, ["%s!%s%d" % (tab, column_letter(visible_col), row)]
-                              ).get(entry["tab"], {}).get((row, visible_col))
+    if guarded:
+        try:
+            saved, layout, _, _ = _link_repair_grid(token, agenda, entry, plan)
+            after = saved.get((row, visible_col))
+            verified_source = (_second_deck_source(token, fix) == source
+                               and _second_deck_target(saved, layout, row) == fix["target_id"]
+                               and _second_deck_row_basis(saved, row, visible_col)
+                               == _second_deck_row_basis(entry["cells"], row, visible_col))
+        except Held as error:
+            return {**reply, "status": "unconfirmed", "changed": True, "problem": str(error)}
+    else:
+        after = google.sheet_grid(token, agenda.spreadsheet_id, ["%s!%s%d" % (tab, column_letter(visible_col), row)]
+                                  ).get(entry["tab"], {}).get((row, visible_col))
     shown = [url for url, _ in links(after)]
     if linked:
         verified = (not _formula(after) and text(after).strip() == fix["label"] and bool(shown)
                     and (shown[0] == fix["url"] or file_id(shown[0]) == file_id(fix["url"]) != ""))
+        if guarded:
+            verified = verified and verified_source and shown == [fix["url"]]
     else:
         verified = (_formula(after).replace(" ", "") == fix["formula"].replace(" ", "")
                     and (not shown or file_id(shown[0]) == file_id(plan["hidden_url"])))
@@ -481,6 +575,8 @@ def repair_link(token, write_token, config, agenda, fingerprint, *, dry_run=True
                   "class_key": plan["class_key"], "week": plan["week"], "row": row, "column": fix["column"],
                   "repair": fix["kind"], "formula": fix.get("formula"), "label": reply["label"], "url": reply["url"],
                   "role": plan["role"], "verified_at": reply["verified_at"], "source_url": plan["source_url"]}
+        if guarded:
+            record["target_source"] = source
         _put(port, receipt_id, record)
         _index_repair(port, agenda.spreadsheet_id, record)
     return reply
@@ -844,11 +940,12 @@ def quantity(line, sections, counts):
 
 
 def match_file(line, files):
-    """(best file, score, ambiguous) by normalized name-token overlap."""
+    """Name-token match; one current Agenda extra material may break an exact tie."""
     want = set(_tokens(line))
     if not want:
         return None, 0, False
-    ranked = []
+    by_id = {}
+    explicit = {item["id"]: item for item in files if item.get("agenda_extra_material")}
     for item in files:
         have = set(_tokens(item.get("name", "")))
         inter = len(want & have)
@@ -856,13 +953,19 @@ def match_file(line, files):
             continue
         score = inter / len(want)
         if score >= 0.6 or (inter >= 2 and score >= 0.5):
-            ranked.append((-score, -inter, len(have), item.get("name", ""), item["id"], item))
+            candidate = (-score, -inter, len(have), item.get("name", ""), item["id"], item)
+            if item["id"] not in by_id or candidate[:5] < by_id[item["id"]][:5]:
+                by_id[item["id"]] = candidate
+    ranked = list(by_id.values())
     ranked.sort(key=lambda r: r[:5])
     if not ranked:
         return None, 0, False
     # Fewer unmatched words wins ("CER worksheet" over "CER worksheet answer key").
-    ambiguous = len(ranked) > 1 and ranked[0][:3] == ranked[1][:3]
-    return ranked[0][5], round(-ranked[0][0], 2), ambiguous
+    tied = [candidate for candidate in ranked if candidate[:3] == ranked[0][:3]]
+    bound = [candidate for candidate in tied if candidate[4] in explicit]
+    best = bound[0] if len(bound) == 1 else ranked[0]
+    # Same-ID aliases do not override the current Agenda source's metadata.
+    return explicit.get(best[4], best[5]), round(-best[0], 2), len(tied) > 1 and len(bound) != 1
 
 
 def match_link(line, links):
@@ -1362,6 +1465,10 @@ def _link_checks(agenda, lesson, repairs):
         plan = item.get("plan")
         if not plan:
             action = "Fix the %s link in the Agenda by hand." % item["role"]
+        elif plan.get("source_check") == "exact_second_deck":
+            action = ("Repair the placeholder in %s%d as “%s”, linked to its exact existing %s%d URL; "
+                      "verify the Slides source before applying." % (
+                          plan["column"], plan["row"], plan["label"], item["hidden_column"], plan["row"]))
         elif plan["kind"] == "linked_label":
             action = ("Use “Repair link” to link the label “%s” in %s%d to its hidden %s%d URL (the same text, "
                       "now clickable)." % (plan["label"], plan["column"], plan["row"], item["hidden_column"], plan["row"]))
@@ -1632,7 +1739,7 @@ def _folders(ctx, lesson):
         if node["accessible"] and not node["trashed"] and node["mimeType"] in PRINTABLE \
                 and "extra_material" in node["roles"]:
             lesson["folder_files"].append({"id": node["id"], "name": node["name"], "mimeType": node["mimeType"],
-                                           "shortcut": False, "folder": None})
+                                           "shortcut": False, "folder": None, "agenda_extra_material": True})
 
 
 def _student_work(item):

@@ -996,11 +996,7 @@ class LinkRepairTests(Base):
                 wp.repair_link('read', 'write', self.config, stale, finding['fingerprint'], dry_run=False, port=self.port)
         self.assertEqual(self.writes, [])
 
-    def test_a_blank_or_typed_cell_in_a_column_with_no_formula_still_needs_a_decision(self):
-        self.no_formula_column('—')
-        [blank] = self.plan(6, 'forensics')
-        self.assertNotIn('plan', blank)
-        self.assertIn('no label to link', blank['reason'])
+    def test_typed_content_in_a_column_with_no_formula_still_needs_a_decision(self):
         self.no_formula_column('see the lab binder')
         [typed] = self.plan(6, 'forensics')
         self.assertNotIn('plan', typed)
@@ -1010,6 +1006,260 @@ class LinkRepairTests(Base):
         self.grids['🔬 Forensics'][5, 14] = cell('2nd deck', textFormatRuns=[{'format': {'link': {'uri': deck_url(FOR_DECK2)}}}])
         [label] = self.plan(6, 'forensics')
         self.assertEqual((label['plan']['kind'], label['plan']['label']), ('linked_label', '2nd deck'))
+
+    def test_second_deck_placeholder_previews_and_repairs_only_the_exact_visible_cell(self):
+        grid = self.no_formula_column('—')
+        before = deepcopy(self.grids)
+        [finding] = self.plan(6, 'forensics')
+        self.assertEqual(finding['plan']['source_check'], 'exact_second_deck')
+        preview = wp.repair_link('read', None, self.config, self.agenda(), finding['fingerprint'], port=self.port)
+        self.assertEqual((preview['status'], preview['dry_run'], self.writes), ('planned', True, []))
+        self.assertEqual((preview['label'], preview['url'], preview['target_source']['id']),
+                         ('2nd deck ↗', deck_url(FOR_SECOND), FOR_SECOND))
+        self.assertEqual(self.grids, before)
+        done = wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'],
+                              dry_run=False, port=self.port)
+        self.assertEqual((done['status'], done['changed']), ('repaired_and_verified', True))
+        [[request]] = self.writes
+        self.assertEqual(request['updateCells']['range'], {
+            'sheetId': 3, 'startRowIndex': 5, 'endRowIndex': 6, 'startColumnIndex': 13, 'endColumnIndex': 14})
+        self.assertEqual(agenda.links(grid[6, 14]), [(deck_url(FOR_SECOND), '2nd deck ↗')])
+        after = deepcopy(self.grids)
+        after['🔬 Forensics'][6, 14] = before['🔬 Forensics'][6, 14]
+        self.assertEqual(after, before, 'all lesson, Form, folder, hidden URL and unrelated cells are preserved')
+        receipt_id = key('weeklypreflightrepair', finding['fingerprint'])
+        self.assertEqual(self.port.read([receipt_id]).documents[receipt_id].value['target_source'],
+                         self.src.files[FOR_SECOND])
+        again = wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'],
+                               dry_run=False, port=self.port)
+        self.assertEqual((again['changed'], len(self.writes)), (False, 1))
+
+    def test_only_second_deck_blank_or_dash_placeholders_gain_a_neutral_label(self):
+        for placeholder in ('', '—', '–', '-'):
+            self.no_formula_column(placeholder)
+            [finding] = self.plan(6, 'forensics')
+            self.assertEqual(finding['plan']['label'], '2nd deck ↗')
+        for prose in ('?', 'see the lab binder', 'Do not link yet'):
+            self.no_formula_column(prose)
+            [finding] = self.plan(6, 'forensics')
+            self.assertNotIn('plan', finding)
+        grid = self.grids['🌿 Biology']
+        for row in (4, 5, 7):
+            grid.pop((row, 15), None)
+        grid[6, 15], grid[6, 19] = cell('—'), cell(deck_url(FOR_SECOND))
+        finding = next(f for f in self.plan(6, 'biology') if f['role'] == 'Extra material')
+        self.assertNotIn('plan', finding, 'a hidden Slides URL is not enough outside the exact second-deck role')
+
+    def test_second_deck_ambiguous_columns_and_multiple_or_non_slides_urls_have_no_plan(self):
+        original = deepcopy(self.no_formula_column('—'))
+        cases = [((3, 24), cell('2nd deck')),
+                 ((6, 18), cell(deck_url(FOR_SECOND) + ' ' + deck_url(FOR_DECK))),
+                 ((6, 18), cell('https://docs.google.com/document/d/' + FOR_SECOND + '/edit')),
+                 ((6, 18), cell('https://untrusted.example/presentation/d/' + FOR_SECOND + '/edit'))]
+        for position, value in cases:
+            with self.subTest(position=position, value=value):
+                self.grids['🔬 Forensics'] = deepcopy(original)
+                self.grids['🔬 Forensics'][position] = value
+                [finding] = self.plan(6, 'forensics')
+                self.assertNotIn('plan', finding)
+        self.grids['🔬 Forensics'] = deepcopy(original)
+        self.grids['🔬 Forensics'][3, 18] = cell('2nd deck URL')
+        self.grids['🔬 Forensics'][3, 24] = cell('second deck URL')
+        [finding] = self.plan(6, 'forensics')
+        self.assertNotIn('plan', finding)
+
+    def test_placeholder_target_must_be_exact_readable_untrashed_slides_with_complete_metadata(self):
+        self.no_formula_column('—')
+        [finding] = self.plan(6, 'forensics')
+        original = deepcopy(self.src.files[FOR_SECOND])
+        for field, value in (('id', FOR_DECK), ('mimeType', google.DOC), ('trashed', True),
+                             ('version', ''), ('modifiedTime', ''), ('name', ''), ('parents', None)):
+            with self.subTest(field=field):
+                self.src.files[FOR_SECOND] = {**original, field: value}
+                for dry_run in (True, False):
+                    with self.assertRaisesRegex(wp.Held, 'complete current metadata'):
+                        wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'],
+                                       dry_run=dry_run, port=self.port)
+        with patch.object(google, 'drive_file', side_effect=google.GoogleError('Access denied', 403)):
+            with self.assertRaisesRegex(wp.Held, 'could not be verified'):
+                wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'],
+                               dry_run=False, port=self.port)
+        self.assertEqual(self.writes, [])
+
+    def test_placeholder_repair_holds_changed_hidden_url_lesson_and_visible_content(self):
+        original = deepcopy(self.no_formula_column('—'))
+        [finding] = self.plan(6, 'forensics')
+        stale = self.agenda()
+        for position, value in (((6, 18), cell(deck_url(FOR_DECK))), ((6, 3), cell('A different lesson')),
+                                ((6, 14), cell('Teacher notes')),
+                                ((6, 14), shown('R', 6, LABELS['second'], deck_url(FOR_SECOND)))):
+            with self.subTest(position=position):
+                self.grids['🔬 Forensics'] = deepcopy(original)
+                self.grids['🔬 Forensics'][position] = value
+                with self.assertRaisesRegex(wp.Held, 'changed'):
+                    wp.repair_link('read', 'write', self.config, stale, finding['fingerprint'],
+                                   dry_run=False, port=self.port)
+        self.assertEqual(self.writes, [])
+
+    def test_placeholder_source_and_row_changes_during_bookends_stop_before_write(self):
+        original = deepcopy(self.no_formula_column('—'))
+        original_source = deepcopy(self.src.files[FOR_SECOND])
+        [finding] = self.plan(6, 'forensics')
+        for change in ('version', 'name', 'parents', 'hidden_url'):
+            with self.subTest(change=change):
+                self.grids['🔬 Forensics'] = deepcopy(original)
+                self.src.files[FOR_SECOND] = deepcopy(original_source)
+                calls = []
+
+                def changing_read(token, ident, fields=None):
+                    calls.append(ident)
+                    if len(calls) == 2:
+                        if change == 'hidden_url':
+                            self.grids['🔬 Forensics'][6, 18] = cell(deck_url(FOR_DECK))
+                        else:
+                            self.src.files[ident][change] = ['DifferentFolder'] if change == 'parents' else 'changed'
+                    return self.src.drive_file(token, ident, fields)
+
+                with patch.object(google, 'drive_file', side_effect=changing_read):
+                    with self.assertRaisesRegex(wp.Held, 'changed'):
+                        wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'],
+                                       dry_run=False, port=self.port)
+        self.assertEqual(self.writes, [])
+
+    def test_placeholder_write_requires_exact_url_source_and_row_readback(self):
+        original = deepcopy(self.no_formula_column('—'))
+        original_source = deepcopy(self.src.files[FOR_SECOND])
+        [finding] = self.plan(6, 'forensics')
+        for change in ('visible_url', 'source_revision', 'hidden_url', 'read_failure'):
+            with self.subTest(change=change):
+                self.grids['🔬 Forensics'] = deepcopy(original)
+                self.src.files[FOR_SECOND] = deepcopy(original_source)
+                self.writes.clear()
+
+                def write_then_change(token, sheet, requests):
+                    self.batch_update(token, sheet, requests)
+                    if change == 'visible_url':
+                        self.grids['🔬 Forensics'][6, 14]['textFormatRuns'][0]['format']['link']['uri'] += '?different=1'
+                    elif change == 'source_revision':
+                        self.src.bump(FOR_SECOND)
+                    elif change == 'hidden_url':
+                        self.grids['🔬 Forensics'][6, 18] = cell(deck_url(FOR_DECK))
+                    else:
+                        self.src.files.pop(FOR_SECOND)
+
+                with patch.object(google, 'batch_update', side_effect=write_then_change):
+                    result = wp.repair_link('read', 'write', self.config, self.agenda(), finding['fingerprint'],
+                                            dry_run=False, port=self.port)
+                self.assertEqual((result['status'], result['changed'], len(self.writes)), ('unconfirmed', True, 1))
+                receipt_id = key('weeklypreflightrepair', finding['fingerprint'])
+                self.assertIsNone(self.port.read([receipt_id]).documents[receipt_id])
+
+
+class PrintSourcePreferenceTests(Base):
+    EXTRA = 'FICTIONALEXPLICITGUIDE001'
+    COPY = 'FICTIONALFOLDERGUIDE0001'
+
+    def extra(self, ident=EXTRA, title='Cycle 06 — CER worksheet', parent=None):
+        self.src.add(ident, title, google.DOC, [parent] if parent else [])
+        self.src.pdfs[ident] = pdf_bytes(605)
+        self.grids['🌿 Biology'][5, 19] = cell('https://docs.google.com/document/d/%s/edit' % ident)
+
+    def test_unique_current_agenda_extra_breaks_only_a_tied_print_match(self):
+        self.extra()
+        before = deepcopy(self.src.files)
+        result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual(item['file']['id'], self.EXTRA)
+        self.assertFalse([e for e in self.exceptions(result, 'biology', 5) if e['kind'] == 'print_item_ambiguous'])
+        self.assertEqual(self.src.files, before, 'both originals are preserved')
+        self.assertEqual(self.writes, [])
+        self.assertNotIn('Printed', json.dumps(result))
+        self.assertNotIn('Handed', json.dumps(result))
+
+    def test_unique_better_folder_match_outranks_explicit_less_precise_match(self):
+        self.extra(title='Cycle 06 — CER worksheet teacher answer key')
+        result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual(item['file']['id'], HANDOUT)
+
+    def test_multiple_explicit_choices_and_folder_only_ties_remain_ambiguous(self):
+        one = {'id': self.EXTRA, 'name': 'CER worksheet', 'agenda_extra_material': True}
+        two = {'id': self.COPY, 'name': 'CER worksheet', 'agenda_extra_material': True}
+        self.assertTrue(wp.match_file('CER worksheet', [one, two])[2])
+        self.assertTrue(wp.match_file('CER worksheet', [{**one, 'agenda_extra_material': False},
+                                                       {**two, 'agenda_extra_material': False}])[2])
+        worse = {'id': 'FICTIONALWORSEGUIDE0001', 'name': 'CER worksheet teacher answer key',
+                 'agenda_extra_material': True}
+        self.assertTrue(wp.match_file('CER worksheet', [{**one, 'agenda_extra_material': False},
+                                                       {**two, 'agenda_extra_material': False}, worse])[2])
+
+    def test_one_file_linked_in_the_agenda_and_folder_does_not_tie_with_itself(self):
+        self.extra(ident=HANDOUT, title=self.src.files[HANDOUT]['name'])
+        result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual(item['file']['id'], HANDOUT)
+        self.assertFalse([e for e in self.exceptions(result, 'biology', 5) if e['kind'] == 'print_item_ambiguous'])
+
+    def test_same_id_duplicate_references_do_not_hide_two_explicit_choices(self):
+        one = {'id': self.EXTRA, 'name': 'CER worksheet', 'agenda_extra_material': True}
+        two = {'id': self.COPY, 'name': 'CER worksheet', 'agenda_extra_material': True}
+        self.assertTrue(wp.match_file('CER worksheet', [one, one, two])[2])
+        best, _, ambiguous = wp.match_file('CER worksheet', [{**one, 'agenda_extra_material': False}, one])
+        self.assertEqual((best['id'], ambiguous), (self.EXTRA, False))
+
+    def test_selected_explicit_material_read_failure_does_not_fall_back_to_folder_copy(self):
+        self.extra()
+
+        def unavailable(token, ident, mime):
+            if ident == self.EXTRA:
+                raise google.GoogleError('Temporarily unavailable', 429)
+            return self.src.printable_pdf_bytes(token, ident, mime)
+
+        with patch.object(google, 'printable_pdf_bytes', side_effect=unavailable):
+            result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual((item['file']['id'], item['file']['pages']), (self.EXTRA, None))
+        self.assertIn('print_file_unreadable', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
+        self.assertEqual(self.src.calls['pdf:' + HANDOUT], 0)
+
+    def test_duplicate_folder_metadata_cannot_bypass_current_explicit_source_read_failure(self):
+        self.extra(ident=HANDOUT, title=self.src.files[HANDOUT]['name'])
+
+        def stale_listing(token, ident):
+            items, complete = self.src.folder_listing(token, ident)
+            for item in items:
+                if item['id'] == HANDOUT:
+                    item.update(mimeType=wp.DOCX, version='old-folder-revision')
+            return items, complete
+
+        def unavailable(token, ident, mime):
+            if ident == HANDOUT:
+                raise google.GoogleError('Current source unavailable', 403)
+            return self.src.printable_pdf_bytes(token, ident, mime)
+
+        with patch.object(google, 'folder_listing', side_effect=stale_listing), \
+                patch.object(google, 'printable_pdf_bytes', side_effect=unavailable):
+            result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual((item['file']['id'], item['file']['mimeType'], item['file']['pages']),
+                         (HANDOUT, google.DOC, None))
+        self.assertNotIn('print_from_folder', item['file'])
+        self.assertIn('print_file_unreadable', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
+
+    def test_duplicate_folder_reference_cannot_mask_unavailable_current_metadata(self):
+        self.extra(ident=HANDOUT, title=self.src.files[HANDOUT]['name'])
+
+        def unavailable(token, ident, fields=None):
+            if ident == HANDOUT:
+                raise google.GoogleError('Current metadata unavailable', 403)
+            return self.src.drive_file(token, ident, fields)
+
+        with patch.object(google, 'drive_file', side_effect=unavailable):
+            result = self.run_check()
+        item = next(p for p in result['print_items'] if p['text'] == 'CER worksheet (1 per student)')
+        self.assertEqual((item['file']['id'], item['file']['pages']), (HANDOUT, None))
+        self.assertEqual(self.src.calls['pdf:' + HANDOUT], 0)
+        self.assertIn('source_inaccessible', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
 
 
 class FolderListingTests(unittest.TestCase):
