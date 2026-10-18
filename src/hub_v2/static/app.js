@@ -1250,7 +1250,6 @@ async function weekAheadRepair(item, preview) {
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
   invalidateReviewPanel(visibleReviewPanels.today);
-  invalidateReviewPanel(visibleReviewPanels.routine);
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
   if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
     const packet = cockpit.feedbackData.daily_packet;
@@ -3177,7 +3176,6 @@ async function loadMorningSummary() {
   if (!box) return;
   const seq = ++morningSummarySeq;
   invalidateReviewPanel(visibleReviewPanels.routine);
-  invalidateReviewPanel(visibleReviewPanels.today);
   try {
     const data = await getJSON('api/morning/reports');
     if (seq !== morningSummarySeq) return;
