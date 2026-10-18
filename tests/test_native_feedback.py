@@ -3,6 +3,7 @@ import io
 import json
 import unittest
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from hub_v2 import app, feedback_pdf, google, native_feedback as fb
@@ -509,7 +510,75 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
              patch.object(fb.completion, 'lesson_decks', return_value=['template'] if decks is None else decks), \
              patch.object(fb.assessment_save, 'capture', side_effect=self.captures), \
              patch.object(fb.feedback, 'load_prompt', return_value=('Live policy', 'policy-url')):
-            return fb.evidence('signed', 'token', {}, {}, self.scope, self.found)
+            return fb.evidence('signed', 'token', {}, getattr(self, 'agenda', {}), self.scope, self.found)
+
+    def registered_sources(self, mime=google.PPTX):
+        self.binding = {'source_folder_id': 'FictionalFolder', 'teacher_ids': ['template']}
+        self.found['lessons'][0]['forms'][0]['teacher_source_binding'] = self.binding
+        self.agenda = SimpleNamespace(lessons=lambda course, week: self.found['lessons'])
+        meta = {'id': 'template', 'name': 'Exact teacher', 'mimeType': mime,
+                'modifiedTime': 'lesson-time', 'version': '7', 'trashed': False,
+                'parents': ['FictionalFolder']}
+        self.sources = {'decks': [{'id': 'template', 'metadata': meta}],
+                        'problem': None, 'binding': self.binding,
+                        'folders': [{'id': 'FictionalFolder', 'deck_ids': ['template']}]}
+        self.captures[1]['file'] = {'id': 'template', 'name': 'Exact teacher', 'mime_type': mime,
+                                    'modified_at': 'lesson-time', 'version': '7'}
+
+    def test_registered_native_and_pptx_teachers_need_no_direct_agenda_presentation_link(self):
+        for mime in (fb.completion.SLIDES, google.PPTX):
+            with self.subTest(mime=mime):
+                self.registered_sources(mime)
+                with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                        patch.object(fb.completion, 'lesson_sources', return_value=self.sources) as sources:
+                    result = self.read(decks=[])
+                self.assertEqual(result['reference']['file']['id'], 'template')
+                self.assertEqual(sources.call_count, 2)
+                self.assertTrue(all(call.kwargs['binding'] == self.binding for call in sources.call_args_list))
+
+    def test_registered_source_change_or_capture_disagreement_holds(self):
+        for issue in ('membership', 'deleted', 'version', 'id', 'mime', 'name', 'resolution'):
+            with self.subTest(issue=issue):
+                self.registered_sources()
+                after = deepcopy(self.sources)
+                if issue == 'membership': after['folders'][0]['deck_ids'] = []
+                elif issue == 'deleted': after['problem'] = 'Teacher is unavailable'
+                elif issue == 'resolution':
+                    self.found['lessons'][0]['forms'][0]['grade_readiness'] = {
+                        'source_resolution': {**self.sources, 'problem': 'Stale resolution'}}
+                else: self.captures[1]['file'][{'mime': 'mime_type'}.get(issue, issue)] = 'changed'
+                with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                        patch.object(fb.completion, 'lesson_sources', side_effect=[self.sources, after]):
+                    with self.assertRaises(fb.Held): self.read(decks=[])
+                self.found['lessons'][0]['forms'][0].pop('grade_readiness', None)
+
+    def test_registered_declaration_removal_or_foreign_form_never_falls_back(self):
+        for declaration in (None, {'source_folder_id': 'OtherFolder', 'teacher_ids': ['template']}):
+            self.registered_sources()
+            with self.subTest(declaration=declaration), \
+                    patch.object(fb.work, 'form_teacher_sources', return_value=declaration), \
+                    patch.object(fb.completion, 'lesson_sources') as sources:
+                with self.assertRaisesRegex(fb.Held, 'declaration changed'): self.read()
+                sources.assert_not_called()
+
+    def test_registered_membership_does_not_override_registry_or_missing_source_proof(self):
+        for issue in ('registry', 'foreign_template', 'problem', 'unverified_binding'):
+            with self.subTest(issue=issue):
+                self.registered_sources()
+                if issue == 'registry': self.assignment['source_deck_id'] = 'other'
+                elif issue == 'foreign_template': self.sources['decks'][0]['id'] = 'other'
+                elif issue == 'problem': self.sources['problem'] = 'Cannot verify source folder'
+                elif issue == 'unverified_binding': self.sources.pop('binding')
+                with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                        patch.object(fb.completion, 'lesson_sources', return_value=self.sources):
+                    with self.assertRaises(fb.Held): self.read(decks=[])
+                self.assignment['source_deck_id'] = 'template'
+
+    def test_unconfigured_form_cannot_borrow_readiness_sources_without_direct_link(self):
+        self.found['lessons'][0]['forms'][0]['grade_readiness'] = {
+            'source_resolution': {'decks': [{'id': 'template'}]}}
+        with patch.object(fb.completion, 'lesson_sources', side_effect=AssertionError('unconfigured source expansion')):
+            with self.assertRaisesRegex(fb.Held, 'assessment-register'): self.read(decks=[])
 
     def reference(self, text, drafts):
         self.captures[1]['text'] = text

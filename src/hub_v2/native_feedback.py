@@ -317,14 +317,44 @@ def evidence(assertion, token, config, agenda, scope, found):
     assignments = [a for a in records['assignments'] if a['class_key'] == scope['class']
                    and a.get('source_deck_id') == score.get('template_id')
                    and a.get('assignment_code') == score.get('code')]
-    if len(assignments) != 1 or score['template_id'] not in completion.lesson_decks(
-            agenda, scope['class'], scope['week'], scope['form']):
+    if len(assignments) != 1:
+        raise Held('The exact lesson deck needs its assessment-register connection verified.')
+    try:
+        binding = work.form_teacher_sources(config, agenda, scope['class'], scope['week'], scope['form'])
+    except ValueError as error:
+        raise Held(str(error)) from None
+    if binding != form.get('teacher_source_binding'):
+        raise Held('The exact Form teacher-source declaration changed. Reload current work before preparing feedback.')
+    sources = None
+    if binding:
+        lessons = [lesson for lesson in agenda.lessons(scope['class'], scope['week'])
+                   if any(f.get('form_id') == scope['form'] for f in lesson['forms'])]
+        if len(lessons) != 1:
+            raise Held('The exact Form needs one current Agenda lesson.')
+        sources = completion.lesson_sources(token, lessons[0], binding=binding)
+        selected = [d for d in sources.get('decks', []) if d['id'] == score['template_id']]
+        prior_sources = (form.get('grade_readiness') or {}).get('source_resolution')
+        if (sources.get('problem') or sources.get('read_failure') or sources.get('binding') != binding
+                or len(selected) != 1 or (prior_sources is not None and prior_sources != sources)):
+            raise Held('The exact Form registered teacher sources need fresh verification before feedback.')
+    elif score['template_id'] not in completion.lesson_decks(agenda, scope['class'], scope['week'], scope['form']):
         raise Held('The exact lesson deck needs its assessment-register connection verified.')
     captured = assessment_save.capture(assertion, scope['file'], config)
     reference = assessment_save.capture(assertion, score['template_id'], config)
     if (captured['file']['modified_at'] != score['file_updated']
             or reference['file']['modified_at'] != score['template_updated']):
         raise Held('The student work or lesson changed while it was being read. Reload and try again.')
+    if sources is not None:
+        # lesson_sources brackets exact registered parent/teacher metadata and
+        # membership internally. Repeat that proof around the existing capture;
+        # no second export or invented consumed-template tuple is necessary.
+        after = completion.lesson_sources(token, lessons[0], binding=binding)
+        meta = selected[0]['metadata']
+        expected = {'id': meta['id'], 'name': str(meta.get('name', ''))[:200],
+                    'mime_type': meta['mimeType'], 'modified_at': str(meta['modifiedTime']),
+                    'version': str(meta['version'])}
+        if after != sources or reference['file'] != expected:
+            raise Held('The captured teacher source differs from its verified Form collection. Reload current work.')
     prompt, where = feedback.load_prompt(token, agenda)
     if not prompt:
         raise Held(where)
