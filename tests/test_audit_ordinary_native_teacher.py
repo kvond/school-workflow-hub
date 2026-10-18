@@ -1,5 +1,6 @@
 """Native readiness is limited to the exact ordinary Agenda teacher, never a sibling."""
 from copy import deepcopy
+import json
 from unittest import TestCase
 from unittest.mock import Mock, patch
 from hub_v2 import audit, completion, google, work
@@ -10,7 +11,7 @@ FOLDER = 'FICTIONAL_FOLDER_1234567890'
 
 
 class OrdinaryNativeAuditTests(TestCase):
-    def run_audit(self, *, change=None, exported=403, drift=None, held=False, policy=False, native_value=None, sibling=False):
+    def run_audit(self, *, change=None, exported=403, drift=None, held=False, policy=False, native_value=None, sibling=False, mappings=None):
         completion._templates.clear(); completion._native_teacher_templates.clear()
         meta = metadata(parents=[FOLDER])
         folder = {'id': FOLDER, 'name': 'Teacher folder', 'mimeType': google.FOLDER,
@@ -23,6 +24,7 @@ class OrdinaryNativeAuditTests(TestCase):
         ag = Mock(); ag.classes = {'anatomy': {'name': 'Anatomy', 'cells': {},
             'layout': {'columns': {}, 'rows': [(8, 'Wk 08')]}}}
         ag.week_for.return_value = {'label': 'Wk 08'}
+        ag.lessons.return_value = [lesson]
         other = deepcopy(lesson)
         other['forms'].append({'form_id': 'SIBLING_FORM_123'})
         if sibling: ag.classes['anatomy']['layout']['rows'].append((9, 'Wk 09'))
@@ -46,7 +48,7 @@ class OrdinaryNativeAuditTests(TestCase):
              patch.object(google, 'native_presentation', return_value=native() if native_value is None else native_value) as native_get, \
              patch.object(audit.completion_holds, 'check', return_value={'held': held, 'label': 'Held', 'problem': 'Teacher hold', 'action': 'Review'}), \
              patch.object(google, 'append_rows') as writes:
-            rows = audit.check('read', ag, 'anatomy', {})['rows']
+            rows = audit.check('read', ag, 'anatomy', mappings or {})['rows']
             result = [r['release'] for r in rows] if sibling else rows[0]['release']
         writes.assert_not_called()
         return result, native_get
@@ -90,4 +92,20 @@ class OrdinaryNativeAuditTests(TestCase):
         self.assertEqual(results[0]['status'], 'READY')
         self.assertEqual(results[1]['status'], 'NOT_READY')
         self.assertIn('Export unavailable', results[1]['problem'])
+        get.assert_called_once_with('read', TEMPLATE)
+
+    def test_explicit_foreign_form_ownership_cannot_use_single_form_native_exception(self):
+        for target in ('FICTIONAL_OTHER_FORM_1234567890', 19):
+            with self.subTest(target=target):
+                result, get = self.run_audit(mappings={
+                    'HUB_INTAKE_DECK_ASSIGNMENTS': json.dumps({TEMPLATE: 'anatomy:W08A'}),
+                    'HUB_ASSIGNMENT_FORM_IDS': json.dumps({'anatomy:W08A': target})})
+                self.assertEqual(result['status'], 'NOT_READY')
+                self.assertIn('Export unavailable', result['problem'])
+                get.assert_not_called()
+
+    def test_mapping_without_target_does_not_invent_a_foreign_form(self):
+        result, get = self.run_audit(mappings={
+            'HUB_INTAKE_DECK_ASSIGNMENTS': json.dumps({TEMPLATE: 'anatomy:W08A'})})
+        self.assertEqual(result['status'], 'READY')
         get.assert_called_once_with('read', TEMPLATE)

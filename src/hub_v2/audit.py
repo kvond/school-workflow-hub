@@ -233,6 +233,9 @@ def check(token, agenda, class_key, config=None):
             fid = r["lesson"]["forms"][0]["form_id"]
             if not completion_holds.check(config or {}, agenda, class_key, r["week"], fid)["held"]:
                 try:
+                    # A lone visible Form never overrides explicit ownership of
+                    # its linked teacher by another assignment or Form.
+                    completion.form_source_ownership(config or {}, agenda, class_key, r["week"], fid)
                     proof = _ordinary_native_proof(token, r)
                     units[0].update(source=proof["source"], ordinary_native_proof=proof)
                     ordinary = proof["source"]
