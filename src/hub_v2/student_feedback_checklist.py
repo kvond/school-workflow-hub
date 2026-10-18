@@ -5,6 +5,7 @@ listed; source PDFs, teacher marks and feedback generation are untouched.
 """
 from datetime import datetime, timezone
 import hashlib
+import re
 from html import escape
 from io import BytesIO
 from urllib.parse import quote
@@ -16,6 +17,57 @@ from school_workflow_hub.core.runs import content_hash
 NAME = "00 — Feedback created checklist.pdf"
 SCHEMA = "student-feedback-checklist/v1"
 MAX_STUDENTS = 25
+
+
+def _legacy_feedback_identity(run, artifact):
+    """Validate the frozen, audited October import, not a guessed native key.
+
+    The legacy importer bound each separately verified student excerpt to the
+    exact original document, revision, content digest, source span and report
+    ID before the existing archive create/attach/private-readback contract.
+    Older source revisions remain history; this does not reassess current work.
+    """
+    source_id = artifact.get("source_document_id")
+    source_hash = artifact.get("source_sha256")
+    revision = artifact.get("source_revision")
+    ranges = artifact.get("source_ranges")
+    feedback_id = artifact.get("feedback_id")
+    aliases = artifact.get("source_alias_ids", [])
+    if (artifact.get("feedback_origin") != "legacy_packet"
+            or artifact.get("source_kind") != "legacy_student_excerpt"
+            or artifact.get("date_basis") != "file_created"
+            or artifact.get("identity_status") != "identity_unverified"
+            or not isinstance(artifact.get("identity_basis"), str) or not artifact["identity_basis"].strip()
+            or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", str(source_id or ""))
+            or artifact.get("source_file_id") != source_id
+            or not isinstance(revision, str) or not re.fullmatch(r"[1-9][0-9]*", revision)
+            or not re.fullmatch(r"[a-f0-9]{64}", str(source_hash or ""))
+            or not re.fullmatch(r"feedbacksource_[a-f0-9]{64}", str(feedback_id or ""))
+            or not isinstance(ranges, dict) or artifact.get("source_span") != ranges
+            or not isinstance(aliases, list) or len(aliases) != len(set(str(item) for item in aliases))
+            or any(not isinstance(item, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", item) for item in aliases)
+            or artifact.get("supersedes_report_id") or artifact.get("superseded_by")
+            or artifact.get("presentation_version", 1) != 1):
+        raise archive.Held("A legacy feedback excerpt no longer matches its audited import provenance.")
+    pages, indices = ranges.get("pdf_pages_1_based"), ranges.get("native_doc_indices")
+    if (not ranges or set(ranges) - {"pdf_pages_1_based", "native_doc_indices"}
+            or (pages is None and indices is None)
+            or (pages is not None and (not isinstance(pages, list) or not pages
+                or any(type(page) is not int or page < 1 for page in pages) or sorted(set(pages)) != pages))
+            or (indices is not None and (not isinstance(indices, list) or len(indices) != 2
+                or any(type(index) is not int or index < 0 for index in indices) or indices[1] <= indices[0]))):
+        raise archive.Held("A legacy feedback excerpt has no exact verified PDF pages or document index range.")
+    expected = key("archivelegacyfeedback", [run.root, run.cls, source_id, revision, source_hash, ranges, feedback_id])
+    if artifact.get("record_key") != expected:
+        raise archive.Held("A legacy feedback excerpt's identity does not match its exact source revision and span.")
+
+
+def _feedback_identity(run, artifact):
+    ident, report_id = artifact["record_key"], artifact.get("feedback_id")
+    if artifact.get("feedback_origin") == "legacy_packet" or ident.startswith("archivelegacyfeedback_"):
+        _legacy_feedback_identity(run, artifact)
+    elif not report_id or ident != key("archivefeedback", [run.root, report_id]):
+        raise archive.Held("A feedback version has no unique, verified archive identity.")
 
 
 def _snapshot(run, student_key):
@@ -37,7 +89,7 @@ def _snapshot(run, student_key):
     if (metadata[student["drive_file_id"]].get("properties") or {}).get(archive.TAG) != student_key:
         raise archive.Held("The checklist's student folder no longer matches its private archive identity.")
     children = google.folder_children(run.token, student["drive_file_id"])
-    if any(str((item.get("properties") or {}).get(archive.TAG, "")).startswith("archivefeedback_")
+    if any(str((item.get("properties") or {}).get(archive.TAG, "")).startswith(("archivefeedback_", "archivelegacyfeedback_"))
            and (item.get("properties") or {})[archive.TAG] not in items for item in children):
         raise archive.Held("An unattached feedback artifact needs archive verification before refreshing the checklist.")
     rows, report_ids = [], set()
@@ -52,7 +104,8 @@ def _snapshot(run, student_key):
         if artifact["kind"] != "feedback":
             continue
         report_id = artifact.get("feedback_id")
-        if not report_id or ident != key("archivefeedback", [run.root, report_id]) or report_id in report_ids:
+        _feedback_identity(run, artifact)
+        if report_id in report_ids:
             raise archive.Held("A feedback version has no unique, verified archive identity.")
         report_ids.add(report_id)
         meta = archive._feedback_file(run.token, run.root, run.course, student, artifact)
@@ -64,9 +117,11 @@ def _snapshot(run, student_key):
         version = artifact.get("presentation_version", 1)
         if type(version) is not int or version < 1:
             raise archive.Held("A saved feedback version needs verification before listing it.")
-        report_type = artifact.get("report_type") or ("critical_aspects"
+        legacy = artifact.get("feedback_origin") == "legacy_packet"
+        report_type = artifact.get("report_type") or ("legacy_feedback" if legacy else "critical_aspects"
             if artifact.get("feedback_origin", "native_saved") == "native_saved" else "feedback")
-        label = {"critical_aspects": "Critical aspects", "science_writing": "Science writing"}.get(
+        label = {"critical_aspects": "Critical aspects", "science_writing": "Science writing",
+                 "legacy_feedback": "Feedback (type not recorded)"}.get(
             report_type, str(report_type).replace("_", " ").capitalize())
         lessons = [source.get("assignment") for source in (artifact.get("source_records") or []) if source.get("assignment")]
         rows.append({"report_id": report_id, "record_key": ident, "made": True,
@@ -74,7 +129,8 @@ def _snapshot(run, student_key):
             "lesson": "; ".join(dict.fromkeys(lessons)) or artifact.get("assignment") or "Lesson not recorded",
             "type": report_type, "type_label": label, "version": version,
             "historical": bool(artifact.get("superseded_by")), "url": archive._url(artifact["drive_file_id"]),
-            "pdf_sha256": artifact.get("pdf_sha256")})
+            "pdf_sha256": artifact.get("pdf_sha256"),
+            **({"date_basis": "file_created"} if legacy else {})})
     # Bookend the full class membership and selected student's complete index.
     baseline = {run.index_key: index, student_key: owner, **documents}
     fresh = archive._batch_read(run.port, list(baseline))
@@ -103,7 +159,8 @@ def render(student, rows):
              Paragraph("A checked item means the report was made and its saved file was verified. "
                        "It does not mean printed, sent or handed to the student.", style), Spacer(1, 10)]
     for row in rows:
-        label = "[x] %s — %s — version %s%s" % (row["date"], row["type_label"], row["version"],
+        date_label = ("Source file date: " if row.get("date_basis") == "file_created" else "") + row["date"]
+        label = "[x] %s — %s — version %s%s" % (date_label, row["type_label"], row["version"],
                                               " (previous version)" if row["historical"] else "")
         story.append(KeepTogether([Paragraph(escape(label), style), Paragraph(escape(row["lesson"]), style),
             Paragraph('<link href="%s" color="#1457a6">Open saved feedback</link>' % escape(row["url"], quote=True), style),

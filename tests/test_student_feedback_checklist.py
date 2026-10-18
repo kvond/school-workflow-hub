@@ -63,6 +63,105 @@ class StudentFeedbackChecklistTests(unittest.TestCase):
             run.finish({"status": "verified"})
         return artifact
 
+    def legacy_report(self, *, native_document=False):
+        run = archive._Run("read", "write", self.config, "biology")
+        student = archive._read(self.port, self.student_key).value
+        feedback_id = "feedbacksource_" + "e" * 64
+        source_id, revision, source_hash = "FictionalLegacySource001", "7", "f" * 64
+        ranges = ({"native_doc_indices": [10, 250], "pdf_pages_1_based": None}
+                  if native_document else {"pdf_pages_1_based": [2, 3]})
+        ident = archive.key("archivelegacyfeedback", [ROOT, "biology", source_id, revision, source_hash, ranges, feedback_id])
+        artifact = run.create(ident, "Fictional legacy excerpt.pdf", self.student_folder, archive.PDF,
+            pdf=b"%PDF already audited legacy excerpt", attributes={"kind": "feedback", "date": "2026-09-18",
+                "saved_at": "2026-09-18T13:00:00Z", "date_basis": "file_created", "class_key": "biology",
+                "student_key": self.student_key, "assignment": "Fictional earlier lesson", "feedback_id": feedback_id,
+                "feedback_origin": "legacy_packet", "source_kind": "legacy_student_excerpt", "source_document_id": source_id,
+                "source_file_id": source_id, "source_revision": revision, "source_sha256": source_hash,
+                "source_span": ranges, "source_ranges": ranges, "source_alias_ids": [],
+                "identity_status": "identity_unverified", "identity_basis": "Previously audited unique roster label"})
+        run.attach(student, artifact)
+        with patch.object(checklist, "refresh_run", return_value={"status": "deferred"}):
+            run.finish({"status": "verified"})
+        return artifact
+
+    def test_mixed_native_and_legacy_history_retains_real_type_and_date_evidence(self):
+        legacy = self.legacy_report()
+        self.second_report()
+        result = self.refresh()
+        self.assertEqual(result["status"], "verified", result)
+        rows = self.record()["confirmed"]["rows"]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([r["type_label"] for r in rows],
+                         ["Feedback (type not recorded)", "Critical aspects", "Science writing"])
+        self.assertEqual(rows[0]["date"], "2026-09-18")
+        self.assertEqual(rows[0]["date_basis"], "file_created")
+        self.assertEqual(rows[0]["report_id"], legacy["feedback_id"])
+        self.assertEqual(rows[0]["url"], archive._url(legacy["drive_file_id"]))
+        from pypdf import PdfReader
+        text = " ".join(" ".join(p.extract_text() for p in PdfReader(BytesIO(
+            self.drive.contents[self.record()["drive_file_id"]])).pages).split())
+        self.assertIn("Source file date: 2026-09-18", text)
+        self.assertIn("Feedback (type not recorded)", text)
+        before = len(self.drive.created)
+        self.assertEqual(self.refresh()["unchanged"], 1)
+        self.assertEqual(len(self.drive.created), before)
+
+    def test_legacy_native_document_span_uses_exact_import_recipe(self):
+        self.legacy_report(native_document=True)
+        result = self.refresh()
+        self.assertEqual(result["status"], "verified", result)
+        self.assertEqual(len(self.record()["confirmed"]["rows"]), 2)
+
+    def test_legacy_source_identity_span_and_student_corruption_never_publish(self):
+        legacy = self.legacy_report()
+        snapshot = deepcopy(self.port.rows); drive = deepcopy(self.drive.items)
+        mutations = [lambda row: row.update(source_revision="8"),
+            lambda row: row.update(source_sha256="1" * 64),
+            lambda row: row.update(source_file_id="FictionalOtherSource001"),
+            lambda row: row.update(source_document_id="FictionalOtherSource001"),
+            lambda row: row.update(source_span={"pdf_pages_1_based": [4]}),
+            lambda row: row.update(source_ranges={"pdf_pages_1_based": [4]}, source_span={"pdf_pages_1_based": [4]}),
+            lambda row: row.update(feedback_id="feedbacksource_" + "1" * 64),
+            lambda row: row.update(student_key="AnotherStudentKey"),
+            lambda row: row.update(class_key="forensics"),
+            lambda row: row.update(feedback_origin="native_saved"),
+            lambda row: row.update(date_basis="unknown"),
+            lambda row: row.update(identity_basis=""),
+            lambda row: row.update(source_kind="unverified_excerpt")]
+        before = len(self.drive.created)
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                self.port.rows = deepcopy(snapshot); self.drive.items = deepcopy(drive)
+                mutate(self.port.rows[legacy["record_key"]].value)
+                result = self.refresh()
+                self.assertEqual(result["status"], "held", result)
+                self.assertEqual(len(self.drive.created), before)
+
+    def test_invalid_legacy_ranges_hold_even_with_recomputed_key(self):
+        legacy = self.legacy_report()
+        run = Mock(root=ROOT); run.cls = "biology"
+        for ranges in ({"pdf_pages_1_based": []}, {"pdf_pages_1_based": [True]},
+                       {"pdf_pages_1_based": [3, 2]}, {"pdf_pages_1_based": [0]},
+                       {"native_doc_indices": [100, 50]}, {"native_doc_indices": [10]},
+                       {"native_doc_indices": [1, 5], "unknown_span": [2]}):
+            row = {**legacy, "source_span": ranges, "source_ranges": ranges}
+            row["record_key"] = archive.key("archivelegacyfeedback", [ROOT, "biology", row["source_document_id"],
+                row["source_revision"], row["source_sha256"], ranges, row["feedback_id"]])
+            with self.subTest(ranges=ranges), self.assertRaises(archive.Held):
+                checklist._legacy_feedback_identity(run, row)
+
+    def test_unattached_legacy_pdf_or_changed_archive_tag_cannot_disappear_from_history(self):
+        legacy = self.legacy_report()
+        snapshot = deepcopy(self.port.rows)
+        self.port.rows[self.student_key].value["items"].pop(legacy["record_key"])
+        result = self.refresh()
+        self.assertEqual(result["status"], "held", result)
+        self.assertIn("unattached feedback", result["held"][0]["problem"])
+        self.port.rows = snapshot
+        self.drive.items[legacy["drive_file_id"]]["properties"][archive.TAG] = "changed"
+        self.assertEqual(self.refresh()["status"], "held")
+        self.assertFalse(any(f["name"] == checklist.NAME for f in self.drive.created))
+
     def test_one_stable_readable_checklist_with_dates_types_links_and_no_delivery_inference(self):
         first = self.refresh()
         self.assertEqual(first["status"], "verified", first)
