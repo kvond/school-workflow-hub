@@ -407,6 +407,17 @@ associated with the student work, after checking inherited access. Page 03 is
 where needed), not an inline paragraph. Preserve document identity and history;
 exclude generated reports/summaries from student-submission discovery.
 
+The October 18 teacher update requires a **Lesson review for tomorrow** at the
+end of every completed class/section lesson review, even when zero, one or only
+a few new individual student feedback sheets are produced. It uses the actual
+verified reviewed evidence, not the print selection. Include interesting student
+ideas, supported misunderstandings, short whiteboard **Write / Ask / If discussion
+stalls, say or show** prompts, and lesson-specific questions about evidence,
+assumptions or ways of knowing. Keep partial coverage explicit. Use the existing
+private teacher-summary document and report index, large text and one idea per
+line; no extra Today panel or student packet. Follow the authoring and saved-file
+verification rules in [Class summary contract](CLASS_SUMMARY_CONTRACT.md).
+
 ## Assignment-specific Form intake — issue #37
 
 The teacher clarified on September 23: **each assignment has its own Form**.
