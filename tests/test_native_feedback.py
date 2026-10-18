@@ -552,6 +552,78 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(fb.Held, 'numbered critical-aspects list'):
             self.read()
 
+    def question_reference(self, course='forensics'):
+        self.scope['class'] = course
+        self.assignment['class_key'] = course
+        titles = ['How does this observation support your inference?',
+                  'Which alternative explanation fits the evidence?',
+                  'What additional evidence would distinguish the explanations?']
+        self.captures[1]['text'] = '\n'.join(titles)
+        self.score['items'] = [{'category': 'DRAFT', 'id': 'Q-MASTERY-%d' % n,
+                               'question': title, 'at': n, 'slide': n + 1,
+                               'status': 'done', 'answer': 'My revised explanation %d.' % n}
+                              for n, title in enumerate(titles, 2)]
+
+    def test_question_identified_courses_keep_exact_teacher_labels_ids_and_answers(self):
+        for course in ('anatomy', 'forensics'):
+            with self.subTest(course=course):
+                self.question_reference(course)
+                result = self.read()
+                for aspect, item in zip(result['aspects'], self.score['items']):
+                    self.assertEqual(aspect, {'question_id': item['id'], 'name': item['question'],
+                                             'answer': item['answer'], 'available': True, 'slide': item['slide']})
+                response = report()
+                response['aspects'] = [{'question_id': a['question_id'], 'name': a['name'],
+                                       'current_level': 'Developing', 'quote': a['answer'],
+                                       'explanation': 'Explain how the evidence supports this inference.'}
+                                      for a in result['aspects']]
+                response.pop('teacher_dimensions')
+                fb.validate_report(response, result)
+                response['aspects'][0]['name'] = 'Invented critical aspect'
+                with self.assertRaises(fb.Held): fb.validate_report(response, result)
+
+    def test_question_identified_blank_answer_remains_unavailable(self):
+        self.question_reference()
+        self.score['items'][0].update(status='blank', answer='')
+        self.assertFalse(self.read()['aspects'][0]['available'])
+
+    def test_question_identified_fallback_never_bypasses_biology_or_assignment_registry(self):
+        self.question_reference('biology')
+        with self.assertRaisesRegex(fb.Held, 'numbered critical-aspects list'): self.read()
+        self.question_reference()
+        self.assignment['source_deck_id'] = 'other-template'
+        with self.assertRaisesRegex(fb.Held, 'assessment-register'): self.read()
+
+    def test_question_identified_fallback_rejects_ambiguous_or_unverified_bindings(self):
+        for issue in ('no_rows', 'too_many', 'duplicate_id', 'duplicate_title', 'duplicate_slide',
+                      'missing_title', 'generic_title', 'numeric_title', 'foreign_title', 'missing_slide',
+                      'mixed_ids', 'uncompared', 'missing_template'):
+            with self.subTest(issue=issue):
+                self.question_reference()
+                rows = self.score['items']
+                if issue == 'no_rows': self.score['items'] = []
+                elif issue == 'too_many': rows.extend([deepcopy(rows[0]), deepcopy(rows[1])])
+                elif issue == 'duplicate_id': rows[1]['id'] = rows[0]['id']
+                elif issue == 'duplicate_title': rows[1]['question'] = rows[0]['question']
+                elif issue == 'duplicate_slide': rows[1]['at'] = rows[0]['at']
+                elif issue == 'missing_title': rows[0].pop('question')
+                elif issue in ('generic_title', 'numeric_title'):
+                    rows[0]['question'] = 'Question 2' if issue == 'generic_title' else '123'
+                    self.captures[1]['text'] += '\n' + rows[0]['question']
+                elif issue == 'foreign_title': rows[0]['question'] = 'A title absent from the teacher source'
+                elif issue == 'missing_slide': rows[0].pop('at')
+                elif issue == 'mixed_ids': rows[0]['id'] = 'CA1-MASTERY'
+                elif issue == 'uncompared': self.score['compared'] = False
+                elif issue == 'missing_template': self.score['template_id'] = ''
+                with self.assertRaises(fb.Held): self.read()
+                self.score['compared'] = True
+                self.score['template_id'] = 'template'
+
+    def test_question_fallback_does_not_replace_partial_critical_aspect_mapping(self):
+        self.question_reference()
+        self.captures[1]['text'] += '\nCRITICAL ASPECTS\n1. Evidence supports an inference\n[[MARKER-INVENTORY:F01]]'
+        with self.assertRaisesRegex(fb.Held, 'revised-answer field'): self.read()
+
     def test_exact_agenda_deck_registry_and_live_prompt_bind_feedback(self):
         result = self.read()
         self.assertEqual(result['aspects'][0]['answer'], 'Carbon moves.')

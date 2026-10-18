@@ -243,7 +243,34 @@ def _receipt_date(receipt, scope, submitted_at):
     return moment.astimezone(ZoneInfo('America/New_York')).date().isoformat()
 
 
-def _aspects(reference, score):
+def _question_aspects(reference, score):
+    """Use only exact matched teacher question labels, never invent a rubric."""
+    rows = [item for item in score['items'] if item['category'] == 'DRAFT']
+    if not score.get('compared') or not score.get('template_id') or not 1 <= len(rows) <= 4:
+        raise Held('The lesson needs one to four verified teacher revision questions.')
+    ids, titles, slides = set(), set(), set()
+    text = ' '.join(reference.split())
+    result = []
+    for item in rows:
+        qid, title, at = item.get('id'), item.get('question'), item.get('at')
+        normalized = ' '.join(title.split()) if isinstance(title, str) else ''
+        generic = re.sub(r'[^a-z]+', ' ', normalized.casefold()).strip()
+        if (not isinstance(qid, str) or not re.fullmatch(r'Q-MASTERY(?:-\d+)?', qid)
+                or qid in ids or not normalized or len(title) > 160
+                or not generic or set(generic.split()) <= {
+                    'question', 'revision', 'revised', 'my', 'your', 'answer', 'response', 'draft', 'slide',
+                    'write', 'here', 'prompt', 'notes', 'final', 'q', 'one', 'two', 'three', 'four'}
+                or re.fullmatch(r'Q-MASTERY(?:-\d+)?', normalized, re.I)
+                or normalized.casefold() in titles or normalized not in text
+                or type(at) is not int or at < 1 or at in slides):
+            raise Held('A revision question needs one distinct, meaningful title from its matched teacher slide.')
+        ids.add(qid); titles.add(normalized.casefold()); slides.add(at)
+        result.append({'question_id': qid, 'name': title, 'answer': item.get('answer', ''),
+                       'available': item['status'] == 'done', 'slide': item.get('slide')})
+    return result
+
+
+def _aspects(reference, score, *, course=None):
     """Pair each listed critical aspect with its one revised-answer field.
 
     Aspect N pairs with CA<N>-MASTERY when every listed number has that field
@@ -251,7 +278,10 @@ def _aspects(reference, score):
     unit ("3.") while the deck's field is CA1-MASTERY, so when no listed number
     has its field the list pairs in order with the deck's CA fields, if the
     counts match. A partial match is a coding error and refuses."""
-    listed = [a for a in deck_release.critical_aspects(reference) if a['number'] is not None][:4]
+    all_aspects = deck_release.critical_aspects(reference)
+    if not all_aspects and course in ('anatomy', 'forensics'):
+        return _question_aspects(reference, score)
+    listed = [a for a in all_aspects if a['number'] is not None][:4]
     if not listed:
         raise Held('The lesson needs a readable, numbered critical-aspects list.')
     drafts = {item['id'] for item in score['items'] if item['category'] == 'DRAFT'}
@@ -308,7 +338,7 @@ def evidence(assertion, token, config, agenda, scope, found):
     return {'scope': scope, 'person': person, 'assignment': assignments[0],
             'archive_identity': archive_identity,
             'submitted_at': receipt['submitted_at'], 'submission_receipt': receipt,
-            'source': captured, 'reference': reference, 'aspects': _aspects(reference['text'], score),
+            'source': captured, 'reference': reference, 'aspects': _aspects(reference['text'], score, course=scope['class']),
             'answers': score['items'], 'prompt': prompt, 'prompt_url': where}
 
 
