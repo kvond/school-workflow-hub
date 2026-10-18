@@ -510,7 +510,8 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
              patch.object(fb.completion, 'lesson_decks', return_value=['template'] if decks is None else decks), \
              patch.object(fb.assessment_save, 'capture', side_effect=self.captures), \
              patch.object(fb.feedback, 'load_prompt', return_value=('Live policy', 'policy-url')):
-            return fb.evidence('signed', 'token', {}, getattr(self, 'agenda', {}), self.scope, self.found)
+            agenda = getattr(self, 'agenda', SimpleNamespace(lessons=lambda *args: self.found['lessons']))
+            return fb.evidence('signed', 'token', {}, agenda, self.scope, self.found)
 
     def registered_sources(self, mime=google.PPTX):
         self.binding = {'source_folder_id': 'FictionalFolder', 'teacher_ids': ['template']}
@@ -579,6 +580,19 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
             'source_resolution': {'decks': [{'id': 'template'}]}}
         with patch.object(fb.completion, 'lesson_sources', side_effect=AssertionError('unconfigured source expansion')):
             with self.assertRaisesRegex(fb.Held, 'assessment-register'): self.read(decks=[])
+
+    def test_unconfigured_feedback_cannot_borrow_another_forms_row_sources(self):
+        self.found['lessons'][0]['forms'].append({'form_id': 'SiblingForm', 'students': []})
+        with self.assertRaisesRegex(fb.Held, 'exact teacher-source ownership'):
+            self.read()
+
+    def test_bound_feedback_does_not_inherit_sibling_form_source_failure(self):
+        self.registered_sources()
+        self.found['lessons'][0]['forms'].append({'form_id': 'SiblingForm', 'students': [],
+                                               'problem': 'Sibling source unavailable'})
+        with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                patch.object(fb.completion, 'lesson_sources', return_value=self.sources):
+            self.assertEqual(self.read(decks=[])['reference']['file']['id'], 'template')
 
     def reference(self, text, drafts):
         self.captures[1]['text'] = text

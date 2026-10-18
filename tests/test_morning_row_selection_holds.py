@@ -11,7 +11,7 @@ import unittest
 
 from hub_v2 import app, completion, google, morning
 from test_completion_readiness import FORM, TEMPLATE, source
-from test_hub_v2 import fixture
+from test_completion_readiness import single_assignment_agenda as fixture
 
 NOW = datetime(2026, 10, 11, 14, tzinfo=timezone.utc)
 VALID = 'FICTIONAL_VALID_CURRENT_123'
@@ -63,6 +63,7 @@ class MorningRowSelectionHoldTests(unittest.TestCase):
         from contextlib import ExitStack
         self.assertIsInstance(stack, ExitStack)
         stack.enter_context(patch.object(completion, 'student_coding_required', return_value=False))
+        stack.enter_context(patch.object(completion, 'lesson_sources', return_value=self.ready['source_resolution']))
         stack.enter_context(patch.object(completion, '_teacher_template', return_value=({
             'id': TEMPLATE, 'name': 'Observations', 'version': '1'}, source())))
         metadata = stack.enter_context(patch.object(google, 'drive_file', side_effect=lambda token, fid, fields: {

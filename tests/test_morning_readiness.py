@@ -37,7 +37,8 @@ class TeacherHoldTests(unittest.TestCase):
 
     def test_explicit_copy_hold_is_not_cleared_by_a_ready_linked_deck(self):
         with patch.object(holds,'configured_store',return_value=self.port),patch.object(completion,'_template') as template:
-            result=completion.assignment_readiness('read',settings(),self.agenda,CLASS,WEEK,FORM)
+            from test_completion_readiness import single_assignment_agenda
+            result=completion.assignment_readiness('read',settings(),single_assignment_agenda(),CLASS,WEEK,FORM)
         self.assertEqual(result['status'],'NOT_READY');self.assertEqual(result['code'],'teacher_readiness_hold')
         self.assertEqual(result['label'],'Needs embedded codes')
         self.assertIn('Forensics · Wk 04',result['problem']);self.assertIn('preserve answers',result['action'])

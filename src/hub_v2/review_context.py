@@ -172,11 +172,14 @@ def cached_reviews(token, agenda, class_key, week, form_id, rows, *, config=None
     """Read existing assessments, fresh-checking both operands without bytes."""
     results, limitations, metadata = {}, [], {}
     cache = dict(completion._results)
-    binding = work.form_teacher_sources(config or {}, agenda, class_key, week, form_id)
-    linked = set(binding['teacher_ids'] if binding else completion.lesson_decks(agenda, class_key, week, form_id))
+    try:
+        binding = work.form_teacher_sources(config or {}, agenda, class_key, week, form_id)
+        ownership = completion.form_source_ownership(config or {}, agenda, class_key, week, form_id, binding=binding)
+        lesson = completion.form_source_scope(agenda, class_key, week, form_id, binding=binding, ownership=ownership)
+    except (ValueError, TypeError, KeyError, completion.Unreadable) as error:
+        return {}, ['Earlier response checks were not reused: ' + str(error)]
+    linked = set(completion.lesson_decks(agenda, class_key, week, form_id, binding=binding, ownership=ownership))
     required = completion.student_coding_required(agenda, class_key, week, form_id)
-    lesson = next(lesson for lesson in agenda.lessons(class_key, week)
-                  if any(f.get('form_id') == form_id for f in lesson['forms']))
     resolution = None
 
     def meta(ident):
@@ -196,7 +199,7 @@ def cached_reviews(token, agenda, class_key, week, form_id, rows, *, config=None
         if not candidates:
             continue
         if resolution is None:
-            resolution = completion.lesson_sources(token, lesson, binding=binding) if binding else completion.lesson_sources(token, lesson)
+            resolution = completion.scoped_lesson_sources(token, lesson, binding=binding, ownership=ownership)
             if resolution.get('problem'):
                 limitations.append('Earlier response checks were not reused: ' + resolution['problem'])
                 return {}, limitations
@@ -215,7 +218,7 @@ def cached_reviews(token, agenda, class_key, week, form_id, rows, *, config=None
     # Any source or template drift discards every cached note from this read.
     try:
         stable = all(google.drive_file(token, ident, _META) == before for ident, before in metadata.items())
-        if results and (completion.lesson_sources(token, lesson, binding=binding) if binding else completion.lesson_sources(token, lesson)) != resolution:
+        if results and completion.scoped_lesson_sources(token, lesson, binding=binding, ownership=ownership) != resolution:
             stable = False
     except google.GoogleError:
         stable = False
