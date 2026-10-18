@@ -83,7 +83,7 @@ test('Today shares one audit result between readiness and the separate Agenda pa
   const readiness = app.document.getElementById('lesson-readiness-body');
   const agenda = app.document.getElementById('today-next-agenda');
   assert.match(readiness.textContent, /Biology · Wk 09.*Ready/);
-  assert.match(agenda.textContent, /Next from Agenda.*Fictional ecosystems/);
+  assert.match(agenda.textContent, /Next from Agenda.*Teacher-action check pending/);
   assert.doesNotMatch(app.document.getElementById('today-body').textContent, /Next from Agenda/);
   assert.equal(app.requests.filter(({url}) => url.startsWith('api/audit?')).length, 3);
   assert.equal(app.summaries.length, 0);
@@ -107,7 +107,7 @@ test('a failed Today refresh removes the earlier Agenda and readiness result, th
   assert.doesNotMatch(app.document.getElementById('lesson-readiness-body').textContent, /Ready/);
   fail = false;
   await app.ui.loadToday(true);
-  assert.match(app.document.getElementById('today-next-agenda').textContent, /Fictional ecosystems/);
+  assert.match(app.document.getElementById('lesson-readiness-body').textContent, /Fictional ecosystems/);
 });
 
 test('a delayed earlier load cannot replace the newer readiness or Next from Agenda', async () => {
@@ -123,7 +123,7 @@ test('a delayed earlier load cannot replace the newer readiness or Next from Age
   await app.ui.loadToday(true);
   releaseOld({week: {label: 'Wk 09'}});
   await old;
-  assert.match(app.document.getElementById('today-next-agenda').textContent, /New fictional lesson/);
+  assert.match(app.document.getElementById('agenda-diagnostics').textContent, /New fictional lesson/);
   assert.doesNotMatch(app.document.getElementById('today-next-agenda').textContent, /Old fictional lesson/);
   assert.match(app.document.getElementById('lesson-readiness-body').textContent, /New fictional lesson/);
 });

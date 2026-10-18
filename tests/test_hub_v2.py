@@ -2557,3 +2557,17 @@ class RealDeckShapeTests(unittest.TestCase):
         search.assert_not_called()
         self.assertIsNone(result["problem"])
         self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})
+
+
+class TeacherLinksTests(unittest.TestCase):
+    def test_private_links_are_validated_without_a_growth_report_or_google_token(self):
+        config = {'HUB_SYSTEM_NOTES_SLACK_URL': 'https://app.slack.com/client/T123ABC/C456DEF',
+                  'HUB_FEEDBACK_CHECKLIST_URL': 'https://docs.google.com/spreadsheets/d/FICTIONALCHECKLIST123/edit#gid=7'}
+        with patch.object(google, 'service_token', side_effect=AssertionError('No source token needed')):
+            self.assertEqual(app.api('api/teacher-links', {}, config), {
+                'system_notes_url': config['HUB_SYSTEM_NOTES_SLACK_URL'],
+                'feedback_list_url': config['HUB_FEEDBACK_CHECKLIST_URL']})
+        for bad in ('javascript:alert(1)', 'https://app.slack.com.evil.test/client/T123/C123',
+                    'https://app.slack.com/client/T123/C123?secret=private'):
+            self.assertEqual(app.teacher_links({'HUB_SYSTEM_NOTES_SLACK_URL': bad})['system_notes_url'], '')
+        self.assertEqual(app.teacher_links({}), {'system_notes_url': '', 'feedback_list_url': ''})

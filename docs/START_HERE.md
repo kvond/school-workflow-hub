@@ -24,21 +24,37 @@ existing class/next-week browser storage and now offers a full-width, resizable
 editor. Those notes remain local to that browser; they are not silently moved or
 merged into another store.
 
-System → Notes is shared through the existing private Hub store, scoped to the
-configured Agenda. Authenticated GET `/v2/api/system/notes` returns `text`,
-`revision` and `updated_at`. Same-origin teacher JSON POST to the same endpoint
-accepts exactly `text` and the last-read `revision` (empty for an absent record),
-up to 30,000 characters. A save atomically preserves the new current text and an
-immutable history record, then verifies both. Concurrent changes return 409;
-unavailable or uncertain storage returns 503. The editor retains the unsaved
-draft and can show a freshly read saved copy for comparison. Refresh/navigation
-does not silently replace that draft.
+Operational **System notes** now belong in the configured Slack channel, linked
+from Lessons through authenticated `GET /v2/api/teacher-links` and private
+`HUB_SYSTEM_NOTES_SLACK_URL` (an exact Slack workspace/channel URL). Existing
+private Hub notes stay available under the collapsed Earlier private Hub notes;
+opening the page never copies their contents into Slack or modifies them.
+The private GET/POST `/v2/api/system/notes` contract, revisions and immutable
+history remain intact for existing authorized maintenance callers. Do not send
+student names, grades, report contents or private records to a public channel.
 
-The authorized daily maintenance worker should read these notes with Today and
-System status, investigate concrete reported problems and record verified
-resolution evidence. Notes alone do not grant new permissions or confirm a
-repair. They never change grades, delivery marks, student work, external access
-or schedules. A stored note and a configured daily task are not completed checks.
+Repair workers read the relevant Slack thread and the current/next Agenda week,
+including **Week ahead**. Investigate exact existing sources, use a focused web
+search for missing public lesson resources, open the authoritative result, and
+repair proven links through the existing preview/apply/readback contracts. Web
+search cannot prove a private deck identity. Preserve source-change cutoffs,
+originals, teaching content, privacy and separate grade/feedback ownership.
+Record verified results in the same operational thread; no duplicate logs.
+
+**Next from Agenda** contains only concrete unresolved lesson-plan, calendar or
+print-content choices from a fresh complete Week ahead result, with class,
+section, lesson/date, cause, action and the exact source link. Ready lessons,
+waiting intake, link fixes, code repairs and provider failures stay with the
+repair worker and the collapsed diagnostics. A stale/failed check says the
+teacher-action check is pending; it does not claim no issues remain.
+
+**Daily feedback document** shows one configured feedback-list link and Updated,
+Not updated, Checking, or Update not verified. Only a complete current-source
+read proves today's update; a saved older PDF or Printed/Handed mark cannot.
+Full report history, delivery evidence and existing optional print controls
+remain under the closed Hub tools / Feedback backup tools. No delivery marks
+are changed by the compact view. The list link is independent of Biology growth
+report configuration.
 
 ## Teacher review context
 
@@ -61,7 +77,7 @@ Submitted student files and named source-review details remain in Student work,
 using its exact current class/week/Form review route. Today and its Hub tools do
 not request or display the student source overview. Today retains lesson-focused
 VT readiness and feedback-code checks, Week ahead, Next from Agenda, morning
-receipts and feedback printing/delivery. Lesson-source readiness does not verify
+receipts and the compact feedback-list status. Lesson-source readiness does not verify
 submitted student copies or completed grading.
 
 Current source discovery rereads the roster and Agenda before publishing named

@@ -120,7 +120,22 @@ def learning_report(config):
             'as_of': as_of, 'automatic_refresh': False, **links}
 
 
+def teacher_links(config):
+    """Configured destinations only; never embed school links in the code bundle."""
+    notes = str(config.get('HUB_SYSTEM_NOTES_SLACK_URL') or '')
+    feedback = str(config.get('HUB_FEEDBACK_CHECKLIST_URL') or '')
+    return {
+        'system_notes_url': notes if re.fullmatch(r'https://app\.slack\.com/client/T[A-Z0-9]+/C[A-Z0-9]+', notes) else '',
+        'feedback_list_url': feedback if re.fullmatch(
+            r'https://docs\.google\.com/spreadsheets/d/[A-Za-z0-9_-]{10,200}/edit(?:#gid=\d+)?', feedback) else '',
+    }
+
+
 def api(sub, query, config):
+    if sub == 'api/teacher-links':
+        if query:
+            raise ValueError()
+        return teacher_links(config)
     if sub == 'api/system/notes':
         if query:
             raise ValueError()

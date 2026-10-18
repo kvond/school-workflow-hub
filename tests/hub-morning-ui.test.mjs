@@ -82,7 +82,8 @@ test('Today and Hub tools refresh keep receipt counts without fetching or render
     function loadWeekAhead() {}
     function renderTodayFeedbackArea() {}
     async function loadAudits() { return {}; }
-    function renderNextLessons() { return el('p', {text: 'Fictional lesson'}); }
+    function renderAgendaDiagnostics() { return el('p', {text: 'Fictional lesson'}); }
+    function renderNextLessons() { return el('p', {text: 'Teacher actions'}); }
     ${today}
     globalThis.refreshToday = loadToday;
   `, context);
@@ -558,7 +559,7 @@ test('readiness source links deduplicate exact resources and ready Next Agenda r
   const {context} = boot([]);
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
   const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
-  vm.runInContext(helpers + '\n' + next + '\nglobalThis.lessonCompact = {lessonReviewNotice, renderNextLessons};', context);
+  vm.runInContext(helpers + '\n' + next + '\nglobalThis.lessonCompact = {lessonReviewNotice, renderAgendaDiagnostics};', context);
   const row = {classKey: 'biology', className: 'Biology', week: 'Wk 07', topic: 'Cellular Respiration',
     release: {status: 'READY', issues: [], source_resolution: {decks: [
       {id: 'CELLULARDECK123', title: 'Cellular Respiration'}, {id: 'CELLULARDECK123', title: 'Same source again'}],
@@ -568,64 +569,64 @@ test('readiness source links deduplicate exact resources and ready Next Agenda r
   assert.equal(notice.sources.length, 3); assert.equal(notice.slides.length, 3);
   assert.equal(new Set(notice.sources.map(source => source.url)).size, 3);
   const audits = {biology: {data: {rows: [row]}}};
-  const ready = context.lessonCompact.renderNextLessons(audits);
+  const ready = context.lessonCompact.renderAgendaDiagnostics(audits);
   assert.equal(ready.tagName, 'details'); assert.equal(ready.open, undefined);
   assert.equal(ready.children[0].tagName, 'summary');
-  assert.match(ready.children[0].textContent, /Next from Agenda.*1 current\/upcoming lesson source check$/);
+  assert.match(ready.children[0].textContent, /Agenda source diagnostics.*1 current\/upcoming lesson source check$/);
   assert.doesNotMatch(ready.children[0].textContent, /Cellular Respiration|Linked lesson source is ready/);
   assert.match(ready.textContent, /Linked lesson source is ready\. Student copies are checked separately/);
   assert.doesNotMatch(ready.textContent, /Lesson-wide source check|Slides not verified|Next action:|Student identity not verified/);
   const issue = {...row, release: {...row.release, status: 'NOT_READY', issues: ['duplicate_feedback_marker'],
     problem: 'The exact source repeats a feedback marker.', action: 'Review the duplicate marker without changing answers.'}};
-  const held = context.lessonCompact.renderNextLessons({biology: {data: {rows: [issue]}}});
+  const held = context.lessonCompact.renderAgendaDiagnostics({biology: {data: {rows: [issue]}}});
   assert.match(held.textContent, /Lesson-wide source check.*The exact source repeats a feedback marker/);
   assert.match(held.textContent, /Next action: Review the duplicate marker/);
   assert.doesNotMatch(held.textContent, /Slides not verified|Exact slide numbers are unavailable/);
   assert.equal(allNodes(held).filter(node => node.tagName === 'a').length, 3);
-  const empty = context.lessonCompact.renderNextLessons({});
+  const empty = context.lessonCompact.renderAgendaDiagnostics({});
   assert.equal(empty.tagName, 'details'); assert.equal(empty.open, undefined);
-  assert.match(empty.children[0].textContent, /Next from Agenda.*No current\/upcoming checks available/);
+  assert.match(empty.children[0].textContent, /Agenda source diagnostics.*No current\/upcoming checks available/);
 });
 
 test('Next Agenda keeps planning links for verified waiting or excluded Forms and never treats failed or unmatched intake as waiting', () => {
   const {context} = boot([]);
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
   const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
-  vm.runInContext(helpers + '\n' + next + '\nglobalThis.nextAgenda = {renderNextLessons};', context);
+  vm.runInContext(helpers + '\n' + next + '\nglobalThis.nextAgenda = {renderAgendaDiagnostics};', context);
   const row = {classKey: 'biology', className: 'Biology', week: 'Wk 07', topic: 'Exact future lesson',
     forms: [{form_id: 'WAITINGFORM123'}], release: {status: 'NOT_READY', issues: ['lesson_folder_unverified'],
       readability: {stage: 'folder'}, problem: 'Audit folder needs repair.', action: 'Repair this folder before grading.'}};
   const audits = {biology: {data: {rows: [row]}}};
   const scope = {class_key: 'biology', week: 'Wk 07', form_id: 'WAITINGFORM123'};
   const empty = sourceSummary([sourceContext(scope, [], {status: 'waiting', intake_status: 'waiting', teacher_actionable: false})]);
-  const panel = context.nextAgenda.renderNextLessons(audits, empty);
+  const panel = context.nextAgenda.renderAgendaDiagnostics(audits, empty);
   assert.match(panel.textContent, /Waiting for digital submissions.*Lesson planning remains available/);
   assert.doesNotMatch(panel.textContent, /Audit folder needs repair|Repair this folder|Slides not verified|Next action:/);
   assert.equal(allNodes(panel).filter(node => node.tagName === 'button').length, 1);
   panel.open = true;
   const excluded = sourceSummary([sourceContext(scope, [], {status: 'excluded', intake_status: 'excluded', teacher_actionable: false})]);
-  assert.equal(context.nextAgenda.renderNextLessons(audits, excluded, panel), panel);
+  assert.equal(context.nextAgenda.renderAgendaDiagnostics(audits, excluded, panel), panel);
   assert.equal(panel.open, true, 'a completed overview does not collapse a teacher-opened planning section');
   assert.match(panel.textContent, /Excluded from current grading review/);
   const failed = sourceSummary([sourceContext(scope, [], {status: 'unavailable', intake_status: 'unavailable', teacher_actionable: false})]);
-  const unavailable = context.nextAgenda.renderNextLessons(audits, failed);
+  const unavailable = context.nextAgenda.renderAgendaDiagnostics(audits, failed);
   assert.match(unavailable.textContent, /Intake unavailable.*Current intake could not be verified/);
   assert.doesNotMatch(unavailable.textContent, /Waiting for submissions|Waiting for digital submissions|Repair this folder/);
   const foreign = sourceSummary([sourceContext({...scope, form_id: 'ANOTHERFORM123'}, [], {status: 'waiting'})]);
-  assert.match(context.nextAgenda.renderNextLessons(audits, foreign).textContent, /Audit folder needs repair/);
+  assert.match(context.nextAgenda.renderAgendaDiagnostics(audits, foreign).textContent, /Audit folder needs repair/);
   const duplicated = sourceSummary([empty.reviews[0], empty.reviews[0]]);
-  assert.match(context.nextAgenda.renderNextLessons(audits, duplicated).textContent, /Audit folder needs repair/);
+  assert.match(context.nextAgenda.renderAgendaDiagnostics(audits, duplicated).textContent, /Audit folder needs repair/);
   const repeatedLink = {...row, forms: [...row.forms, ...row.forms]};
-  assert.match(context.nextAgenda.renderNextLessons({biology: {data: {rows: [repeatedLink]}}}, empty).textContent,
+  assert.match(context.nextAgenda.renderAgendaDiagnostics({biology: {data: {rows: [repeatedLink]}}}, empty).textContent,
     /Waiting for digital submissions/);
   const futureRow = {...row, week: 'Wk 08', topic: 'Exact upcoming lesson', forms: [{form_id: 'FUTUREFORM123'}]};
   const plannedAudits = {biology: {data: {rows: [row, futureRow]}}};
-  const planned = context.nextAgenda.renderNextLessons(plannedAudits, empty, undefined, 'Wk 07');
+  const planned = context.nextAgenda.renderAgendaDiagnostics(plannedAudits, empty, undefined, 'Wk 07');
   assert.match(planned.textContent, /Upcoming lesson.*Digital intake has not been checked/);
   assert.doesNotMatch(planned.textContent, /Audit folder needs repair|Repair this folder|Next action:/);
   const futureFailed = sourceSummary([...empty.reviews, sourceContext({...scope, week: 'Wk 08', form_id: 'FUTUREFORM123'}, [],
     {status: 'unavailable', intake_status: 'unavailable', teacher_actionable: false})]);
-  assert.match(context.nextAgenda.renderNextLessons(plannedAudits, futureFailed, undefined, 'Wk 07').textContent,
+  assert.match(context.nextAgenda.renderAgendaDiagnostics(plannedAudits, futureFailed, undefined, 'Wk 07').textContent,
     /Exact upcoming lesson.*Intake unavailable.*Current intake could not be verified/);
 });
 
@@ -634,7 +635,7 @@ test('two exact Form collections render separate ready sources and informational
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
   const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
   const auditUI = source.slice(source.indexOf('const QUIET ='), source.indexOf('async function runLinkCheck()'));
-  vm.runInContext(helpers + '\n' + next + '\n' + auditUI + '\nglobalThis.formReadiness = {lessonReadinessRows, renderNextLessons, linkCheckResult};', context);
+  vm.runInContext(helpers + '\n' + next + '\n' + auditUI + '\nglobalThis.formReadiness = {lessonReadinessRows, renderAgendaDiagnostics, linkCheckResult};', context);
   const form = (id, title, deck, folder) => ({class_key: 'forensics', week: 'Wk 06', form_id: id, form_title: title,
     status: 'READY', issues: [], scope: 'form_collection', source_resolution: {
       decks: [{id: deck, title: '<script>' + title + '</script>'}], folders: [{id: folder, name: title + ' folder'}]},
@@ -649,7 +650,7 @@ test('two exact Form collections render separate ready sources and informational
   assert.equal(checks.length, 2);
   assert.deepEqual(Array.from(checks[0].forms, form => form.form_id), [first.form_id]);
   assert.deepEqual(Array.from(checks[1].forms, form => form.form_id), [second.form_id]);
-  const panel = context.formReadiness.renderNextLessons({forensics: {data: {rows: [row]}}});
+  const panel = context.formReadiness.renderAgendaDiagnostics({forensics: {data: {rows: [row]}}});
   assert.match(panel.textContent, /Searching and Photography.*Ready.*Agenda links:.*<script>Searching and Photography<\/script>/);
   assert.match(panel.textContent, /Sketching and Evidence.*Ready.*Agenda links:.*separate from this Form’s source readiness/);
   assert.doesNotMatch(panel.textContent, /Next action:|Lesson-wide source check|Slides not verified/);
@@ -669,7 +670,7 @@ test('one failed Form source retains its own context without borrowing ready sib
   const {context} = boot([]);
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
   const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
-  vm.runInContext(helpers + '\n' + next + '\nglobalThis.formReadiness = {lessonReadinessRows, renderNextLessons};', context);
+  vm.runInContext(helpers + '\n' + next + '\nglobalThis.formReadiness = {lessonReadinessRows, renderAgendaDiagnostics};', context);
   const first = {class_key: 'forensics', week: 'Wk 06', form_id: 'FIRSTFORM123', form_title: 'Searching and Photography',
     status: 'READY', issues: [], source_resolution: {decks: [{id: 'SEARCHTEACHER123', title: 'Searching'}], folders: []}};
   const second = {class_key: 'forensics', week: 'Wk 06', form_id: 'SECONDFORM123', form_title: 'Sketching and Evidence',
@@ -677,7 +678,7 @@ test('one failed Form source retains its own context without borrowing ready sib
     readability: {stage: 'folder'}, action: 'Recheck the exact second source folder.', source_resolution: {decks: [], folders: []}};
   const row = {week: 'Wk 06', topic: 'Searching', forms: [{form_id: first.form_id}, {form_id: second.form_id}], decks: [],
     release: {scope: 'form_collections', status: 'NOT_READY', form_releases: [first, second]}};
-  const panel = context.formReadiness.renderNextLessons({forensics: {data: {rows: [row]}}});
+  const panel = context.formReadiness.renderAgendaDiagnostics({forensics: {data: {rows: [row]}}});
   assert.match(panel.textContent, /Searching and Photography.*Ready.*Linked lesson source is ready/);
   assert.match(panel.textContent, /Sketching and Evidence.*exact second source folder changed/);
   const links = allNodes(panel).filter(node => node.tagName === 'a');

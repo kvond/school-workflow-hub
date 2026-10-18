@@ -130,11 +130,11 @@ test('a timed-out overview or gateway timeout says so and rereads only when pres
 test('Next from Agenda shows a timed-out intake check without waiting, missing-work or repair claims', () => {
   const helpers = source.slice(source.indexOf('function issueAction('), source.indexOf('async function openAgendaLesson('));
   const next = source.slice(source.indexOf('function agendaIntakeStatus('), source.indexOf('async function printTodayFeedback('));
-  const {context: vmContext} = boot(helpers + '\n' + next + '\nglobalThis.nextAgenda = {renderNextLessons, agendaIntakeStatus};');
+  const {context: vmContext} = boot(helpers + '\n' + next + '\nglobalThis.nextAgenda = {renderAgendaDiagnostics, agendaIntakeStatus};');
   const row = {classKey: 'anatomy', className: 'A&P', week: 'Wk 07', topic: 'Fictional tissues', forms: [{form_id: 'TIMEDOUTFORM123'}],
     release: {status: 'NOT_READY', issues: ['lesson_folder_unverified'], problem: 'Audit folder needs repair.', action: 'Repair this folder.'}};
   assert.equal(vmContext.nextAgenda.agendaIntakeStatus(row, summary([timedOut])), 'timed_out');
-  const panel = vmContext.nextAgenda.renderNextLessons({anatomy: {data: {rows: [row]}}}, summary([timedOut]));
+  const panel = vmContext.nextAgenda.renderAgendaDiagnostics({anatomy: {data: {rows: [row]}}}, summary([timedOut]));
   assert.match(panel.textContent, /Check timed out.*The intake check timed out\. Retry it in Current source checks; no missing work is inferred/);
   assert.doesNotMatch(panel.textContent, /Waiting for|Intake unavailable|Audit folder needs repair|Repair this folder/);
 });
@@ -150,20 +150,20 @@ const timedOutFeedback = {configured: true, date: DAY, requested_date: '2026-10-
 function bootToday(handler) {
   const today = source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('function renderLessonReadiness('));
   const requests = [], never = new Promise(() => {});
-  const {ui, context: vmContext, document} = boot('function renderNextLessons() { return el("p", {text: "Deck readiness"}); }\n' + today +
-    '\nglobalThis.today = {loadToday, renderTodayFeedback, cockpit};');
+  const {ui, context: vmContext, document} = boot('function renderAgendaDiagnostics() { return el("p", {text: "Source checks"}); }\nfunction renderNextLessons() { return el("p", {text: "Deck readiness"}); }\n' + today +
+    '\nglobalThis.today = {loadToday, renderFeedbackTools, cockpit};');
   vmContext.fetch = (url, options) => { requests.push(url); return handler(url, options) ?? never; };
   return {today: vmContext.today, document, requests};
 }
 
 test('a timed-out feedback source check keeps the saved PDF, claims nothing new and offers a retry', () => {
   const {today} = bootToday(() => null);
-  const rendered = today.renderTodayFeedback(timedOutFeedback);
+  const rendered = today.renderFeedbackTools(timedOutFeedback);
   assert.match(rendered.textContent, /New feedback for 2026-10-14 was not checked because the source check timed out/);
   assert.match(rendered.textContent, /Feedback source check timed out — retry\. This saved dated document remains available/);
   assert.doesNotMatch(rendered.textContent, /No new feedback|No print-ready feedback|could not be fully checked|Printed =|printed successfully/);
   assert.deepEqual(buttons(rendered).map(button => button.textContent), ['Retry feedback check', 'Reprint saved feedback — 2026-10-11']);
-  const unsaved = today.renderTodayFeedback({...timedOutFeedback, date: '2026-10-14',
+  const unsaved = today.renderFeedbackTools({...timedOutFeedback, date: '2026-10-14',
     daily_packet: {configured: true, status: 'not_saved', date: '2026-10-14'}});
   assert.match(unsaved.textContent, /Feedback source check timed out — retry\. The feedback source check timed out \(2 attempts\)/);
   assert.doesNotMatch(unsaved.textContent, /No print-ready feedback documents were found/);
@@ -172,11 +172,11 @@ test('a timed-out feedback source check keeps the saved PDF, claims nothing new 
 
 test('a still-running feedback check is shown as checking, never as nothing new', () => {
   const {today} = bootToday(() => null);
-  const empty = today.renderTodayFeedback({date: '2026-10-14', files: [], checking: true,
+  const empty = today.renderFeedbackTools({date: '2026-10-14', files: [], checking: true,
     daily_packet: {configured: true, status: 'not_saved', date: '2026-10-14'}});
   assert.match(empty.textContent, /Checking current feedback sources…/);
   assert.doesNotMatch(empty.textContent, /No print-ready feedback documents were found/);
-  const saved = today.renderTodayFeedback({date: DAY, files: [], checking: true, daily_packet: packet});
+  const saved = today.renderFeedbackTools({date: DAY, files: [], checking: true, daily_packet: packet});
   assert.match(saved.textContent, /Checking current feedback for \d{4}-\d{2}-\d{2}… Earlier dated feedback remains available/);
   assert.doesNotMatch(saved.textContent, /No new feedback/);
 });
@@ -191,7 +191,7 @@ test('a gateway timeout on the feedback read becomes a retry that rereads only t
     return null;
   });
   today.loadToday(); await tick(); await tick();
-  const card = document.getElementById('today-feedback');
+  const card = document.getElementById('today-feedback-tools');
   assert.match(card.textContent, /Feedback source check timed out — retry\. This saved dated document remains available: Fictional gateway timeout\./);
   assert.match(card.textContent, /New feedback for \d{4}-\d{2}-\d{2} was not checked because the source check timed out/);
   const retry = buttons(card).find(button => button.textContent === 'Retry feedback check');
@@ -220,7 +220,7 @@ for (const failure of [{checking: true}, {source_problem: 'Permission read unava
   test('current-source availability precedes an old Printed packet: ' + JSON.stringify(failure), () => {
     const {today} = bootToday(() => null);
     const delivery = {status: 'verified', pending_file_ids: [], handed_file_ids: ['old']};
-    const rendered = today.renderTodayFeedback({date: DAY, requested_date: '2026-10-15', files: [],
+    const rendered = today.renderFeedbackTools({date: DAY, requested_date: '2026-10-15', files: [],
       daily_packet: {...packet, delivery}, ...failure});
     assert.doesNotMatch(rendered.textContent, /No pending printing|No new feedback|No print-ready/);
     assert.match(rendered.textContent, /Checking current feedback|could not be checked|source check timed out/);

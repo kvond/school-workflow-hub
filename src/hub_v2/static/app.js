@@ -64,7 +64,7 @@ function showAgendaLink(agenda) {
 
 
 // ---------- Hub v3 teacher cockpit ----------
-const cockpit = {seq: 0, audits: null, auditsAt: 0, feedbackData: null, learningData: null};
+const cockpit = {seq: 0, audits: null, auditsAt: 0, feedbackData: null, learningData: null, teacherLinks: null};
 
 function cockpitPanel(title, ...children) {
   return el('details', {class: 'cockpit-panel cockpit-details', open: true},
@@ -786,10 +786,10 @@ function agendaIntakeStatus(row, summary) {
   return null;
 }
 
-function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails('Next from Agenda'), currentWeek = null) {
+function renderAgendaDiagnostics(audits, sourceSummary = null, panel = cockpitDetails('Agenda source diagnostics'), currentWeek = null) {
   const rows = allReleaseRows(audits);
   const populate = (context, ...children) => {
-    panel.replaceChildren(el('summary', {}, el('h2', {text: 'Next from Agenda'}), context), ...children);
+    panel.replaceChildren(el('summary', {}, el('h2', {text: 'Agenda source diagnostics'}), context), ...children);
     return panel;
   };
   if (!rows.length) return populate(el('span', {class: 'cockpit-summary-context muted', text: 'No current/upcoming checks available'}),
@@ -829,6 +829,39 @@ function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails(
   return populate(
     el('span', {class: 'cockpit-summary-context muted', text: `${rows.length} current/upcoming lesson source check${rows.length === 1 ? '' : 's'}`}),
     el('div', {class: 'table-wrap'}, table));
+}
+
+// Only unresolved teaching choices belong in the teacher's Agenda action list.
+// Technical/read failures retain their full evidence in Week ahead / Hub tools.
+const TEACHER_AGENDA_CHOICES = new Set(['needs_content', 'calendar_conflict', 'calendar_friday_unknown', 'print_item_ambiguous']);
+function freshAgendaCheck(value) {
+  const checked = new Date(value);
+  return typeof value === 'string' && Number.isFinite(checked.getTime()) && checked.getTime() <= Date.now()
+    && new Intl.DateTimeFormat('en-CA', {timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit'}).format(checked) === todayISO();
+}
+function agendaTeacherChoices(data) {
+  if (!data || ['not_checked', 'incomplete'].includes(data.status)) return [];
+  return (data.exceptions || []).filter(item => item.status === 'needs_decision'
+    && TEACHER_AGENDA_CHOICES.has(item.kind) && item.reason && item.next_action
+    && /^https:\/\//.test(item.source_url || ''));
+}
+function renderNextLessons(audits, sourceSummary = null, panel = cockpitDetails('Next from Agenda'), currentWeek = null,
+  preflight = typeof weekAhead === 'undefined' ? null : weekAhead.data) {
+  const stale = !freshAgendaCheck(preflight?.last_successful_check);
+  const unavailable = !preflight || ['not_checked', 'incomplete'].includes(preflight.status)
+    || (typeof weekAhead !== 'undefined' && !!weekAhead.error);
+  const items = stale || unavailable ? [] : agendaTeacherChoices(preflight);
+  panel.replaceChildren(el('summary', {}, el('h2', {text: 'Next from Agenda'}),
+    el('span', {class: 'cockpit-summary-context muted', text: unavailable || stale ? 'Teacher-action check pending'
+      : items.length ? `${items.length} teaching decision${items.length === 1 ? '' : 's'}` : 'Nothing needs your decision'})),
+    ...(items.length ? items.map(item => el('div', {class: 'review-notice'},
+      el('strong', {text: [item.class, ...(item.sections || []), item.week, item.lesson, item.date].filter(Boolean).join(' · ')}),
+      el('p', {text: item.reason}), el('p', {text: 'Your action: ' + item.next_action}),
+      link('Open the exact Agenda or lesson source', item.source_url)))
+      : [el('p', {class: 'muted', text: unavailable || stale
+        ? 'The repair worker needs a fresh Week ahead check before your actions can be confirmed.'
+        : 'Technical checks and link repairs are handled by the repair worker.'})]));
+  return panel;
 }
 
 async function printTodayFeedback(data, status, button) {
@@ -911,6 +944,20 @@ function retryFeedbackButton() {
 }
 
 function renderTodayFeedback(data) {
+  const panel = cockpitPanel('Daily feedback document');
+  const requested = data.requested_date || todayISO();
+  const unavailable = !!(data.error || data.problem || data.source_problem) || data.source_check?.status === 'timed_out';
+  const known = !unavailable && data.current_sources_verified === true;
+  const updated = known && data.date === requested && (data.files || []).length > 0;
+  const status = unavailable ? 'Update not verified' : data.checking ? 'Checking update…'
+    : !known ? 'Update not verified' : updated ? `Updated · ${data.date}` : `Not updated · ${requested}`;
+  const url = cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
+  panel.append(el('p', {role: 'status', text: status}), url
+    ? link('Feedback list', url) : el('p', {class: 'muted', text: 'Feedback list link unavailable'}));
+  return panel;
+}
+
+function renderFeedbackTools(data) {
   if (data.error) return cockpitPanel('Feedback ready to print', note(data.timed_out
     ? 'Feedback source check timed out — retry. Nothing is concluded about new, pending or printed feedback: ' + data.error
     : data.error, 'info'), retryFeedbackButton());
@@ -1019,6 +1066,8 @@ function renderTodayFeedbackArea(seq) {
   if (seq !== cockpit.seq) return;
   $('today-feedback').replaceChildren(...[renderLearningReport(cockpit.learningData),
     cockpit.feedbackData ? renderTodayFeedback(cockpit.feedbackData) : null].filter(Boolean));
+  const tools = $('today-feedback-tools');
+  if (tools) tools.replaceChildren(...(cockpit.feedbackData ? [renderFeedbackTools(cockpit.feedbackData)] : []));
 }
 
 async function loadTodayFeedback(seq) {
@@ -1188,11 +1237,15 @@ function renderWeekAhead() {
           ? ' · flow reviewed' : ' · flow not yet reviewed')))) : null);
   details.addEventListener('toggle', () => store.set('weekAheadOpen', details.open ? '1' : '0'));
   box.replaceChildren(details);
+  const next = $('today-next-agenda');
+  if (next) next.replaceChildren(renderNextLessons(cockpit.audits, null, undefined, null, weekAhead.data));
 }
 
 async function loadWeekAhead() {
   const seq = ++weekAhead.seq;
   weekAhead.error = '';
+  weekAhead.data = null;
+  renderWeekAhead();
   try {
     const data = await getJSON(`api/weekly-preflight?start=${encodeURIComponent(weekAheadStart())}&weeks=${weekAheadWeeks()}`);
     if (seq !== weekAhead.seq) return;
@@ -1258,6 +1311,10 @@ async function loadToday(force = false) {
   }
   loadTodayFeedback(seq);
   loadWeekAhead();
+  getJSON('api/teacher-links').catch(() => ({})).then(data => {
+    if (seq !== cockpit.seq) return;
+    cockpit.teacherLinks = data; renderTodayFeedbackArea(seq);
+  });
   getJSON('api/learning-report').catch(() => ({configured: false})).then(data => {
     if (seq !== cockpit.seq) return;
     cockpit.learningData = data;
@@ -1274,6 +1331,7 @@ async function loadToday(force = false) {
     if (seq !== cockpit.seq) return;
     showAgendaLink(day.agenda);
     renderLessonReadiness(audits);
+    $('agenda-diagnostics').replaceChildren(renderAgendaDiagnostics(audits));
     const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
     const nextAgenda = renderNextLessons(audits, null, undefined, day.week?.label);
     $('today-body').replaceChildren(
@@ -2952,63 +3010,30 @@ async function missingWorkSheets() {
 }
 
 // ---------- Shared System notes ----------
-// Navigation/Refresh must never erase a draft. A reload compares the latest
-// saved copy, and a save is confirmed only by the server's private readback.
-const systemNotes = {loaded: false, loading: false, busy: false, dirty: false,
-  text: '', revision: '', updatedAt: null, message: '', error: false, comparison: null};
-
+// Operational notes live in the configured Slack channel. The prior private
+// notes remain readable; navigation never migrates or writes their contents.
+const systemNotes = {loaded: false, loading: false, text: '', updatedAt: null, error: '', slackURL: ''};
 function renderSystemNotes() {
-  const state = systemNotes, box = $('system-notes-body');
+  const box = $('system-notes-body');
   if (!box) return;
-  const input = el('textarea', {rows: 14, maxlength: 30000, 'aria-label': 'System notes',
-    disabled: !state.loaded || state.busy, placeholder: 'What needs attention? Add the class or lesson and a link when useful.'});
-  input.value = state.text;
-  const status = el('p', {class: 'status' + (state.error ? ' error' : ''), role: 'status',
-    text: state.message || (state.updatedAt ? `Saved in the Hub · ${when(state.updatedAt)}` : state.loading ? 'Reading saved notes…' : '')});
-  const save = el('button', {type: 'button', class: 'primary', disabled: !state.loaded || !state.dirty || state.busy,
-    onclick: saveSystemNotes}, state.busy ? 'Saving…' : 'Save notes');
-  input.addEventListener('input', () => {
-    state.text = input.value; state.dirty = true; state.message = 'Unsaved changes'; state.error = false;
-    status.textContent = state.message; status.className = 'status'; save.disabled = state.busy;
-  });
-  box.replaceChildren(...[input, el('div', {class: 'action-row'}, save,
-    el('button', {type: 'button', disabled: state.loading || state.busy, onclick: () => loadSystemNotes(true)},
-      'Reload saved notes')), status,
-    state.comparison !== null ? el('details', {open: true}, el('summary', {text: 'Saved notes from another tab'}),
-      el('p', {class: 'plan', text: state.comparison || '(empty)'}),
-      el('p', {class: 'muted', text: 'Your draft is still above. Combine anything you need before saving.'}),
-      el('button', {type: 'button', onclick: () => {
-        state.text = state.comparison; state.comparison = null; state.dirty = false;
-        state.message = 'Showing saved notes'; state.error = false; renderSystemNotes();
-      }}, 'Use saved notes')) : null].filter(Boolean));
+  const state = systemNotes;
+  box.replaceChildren(...[
+    state.slackURL ? link('Open System notes in Slack', state.slackURL)
+      : el('p', {class: 'muted', text: state.loading ? 'Reading the System notes link…' : 'System notes Slack link unavailable.'}),
+    state.error ? note(state.error) : null,
+    state.loaded ? el('details', {}, el('summary', {text: 'Earlier private Hub notes'}),
+      el('p', {class: 'plan', text: state.text || 'No earlier notes saved.'})) : null].filter(Boolean));
 }
-
 async function loadSystemNotes(force = false) {
   const state = systemNotes;
-  if (state.loading || state.busy || (state.loaded && !force)) { renderSystemNotes(); return; }
-  state.loading = true; state.message = 'Reading saved notes…'; state.error = false; renderSystemNotes();
-  try {
-    const saved = await getJSON('api/system/notes');
-    const hadDraft = state.loaded && state.dirty && state.text !== saved.text;
-    state.comparison = hadDraft ? saved.text : null;
-    if (!hadDraft) { state.text = saved.text; state.dirty = false; }
-    state.loaded = true; state.revision = saved.revision; state.updatedAt = saved.updated_at;
-    state.message = hadDraft ? 'Saved notes reloaded. Your unsaved draft is preserved above; compare the saved copy below.'
-      : saved.updated_at ? `Saved in the Hub · ${when(saved.updated_at)}` : 'No saved notes yet.';
-  } catch (error) { state.message = error.message; state.error = true; }
-  finally { state.loading = false; renderSystemNotes(); }
-}
-
-async function saveSystemNotes() {
-  const state = systemNotes;
-  if (!state.loaded || !state.dirty || state.busy || state.loading) return;
-  state.busy = true; state.message = 'Saving notes…'; state.error = false; renderSystemNotes();
-  try {
-    const saved = await postJSON('api/system/notes', {text: state.text, revision: state.revision});
-    state.text = saved.text; state.revision = saved.revision; state.updatedAt = saved.updated_at;
-    state.dirty = false; state.comparison = null; state.message = `Saved in the Hub · ${when(saved.updated_at)}`;
-  } catch (error) { state.message = error.message; state.error = true; }
-  finally { state.busy = false; renderSystemNotes(); }
+  if (state.loading || (state.loaded && !force)) { renderSystemNotes(); return; }
+  state.loading = true; state.error = ''; renderSystemNotes();
+  const [notes, links] = await Promise.allSettled([getJSON('api/system/notes'), getJSON('api/teacher-links')]);
+  if (notes.status === 'fulfilled') {
+    state.text = notes.value.text; state.updatedAt = notes.value.updated_at; state.loaded = true;
+  } else state.error = 'Earlier private notes could not be read. Their saved contents are unchanged.';
+  state.slackURL = links.status === 'fulfilled' ? links.value.system_notes_url || '' : '';
+  state.loading = false; renderSystemNotes();
 }
 
 // ---------- Routine: the morning score handoff ----------
