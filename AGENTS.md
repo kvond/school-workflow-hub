@@ -3,6 +3,10 @@
 - Parallel agents (Codex workers, Claude specialist, ChatGPT direction): read
   `docs/PARALLEL_AGENTS.md`. Every PR must pass `scripts/check.sh`; the
   `Checks` workflow (authorized 2026-10-15) runs it on pull requests.
+- The owner authorized the coordinating Codex agent to handle routine reviewed
+  merges for approved work on October 17, 2026. Katherine does not need to review
+  code or click Merge for those changes. Follow the exact-commit checks,
+  independent review and escalation limits in `docs/PARALLEL_AGENTS.md`.
 
 - September 16 reconciliation: start with `docs/PYTHON_INTEGRATION_20260916.md`
   and `docs/CLOUD_READINESS.md`. September 15 records verify hosted Agenda reads,
@@ -100,6 +104,16 @@ The Python package holds no model client and makes no model call; the feedback
 and reporting workflows carry a live-model-call counter that the tests assert
 stays at zero. Keep it that way, and see `docs/ROSTER_SYNC_INTEGRATION.md` for
 the worked example of the boundary.
+
+## Asking the teacher for approval
+
+- Batch work on her Mac or other remote machines into one command per action.
+  Before it runs, show a one-look plan (what it reads, what it writes and where,
+  and what makes it stop) so one approval covers it. Run long jobs in the
+  background with a log and report the result once; don't spread one job across
+  many small prompts.
+- Read-only Remote Desktop Commander tools are pre-allowed in
+  `.claude/settings.json`; commands and writes still ask.
 
 ## Document retirement
 

@@ -101,6 +101,16 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(completion.readiness(deck)['status'], 'READY')
 
 
+def single_assignment_agenda():
+    """This scoring fixture models one assignment, not the shared-row routing fixture."""
+    result = fixture()
+    lessons = result.lessons('forensics', 'Wk 04')
+    for lesson in lessons:
+        lesson['forms'] = [f for f in lesson['forms'] if f.get('form_id') == FORM]
+    result.lessons = lambda cls, week: deepcopy(lessons)
+    return result
+
+
 class ScoringGateTests(unittest.TestCase):
     def setUp(self):
         completion._results.clear(); completion._templates.clear()
@@ -114,7 +124,7 @@ class ScoringGateTests(unittest.TestCase):
              patch.object(google, 'drive_file', return_value={'id': STUDENT, 'name': 'Student copy',
                  'mimeType': google.PPTX, 'modifiedTime': 'same-modified-time', 'version': source_version}), \
              patch.object(completion, '_read', return_value=student):
-            return completion.score_file('read', fixture(), 'forensics', 'Wk 04', FORM, STUDENT, work_result())
+            return completion.score_file('read', single_assignment_agenda(), 'forensics', 'Wk 04', FORM, STUDENT, work_result())
 
     def test_unmarked_student_copy_stops_before_cached_zero_or_assessment_and_preserves_history(self):
         legacy = {(STUDENT, 'same-modified-time'): {'template': (TEMPLATE, 'same-modified-time'),
@@ -181,7 +191,7 @@ class ScoringGateTests(unittest.TestCase):
              patch.object(completion, '_read', return_value=source('The scene must be recorded.')), \
              patch.object(completion, '_siblings', return_value=[{'id':original_id,'name':'Scene photography.pptx'}]), \
              patch.object(google, 'files_named') as searched:
-            scored = completion.score_file('read', fixture(), 'forensics', 'Wk 04', FORM, STUDENT, found)
+            scored = completion.score_file('read', single_assignment_agenda(), 'forensics', 'Wk 04', FORM, STUDENT, found)
         self.assertIsNone(scored['problem'])
         self.assertEqual(scored['template_id'], original_id)
         self.assertEqual(scored['notes_score'], 10)

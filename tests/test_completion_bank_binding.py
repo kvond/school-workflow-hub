@@ -246,6 +246,7 @@ class BankBindingTests(unittest.TestCase):
                 "window": {"from": "2020-01-01T00:00:00Z", "at": "2050-01-01T00:00:00Z"}}
         found = {"lessons": [{"topic": "Vocabulary", "forms": [form]}], "problems": []}
         agenda = Mock(classes={"biology": {"name": "Fictional Biology"}})
+        agenda.lessons.return_value = [{"topic": "Vocabulary", "forms": [{"form_id": fid}], "materials": []}]
         config = {"HUB_IC_ASSIGNMENT_MAP": json.dumps([{"class_key": "biology", "form_id": fid, "targets": []}])}
         with patch.object(completion, "_template", return_value=({"id": tid, "name": "Fictional template",
                 "version": "1", "modifiedTime": "fictional-template"}, template)), \
@@ -253,6 +254,7 @@ class BankBindingTests(unittest.TestCase):
                 patch.object(google, "drive_file", return_value={"id": sid, "name": "Fictional bank",
                     "version": "1", "modifiedTime": "fictional-student"}), \
                 patch.object(completion, "assignment_readiness", return_value=ready), \
+                patch.object(completion, "lesson_sources", return_value=ready["source_resolution"]), \
                 patch.object(morning.ledger, "read", return_value={"configured": True}), \
                 patch.dict(completion._results, {}, clear=True), \
                 patch.object(completion, "score", side_effect=AssertionError("Held source cannot become numeric zero")):

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from . import completion, feedback, google, source_repair_provenance, work
 from school_workflow_hub.adapters import assessment_provider, assessment_save, grading_records
 from school_workflow_hub.adapters.firestore_state import configured_store
+from school_workflow_hub.workflows import deck_release
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, key
 from school_workflow_hub.core.runs import content_hash
 
@@ -66,6 +67,27 @@ FEEDBACK_FOLDERS = {
     'anatomy': '🫀 A&P — Private feedback',
 }
 FEEDBACK_COURSE_NAMES = {'biology': 'Biology', 'forensics': 'Forensics', 'anatomy': 'A&P'}
+QUESTION_POLICY_VERSION = 'course-revision-question/v1'
+REVISION_QUESTION_POLICY = """
+Make the one thinking question intentional: ground it in an actual supplied
+revised answer and its unresolved relationship, contradiction or limit. Ask one
+conceptual transfer or contrast question that helps the student further that
+revision; do not answer it. Use only supplied lesson concepts and evidence.
+Do not invent a misconception, rubric, new criterion or activity. If revised
+evidence is unavailable, do not pretend an answer exists: ground the question
+in a supplied critical aspect and its lesson reference instead.
+"""
+
+
+def _policy(inputs):
+    course = inputs['scope']['class']
+    guidance = {
+        'anatomy': 'Explore structure/function or a causal mechanism only when the supplied lesson supports it.',
+        'forensics': 'Explore observation versus inference, evidence, or an alternative explanation only when the supplied lesson supports it.',
+    }.get(course)
+    return POLICY + REVISION_QUESTION_POLICY + guidance if guidance else POLICY
+
+
 FEEDBACK_FOLDER_CONFIG = 'HUB_FEEDBACK_DRIVE_FOLDERS'
 FEEDBACK_ROOT_CONFIG = 'HUB_FEEDBACK_DRIVE_ROOT_ID'
 PRINTABLE_MIMES = {'application/pdf', 'application/vnd.google-apps.document'}
@@ -221,14 +243,60 @@ def _receipt_date(receipt, scope, submitted_at):
     return moment.astimezone(ZoneInfo('America/New_York')).date().isoformat()
 
 
-def _aspects(reference, score):
-    block = re.search(r'(?im)^CRITICAL ASPECTS\s*\n((?:\d+\.\s*[^\n]+\n?){1,4})', reference)
-    if not block:
-        raise Held('The lesson needs a readable, numbered critical-aspects list.')
-    names = dict(re.findall(r'(?m)^(\d+)\.\s*([^\n]+)', block[1]))
+def _question_aspects(reference, score):
+    """Use only exact matched teacher question labels, never invent a rubric."""
+    rows = [item for item in score['items'] if item['category'] == 'DRAFT']
+    if not score.get('compared') or not score.get('template_id') or not 1 <= len(rows) <= 4:
+        raise Held('The lesson needs one to four verified teacher revision questions.')
+    ids, titles, slides = set(), set(), set()
+    text = ' '.join(reference.split())
     result = []
-    for number, name in names.items():
-        qid = 'CA' + number + '-MASTERY'
+    for item in rows:
+        qid, title, at = item.get('id'), item.get('question'), item.get('at')
+        normalized = ' '.join(title.split()) if isinstance(title, str) else ''
+        generic = re.sub(r'[^a-z]+', ' ', normalized.casefold()).strip()
+        if (not isinstance(qid, str) or not re.fullmatch(r'Q-MASTERY(?:-\d+)?', qid)
+                or qid in ids or not normalized or len(title) > 160
+                or not generic or set(generic.split()) <= {
+                    'question', 'revision', 'revised', 'my', 'your', 'answer', 'response', 'draft', 'slide',
+                    'write', 'here', 'prompt', 'notes', 'final', 'q', 'one', 'two', 'three', 'four'}
+                or re.fullmatch(r'Q-MASTERY(?:-\d+)?', normalized, re.I)
+                or normalized.casefold() in titles or normalized not in text
+                or type(at) is not int or at < 1 or at in slides):
+            raise Held('A revision question needs one distinct, meaningful title from its matched teacher slide.')
+        ids.add(qid); titles.add(normalized.casefold()); slides.add(at)
+        result.append({'question_id': qid, 'name': title, 'answer': item.get('answer', ''),
+                       'available': item['status'] == 'done', 'slide': item.get('slide')})
+    return result
+
+
+def _aspects(reference, score, *, course=None):
+    """Pair each listed critical aspect with its one revised-answer field.
+
+    Aspect N pairs with CA<N>-MASTERY when every listed number has that field
+    (Biology numbers aspects within the lesson). A&P numbers them within the
+    unit ("3.") while the deck's field is CA1-MASTERY, so when no listed number
+    has its field the list pairs in order with the deck's CA fields, if the
+    counts match. A partial match is a coding error and refuses."""
+    all_aspects = deck_release.critical_aspects(reference)
+    if not all_aspects and course in ('anatomy', 'forensics'):
+        return _question_aspects(reference, score)
+    listed = [a for a in all_aspects if a['number'] is not None][:4]
+    if not listed:
+        raise Held('The lesson needs a readable, numbered critical-aspects list.')
+    drafts = {item['id'] for item in score['items'] if item['category'] == 'DRAFT'}
+    by_number = ['CA%d-MASTERY' % a['number'] for a in listed]
+    matched = [qid in drafts for qid in by_number]
+    if any(matched) and not all(matched):
+        raise Held('A critical aspect does not have one identifiable revised-answer field.')
+    if not all(matched) or len(set(by_number)) != len(by_number):
+        fields = sorted((qid for qid in drafts if re.fullmatch(r'CA\d+-MASTERY', qid)),
+                        key=lambda qid: int(qid[2:-8]))
+        if len(fields) != len(listed):
+            raise Held('A critical aspect does not have one identifiable revised-answer field.')
+        by_number = fields
+    result = []
+    for qid, name in zip(by_number, (a['name'] for a in listed)):
         rows = [item for item in score['items'] if item['category'] == 'DRAFT' and item['id'] == qid]
         if len(rows) != 1:
             raise Held('A critical aspect does not have one identifiable revised-answer field.')
@@ -249,14 +317,46 @@ def evidence(assertion, token, config, agenda, scope, found):
     assignments = [a for a in records['assignments'] if a['class_key'] == scope['class']
                    and a.get('source_deck_id') == score.get('template_id')
                    and a.get('assignment_code') == score.get('code')]
-    if len(assignments) != 1 or score['template_id'] not in completion.lesson_decks(
-            agenda, scope['class'], scope['week'], scope['form']):
+    if len(assignments) != 1:
+        raise Held('The exact lesson deck needs its assessment-register connection verified.')
+    try:
+        binding = work.form_teacher_sources(config, agenda, scope['class'], scope['week'], scope['form'])
+    except ValueError as error:
+        raise Held(str(error)) from None
+    if binding != form.get('teacher_source_binding'):
+        raise Held('The exact Form teacher-source declaration changed. Reload current work before preparing feedback.')
+    try:
+        ownership = completion.form_source_ownership(config, agenda, scope['class'], scope['week'], scope['form'], binding=binding)
+        scoped_lesson = completion.form_source_scope(agenda, scope['class'], scope['week'], scope['form'],
+                                                      binding=binding, ownership=ownership)
+    except (completion.Unreadable, ValueError, TypeError, KeyError) as error:
+        raise Held(str(error)) from None
+    sources = None
+    if binding or ownership:
+        sources = completion.scoped_lesson_sources(token, scoped_lesson, binding=binding, ownership=ownership)
+        selected = [d for d in sources.get('decks', []) if d['id'] == score['template_id']]
+        prior_sources = (form.get('grade_readiness') or {}).get('source_resolution')
+        if (sources.get('problem') or sources.get('read_failure') or (binding and sources.get('binding') != binding)
+                or len(selected) != 1 or (prior_sources is not None and prior_sources != sources)):
+            raise Held('The exact Form registered teacher sources need fresh verification before feedback.')
+    elif score['template_id'] not in completion.lesson_decks(agenda, scope['class'], scope['week'], scope['form']):
         raise Held('The exact lesson deck needs its assessment-register connection verified.')
     captured = assessment_save.capture(assertion, scope['file'], config)
     reference = assessment_save.capture(assertion, score['template_id'], config)
     if (captured['file']['modified_at'] != score['file_updated']
             or reference['file']['modified_at'] != score['template_updated']):
         raise Held('The student work or lesson changed while it was being read. Reload and try again.')
+    if sources is not None:
+        # lesson_sources brackets exact registered parent/teacher metadata and
+        # membership internally. Repeat that proof around the existing capture;
+        # no second export or invented consumed-template tuple is necessary.
+        after = completion.scoped_lesson_sources(token, scoped_lesson, binding=binding, ownership=ownership)
+        meta = selected[0]['metadata']
+        expected = {'id': meta['id'], 'name': str(meta.get('name', ''))[:200],
+                    'mime_type': meta['mimeType'], 'modified_at': str(meta['modifiedTime']),
+                    'version': str(meta['version'])}
+        if after != sources or reference['file'] != expected:
+            raise Held('The captured teacher source differs from its verified Form collection. Reload current work.')
     prompt, where = feedback.load_prompt(token, agenda)
     if not prompt:
         raise Held(where)
@@ -270,7 +370,7 @@ def evidence(assertion, token, config, agenda, scope, found):
     return {'scope': scope, 'person': person, 'assignment': assignments[0],
             'archive_identity': archive_identity,
             'submitted_at': receipt['submitted_at'], 'submission_receipt': receipt,
-            'source': captured, 'reference': reference, 'aspects': _aspects(reference['text'], score),
+            'source': captured, 'reference': reference, 'aspects': _aspects(reference['text'], score, course=scope['class']),
             'answers': score['items'], 'prompt': prompt, 'prompt_url': where}
 
 
@@ -362,7 +462,9 @@ def _call(config, inputs):
             'teacher_dimensions': list(TEACHER_DIMENSIONS),
             'student_submission': inputs['source']['text'],
             'printed_lesson_reference': inputs['reference']['text']}
-    return assessment_provider._call(config, POLICY + '\nCURRENT TEACHER POLICY:\n' + inputs['prompt'],
+    if inputs['scope']['class'] in ('anatomy', 'forensics'):
+        user['course_context'] = {'class': inputs['scope']['class'], 'assignment': inputs['assignment']}
+    return assessment_provider._call(config, _policy(inputs) + '\nCURRENT TEACHER POLICY:\n' + inputs['prompt'],
                                      json.dumps(user), schema=SCHEMA)
 
 
@@ -376,8 +478,8 @@ def generate(config, inputs):
         raise Held('The feedback provider is not configured.')
     port = configured_store(config)
     decision = None
-    basis = content_hash([POLICY, source_repair_provenance.analysis_basis(
-        inputs, assessment_provider.model_name(config))])
+    source_basis = source_repair_provenance.analysis_basis(inputs, assessment_provider.model_name(config))
+    basis = content_hash([_policy(inputs), source_basis])
     # Live evidence carries an authenticated exact-file Form event. A changed
     # source from that same event must not automatically become new writing,
     # another provider charge or a new growth point after a technical repair.
@@ -389,7 +491,8 @@ def generate(config, inputs):
             prior = _read(port, prior_ref.value['id'])
             if not prior or prior.value.get('schema') != VERSION:
                 raise Held('The previous feedback source could not be verified. Its saved PDF remains available.')
-            decision = source_repair_provenance.classify(port, inputs['scope'], prior.value, inputs, basis)
+            prior_basis = basis if prior.value.get('question_policy_version') else content_hash([POLICY, source_basis])
+            decision = source_repair_provenance.classify(port, inputs['scope'], prior.value, inputs, prior_basis)
             if decision.get('reuse_saved'):
                 # Serve the immutable historical report. Its old source bytes,
                 # source date, archive and Printed/Handed states remain intact.
@@ -446,6 +549,17 @@ def generate(config, inputs):
         _point_to(port, inputs['scope'], ident)
         return reply(stored.value, cached=True)
     call_id = key('feedbackcall', fingerprint)
+    # Exhaust the earlier policy's saved draft and reservation before selecting
+    # the new question policy. An interrupted or returned old call is never
+    # permission to bill again merely because guidance changed.
+    if not legacy_call and _policy(inputs) != POLICY and not _read(port, call_id):
+        fingerprint = {**fingerprint, 'prompt': content_hash([_policy(inputs), inputs['prompt']])}
+        ident = key('feedbackdraft', fingerprint)
+        stored = _read(port, ident)
+        if stored:
+            _point_to(port, inputs['scope'], ident)
+            return reply(stored.value, cached=True)
+        call_id = key('feedbackcall', fingerprint)
     if event and event.value.get('call_id') != call_id:
         raise Held('This Form event already has another feedback-call reservation. Review it before another assessment.')
     call = _read(port, call_id)
@@ -480,6 +594,10 @@ def generate(config, inputs):
              'prompt_sha256': content_hash(inputs['prompt']), 'prompt_url': inputs['prompt_url'],
              'saved_at': None}
     value['analysis_basis_sha256'] = basis
+    if fingerprint['prompt'] == content_hash([_policy(inputs), inputs['prompt']]) and _policy(inputs) != POLICY:
+        value['question_policy_version'] = QUESTION_POLICY_VERSION
+    else:
+        value['analysis_basis_sha256'] = content_hash([POLICY, source_basis])
     for field in ('raw_sha256', 'metadata_sha256'):
         if field in inputs['source']:
             value['source'][field] = inputs['source'][field]

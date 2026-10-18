@@ -212,6 +212,15 @@ review; it is not silently regenerated. ZIP intake and longitudinal growth
 remain separate, unverified work. Deployment and a real saved/printed draft
 must still be verified separately from these implementation tests.
 
+October 17 feedback direction: Biology keeps the approved source-comparison
+format with four writing-area graphics and source-based practice. Anatomy and
+Forensics keep concise student reports; their next feedback question should
+further the student's actual revision using the supplied lesson relationship,
+contrast or transfer case. The course-specific provider guidance applies to new
+work only. It does not regenerate saved reports, create another charge for an
+existing submission, add rubric criteria, or change any assessment or delivery
+record. Deployment and live acceptance of that guidance remain separate checks.
+
 Morning status must show incomplete or failed receipts as unresolved. An active
 schedule and a ready browser companion do not establish a completed run.
 
@@ -367,6 +376,35 @@ names throughout, shows A2/A3 only for Forensics, and uses each other class's on
 verified section automatically. Fresh target checks protect drafts and saves from
 stale lesson/section selections. Saved assessment histories remain intact. This
 is not a deployment or recovery-completion claim.
+
+### Lesson pages and turn-in folders
+
+Schoology pages and storage folders organize lessons; they are not assignment
+identities. Existing assignments may share a weekly turn-in folder without
+being merged, and sharing that parent alone does not require moving files.
+For new setup, use one Schoology assignment page and turn-in folder per lesson.
+A second assignment may be listed on the same lesson page, with each assessment
+retaining its exact Form binding or explicitly approved combined-component
+binding. Do not split a working page or create another folder just because a
+lesson has a second assignment.
+
+When the schedule changes, reuse the lesson's page, folder, Form and source IDs;
+update the dates and links and freshly verify the exact bindings. Do not recreate
+submissions, replace original submission dates, renumber grade history or infer
+new ownership from a week label. This setup policy does not establish that a
+changed live mapping has already been verified.
+
+Readiness, scoring and native feedback resolve teacher-source ownership for the
+exact Form before reading lesson sources. Separate Forms in one Agenda row do
+not inherit each other's decks. Existing exact teacher-source declarations or
+the validated deck-to-assignment-to-Form mappings supply that ownership; labels,
+link order and a shared week do not. Missing or conflicting ownership returns a
+Form-specific assignment-setup action. A verified sibling can proceed without
+reading another Form's inaccessible teacher. Mapped source metadata and consumed
+teacher versions are checked again after reads. A single unconfigured Form keeps
+its existing row/folder source rules, and explicitly combined assessments retain
+their declared component sources. This does not register new assignment keys,
+write grades, or alter original submissions and delivery records.
 
 ## Source collection: one root, not one assumed folder
 

@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Remote_Desktop_Commander__list_devices",
+      "mcp__Remote_Desktop_Commander__ping",
+      "mcp__Remote_Desktop_Commander__who_am_i",
+      "mcp__Remote_Desktop_Commander__get_config",
+      "mcp__Remote_Desktop_Commander__list_directory",
+      "mcp__Remote_Desktop_Commander__read_file",
+      "mcp__Remote_Desktop_Commander__read_multiple_files",
+      "mcp__Remote_Desktop_Commander__get_file_info",
+      "mcp__Remote_Desktop_Commander__start_search",
+      "mcp__Remote_Desktop_Commander__get_more_search_results",
+      "mcp__Remote_Desktop_Commander__list_searches",
+      "mcp__Remote_Desktop_Commander__stop_search",
+      "mcp__Remote_Desktop_Commander__list_sessions",
+      "mcp__Remote_Desktop_Commander__list_processes",
+      "mcp__Remote_Desktop_Commander__read_process_output",
+      "mcp__Remote_Desktop_Commander__get_recent_tool_calls",
+      "mcp__Remote_Desktop_Commander__list_remote_tool_calls",
+      "mcp__Remote_Desktop_Commander__get_tool_result",
+      "mcp__Remote_Desktop_Commander__get_usage_stats"
+    ]
+  }
+}

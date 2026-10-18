@@ -57,7 +57,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/2"
+RULES = "weekly-preflight-rules/3"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -567,7 +567,9 @@ def _container_text(runs, links, index):
         if url:
             links.append({"text": index, "at": len(value), "url": url})
         value += piece.get("content", "")
-    return value
+    # A soft line break (Shift+Enter) is \v in Slides; read it as a line break.
+    # Same length, so the link offsets above still hold.
+    return value.replace("\v", "\n")
 
 
 def _native_texts(elements, out, links, depth=0):
@@ -1465,6 +1467,62 @@ def _resolve_sources(ctx, lesson):
                 "Restore it, or link the current file in the Agenda.", url=node["url"], sources=[node["id"]],
                 revision_key=node["revision"]))
     _folders(ctx, lesson)
+    _name_lesson(ctx, lesson)
+
+
+# ---------- lesson names ----------
+
+# The weekly folder's name is the lesson's name; the Agenda topic may be the
+# teacher's shorthand ("Fermentation" for "Cellular Respiration & Fermentation").
+WEEKLY_PREFIX = re.compile(r"^\s*(?:(?:▶\s*)?LIVE\s*[—–-]\s*)?(?:(?:Cycle|Week|Wk|Unit)\s*0*\d+[a-z]?\b[\s—–\-:·|]*)+",
+                           re.I)
+UNIT_SUFFIX = re.compile(r"\s*\((?:Unit|Cycle|Week|Wk)\s*\d+[a-z]?\)\s*$", re.I)
+
+
+def folder_lesson_name(name):
+    """The lesson a weekly folder names: "Cycle 06 — Cellular Respiration &
+    Fermentation (Unit 1)" -> "Cellular Respiration & Fermentation"; "" for a
+    folder named only by its week ("Week 07")."""
+    rest = UNIT_SUFFIX.sub("", WEEKLY_PREFIX.sub("", str(name or ""))).strip(" —–-:·|")
+    return rest if re.search(r"[A-Za-z]{3}", rest) else ""
+
+
+def lesson_name(folder_names, agenda_topic):
+    """The lesson's name from its weekly folders, in order and without repeats
+    ("History of Forensics + Crime Scene to Courtroom (Mock Trial)"), or the
+    Agenda topic when no folder names a lesson."""
+    names = []
+    for name in folder_names:
+        name = folder_lesson_name(name)
+        if name and norm(name) not in {norm(n) for n in names}:
+            names.append(name)
+    return " + ".join(names) if names else str(agenda_topic or "").strip()
+
+
+def _name_lesson(ctx, lesson):
+    """Name the lesson by its linked lesson folder, then by the weekly folder of
+    each linked deck kept elsewhere (a two-lesson week); keep the Agenda topic
+    as agenda_topic. Only weekly folders ("Week/Wk/Cycle/Unit NN …") name a
+    lesson, so a general folder ("03 BIOLOGY (Public)") never renames it."""
+    folders = [n for n in lesson["sources"] if "folder" in n["roles"] and n.get("accessible") and not n.get("trashed")]
+    seen = {n["id"] for n in folders}
+    names = [n.get("name", "") for n in folders if WEEKLY_PREFIX.match(str(n.get("name") or ""))]
+    for node in lesson["sources"]:
+        if not set(node["roles"]) & {"teacher_deck", "second_deck"} or not node.get("accessible"):
+            continue
+        for parent in node.get("parents") or []:
+            if parent in seen:
+                continue
+            seen.add(parent)
+            meta = ctx.file(parent)
+            if not meta.get("error") and WEEKLY_PREFIX.match(str(meta.get("name") or "")):
+                names.append(meta["name"])
+    lesson["agenda_topic"] = lesson["topic"]
+    lesson["topic"] = lesson_name(names, lesson["topic"])
+    for item in lesson["exceptions"]:
+        item["lesson"] = lesson["topic"]
+    for row in lesson["supply_rows"]:
+        row["lesson"] = lesson["topic"]
 
 
 def _folders(ctx, lesson):
@@ -1717,8 +1775,8 @@ def _finish_week(week_plan, sheet, port):
         print_items += lesson["print_items"]
         supply_rows += lesson["supply_rows"]
         lessons.append({field: lesson.get(field) for field in (
-            "lesson_id", "class_key", "class", "sections", "week", "monday", "row", "topic", "agenda_url",
-            "days", "meeting_dates", "status", "teacher_prep", "unlisted_files", "teacher_only_slides", "pending")}
+            "lesson_id", "class_key", "class", "sections", "week", "monday", "row", "topic", "agenda_topic",
+            "agenda_url", "days", "meeting_dates", "status", "teacher_prep", "unlisted_files", "teacher_only_slides", "pending")}
             | {"week_policy": {k: lesson["week_policy"].get(k) for k in ("excluded", "reason", "problem")},
                "sources": [_compact_node(n) for n in lesson["sources"]],
                "exceptions": [e["fingerprint"] for e in lesson["exceptions"]],

@@ -3,6 +3,7 @@ import io
 import json
 import unittest
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from hub_v2 import app, feedback_pdf, google, native_feedback as fb
@@ -33,6 +34,65 @@ def report():
 
 
 class NativeFeedbackTests(unittest.TestCase):
+    def test_course_question_prompt_uses_actual_revisions_and_exact_course_context(self):
+        self.model.stop()
+        for course, focus in [('anatomy', 'structure/function'), ('forensics', 'observation versus inference'), ('biology', None)]:
+            data = inputs(); data['scope']['class'] = course
+            with self.subTest(course=course), patch.object(fb.assessment_provider, '_call', return_value=('{}', {})) as provider:
+                fb._call(OPENAI_CONFIG, data)
+                policy, user = provider.call_args.args[1:3]
+                payload = json.loads(user)
+                self.assertEqual(payload['aspects'], data['aspects'])
+                self.assertEqual(payload['printed_lesson_reference'], data['reference']['text'])
+                if focus:
+                    self.assertIn(focus, policy)
+                    self.assertIn('actual supplied\nrevised answer', policy)
+                    self.assertIn('Do not invent a misconception', policy)
+                    self.assertEqual(payload['course_context']['class'], course)
+                    self.assertEqual(payload['course_context']['assignment'], data['assignment'])
+                else:
+                    self.assertEqual(policy, fb.POLICY + '\nCURRENT TEACHER POLICY:\n' + data['prompt'])
+                    self.assertNotIn('course_context', payload)
+
+    def test_new_course_question_policy_is_cached_without_another_call(self):
+        for course in ('anatomy', 'forensics'):
+            data = inputs(); data['scope']['class'] = course
+            draft = fb.generate(OPENAI_CONFIG, data)
+            value = fb.get_saved(OPENAI_CONFIG, draft['id']).value
+            self.assertEqual(value['question_policy_version'], fb.QUESTION_POLICY_VERSION)
+            self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], draft['id'])
+        self.assertEqual(self.call.call_count, 2)
+
+    def test_prior_course_policy_draft_and_uncertain_call_are_preserved(self):
+        data = inputs(); data['scope']['class'] = 'anatomy'
+        with patch.object(fb, '_policy', return_value=fb.POLICY):
+            old = fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(fb.generate(OPENAI_CONFIG, data)['id'], old['id'])
+        self.assertEqual(self.call.call_count, 1)
+
+        data['source']['sha256'] = 'c' * 64
+        with patch.object(fb, '_policy', return_value=fb.POLICY), \
+                patch.object(fb, '_call', side_effect=RuntimeError('interrupted')):
+            with self.assertRaises(fb.Held): fb.generate(OPENAI_CONFIG, data)
+        with self.assertRaisesRegex(fb.Held, 'No duplicate AI call'):
+            fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(self.call.call_count, 1)
+
+    def test_course_question_upgrade_retains_capture_bound_original_event(self):
+        from tests.test_source_repair_provenance import case
+        data, _, _ = case()
+        data['scope']['class'] = 'forensics'
+        with patch.object(fb, '_policy', return_value=fb.POLICY):
+            old = fb.generate(OPENAI_CONFIG, data)
+        again = fb.generate(OPENAI_CONFIG, data)
+        self.assertEqual(again['id'], old['id'])
+        self.assertTrue(again['cached'])
+        changed = deepcopy(data)
+        changed['source']['raw_sha256'] = 'f' * 64
+        with self.assertRaises(fb.Held):
+            fb.generate(OPENAI_CONFIG, changed)
+        self.assertEqual(self.call.call_count, 1)
+
     def test_learning_report_handoff_does_not_need_source_reads_and_rejects_external_links(self):
         with patch.object(google, 'service_token', side_effect=AssertionError('unnecessary source access')):
             self.assertEqual(app.api('api/learning-report', {}, {}), {'configured': False})
@@ -450,7 +510,202 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
              patch.object(fb.completion, 'lesson_decks', return_value=['template'] if decks is None else decks), \
              patch.object(fb.assessment_save, 'capture', side_effect=self.captures), \
              patch.object(fb.feedback, 'load_prompt', return_value=('Live policy', 'policy-url')):
-            return fb.evidence('signed', 'token', {}, {}, self.scope, self.found)
+            agenda = getattr(self, 'agenda', SimpleNamespace(lessons=lambda *args: self.found['lessons']))
+            return fb.evidence('signed', 'token', {}, agenda, self.scope, self.found)
+
+    def registered_sources(self, mime=google.PPTX):
+        self.binding = {'source_folder_id': 'FictionalFolder', 'teacher_ids': ['template']}
+        self.found['lessons'][0]['forms'][0]['teacher_source_binding'] = self.binding
+        self.agenda = SimpleNamespace(lessons=lambda course, week: self.found['lessons'])
+        meta = {'id': 'template', 'name': 'Exact teacher', 'mimeType': mime,
+                'modifiedTime': 'lesson-time', 'version': '7', 'trashed': False,
+                'parents': ['FictionalFolder']}
+        self.sources = {'decks': [{'id': 'template', 'metadata': meta}],
+                        'problem': None, 'binding': self.binding,
+                        'folders': [{'id': 'FictionalFolder', 'deck_ids': ['template']}]}
+        self.captures[1]['file'] = {'id': 'template', 'name': 'Exact teacher', 'mime_type': mime,
+                                    'modified_at': 'lesson-time', 'version': '7'}
+
+    def test_registered_native_and_pptx_teachers_need_no_direct_agenda_presentation_link(self):
+        for mime in (fb.completion.SLIDES, google.PPTX):
+            with self.subTest(mime=mime):
+                self.registered_sources(mime)
+                with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                        patch.object(fb.completion, 'lesson_sources', return_value=self.sources) as sources:
+                    result = self.read(decks=[])
+                self.assertEqual(result['reference']['file']['id'], 'template')
+                self.assertEqual(sources.call_count, 2)
+                self.assertTrue(all(call.kwargs['binding'] == self.binding for call in sources.call_args_list))
+
+    def test_registered_source_change_or_capture_disagreement_holds(self):
+        for issue in ('membership', 'deleted', 'version', 'id', 'mime', 'name', 'resolution'):
+            with self.subTest(issue=issue):
+                self.registered_sources()
+                after = deepcopy(self.sources)
+                if issue == 'membership': after['folders'][0]['deck_ids'] = []
+                elif issue == 'deleted': after['problem'] = 'Teacher is unavailable'
+                elif issue == 'resolution':
+                    self.found['lessons'][0]['forms'][0]['grade_readiness'] = {
+                        'source_resolution': {**self.sources, 'problem': 'Stale resolution'}}
+                else: self.captures[1]['file'][{'mime': 'mime_type'}.get(issue, issue)] = 'changed'
+                with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                        patch.object(fb.completion, 'lesson_sources', side_effect=[self.sources, after]):
+                    with self.assertRaises(fb.Held): self.read(decks=[])
+                self.found['lessons'][0]['forms'][0].pop('grade_readiness', None)
+
+    def test_registered_declaration_removal_or_foreign_form_never_falls_back(self):
+        for declaration in (None, {'source_folder_id': 'OtherFolder', 'teacher_ids': ['template']}):
+            self.registered_sources()
+            with self.subTest(declaration=declaration), \
+                    patch.object(fb.work, 'form_teacher_sources', return_value=declaration), \
+                    patch.object(fb.completion, 'lesson_sources') as sources:
+                with self.assertRaisesRegex(fb.Held, 'declaration changed'): self.read()
+                sources.assert_not_called()
+
+    def test_registered_membership_does_not_override_registry_or_missing_source_proof(self):
+        for issue in ('registry', 'foreign_template', 'problem', 'unverified_binding'):
+            with self.subTest(issue=issue):
+                self.registered_sources()
+                if issue == 'registry': self.assignment['source_deck_id'] = 'other'
+                elif issue == 'foreign_template': self.sources['decks'][0]['id'] = 'other'
+                elif issue == 'problem': self.sources['problem'] = 'Cannot verify source folder'
+                elif issue == 'unverified_binding': self.sources.pop('binding')
+                with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                        patch.object(fb.completion, 'lesson_sources', return_value=self.sources):
+                    with self.assertRaises(fb.Held): self.read(decks=[])
+                self.assignment['source_deck_id'] = 'template'
+
+    def test_unconfigured_form_cannot_borrow_readiness_sources_without_direct_link(self):
+        self.found['lessons'][0]['forms'][0]['grade_readiness'] = {
+            'source_resolution': {'decks': [{'id': 'template'}]}}
+        with patch.object(fb.completion, 'lesson_sources', side_effect=AssertionError('unconfigured source expansion')):
+            with self.assertRaisesRegex(fb.Held, 'assessment-register'): self.read(decks=[])
+
+    def test_unconfigured_feedback_cannot_borrow_another_forms_row_sources(self):
+        self.found['lessons'][0]['forms'].append({'form_id': 'SiblingForm', 'students': []})
+        with self.assertRaisesRegex(fb.Held, 'exact teacher-source ownership'):
+            self.read()
+
+    def test_bound_feedback_does_not_inherit_sibling_form_source_failure(self):
+        self.registered_sources()
+        self.found['lessons'][0]['forms'].append({'form_id': 'SiblingForm', 'students': [],
+                                               'problem': 'Sibling source unavailable'})
+        with patch.object(fb.work, 'form_teacher_sources', return_value=self.binding), \
+                patch.object(fb.completion, 'lesson_sources', return_value=self.sources):
+            self.assertEqual(self.read(decks=[])['reference']['file']['id'], 'template')
+
+    def reference(self, text, drafts):
+        self.captures[1]['text'] = text
+        self.score['items'] = [{'category': 'DRAFT', 'id': qid, 'status': 'done', 'answer': qid, 'slide': n}
+                               for n, qid in enumerate(drafts, 2)]
+
+    def test_unit_numbered_singular_heading_pairs_by_order(self):
+        # A&P teacher references number the aspect within the unit and use the
+        # singular heading; the deck's own revision box is still CA1.
+        self.reference('TEACHER REFERENCE — do not project\nCRITICAL ASPECT\n'
+                       '3.  Structure fits function — why a tissue is built the way it is\n'
+                       'WEEK QUESTION\nIf you could see the cells, could you predict the job?\n'
+                       '[[MARKER-INVENTORY:A07]]', ['CA1-MASTERY'])
+        aspects = self.read()['aspects']
+        self.assertEqual([(a['question_id'], a['name']) for a in aspects],
+                         [('CA1-MASTERY', 'Structure fits function — why a tissue is built the way it is')])
+
+    def test_numbers_that_match_revision_boxes_pair_by_number(self):
+        self.reference('CRITICAL ASPECTS\n1. Storing energy\n2. Releasing energy\n[[MARKER-INVENTORY:C09]]',
+                       ['CA2-MASTERY', 'CA1-MASTERY'])
+        aspects = self.read()['aspects']
+        self.assertEqual([(a['question_id'], a['name'], a['answer']) for a in aspects],
+                         [('CA1-MASTERY', 'Storing energy', 'CA1-MASTERY'),
+                          ('CA2-MASTERY', 'Releasing energy', 'CA2-MASTERY')])
+
+    def test_aspects_without_one_revision_box_each_still_refuse(self):
+        self.reference('CRITICAL ASPECT\n3. Structure fits function\n4. Layers protect\n[[MARKER-INVENTORY:A07]]',
+                       ['CA1-MASTERY'])
+        with self.assertRaisesRegex(fb.Held, 'revised-answer field'):
+            self.read()
+
+    def test_partly_matching_numbers_refuse_instead_of_guessing(self):
+        self.reference('CRITICAL ASPECTS\n1. Storing energy\n2. Releasing energy\n[[MARKER-INVENTORY:C09]]',
+                       ['CA1-MASTERY', 'CA3-MASTERY'])
+        with self.assertRaisesRegex(fb.Held, 'revised-answer field'):
+            self.read()
+
+    def test_missing_list_still_refuses(self):
+        self.reference('TEACHER REFERENCE\nWEEK QUESTION\nWhy?', ['CA1-MASTERY'])
+        with self.assertRaisesRegex(fb.Held, 'numbered critical-aspects list'):
+            self.read()
+
+    def question_reference(self, course='forensics'):
+        self.scope['class'] = course
+        self.assignment['class_key'] = course
+        titles = ['How does this observation support your inference?',
+                  'Which alternative explanation fits the evidence?',
+                  'What additional evidence would distinguish the explanations?']
+        self.captures[1]['text'] = '\n'.join(titles)
+        self.score['items'] = [{'category': 'DRAFT', 'id': 'Q-MASTERY-%d' % n,
+                               'question': title, 'at': n, 'slide': n + 1,
+                               'status': 'done', 'answer': 'My revised explanation %d.' % n}
+                              for n, title in enumerate(titles, 2)]
+
+    def test_question_identified_courses_keep_exact_teacher_labels_ids_and_answers(self):
+        for course in ('anatomy', 'forensics'):
+            with self.subTest(course=course):
+                self.question_reference(course)
+                result = self.read()
+                for aspect, item in zip(result['aspects'], self.score['items']):
+                    self.assertEqual(aspect, {'question_id': item['id'], 'name': item['question'],
+                                             'answer': item['answer'], 'available': True, 'slide': item['slide']})
+                response = report()
+                response['aspects'] = [{'question_id': a['question_id'], 'name': a['name'],
+                                       'current_level': 'Developing', 'quote': a['answer'],
+                                       'explanation': 'Explain how the evidence supports this inference.'}
+                                      for a in result['aspects']]
+                response.pop('teacher_dimensions')
+                fb.validate_report(response, result)
+                response['aspects'][0]['name'] = 'Invented critical aspect'
+                with self.assertRaises(fb.Held): fb.validate_report(response, result)
+
+    def test_question_identified_blank_answer_remains_unavailable(self):
+        self.question_reference()
+        self.score['items'][0].update(status='blank', answer='')
+        self.assertFalse(self.read()['aspects'][0]['available'])
+
+    def test_question_identified_fallback_never_bypasses_biology_or_assignment_registry(self):
+        self.question_reference('biology')
+        with self.assertRaisesRegex(fb.Held, 'numbered critical-aspects list'): self.read()
+        self.question_reference()
+        self.assignment['source_deck_id'] = 'other-template'
+        with self.assertRaisesRegex(fb.Held, 'assessment-register'): self.read()
+
+    def test_question_identified_fallback_rejects_ambiguous_or_unverified_bindings(self):
+        for issue in ('no_rows', 'too_many', 'duplicate_id', 'duplicate_title', 'duplicate_slide',
+                      'missing_title', 'generic_title', 'numeric_title', 'foreign_title', 'missing_slide',
+                      'mixed_ids', 'uncompared', 'missing_template'):
+            with self.subTest(issue=issue):
+                self.question_reference()
+                rows = self.score['items']
+                if issue == 'no_rows': self.score['items'] = []
+                elif issue == 'too_many': rows.extend([deepcopy(rows[0]), deepcopy(rows[1])])
+                elif issue == 'duplicate_id': rows[1]['id'] = rows[0]['id']
+                elif issue == 'duplicate_title': rows[1]['question'] = rows[0]['question']
+                elif issue == 'duplicate_slide': rows[1]['at'] = rows[0]['at']
+                elif issue == 'missing_title': rows[0].pop('question')
+                elif issue in ('generic_title', 'numeric_title'):
+                    rows[0]['question'] = 'Question 2' if issue == 'generic_title' else '123'
+                    self.captures[1]['text'] += '\n' + rows[0]['question']
+                elif issue == 'foreign_title': rows[0]['question'] = 'A title absent from the teacher source'
+                elif issue == 'missing_slide': rows[0].pop('at')
+                elif issue == 'mixed_ids': rows[0]['id'] = 'CA1-MASTERY'
+                elif issue == 'uncompared': self.score['compared'] = False
+                elif issue == 'missing_template': self.score['template_id'] = ''
+                with self.assertRaises(fb.Held): self.read()
+                self.score['compared'] = True
+                self.score['template_id'] = 'template'
+
+    def test_question_fallback_does_not_replace_partial_critical_aspect_mapping(self):
+        self.question_reference()
+        self.captures[1]['text'] += '\nCRITICAL ASPECTS\n1. Evidence supports an inference\n[[MARKER-INVENTORY:F01]]'
+        with self.assertRaisesRegex(fb.Held, 'revised-answer field'): self.read()
 
     def test_exact_agenda_deck_registry_and_live_prompt_bind_feedback(self):
         result = self.read()

@@ -28,7 +28,7 @@ const lesson = title => ({week: 'Wk 09', topic: title, row: 12, forms: [],
   release: {status: 'READY', issues: [], source_resolution: {decks: [], folders: []}}});
 
 function boot(overrides = () => undefined) {
-  const nodes = new Map(), requests = [], summaries = [], planReads = [];
+  const nodes = new Map(), requests = [], summaries = [], planReads = [], toolsReads = [];
   const document = {createElement: tag => new Element(tag), querySelectorAll: () => [],
     getElementById: id => {
       if (!nodes.has(id)) nodes.set(id, new Element('div'));
@@ -48,7 +48,7 @@ function boot(overrides = () => undefined) {
     loadTodayFeedback() {}, loadWeekAhead() {}, renderTodayFeedbackArea() {},
     refreshVisiblePlans() { planReads.push('navigation'); },
     loadPlans(date, fresh) { planReads.push({date, fresh}); },
-    openWork() {}, loadRoutine() {},
+    openWork() {}, loadRoutine() { toolsReads.push('routine'); }, loadSystemNotes() { toolsReads.push('notes'); },
   });
   vm.runInContext(renderers + `
     function renderMorningCockpit() { return el('p', {text: 'Existing morning receipt'}); }
@@ -60,7 +60,7 @@ function boot(overrides = () => undefined) {
   ` + today + navigation + '\nglobalThis.ui = {loadToday, showTab, cockpit};', context);
   const reload = source.split('\n').find(line => line.startsWith("$('reload-plans').addEventListener("));
   vm.runInContext(reload, context);
-  return {ui: context.ui, context, document, requests, summaries, planReads};
+  return {ui: context.ui, context, document, requests, summaries, planReads, toolsReads};
 }
 
 test('Today owns the single collapsed readiness block and Week ahead precedes Next from Agenda', () => {
@@ -71,7 +71,10 @@ test('Today owns the single collapsed readiness block and Week ahead precedes Ne
   assert.match(todayHTML, /<summary>VT readiness and feedback-code checks<\/summary>/);
   assert.doesNotMatch(plansHTML, /lesson-readiness/);
   assert.ok(todayHTML.indexOf('id="today-week-ahead"') < todayHTML.indexOf('id="today-next-agenda"'));
-  assert.match(plansHTML, /id="next-week-notes" aria-label="Notes"/);
+  assert.match(plansHTML, /id="next-week-notes" aria-label="Next week notes"/);
+  assert.match(plansHTML, /id="system-notes"/);
+  assert.match(todayHTML, /id="hub-tools"/);
+  assert.match(html, /data-tab="plans">Lessons/);
 });
 
 test('Today shares one audit result between readiness and the separate Agenda panel, including Refresh', async () => {
@@ -131,11 +134,13 @@ test('Lessons navigation and Reload read plans without starting a hidden readine
   app.document.getElementById('reload-plans').listeners.click();
   assert.deepEqual(app.planReads, ['navigation', {date: '2032-01-07', fresh: true}]);
   assert.equal(app.requests.length, 0);
+  assert.deepEqual(app.toolsReads, ['notes']);
   assert.equal(app.document.getElementById('page-today').hidden, true);
   app.context.location.hash = '#today';
   app.ui.showTab();
   await tick();
   assert.equal(app.document.getElementById('page-today').hidden, false);
+  assert.deepEqual(app.toolsReads, ['notes', 'routine']);
   assert.equal(app.document.getElementById('page-plans').hidden, true);
   assert.match(app.document.getElementById('lesson-readiness-body').textContent, /Biology · Wk 09/);
 });

@@ -24,6 +24,7 @@ import difflib
 from collections import Counter
 import hashlib
 import io
+import json
 import posixpath
 import re
 import zipfile
@@ -1160,9 +1161,116 @@ def original_title(name):
     return text if len(text) >= 6 else ""
 
 
-def lesson_decks(agenda, class_key, week_label, form_id):
+def form_source_scope(agenda, class_key, week_label, form_id, *, binding=None, ownership=None):
+    """Select source ownership before any source read; a week is not an assignment."""
+    lessons = [l for l in agenda.lessons(class_key, week_label)
+               if any(f.get('form_id') == form_id for f in l['forms'])]
+    if len(lessons) != 1:
+        raise Unreadable('The exact Form needs one unambiguous current Agenda lesson.')
+    lesson = lessons[0]
+    forms = {f.get('form_id') or f.get('url') for f in lesson['forms']}
+    if binding:
+        teachers = binding.get('teacher_ids') if isinstance(binding, dict) else None
+        if (not isinstance(teachers, list) or not 1 <= len(teachers) <= 4
+                or any(not isinstance(fid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', fid) for fid in teachers)
+                or len(teachers) != len(set(teachers))):
+            raise Unreadable('The exact Form teacher-source ownership is invalid; verify assignment setup.')
+        expected = {'class_key': class_key, 'week': week_label, 'form_id': form_id,
+                    'agenda_id': getattr(agenda, 'spreadsheet_id', None)}
+        if any(k in binding and binding[k] != value for k, value in expected.items()):
+            raise Unreadable('The teacher-source declaration belongs to another assignment Form or Agenda scope.')
+        return lesson
+    if ownership:
+        if not isinstance(ownership, dict):
+            raise Unreadable('The exact Form source ownership is invalid. Refresh this assignment before scoring.')
+        basis = {'class': class_key, 'week': week_label, 'form': form_id,
+                 'forms': sorted(str(f) for f in forms), 'materials': lesson['materials']}
+        digest = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+        ids = ownership.get('source_ids')
+        if (ownership.get('basis_sha256') != digest or not isinstance(ids, list) or not ids
+                or any(not isinstance(fid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{20,200}', fid) for fid in ids)
+                or len(ids) != len(set(ids))):
+            raise Unreadable('The exact Form source ownership changed. Refresh this assignment before scoring.')
+        selected = [m for m in lesson['materials'] if any(
+            re.search(r'/presentation/d/' + re.escape(fid) + r'(?:/|$)', m['url']) for fid in ids)]
+        found = {match[1] for m in selected
+                 if (match := re.search(r'/presentation/d/([A-Za-z0-9_-]{20,})', m['url']))}
+        if found != set(ids):
+            raise Unreadable('The exact Form source ownership no longer matches the current Agenda.')
+        return {**lesson, 'materials': selected}
+    if len(forms) != 1:
+        raise Unreadable('%s · %s · Form %s: separate assignments need exact teacher-source ownership. '
+                         'Connect this Form to its own teacher sources in assignment setup; no sibling lesson was read.'
+                         % (class_key, week_label, form_id))
+    return lesson
+
+
+def form_source_ownership(config, agenda, class_key, week_label, form_id, *, binding=None):
+    """Reuse the existing validated deck -> assignment -> Form contract."""
+    from school_workflow_hub.adapters.dated_agenda import _day_assignment_forms
+    from school_workflow_hub.adapters.shared_form_intake import private_mapping
+    from school_workflow_hub.adapters.hosted_agenda import ConnectionError
+    lessons = [l for l in agenda.lessons(class_key, week_label)
+               if any(f.get('form_id') == form_id for f in l['forms'])]
+    if len(lessons) != 1:
+        raise Unreadable('The exact Form needs one unambiguous current Agenda lesson.')
+    lesson = lessons[0]
+    if not config.get('HUB_INTAKE_DECK_ASSIGNMENTS') and not config.get('HUB_ASSIGNMENT_FORM_IDS'):
+        return None
+    try:
+        decks = private_mapping(config, 'HUB_INTAKE_DECK_ASSIGNMENTS')
+        forms = private_mapping(config, 'HUB_ASSIGNMENT_FORM_IDS')
+    except ConnectionError:
+        raise Unreadable('The exact assignment source mappings are invalid; verify assignment setup.') from None
+    linked = {match[1] for m in lesson['materials']
+              if (match := re.search(r'/presentation/d/([A-Za-z0-9_-]{20,})', m['url']))}
+    current_forms = {f.get('form_id') or f.get('url') for f in lesson['forms']}
+    relevant = set(binding['teacher_ids']) if binding else linked if len(current_forms) == 1 else set()
+    for fid in relevant & set(decks):
+        key = decks[fid]
+        if (not isinstance(key, str) or not re.fullmatch(re.escape(class_key) + r':[A-Za-z0-9:_-]{1,128}', key)
+                or (key in forms and (not isinstance(forms[key], str)
+                                      or not re.fullmatch(r'[A-Za-z0-9_-]{20,128}', forms[key])))):
+            raise Unreadable('A current teacher has an invalid explicit assignment-Form mapping; verify assignment setup.')
+    if len(current_forms) == 1:
+        for fid in linked & set(decks):
+            key = decks[fid]
+            if (not isinstance(key, str) or (key in forms and
+                    (not isinstance(forms[key], str) or forms[key] != form_id))):
+                raise Unreadable('A current linked teacher has explicit ownership for another Form; verify assignment setup.')
+    exact = {fid for fid in linked if isinstance(decks.get(fid), str) and forms.get(decks[fid]) == form_id}
+    if binding:
+        teachers = set(binding['teacher_ids'])
+        contradictory = any(fid in decks and forms.get(decks[fid]) not in (None, form_id) for fid in teachers)
+        if contradictory or (exact and exact != teachers):
+            raise Unreadable('Explicit teacher-source and assignment-Form ownership disagree; verify this Form setup.')
+        return None
+    row = lesson.get('row')
+    cells = agenda.classes[class_key].get('cells')
+    if row is None or cells is None:
+        return None
+    checked = _day_assignment_forms(cells, row, '', class_key, config)
+    if not checked or checked.get('error'):
+        return None
+    matches = [f for f in checked['forms'] if f['form_id'] == form_id]
+    if len(matches) != 1 or len(exact) != 1:
+        return None
+    basis = {'class': class_key, 'week': week_label, 'form': form_id,
+             'forms': sorted(str(f.get('form_id') or f.get('url')) for f in lesson['forms']),
+             'materials': lesson['materials']}
+    return {'source_ids': sorted(exact), 'assignment_key': matches[0]['assignment_key'],
+            'basis_sha256': hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()}
+
+
+def lesson_decks(agenda, class_key, week_label, form_id, *, binding=None, ownership=None):
     """The Slides linked in the Agenda row of the lesson that holds this Form."""
-    for lesson in agenda.lessons(class_key, week_label):
+    try:
+        scoped = form_source_scope(agenda, class_key, week_label, form_id, binding=binding, ownership=ownership)
+    except Unreadable:
+        return []
+    if binding:
+        return list(binding['teacher_ids'])
+    for lesson in [scoped]:
         if any(f["form_id"] == form_id for f in lesson["forms"]):
             ids = []
             for material in lesson["materials"]:
@@ -1278,7 +1386,7 @@ def _registered_teacher_bookend(token, binding, before, templates):
             raise Unreadable("A consumed teacher template differs from its verified source metadata.")
 
 
-def lesson_sources(token, lesson, *, binding=None):
+def lesson_sources(token, lesson, *, binding=None, metadata_fields=None):
     """Fresh actual-folder/current-link evidence, never a lesson-name search.
 
     Stale/trash links are reported separately. An inaccessible or empty named
@@ -1300,7 +1408,8 @@ def lesson_sources(token, lesson, *, binding=None):
     members = set()
     for fid in folders:
         try:
-            meta = google.drive_file(token, fid)
+            meta = (google.drive_file(token, fid, metadata_fields) if metadata_fields else
+                    google.drive_file(token, fid))
             if meta.get("mimeType") != google.FOLDER or meta.get("trashed"):
                 raise Unreadable("The Agenda lesson folder is unavailable or in trash.")
             children = google.folder_children(token, fid)
@@ -1314,7 +1423,8 @@ def lesson_sources(token, lesson, *, binding=None):
             return result
     for fid, label in linked.items():
         try:
-            meta = google.drive_file(token, fid)
+            meta = (google.drive_file(token, fid, metadata_fields) if metadata_fields else
+                    google.drive_file(token, fid))
             if meta.get("trashed") or (folders and fid not in members):
                 result["stale_links"].append({"id": fid, "label": label, "reason": "in trash" if meta.get("trashed") else "outside the current lesson folder"})
                 continue
@@ -1327,6 +1437,32 @@ def lesson_sources(token, lesson, *, binding=None):
     if not result["decks"]:
         result["problem"] = "No current deck is linked inside the verified lesson folder." if folders else "No current handed-out deck is linked for this lesson."
     return result
+
+
+def scoped_lesson_sources(token, lesson, *, binding=None, ownership=None):
+    if binding:
+        return lesson_sources(token, lesson, binding=binding)
+    if ownership:
+        from . import google
+        return lesson_sources(token, lesson, metadata_fields=google.FILE_FIELDS + ',version')
+    return lesson_sources(token, lesson)
+
+
+def _mapped_teacher_bookend(token, lesson, ownership, before, templates):
+    """Exact mapped sources bracket consumed teacher bytes using metadata only."""
+    after = scoped_lesson_sources(token, lesson, ownership=ownership)
+    if after.get('problem') or after != before:
+        raise Unreadable('The exact mapped Form teacher source changed while its contents were read.')
+    expected = {d['id']: d['metadata'] for d in before['decks']}
+    if {fid for fid, _, _ in templates} != set(ownership['source_ids']):
+        raise Unreadable('Every exact mapped Form teacher must be readable before scoring.')
+    for fid, meta, _ in templates:
+        prior = expected.get(fid, {})
+        if (prior.get('id') != fid or prior.get('trashed') is not False
+                or not prior.get('version') or not prior.get('modifiedTime')
+                or any(meta.get(k) != prior.get(k)
+                       for k in ('id', 'mimeType', 'version', 'modifiedTime', 'name', 'parents'))):
+            raise Unreadable('Consumed teacher bytes differ from the exact mapped Form source metadata.')
 
 
 def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
@@ -1344,20 +1480,19 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
                 "action": "Preserve this activity's original files and grade history; no assessment is requested."}
     try:
         binding = work.form_teacher_sources(config, agenda, class_key, week_label, form_id)
-    except (ValueError, TypeError, KeyError) as error:
-        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Needs check", "problem": str(error)}
-    lessons = [lesson for lesson in agenda.lessons(class_key, week_label)
-               if any(f.get("form_id") == form_id for f in lesson["forms"])]
-    if len(lessons) != 1:
-        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Needs check", "problem": "The exact assignment's Agenda lesson is not confirmed.",
-                "action": "Confirm this Form's Agenda lesson before rerunning grading."}
-    lesson = lessons[0]
+        ownership = form_source_ownership(config, agenda, class_key, week_label, form_id, binding=binding)
+        scoped_lesson = form_source_scope(agenda, class_key, week_label, form_id, binding=binding, ownership=ownership)
+    except (ValueError, TypeError, KeyError, Unreadable) as error:
+        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Needs assignment setup", "problem": str(error),
+                'scope': 'assignment', 'action': '%s · %s · Form %s: connect this Form to its own exact teacher sources in assignment setup, then refresh.'
+                % (class_key, week_label, form_id)}
+    lesson = scoped_lesson
     context = "%s · %s · %s" % (agenda.classes[class_key]["name"], week_label, lesson["topic"])
     hold = completion_holds.check(config, agenda, class_key, week_label, form_id)
     if hold["held"]:
         return {**hold, "context": context, "problem": context + ": " + hold["problem"],
                 "student_copies_checked": False, "scope": "assignment"}
-    sources = lesson_sources(token, lesson, binding=binding) if binding else lesson_sources(token, lesson)
+    sources = scoped_lesson_sources(token, lesson, binding=binding, ownership=ownership)
     if sources["problem"]:
         return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson", "context": context,
                 "source_resolution": sources, "problem": context + ": " + sources["problem"],
@@ -1369,7 +1504,7 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
     for deck_id in ids:
         try:
             meta, deck = _teacher_template(token, deck_id)
-            if binding:
+            if binding or ownership:
                 bound_templates.append((deck_id, meta, deck))
             checked = teacher_readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""),
                 require_complete_codes=student_coding_required(agenda, class_key, week_label, form_id))
@@ -1387,11 +1522,18 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
             results.append({"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson",
                             "problem": str(error),
                             **({"read_failure": failure} if (failure := _registered_teacher_read_failure(error, binding)) else {})})
+    elif ownership:
+        try:
+            _mapped_teacher_bookend(token, lesson, ownership, sources, bound_templates)
+        except (google.GoogleError, Unreadable) as error:
+            results.append({'status': 'NOT_READY', 'code': 'deck_not_ready', 'label': 'Cannot read lesson',
+                            'problem': str(error)})
     failed = next((r for r in results if r["status"] != "READY"), None)
     return {"status": "NOT_READY" if failed else "READY", "code": "deck_not_ready" if failed else None,
             "label": failed.get("label", "Needs check") if failed else "Ready",
             "scope": "assignment", "context": context, "student_copies_checked": False, "linked_decks": results,
             "source_resolution": sources,
+            "source_ownership": ownership,
             **({"read_failure": failed["read_failure"]} if failed and failed.get("read_failure") else {}),
             "problem": context + ": " + failed["problem"] if failed else None,
             "action": failed.get("action") if failed and failed.get("action") else
@@ -1689,12 +1831,31 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         return {**out, "problem": "Only Google Slides or PowerPoint decks can be scored. Open it yourself."}
     templates = []
     eligible = (assignment_check or {}).get("source_resolution")
-    if form.get("teacher_source_binding"):
-        lesson = next(l for l in agenda.lessons(class_key, week_label) if any(f.get("form_id") == form_id for f in l["forms"]))
-        eligible = lesson_sources(token, lesson, binding=form["teacher_source_binding"])
+    binding = form.get('teacher_source_binding')
+    ownership = (assignment_check or {}).get('source_ownership')
+    try:
+        lesson = form_source_scope(agenda, class_key, week_label, form_id, binding=binding, ownership=ownership)
+    except Unreadable as error:
+        return {**out, 'code': 'deck_not_ready', 'label': 'Needs assignment setup', 'problem': str(error)}
+    if binding or ownership or eligible is not None:
+        fresh = scoped_lesson_sources(token, lesson, binding=binding, ownership=ownership)
+        changed = False
+        if eligible is not None:
+            changed = fresh != eligible
+            if binding:
+                # Old readers may omit metadata in readiness. The exact
+                # declared collection is freshly read/bookended below; stale
+                # or sibling source IDs still cannot authorize a source.
+                changed = ({d['id'] for d in fresh.get('decks', [])} !=
+                           {d['id'] for d in eligible.get('decks', [])})
+        if changed:
+            return {**out, 'code': 'deck_not_ready', 'label': 'Needs check',
+                    'problem': 'This exact Form teacher-source resolution changed. Refresh this assignment before scoring.'}
+        eligible = fresh
         if eligible.get("problem"):
             return {**out, "code": "deck_not_ready", "label": "Needs check", "problem": eligible["problem"]}
-    deck_ids = [d["id"] for d in eligible["decks"]] if eligible else lesson_decks(agenda, class_key, week_label, form_id)
+    deck_ids = [d["id"] for d in eligible["decks"]] if eligible else lesson_decks(
+        agenda, class_key, week_label, form_id, binding=binding, ownership=ownership)
     for deck_id in deck_ids:
         try:
             templates.append((deck_id,) + _teacher_template(token, deck_id))
@@ -1721,7 +1882,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if (not complete_codes and not has_codes and len(templates) == 1
             and (not inventory(deck)[0] or inventory(deck)[0] == inventory(templates[0][2])[0])):
         best = templates[0][2]
-    if has_codes and coverage(deck, best) < 0.8 and not form.get("teacher_source_binding"):
+    if has_codes and coverage(deck, best) < 0.8 and not binding and not ownership:
         # Look only in the actual linked lesson/source folders. A same-title
         # file elsewhere, including an obsolete lesson, is not a replacement.
         title = original_title(upload.get("name") or meta.get("name", ""))
@@ -1739,10 +1900,10 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
                 except (google.GoogleError, Unreadable):
                     continue
         best = pick_template(deck, [t[2] for t in templates])
-    if form.get("teacher_source_binding") and has_codes and coverage(deck, best) < 0.8:
+    if (binding or ownership) and has_codes and coverage(deck, best) < 0.8:
         return {**out, "code": "deck_not_ready", "label": "Needs check",
                 "problem": "This submitted copy's own coded questions do not match the exact registered teacher sources."}
-    if form.get("teacher_source_binding") and best is not None:
+    if (binding or ownership) and best is not None:
         share = coverage(deck, best)
         same = [t for t in templates if inventory(t[2])[0] == inventory(best)[0] and coverage(deck, t[2]) == share]
         if len(same) != 1:
@@ -1762,6 +1923,12 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         except (google.GoogleError, Unreadable) as error:
             return {**out, "code": "deck_not_ready", "label": "Cannot read lesson", "problem": str(error),
                     "action": "Recheck the exact registered teacher sources; no scores were calculated."}
+    elif ownership:
+        try:
+            _mapped_teacher_bookend(token, lesson, ownership, eligible, templates)
+        except (google.GoogleError, Unreadable) as error:
+            return {**out, 'code': 'deck_not_ready', 'label': 'Cannot read lesson', 'problem': str(error),
+                    'action': 'Refresh this exact Form teacher source; no scores were calculated.'}
     source_key = (file_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
     template_key = (chosen[0], chosen[1].get("modifiedTime", ""), str(chosen[1].get("version") or ""))
     cached = _results.get(source_key)

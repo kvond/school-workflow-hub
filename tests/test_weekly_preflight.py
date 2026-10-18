@@ -366,6 +366,51 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual([(c['date'], c['closed']) for c in reading['dated']], [('2026-10-23', True)])
 
 
+class LessonNameTests(unittest.TestCase):
+    def test_weekly_folder_names_are_the_lesson_names(self):
+        self.assertEqual(wp.folder_lesson_name('Cycle 06 — Cellular Respiration & Fermentation (Unit 1)'),
+                         'Cellular Respiration & Fermentation')
+        self.assertEqual(wp.folder_lesson_name('Week 08 - History of Forensics'), 'History of Forensics')
+        self.assertEqual(wp.folder_lesson_name('Week 08b - Crime Scene to Courtroom (Mock Trial)'),
+                         'Crime Scene to Courtroom (Mock Trial)')
+        self.assertEqual(wp.folder_lesson_name('Week 07'), '')
+
+    def test_agenda_shorthand_gives_way_to_the_folder_name(self):
+        self.assertEqual(wp.lesson_name(['Cycle 06 — Cellular Respiration & Fermentation (Unit 1)'], 'Fermentation'),
+                         'Cellular Respiration & Fermentation')
+        self.assertEqual(wp.lesson_name(['Week 08 - History of Forensics', 'Week 08 - History of Forensics',
+                                         'Week 08b - Crime Scene to Courtroom (Mock Trial)'], 'Unit 1 Review'),
+                         'History of Forensics + Crime Scene to Courtroom (Mock Trial)')
+        self.assertEqual(wp.lesson_name(['Week 07'], 'Body Tissues (cont.)'), 'Body Tissues (cont.)')
+        self.assertEqual(wp.lesson_name([], 'Body Tissues (cont.)'), 'Body Tissues (cont.)')
+
+    def test_a_deck_kept_in_another_weekly_folder_joins_the_name_and_shorthand_is_kept(self):
+        class Ctx:
+            def file(self, ident):
+                return {'FICTIONALCOURTFOLDER0001': {'name': 'Week 08b - Crime Scene to Courtroom (Mock Trial)'},
+                        'FICTIONALGENERALFOLDER01': {'name': '03 FORENSICS (Public)'}}.get(ident, {'error': 'x'})
+        lesson = {'topic': 'Unit 1 Review', 'exceptions': [{'lesson': 'Unit 1 Review'}], 'supply_rows': [],
+                  'sources': [
+                      {'id': 'FICTIONALHISTFOLDER0001', 'roles': ['folder'], 'accessible': True, 'trashed': False,
+                       'name': 'Week 08 - History of Forensics'},
+                      {'id': 'FICTIONALHISTDECK000001', 'roles': ['teacher_deck'], 'accessible': True,
+                       'parents': ['FICTIONALHISTFOLDER0001', 'FICTIONALGENERALFOLDER01']},
+                      {'id': 'FICTIONALCOURTDECK00001', 'roles': ['second_deck'], 'accessible': True,
+                       'parents': ['FICTIONALCOURTFOLDER0001']}]}
+        wp._name_lesson(Ctx(), lesson)
+        self.assertEqual(lesson['topic'], 'History of Forensics + Crime Scene to Courtroom (Mock Trial)')
+        self.assertEqual(lesson['agenda_topic'], 'Unit 1 Review')
+        self.assertEqual(lesson['exceptions'][0]['lesson'], lesson['topic'])
+
+    def test_soft_line_breaks_split_a_resource_list(self):
+        runs = [{'textRun': {'content': 'Activity and resource links\nWorld Lab — Yeast Balloons\u000b'}},
+                {'textRun': {'content': 'https://example.org/yeast-balloons\u000bOther — Thing\u000bhttps://example.org/other\n'}}]
+        page = {'objectId': 'p1', 'pageElements': [{'shape': {'text': {'textElements': runs}}}]}
+        outline = wp.outline_native({'slides': [page]})
+        links = wp.web_links(outline[0])
+        self.assertEqual(wp.match_link('World Lab — Yeast Balloons', links)['url'], 'https://example.org/yeast-balloons')
+
+
 class DeckSupplyTests(unittest.TestCase):
     def test_deck_lines_are_split_and_kept_only_for_this_weeks_activity(self):
         week = wp._week_text({'topic': 'Fermentation', 'prep': 'LAB Yeast Fermentation Lab',

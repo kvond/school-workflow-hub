@@ -68,7 +68,7 @@ async function loadProvider() {
 }
 
 function maybeLoad() {
-  if (location.hash === '#routine' || !location.hash) loadProvider();
+  if (['', '#today', '#routine'].includes(location.hash)) loadProvider();
 }
 
 window.addEventListener('hashchange', maybeLoad);

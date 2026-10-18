@@ -20,7 +20,7 @@ function boot(reader = async () => ({topic: 'Updated lesson'})) {
   const context = vm.createContext({plans, document, location,
     window: {addEventListener: (name, handler) => { handlers[name] = handler; }},
     $: id => { if (!pages.has(id)) pages.set(id, {}); return pages.get(id); },
-    loadLessonReadiness() {}, loadToday() {}, openWork() {}, loadRoutine() {},
+    loadLessonReadiness() {}, loadToday() {}, openWork() {}, loadRoutine() {}, loadSystemNotes() {},
     loadPlans: async (date, fresh) => { requests.push({date, fresh}); plans.data = await reader(); }});
   vm.runInContext(refresh + navigation + listeners + '\nglobalThis.ui = {refreshVisiblePlans, showTab};', context);
   return {plans, document, location, requests, handlers, ui: context.ui};
@@ -31,7 +31,7 @@ test('returning to Lessons replaces an old plan with a fresh Agenda read', async
   const app = boot(async () => ({topic}));
   app.ui.showTab(); await tick();
   assert.equal(app.plans.data.topic, 'Original lesson');
-  app.location.hash = '#routine'; app.ui.showTab();
+  app.location.hash = '#today'; app.ui.showTab();
   topic = 'Changed in the Agenda';
   app.location.hash = '#plans'; app.ui.showTab(); await tick();
   assert.equal(app.plans.data.topic, topic);
