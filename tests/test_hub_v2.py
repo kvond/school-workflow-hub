@@ -1457,6 +1457,10 @@ class CompletionTests(unittest.TestCase):
 class ScoreFileTests(unittest.TestCase):
     FORM = "FICTIONALFORMID1234567890abc"
 
+    def agenda(self):
+        from test_completion_readiness import single_assignment_agenda
+        return single_assignment_agenda()
+
     def work_result(self, late=False):
         row = {"matched": True, "last": "Rivera", "first": "Ana", "section": "A2 Forensics",
                "files": [{"id": "STUDENTDECK123", "mime": completion.SLIDES}], "late": late, "earlier": []}
@@ -1470,7 +1474,7 @@ class ScoreFileTests(unittest.TestCase):
         with patch.object(google, "drive_file", side_effect=lambda t, fid, fields=None: {
                     "id": fid, "name": "Deck", "mimeType": completion.SLIDES, "modifiedTime": "2026-09-22T00:00:00Z"}), \
                 patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]) as read:
-            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM, file_id,
+            result = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM, file_id,
                                            found if found is not None else self.work_result(late), include_late=include_late)
         return result, read
 
@@ -1522,10 +1526,10 @@ class ScoreFileTests(unittest.TestCase):
         with patch.object(google, "drive_file", side_effect=metadata), \
                 patch.object(google, "deck_bytes", side_effect=content), \
                 patch.object(completion, "assess", wraps=completion.assess) as assess:
-            first = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+            first = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                           "STUDENTDECK123", found, include_late=True)
             state.update(version="2", answer="Energy reaches consumers through producers.")
-            second = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+            second = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                            "STUDENTDECK123", found, include_late=True)
         self.assertEqual(assess.call_count, 2)
         self.assertNotEqual(first["items"][0]["answer"], second["items"][0]["answer"])
@@ -1543,7 +1547,7 @@ class ScoreFileTests(unittest.TestCase):
         mark = {"configured": True, "entered_at": {"at": "2026-10-02T12:46:00Z"}}
         before = deepcopy(found)
         with patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "load_agenda", return_value=self.agenda()), \
                 patch.object(app, "lesson_work", return_value=found) as scans, \
                 patch.object(app.ledger, "read", return_value=mark) as history, \
                 patch.object(completion, "assignment_readiness", return_value={"status": "READY"}) as readiness, \
@@ -1583,7 +1587,7 @@ class ScoreFileTests(unittest.TestCase):
         query = {"class": ["forensics"], "week": ["Wk 04"], "form": [self.FORM],
                  "file": ["STUDENTDECK123"], "include_late": ["true"]}
         with patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "load_agenda", return_value=self.agenda()), \
                 patch.object(app.ledger, "read") as history, \
                 patch.object(completion, "assignment_readiness") as readiness, \
                 patch.object(completion, "_template") as template:
@@ -1607,7 +1611,7 @@ class ScoreFileTests(unittest.TestCase):
         found["other_files"] = [{"files": [{"id": "UNRESOLVEDFILE123"}]}]
         with patch.object(completion, "_template") as template, \
                 patch.object(google, "deck_bytes") as read, patch.object(completion, "assess") as assess:
-            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+            result = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                            "STUDENTDECK123", found, include_late=True)
         self.assertEqual(result["code"], "coverage_incomplete")
         template.assert_not_called()
@@ -1647,10 +1651,10 @@ class ScoreFileTests(unittest.TestCase):
                     "modifiedTime": "2026-10-07T19:45:00Z"}), \
                 patch.object(google, "deck_bytes", side_effect=lambda token, fid, mime:
                              handout(RULE="Through producers") if fid == "REPLACEMENTDECK123" else handout()) as read:
-            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+            result = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                            "REPLACEMENTDECK123", found, include_late=True)
             with self.assertRaises(ValueError):
-                completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                       "STUDENTDECK123", found, include_late=True)
         self.assertEqual(result["notes_score"], 2.0)
         self.assertEqual(sorted(c.args[1] for c in read.call_args_list), ["FICTIONALDECK1234567890", "REPLACEMENTDECK123"])
@@ -1684,7 +1688,7 @@ class ScoreFileTests(unittest.TestCase):
             form["students"][0]["earlier"][0].update(change)
             self.assertIn("selection_problem", completion.recheck_candidates(form)[0])
             with patch.object(google, "drive_file") as metadata, patch.object(google, "deck_bytes") as read:
-                result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+                result = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                                "REPLACEMENTDECK123", found, include_late=True)
             self.assertEqual(result["code"], "coverage_incomplete")
             metadata.assert_not_called(); read.assert_not_called()
@@ -1697,7 +1701,7 @@ class ScoreFileTests(unittest.TestCase):
         from copy import deepcopy
         found = self.replacement_work(); before = deepcopy(found)
         with patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "load_agenda", return_value=self.agenda()), \
                 patch.object(app, "lesson_work", return_value=found), patch.object(app.ledger, "read") as ledger_read:
             response = app.api("api/work", {"class": ["forensics"], "week": ["Wk 04"]}, {})
         derived = response["entry_rechecks"][self.FORM]["rows"][0]
@@ -1761,7 +1765,7 @@ class ScoreFileTests(unittest.TestCase):
         mark = {"configured": True, "entered_at": {"at": "2026-10-02T12:46:00Z"}}
         before = deepcopy(found)
         with patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "load_agenda", return_value=self.agenda()), \
                 patch.object(app, "lesson_work", return_value=found) as scans, \
                 patch.object(app.ledger, "read", return_value=mark) as ledger_read, \
                 patch.object(completion, "assignment_readiness", return_value={"status": "READY"}), \
@@ -1783,7 +1787,7 @@ class ScoreFileTests(unittest.TestCase):
         form["window"] = {"at": "2999-12-01T00:00:00Z"}
         query = {"class": ["forensics"], "week": ["Wk 04"], "form": [self.FORM], "file": ["STUDENTDECK123"]}
         with patch.object(google, "service_token", return_value="token"), \
-                patch.object(app, "load_agenda", return_value=fixture()), \
+                patch.object(app, "load_agenda", return_value=self.agenda()), \
                 patch.object(app, "lesson_work", return_value=found) as scans, \
                 patch.object(app.ledger, "read", return_value={"configured": False}) as history, \
                 patch.object(completion, "assignment_readiness") as readiness, \
@@ -1804,11 +1808,11 @@ class ScoreFileTests(unittest.TestCase):
                 patch.object(google, "drive_file") as metadata, \
                 patch.object(google, "deck_bytes") as read, \
                 patch.object(completion, "assess") as assess:
-            result = completion.score_file("token", fixture(), "forensics", "Wk 04", self.FORM,
+            result = completion.score_file("token", self.agenda(), "forensics", "Wk 04", self.FORM,
                                            "STUDENTDECK123", found)
-            batch = app._score_rows("token", fixture(), "forensics", "Wk 04", self.FORM, form, found)
+            batch = app._score_rows("token", self.agenda(), "forensics", "Wk 04", self.FORM, form, found)
             with patch.object(google, "service_token", return_value="token"), \
-                    patch.object(app, "load_agenda", return_value=fixture()), \
+                    patch.object(app, "load_agenda", return_value=self.agenda()), \
                     patch.object(app, "lesson_work", return_value=found):
                 manual = app.api("api/score", {"class": ["forensics"], "week": ["Wk 04"],
                                               "form": [self.FORM], "file": ["STUDENTDECK123"]}, {})
@@ -2502,6 +2506,7 @@ class RealDeckShapeTests(unittest.TestCase):
         self.assertEqual(completion.original_title("Deck"), "")
 
     def test_a_deck_shared_only_by_link_is_found_beside_the_linked_deck(self):
+        from test_completion_readiness import single_assignment_agenda
         completion._templates.clear()
         completion._results.clear()
         completion._folders.clear()
@@ -2519,12 +2524,13 @@ class RealDeckShapeTests(unittest.TestCase):
                 patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]), \
                 patch.object(google, "files_named", return_value=[]), \
                 patch.object(google, "folder_children", side_effect=lambda t, fid: lesson_folder if fid == "LESSONFOLDER" else []):
-            result = completion.score_file("token", fixture(), "forensics", "Wk 04", ScoreFileTests.FORM,
+            result = completion.score_file("token", single_assignment_agenda(), "forensics", "Wk 04", ScoreFileTests.FORM,
                                            "STUDENTDECK123", found)
         self.assertIsNone(result["problem"])
         self.assertEqual(result["counts"]["BANK"], {"done": 1, "required": 2})
 
     def test_the_handed_out_deck_is_found_in_its_actual_folder_when_agenda_links_another(self):
+        from test_completion_readiness import single_assignment_agenda
         completion._templates.clear()
         completion._results.clear()
         decks = {"FICTIONALDECK1234567890": handout(), "ORIGINALDECK123456789": bank_deck(NOTES_ID="The bobtail squid"),
@@ -2537,7 +2543,7 @@ class RealDeckShapeTests(unittest.TestCase):
                 patch.object(google, "deck_bytes", side_effect=lambda t, fid, mime: decks[fid]), \
                 patch.object(completion, "_siblings", return_value=[{"id": "ORIGINALDECK123456789", "name": "Bank Deck"}]), \
                 patch.object(google, "files_named", return_value=[{"id": "ORIGINALDECK123456789"}]) as search:
-            result = completion.score_file("token", fixture(), "forensics", "Wk 04", ScoreFileTests.FORM,
+            result = completion.score_file("token", single_assignment_agenda(), "forensics", "Wk 04", ScoreFileTests.FORM,
                                            "STUDENTDECK123", found)
         search.assert_not_called()
         self.assertIsNone(result["problem"])

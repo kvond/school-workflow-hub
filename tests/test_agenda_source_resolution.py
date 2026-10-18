@@ -127,14 +127,14 @@ class ActualFolderTests(unittest.TestCase):
         read.assert_not_called()
 
     def test_same_title_elsewhere_does_not_replace_current_lesson_source(self):
-        from test_completion_readiness import work_result,FORM,STUDENT
+        from test_completion_readiness import work_result,FORM,STUDENT,single_assignment_agenda
         from test_hub_v2 import handout
         completion._templates.clear();completion._results.clear()
         with patch.object(completion,'_template',return_value=({'name':'Current linked deck'},completion.read_deck(handout()))), \
              patch.object(google,'drive_file',return_value={'mimeType':google.PPTX,'version':'1'}), \
              patch.object(completion,'_read',return_value=source('A supported answer.')), \
              patch.object(google,'files_named',return_value=[{'id':NEW}]) as search:
-            result=completion.score_file('read',fixture(),'forensics','Wk 04',FORM,STUDENT,work_result())
+            result=completion.score_file('read',single_assignment_agenda(),'forensics','Wk 04',FORM,STUDENT,work_result())
         self.assertIn('No handed-out copy',result['problem'])
         search.assert_not_called()
 

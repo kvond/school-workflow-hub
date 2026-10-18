@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 from hub_v2 import completion, google, native_teacher_source, response_binding
 from test_completion_readiness import HEADER, source, work_result, TEMPLATE, STUDENT, FORM
-from test_hub_v2 import fixture, pptx
+from test_hub_v2 import pptx
+from test_completion_readiness import single_assignment_agenda as fixture
 
 
 def shape(key, text="", *, x=0, y=0, width=900, height=40):

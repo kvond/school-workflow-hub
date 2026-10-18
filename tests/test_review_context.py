@@ -236,7 +236,8 @@ class ReviewContextTests(unittest.TestCase):
                 patch.object(completion, 'score_file', side_effect=AssertionError('no scoring')), \
                 patch.object(completion, 'assess', side_effect=AssertionError('no assessment')), \
                 patch.object(google, 'deck_bytes', side_effect=AssertionError('no source byte read')):
-            return rc.cached_reviews('fictional', fixture(), 'forensics', 'Wk 04', FORM, [row()])
+            from test_completion_readiness import single_assignment_agenda
+            return rc.cached_reviews('fictional', single_assignment_agenda(), 'forensics', 'Wk 04', FORM, [row()])
 
     def test_cached_response_slides_require_exact_source_template_and_folder_bookends(self):
         cached, limitations = self.cached()

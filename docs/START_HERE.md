@@ -377,6 +377,18 @@ verified section automatically. Fresh target checks protect drafts and saves fro
 stale lesson/section selections. Saved assessment histories remain intact. This
 is not a deployment or recovery-completion claim.
 
+Readiness, scoring and native feedback resolve teacher-source ownership for the
+exact Form before reading lesson sources. Separate Forms in one Agenda row do
+not inherit each other's decks. Existing exact teacher-source declarations or
+the validated deck-to-assignment-to-Form mappings supply that ownership; labels,
+link order and a shared week do not. Missing or conflicting ownership returns a
+Form-specific assignment-setup action. A verified sibling can proceed without
+reading another Form's inaccessible teacher. Mapped source metadata and consumed
+teacher versions are checked again after reads. A single unconfigured Form keeps
+its existing row/folder source rules, and explicitly combined assessments retain
+their declared component sources. This does not register new assignment keys,
+write grades, or alter original submissions and delivery records.
+
 ## Source collection: one root, not one assumed folder
 
 The approved **00 ALL TURN IN** root is the default discovery boundary; its

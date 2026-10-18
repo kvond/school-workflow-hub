@@ -325,16 +325,18 @@ def evidence(assertion, token, config, agenda, scope, found):
         raise Held(str(error)) from None
     if binding != form.get('teacher_source_binding'):
         raise Held('The exact Form teacher-source declaration changed. Reload current work before preparing feedback.')
+    try:
+        ownership = completion.form_source_ownership(config, agenda, scope['class'], scope['week'], scope['form'], binding=binding)
+        scoped_lesson = completion.form_source_scope(agenda, scope['class'], scope['week'], scope['form'],
+                                                      binding=binding, ownership=ownership)
+    except (completion.Unreadable, ValueError, TypeError, KeyError) as error:
+        raise Held(str(error)) from None
     sources = None
-    if binding:
-        lessons = [lesson for lesson in agenda.lessons(scope['class'], scope['week'])
-                   if any(f.get('form_id') == scope['form'] for f in lesson['forms'])]
-        if len(lessons) != 1:
-            raise Held('The exact Form needs one current Agenda lesson.')
-        sources = completion.lesson_sources(token, lessons[0], binding=binding)
+    if binding or ownership:
+        sources = completion.scoped_lesson_sources(token, scoped_lesson, binding=binding, ownership=ownership)
         selected = [d for d in sources.get('decks', []) if d['id'] == score['template_id']]
         prior_sources = (form.get('grade_readiness') or {}).get('source_resolution')
-        if (sources.get('problem') or sources.get('read_failure') or sources.get('binding') != binding
+        if (sources.get('problem') or sources.get('read_failure') or (binding and sources.get('binding') != binding)
                 or len(selected) != 1 or (prior_sources is not None and prior_sources != sources)):
             raise Held('The exact Form registered teacher sources need fresh verification before feedback.')
     elif score['template_id'] not in completion.lesson_decks(agenda, scope['class'], scope['week'], scope['form']):
@@ -348,7 +350,7 @@ def evidence(assertion, token, config, agenda, scope, found):
         # lesson_sources brackets exact registered parent/teacher metadata and
         # membership internally. Repeat that proof around the existing capture;
         # no second export or invented consumed-template tuple is necessary.
-        after = completion.lesson_sources(token, lessons[0], binding=binding)
+        after = completion.scoped_lesson_sources(token, scoped_lesson, binding=binding, ownership=ownership)
         meta = selected[0]['metadata']
         expected = {'id': meta['id'], 'name': str(meta.get('name', ''))[:200],
                     'mime_type': meta['mimeType'], 'modified_at': str(meta['modifiedTime']),

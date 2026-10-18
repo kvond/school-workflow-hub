@@ -1,7 +1,7 @@
 """Cross-week source routing and score holds with fictional school data."""
 import unittest
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from hub_v2 import completion, google, morning, work
 
@@ -59,7 +59,9 @@ class CrossWeekMatchingTests(unittest.TestCase):
         with patch.object(completion, "lesson_decks", return_value=[]), \
                 patch.object(google, "drive_file", return_value={}), \
                 patch.object(completion, "_read", side_effect=completion.Unreadable("fictional test")) as read:
-            result = completion.score_file("token", object(), "forensics", "Wk 05", "FORM", "F", found)
+            agenda = Mock()
+            agenda.lessons.return_value = [{"forms": [{"form_id": "FORM"}], "materials": []}]
+            result = completion.score_file("token", agenda, "forensics", "Wk 05", "FORM", "F", found)
         self.assertNotEqual(result.get("code"), "source_week_mismatch")
         read.assert_called_once()
 
