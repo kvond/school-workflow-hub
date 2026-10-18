@@ -20,7 +20,7 @@ function renderer(fetch = async () => {throw Error('unexpected fetch');}) {
     window: {open: () => ({addEventListener() {}, close() {}, location: null})}, URL: {createObjectURL: () => 'blob:fake', revokeObjectURL() {}},
     setTimeout() {}, loadToday() {}};
   vm.createContext(context);
-  vm.runInContext(source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('function renderLearningReport(')) + '\nthis.ui={renderTodayFeedback,printTodayFeedback};', context);
+  vm.runInContext(source.slice(source.indexOf('async function printTodayFeedback('), source.indexOf('function renderLearningReport(')) + '\nthis.ui={renderFeedbackTools,printTodayFeedback};', context);
   return context.ui;
 }
 const file = id => ({id, name: 'student feedback.pdf', url: 'https://drive.google.com/open?id=' + id, course_name: 'Forensics', feedback_day: '2032-01-20'});
@@ -30,12 +30,12 @@ const data = overrides => ({date: '2032-01-20', requested_date: '2032-01-21', fi
   delivery: {status: 'verified', printed_file_ids: ['REPORT1','REPORT2'], handed_file_ids: ['REPORT1'], pending_file_ids: []}, ...overrides});
 
 test('recorded exact versions are compact historical reprints, unknown delivery remains visible pending', () => {
-  const ui = renderer(), known = ui.renderTodayFeedback(data());
+  const ui = renderer(), known = ui.renderFeedbackTools(data());
   assert.match(known.textContent, /Saved feedback dated 2032-01-20 is recorded Printed/);
   assert.match(known.textContent, /recorded Printed.*1 are recorded Handed/);
   assert.equal(nodes(known).filter(n => n.tagName === 'button')[0].textContent, 'Reprint saved feedback — 2032-01-20');
   assert.ok(nodes(known).some(n => n.tagName === 'a' && n.href.includes('/daily/pdf')));
-  const unknown = ui.renderTodayFeedback(data({delivery:{status:'unavailable',pending_file_ids:['REPORT1','REPORT2'],problem:'Private records unavailable.'},pending_files:[file('REPORT1'),file('REPORT2')]}));
+  const unknown = ui.renderFeedbackTools(data({delivery:{status:'unavailable',pending_file_ids:['REPORT1','REPORT2'],problem:'Private records unavailable.'},pending_files:[file('REPORT1'),file('REPORT2')]}));
   assert.match(unknown.textContent, /Private records unavailable.*2 pending report versions/);
   assert.doesNotMatch(unknown.textContent, /No pending printing/);
 });
@@ -47,7 +47,7 @@ test('partial or older-date pending preview sends only exact pending IDs and nev
     name:'Feedback-print-preview-'+'b'.repeat(12)+'.pdf',pdf_url:'/v2/api/feedback/preview/pdf?id='+previewID};
   const calls = [], ui = renderer(async (url, options) => { calls.push([url, options]); return {ok:true,json:async()=>preview}; });
   const view = data({packet_matches_sources:false,pending_files:[file('REPORT2')],delivery:{status:'verified',pending_file_ids:['REPORT2'],printed_file_ids:['REPORT1'],handed_file_ids:[]}});
-  const panel = ui.renderTodayFeedback(view), button = nodes(panel).find(n=>n.tagName==='button');
+  const panel = ui.renderFeedbackTools(view), button = nodes(panel).find(n=>n.tagName==='button');
   assert.equal(button.textContent,'Print pending feedback (1)'); await button.onclick();
   assert.equal(calls.length,1); assert.equal(calls[0][0],'api/feedback/preview');
   assert.match(panel.textContent,/Print pending opens only the pending preview/);
@@ -59,7 +59,7 @@ test('partial or older-date pending preview sends only exact pending IDs and nev
 test('all pending current-day reports retain the existing saved daily-document print path', async () => {
   const calls = [], ui = renderer(async (url, options) => { calls.push([url, options]); return {ok:true,blob:async()=>({type:'application/pdf',size:10})}; });
   const view = data({pending_files:[file('REPORT1'),file('REPORT2')],packet_matches_sources:true,delivery:{status:'verified',pending_file_ids:['REPORT1','REPORT2'],printed_file_ids:[],handed_file_ids:[]}});
-  const panel=ui.renderTodayFeedback(view); await nodes(panel).find(n=>n.tagName==='button').onclick();
+  const panel=ui.renderFeedbackTools(view); await nodes(panel).find(n=>n.tagName==='button').onclick();
   assert.equal(calls.length,1); assert.equal(calls[0][0],view.daily_packet.pdf_url);
   assert.match(panel.textContent,/Daily feedback PDF ready/);
 });
@@ -108,7 +108,7 @@ test('confirmation locks every selector until exact readback and restores contro
 });
 
 test('unverified older pending packet remains visibly blocked with original link and cannot enter preview IDs', () => {
-  const ui=renderer(),blocked=file('BLOCKEDOLD'); const panel=ui.renderTodayFeedback(data({pending_source_problems:[{date:'2032-01-01',files:[blocked],problem:'Student-only source not verified.'}],delivery:{status:'verified',pending_file_ids:['BLOCKEDOLD'],printed_file_ids:['REPORT1','REPORT2'],handed_file_ids:[]}}));
+  const ui=renderer(),blocked=file('BLOCKEDOLD'); const panel=ui.renderFeedbackTools(data({pending_source_problems:[{date:'2032-01-01',files:[blocked],problem:'Student-only source not verified.'}],delivery:{status:'verified',pending_file_ids:['BLOCKEDOLD'],printed_file_ids:['REPORT1','REPORT2'],handed_file_ids:[]}}));
   assert.match(panel.textContent,/pending versions need source verification.*Student-only source not verified/);
   assert.ok(nodes(panel).some(node=>node.tagName==='a'&&node.href===blocked.url));
 });

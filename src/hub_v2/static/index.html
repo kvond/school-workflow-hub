@@ -41,9 +41,11 @@
     <div id="today-feedback" aria-live="polite"></div>
     <details class="routine" id="hub-tools">
       <summary><h2>Hub tools</h2></summary>
-      <p class="muted">The morning score check, the morning helper review, the AI runtime and the lesson link check. Notes moved to Lessons.</p>
+      <p class="muted">The morning score check, the morning helper review, the AI runtime and the lesson link check. System notes are in Slack; their link is on Lessons.</p>
       <div class="controls"><button type="button" id="reload-routine">Refresh Hub tools</button></div>
       <div id="routine-body"></div>
+      <details><summary>Feedback backup tools</summary><div id="today-feedback-tools"></div></details>
+      <div id="agenda-diagnostics"></div>
       <details id="morning-summary" class="routine" aria-live="polite"></details>
       <section id="ai-runtime" class="routine" aria-live="polite">
         <h2>AI runtime</h2>
@@ -70,9 +72,9 @@
         <button type="button" id="reload-plans">Reload</button>
       </div>
     </div>
-    <details id="system-notes" class="routine notes-panel" open>
-      <summary><h2>Notes</h2></summary>
-      <p class="muted">Issues to fix, decisions to remember, and anything else you want to drop here. Saved in the Hub, so it is the same on every computer.</p>
+    <details id="system-notes" class="routine notes-panel">
+      <summary><h2>System notes in Slack</h2></summary>
+      <p class="muted">Use the Slack conversation for Hub issues and repair updates. Earlier private Hub notes are retained below.</p>
       <div id="system-notes-body" aria-live="polite"></div>
     </details>
     <section id="next-week-notes" aria-label="Next week notes"></section>

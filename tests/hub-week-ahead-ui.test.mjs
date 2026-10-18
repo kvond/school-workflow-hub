@@ -30,7 +30,7 @@ function boot(responses) {
     return {ok: true, json: async () => responses(url, options)};
   }});
   vm.runInContext(prefix + '\nasync function postJSON(url, body) { const r = await fetch(url, {method: "POST", body: JSON.stringify(body)}); return r.json(); }\n' +
-    weekAhead + '\nglobalThis.ui = {loadWeekAhead, renderWeekAhead, weekAhead};', context);
+    source.slice(source.indexOf('const TEACHER_AGENDA_CHOICES'), source.indexOf('async function printTodayFeedback(')) + weekAhead + '\nglobalThis.ui = {loadWeekAhead, renderWeekAhead, weekAhead};', context);
   return {ui: context.ui, document, requests};
 }
 
