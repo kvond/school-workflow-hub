@@ -53,9 +53,18 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   the same label text as a linked label to the hidden URL, the way a Hub
   lesson save writes one. The repair rereads the header rows and the row,
   writes only that plain cell, and reads it back; a repeat finds nothing to
-  do. Formula cells, linked cells, blank cells and typed text are never
-  written; a visible link that disagrees with its hidden URL is reported.
+  do. Formula cells, linked cells and typed prose are never overwritten; a
+  visible link that disagrees with its hidden URL is reported.
   The Forensics hidden 2nd-deck slot before the folder column is expected.
+  A narrowly bounded exception permits an empty or dash placeholder in the
+  exact second-deck display column to become **2nd deck ↗**, using its existing
+  same-row hidden Google Slides URL. This needs one unambiguous column pair
+  and one exact URL; no title or different source is inferred. Both preview
+  and apply verify current identity, Slides type, untrashed status and complete
+  revision metadata, with unchanged header/lesson-row/URL bookends. Only the
+  display cell is written. Exact link, unchanged row and source readback are
+  required for a verified receipt; uncertain readback remains unconfirmed.
+  Other blank cells with no established column formula remain unchanged.
 - **Sources** (teacher deck, the `/copy` student template — the same file,
   folder, 2nd deck, extra material, Turn-in Forms with their published
   responder IDs). Trashed or unreadable sources are `inaccessible`; a folder
@@ -87,6 +96,14 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
 - **Print list.** Quantities from current roster counts per section ("1 per
   student", "1 per group" = ceil(n/4), optional "if needed" / support copies),
   matched to folder PDFs and Google Docs by name, with page counts and sides.
+  When equally best candidates tie, the unique exact extra-material reference
+  in that current Agenda row wins over folder-only copies. Same-ID references
+  count as one file, ranked using the current Agenda metadata before matching;
+  a stale same-ID folder/shortcut title cannot promote a worse current source.
+  A better folder match is unchanged; multiple explicit
+  choices or remaining ties still need resolution. The selected file still
+  goes through normal metadata/page reads; a failure never chooses another
+  copy. Both originals and teacher-controlled printing marks are preserved.
   A line with no folder file whose own text, or its deck's link list, gives
   an http(s) page is “print from web: URL” — a print instruction in the
   packet and in the Week ahead **Print list**, not a decision; with no URL it
