@@ -11,7 +11,7 @@ from threading import Barrier, Lock
 import unittest
 from unittest.mock import Mock, patch
 
-from hub_v2 import google, student_archive as archive
+from hub_v2 import google, student_archive as archive, student_feedback_checklist
 from school_workflow_hub.core.cloud_state import CloudState, StoreUnavailable
 from tests.test_cloud_state import MemoryCAS
 
@@ -139,7 +139,8 @@ def name_roster(*extra):
 class StudentArchiveTests(unittest.TestCase):
     def setUp(self):
         self.drive, self.port, self.config = FakeDrive(), MemoryCAS(), config()
-        self.patches = [patch.object(archive, "configured_store", return_value=self.port),
+        self.patches = [patch.object(student_feedback_checklist, "refresh_run", return_value={"status": "verified"}),
+                        patch.object(archive, "configured_store", return_value=self.port),
                         patch.object(google, "drive_file", side_effect=self.drive.metadata),
                         patch.object(google, "folder_children", side_effect=self.drive.children),
                         patch.object(google, "archive_file_id", side_effect=self.drive.reserve),
