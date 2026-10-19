@@ -15,6 +15,8 @@ from . import google
 CLASSES = (("biology", "Biology"), ("forensics", "Forensics"), ("anatomy", "A&P"))
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri")
 LAST_ROW = 80
+# How many Agenda weeks back "Last week's lessons" may look past breaks.
+PREVIOUS_LOOK_BACK = 3
 URL = re.compile(r"https://[^\s\"'<>]+")
 FORM = re.compile(r"https://docs\.google\.com/forms/d/(e/)?([A-Za-z0-9_-]{20,})")
 
@@ -370,10 +372,29 @@ class Agenda:
                 for lesson in item["lessons"]:
                     today = next((p for p in lesson["plans"] if p["day"] == weekday), None)
                     lesson["today"] = today
+                item["previous"] = self.previous_lessons(key, week)
             classes.append(item)
         return {"date": day.isoformat(), "weekday": weekday, "week": week, "classes": classes,
                 "problems": self.problems + ([] if week or not self.weeks else
                                              ["%s isn't in any week listed on the Weeks tab." % day.isoformat()])}
+
+    def previous_lessons(self, class_key, week, look_back=PREVIOUS_LOOK_BACK):
+        """The lessons this class last taught before `week`, so an unfinished
+        lesson's links are one click away. Weeks with nothing planned or no
+        class (a break) are skipped, at most `look_back` Agenda weeks back.
+        Read only: links and topics as the Agenda has them, nothing inferred
+        about whether the lesson was finished."""
+        earlier = sorted((w for w in self.weeks if w["monday"] < week["monday"]),
+                         key=lambda w: w["monday"], reverse=True)
+        for prior in earlier[:look_back]:
+            taught = [lesson for lesson in self.lessons(class_key, prior["label"])
+                      if lesson_kind(lesson["topic"]) == "lesson"]
+            if taught:
+                return {"week": prior["label"], "monday": prior["monday"],
+                        "lessons": [{"row": l["row"], "topic": l["topic"], "materials": l["materials"],
+                                     "forms": [{"label": f["label"], "url": f["url"]} for f in l["forms"]],
+                                     "edit_url": l["edit_url"]} for l in taught]}
+        return None
 
     def week_options(self, class_key):
         """Every week this class has a row for, with its topic, for Page 02."""
