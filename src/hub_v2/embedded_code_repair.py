@@ -133,12 +133,16 @@ def _fixed_text(element, role):
           'an explicitly fixed original text shape is required.' % role)
 
 
-def _declared_inventory(census, parsed_markers):
+def _declared_inventory(census, parsed_markers, parsed):
     """Validate the declaration itself while allowing its known missing codes."""
     _need(not {'marker_inventory_missing_or_duplicated', 'marker_inventory_not_on_first_slide'}
           .intersection(census['issues']), 'The declared inventory must be unique and on slide 1.')
     line, cycle = census['inventory_text'], census['inventory_cycle']
-    fields = re.findall(r'\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=([^\s]+)', line)
+    # Count assignments before validating values, including blank duplicates.
+    # Read every box on the inventory slide: the ordinary inventory reader
+    # omits a box containing only an unparseable count such as "NOTES=".
+    count_text = '\n'.join(u['text'] for s in parsed['slides'] if s['number'] == 1 for u in s['units'])
+    fields = re.findall(r'\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=([^\s]*)', count_text)
     _need(len(fields) == len(completion.CATEGORIES)
           and {k for k, _ in fields} == {'NOTES', 'DRAFT', 'OPTIONAL', 'BANK_TERMS'}
           and all(re.fullmatch(r'[0-9]{1,6}', value) for _, value in fields),
@@ -266,7 +270,7 @@ def _plan(before, operations):
     parsed_inventories = [m for s in before['parsed']['slides'] for u in s['units']
                           for m in completion.INVENTORY.finditer(u['text'])]
     _need(len(parsed_inventories) == 1, 'The normal source reader found an ambiguous inventory.')
-    _declared_inventory(census, parsed_markers)
+    _declared_inventory(census, parsed_markers, before['parsed'])
     for op in operations:
         fields = {'marker', 'page_id', 'label_object_id', 'source_object_id', 'remove',
                   'response_object_ids', 'page_response_object_ids'}

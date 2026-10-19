@@ -502,6 +502,27 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(self.source.writes, 0)
         self.assertFalse(self.port.rows)
 
+    def test_blank_duplicate_inventory_count_assignments_are_refused(self):
+        for category in ('NOTES', 'DRAFT', 'OPTIONAL', 'BANK_TERMS'):
+            for suffix in ('', '   \n'):
+                with self.subTest(category=category, suffix=suffix):
+                    self.source = Source()
+                    inventory = repair._elements(self.source.native)['OriginalInventory'][2]
+                    value = repair._text(inventory).rstrip('\n') + ' ' + category + '=' + suffix
+                    inventory.clear(); inventory.update(shape('OriginalInventory', value, 10))
+                    with self.assertRaisesRegex(repair.Refused, 'exactly one valid total'):
+                        self.plan()
+                    self.assertEqual(self.source.writes, 0)
+                    self.assertFalse(self.port.rows)
+
+    def test_blank_duplicate_count_in_separate_inventory_slide_box_is_refused(self):
+        self.source.native['slides'][0]['pageElements'].append(
+            shape('DuplicateCount', 'NOTES=   \n', 30))
+        with self.assertRaisesRegex(repair.Refused, 'exactly one valid total'):
+            self.plan()
+        self.assertEqual(self.source.writes, 0)
+        self.assertFalse(self.port.rows)
+
     def test_valid_observed_bank_count_without_id_list_still_supported(self):
         inventory = repair._elements(self.source.native)['OriginalInventory'][2]
         value = repair._text(inventory).replace('BANK_TERMS=0', 'BANK_TERMS=1')
