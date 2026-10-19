@@ -3059,6 +3059,10 @@ const lessonPacket = {seq: 0};
 const LESSON_PACKET_CANDIDATES = monday => [[monday, 1], [monday, 2], [addDays(monday, -7), 2]];
 const LESSON_PACKET_URL = /^\/v2\/api\/weekly-preflight\/packet\.pdf\?id=[A-Za-z0-9_-]+$/;
 
+// "No packet is saved" is said only when every candidate read succeeded and
+// none holds a packet. If any read failed (or returned a link the Hub would
+// not serve), the answer is unknown, not absent: say so and don't send the
+// teacher to rebuild a packet that may already exist.
 async function findLessonPacket(monday) {
   let problem = '';
   for (const [start, weeks] of LESSON_PACKET_CANDIDATES(monday)) {
@@ -3066,12 +3070,13 @@ async function findLessonPacket(monday) {
       const reply = await getJSON(`api/weekly-preflight?start=${encodeURIComponent(start)}&weeks=${weeks}`);
       const packet = reply?.packet;
       if (packet?.status === 'ready' && LESSON_PACKET_URL.test(packet.pdf_url || '')) return {packet};
+      if (packet?.status === 'ready') problem ||= 'the saved packet link is not a Hub packet link.';
       if (packet?.status === 'unconfigured') return {unconfigured: true};
     } catch (error) {
-      problem ||= error.message;
+      problem ||= error.message || 'the read failed.';
     }
   }
-  return problem ? {problem} : {};
+  return problem ? {problem} : {absent: true};
 }
 
 function renderLessonPacket(monday, found) {
@@ -3087,8 +3092,11 @@ function renderLessonPacket(monday, found) {
   }
   if (found.unconfigured) return el('div', {class: 'week-packet'}, head,
     note('Week packets are not connected to their private folder yet, so none can be shown here.'));
+  if (found.problem) return el('div', {class: 'week-packet'}, head,
+    note(`Couldn't check for a saved week packet for ${range}: ${found.problem}`),
+    el('p', {class: 'muted'}, 'One may already be saved. Reload Lessons, or look in ',
+      el('a', {href: '#today'}, 'Today → Week ahead'), '. Don\'t rebuild it from this message.'));
   return el('div', {class: 'week-packet'}, head,
-    found.problem ? note('The saved week packet could not be read: ' + found.problem) : null,
     el('p', {class: 'muted'}, `No week packet is saved for ${range} yet. Build it from `,
       el('a', {href: '#today'}, 'Today → Week ahead'), ' after a finished check (Prepare Monday packet).'));
 }

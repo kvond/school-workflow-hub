@@ -72,14 +72,38 @@ test('No saved packet says so and points to Today → Week ahead; nothing is bui
   assert.equal(find(box, 'a', 'Today → Week ahead').href, '#today');
 });
 
-test('A failed read is shown, not hidden', async () => {
-  const {box, ui} = boot(() => new Error('The Hub\'s private state is unavailable. Nothing was checked or changed.'));
+const NO_REBUILD = /No week packet is saved|Prepare Monday packet/;
+
+test('A failed read says the packet is unknown, never "not saved", and asks for no rebuild', async () => {
+  const {calls, box, ui} = boot(() => new Error('The Hub\'s private state is unavailable. Nothing was checked or changed.'));
   await ui.loadLessonPacket('2026-10-19');
-  assert.match(box.textContent, /could not be read: The Hub's private state is unavailable/);
+  assert.equal(calls.length, 3);
+  assert.match(box.textContent, /Couldn't check for a saved week packet for Oct 19 – 23, 2026: The Hub's private state is unavailable/);
+  assert.match(box.textContent, /One may already be saved/);
+  assert.doesNotMatch(box.textContent, NO_REBUILD);
 });
 
-test('An unexpected PDF link is never rendered', async () => {
+test('Mixed reads: one failure plus "not built" elsewhere is still unknown, not absent', async () => {
+  const {box, ui} = boot(url => url.includes('start=2026-10-12&weeks=2')
+    ? new Error('Read timed out.') : {packet: {status: 'not_built'}});
+  await ui.loadLessonPacket('2026-10-19');
+  assert.match(box.textContent, /Couldn't check .*Read timed out/);
+  assert.doesNotMatch(box.textContent, NO_REBUILD);
+});
+
+test('Mixed reads: a failure does not hide a packet found by another read', async () => {
+  const two = {...READY, start: '2026-10-12', weeks: 2};
+  const {box, ui} = boot(url => url.includes('start=2026-10-12&weeks=2')
+    ? {packet: two} : new Error('Read timed out.'));
+  await ui.loadLessonPacket('2026-10-19');
+  assert.ok(find(box, 'a', 'Open week packet'));
+  assert.doesNotMatch(box.textContent, /Couldn't check/);
+});
+
+test('An unexpected PDF link is never rendered and is not reported as absent', async () => {
   const {box, ui} = boot(() => ({packet: {...READY, pdf_url: 'https://example.com/x.pdf'}}));
   await ui.loadLessonPacket('2026-10-19');
   assert.equal(find(box, 'a', 'Open week packet'), undefined);
+  assert.match(box.textContent, /not a Hub packet link/);
+  assert.doesNotMatch(box.textContent, NO_REBUILD);
 });
