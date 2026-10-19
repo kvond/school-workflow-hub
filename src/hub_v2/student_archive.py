@@ -2780,9 +2780,24 @@ def _index_records(sheet, ident):
     return sheets[0]
 
 
+def _legacy_index_hold(values):
+    """Recognize old class notes, never infer artifact or identity evidence."""
+    matched = re.fullmatch(r"workindexhold_([0-9]{8})_([A-Za-z0-9]+(?:_[A-Za-z0-9]+)*)",
+                           values[13].get("stringValue", ""))
+    if not matched or len(matched[2]) > 160:
+        return False
+    try:
+        datetime.strptime(matched[1], "%Y%m%d")
+    except ValueError:
+        return False
+    return (values[2] == {"stringValue": "Class-level source hold"}
+            and all(value in ({}, {"stringValue": ""}) for value in (values[7], values[9], values[10])))
+
+
 def _index_layout(cells, generated):
-    """Reserve manual rows in place; only keyed rows participate in the index."""
+    """Reserve manual history in place; refresh only generated record rows."""
     notes, old_keys, manual = {}, set(), {}
+    fresh_keys = {r[13] for r in generated}
     for number, row in enumerate(cells[1:], 1):
         values = _index_entered(row)
         record_key = values[13].get("stringValue")
@@ -2795,15 +2810,26 @@ def _index_layout(cells, generated):
                                   for c in row.get("values", [])):
                 manual[number] = deepcopy(row)
             continue
+        if not isinstance(record_key, str):
+            raise Held("An index row has an invalid record key. Preserve teacher notes before refreshing.")
         if record_key in old_keys:
             raise Held("An index row has no unique record key. Preserve teacher notes before refreshing.")
         old_keys.add(record_key)
+        if record_key.startswith("workindexhold_"):
+            if not _legacy_index_hold(values):
+                raise Held("A legacy index key is not a verified class-level history row. Existing teacher entries are preserved.")
+            if record_key in fresh_keys:
+                raise Held("A fresh student-record key conflicts with a legacy class-level history row. Existing teacher entries are preserved.")
+            manual[number] = deepcopy(row)
+            continue
         if len(row.get("values", [])) > 12 and row["values"][12].get("dataValidation"):
             raise Held("The index's teacher-note field has a new constraint; preserve it for review.")
         notes[record_key] = values[12]
-    fresh_keys = {r[13] for r in generated}
     if any(value and record_key not in fresh_keys for record_key, value in notes.items()):
         raise Held("A noted student-record row is not in the fresh verified listing. Its teacher note is preserved.")
+    if any(record_key not in fresh_keys and not re.fullmatch(r"workindexrow_[0-9a-f]{64}", record_key)
+           for record_key in notes):
+        raise Held("An index row has an unknown record key. Existing teacher entries are preserved.")
     layout = {0: {"values": [_index_cell(v) for v in INDEX_HEADERS]}, **manual}
     position = 1
     for row in generated:
