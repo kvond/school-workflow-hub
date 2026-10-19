@@ -2037,6 +2037,89 @@ def verify_feedback_successor(token, config, class_key, prior_feedback_id):
         return {"status": "held", "problem": _problem(error)}
 
 
+
+def _science_chart_sources(token, report, student, artifacts, sources):
+    """Verify plotted and gap samples without fabricating assessment observations.
+
+    Opt-in history presentations bind every listed sample to an owned original.
+    Existing reports retain their historical filing contract and source order.
+    """
+    lessons = report.get("lessons")
+    if not isinstance(lessons, list) or not 1 <= len(lessons) <= 125:
+        raise Held("The writing chart needs a bounded list of its exact original samples.")
+    checked, bookends, seen = {}, [], set()
+    for lesson in lessons:
+        if not isinstance(lesson, dict):
+            raise Held("Each writing-chart sample needs its exact source identity.")
+        ident, revision = lesson.get("source_file_id"), str(lesson.get("source_revision") or "")
+        if not ident or not revision or ident in seen:
+            raise Held("Writing-chart originals cannot be missing, duplicated or combine revisions.")
+        seen.add(ident)
+        owned = [a for a in artifacts if a.get("status") == "verified"
+                 and a.get("student_key") == student["student_key"]
+                 and a.get("class_key") == report["class_key"]
+                 and a.get("parent") == student["drive_file_id"]
+                 and ((a.get("source_kind") == IMPORTED_ORIGINAL and a.get("drive_file_id") == ident)
+                      or (a.get("source_kind") in {"submitted_work_copy", "submitted_work_export"}
+                          and a.get("identity_status") == "verified"
+                          and a.get("identity_basis") == "school_email_and_course"
+                          and a.get("source_file_id") == ident and str(a.get("source_version")) == revision))]
+        if len(owned) != 1:
+            raise Held("A chart sample has no single authenticated original in this student's private archive.")
+        artifact = owned[0]
+        if (lesson.get("source_date") != artifact.get("date")
+                or lesson.get("date_basis") != artifact.get("date_basis")
+                or ("submitted_at" in lesson and lesson["submitted_at"] != artifact.get("submitted_at"))):
+            raise Held("A chart sample's date or receipt differs from its verified original.")
+        if artifact.get("source_kind") == IMPORTED_ORIGINAL:
+            meta = google.drive_file(token, ident, FIELDS)
+            _verify_imported_original(meta, artifact)
+            if str(meta.get("version")) != revision:
+                raise Held("An imported chart sample's original revision changed.")
+            raw = _work_bytes(token, meta)
+            if hashlib.sha256(raw).hexdigest() != artifact["copied_content_proof"]["sha256"]:
+                raise Held("An imported chart sample's actual bytes do not match its immutable receipt.")
+            canonical = {"source_kind": IMPORTED_ORIGINAL, "source_record_key": artifact["record_key"],
+                "source_file_id": ident, "source_version": revision, "source_modified_at": meta.get("modifiedTime"),
+                "source_sha256": artifact["copied_content_proof"]["sha256"],
+                "date": artifact["date"], "date_basis": artifact["date_basis"], "submitted_at": None,
+                "assignment": artifact["assignment"], "lesson_status": artifact["lesson_status"],
+                "source_context": artifact["source_context"], "import_provenance": artifact["import_provenance"]}
+            if ident in sources and sources[ident].get("source_review_sha256"):
+                canonical["source_review_sha256"] = sources[ident]["source_review_sha256"]
+            bookends.append((ident, FIELDS, meta, artifact))
+        else:
+            if (artifact.get("date_basis") != "form_receipt" or not artifact.get("submitted_at")
+                    or _date(artifact["submitted_at"]) != artifact.get("date")
+                    or not artifact.get("form_id") or artifact.get("lesson_status") != "verified"):
+                raise Held("A submitted chart sample needs its verified original Form receipt and lesson.")
+            meta = google.drive_file(token, ident, SOURCE_FIELDS)
+            if (_source_revision(meta) != artifact.get("source_revision")
+                    or meta.get("modifiedTime") != artifact.get("source_modified_at")):
+                raise Held("A submitted chart original changed after its archived revision was verified.")
+            copy_meta = google.drive_file(token, artifact["drive_file_id"], FIELDS)
+            if artifact["source_kind"] == "submitted_work_export":
+                _verify_work_export(copy_meta, artifact)
+            else:
+                _verify_work_copy(copy_meta, artifact)
+            bookends.append((ident, SOURCE_FIELDS, meta, artifact))
+            bookends.append((artifact["drive_file_id"], FIELDS, copy_meta, artifact))
+            canonical = {k: artifact.get(k) for k in ("source_file_id", "source_version", "source_modified_at",
+                "submitted_at", "date", "date_basis", "form_id", "assignment_form_id", "assignment", "lesson_status", "source_context")}
+        if ident in sources and sources[ident] != canonical:
+            raise Held("The chart sample disagrees with its rated source evidence.")
+        checked[ident] = canonical
+    if set(sources) - seen:
+        raise Held("A rated writing source is absent from the chart's original samples.")
+    return checked, bookends
+
+
+def _science_chart_bookend(token, port, bookends):
+    for ident, fields, meta, artifact in bookends:
+        saved = _read(port, artifact["record_key"])
+        if (google.drive_file(token, ident, fields) != meta or not saved or saved.value != artifact):
+            raise Held("A writing-chart original or its archive receipt changed during filing.")
+
 def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
                          imported_review_sha256=None, imported_teacher_reference_sha256=None, refresh_index=True):
     """File teacher-authorized science-writing feedback in one existing folder."""
@@ -2123,6 +2206,9 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
             artifact = max(owned, key=lambda a: (a.get("submitted_at", ""), a.get("record_key", "")))
             sources[ident] = {k: artifact.get(k) for k in ("source_file_id", "source_version", "source_modified_at",
                 "submitted_at", "date", "date_basis", "form_id", "assignment_form_id", "assignment", "lesson_status", "source_context")}
+        chart_bookends = []
+        if "gap_caption" in (saved_report.get("presentation_context", {}).get("writing_display") or {}):
+            sources, chart_bookends = _science_chart_sources(token, saved_report, student, artifacts, sources)
         version = saved_report.get("presentation_version", 1)
         if not isinstance(version, int) or isinstance(version, bool) or version < 1:
             raise Held("This report's presentation version is invalid.")
@@ -2158,6 +2244,7 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
         _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True, write=True)
         if any(google.drive_file(token, ident, FIELDS) != meta for ident, meta in imported_metadata.items()):
             raise Held("An imported writing source changed before feedback filing. No report was created.")
+        _science_chart_bookend(token, run.port, chart_bookends)
         ident = key("archivefeedback", [scope, saved_report["id"]]); old = _read(run.port, ident)
         if old and (old.value.get("student_key") != student["student_key"]
                     or old.value.get("report_source_sha256") != report_hash
@@ -2183,6 +2270,7 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
         _feedback_file(token, scope, run.course, student, artifact)
         if any(google.drive_file(token, ident, FIELDS) != meta for ident, meta in imported_metadata.items()):
             raise Held("An imported writing source changed after filing; preserve the report for review.")
+        _science_chart_bookend(token, run.port, chart_bookends)
         if prior:
             # A single fenced class claim serializes replacements. Never retire
             # the current version before the new PDF and its owner are verified.
