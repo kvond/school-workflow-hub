@@ -121,6 +121,68 @@ class WritingGapFilingTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertEqual(result['status'], 'held', result); self.assertEqual(len(self.drive.created), count)
 
+    def snapshot(self, ident=EARLIER):
+        artifact = next(a for a in self.artifacts if a.get('source_file_id') == ident)
+        lesson = next(l for l in self.report['lessons'] if l['source_file_id'] == ident)
+        lesson['title'] += ' [archived snapshot]'
+        lesson['archived_snapshot'] = {'schema': 'writing-gap-archived-snapshot/v1',
+            'record_key': artifact['record_key'], 'drive_file_id': artifact['drive_file_id'],
+            'content_proof': deepcopy(artifact['content_proof']), 'source_file_id': ident,
+            'source_version': artifact['source_version'], 'source_modified_at': artifact['source_modified_at'],
+            'disclosure': 'Archived submitted revision; the current original may differ.'}
+        return artifact, lesson
+
+    def test_changed_original_pptx_can_use_explicit_unchanged_owned_snapshot_for_gap_only(self):
+        artifact, lesson = self.snapshot()
+        original_observations = deepcopy(self.report['provenance']['source_observations'])
+        self.drive.items[EARLIER].update(version='9', modifiedTime='2026-10-08T16:00:00Z',
+                                         md5Checksum='e' * 32, size='999')
+        self.drive.contents[EARLIER] = b'New original writing, never substituted into the old sample'
+        result = self.file(); self.assertEqual(result['status'], 'verified', result)
+        source = next(s for s in result['source_records'] if s['source_file_id'] == EARLIER)
+        self.assertEqual(source['source_version'], '1'); self.assertEqual(source['date'], '2026-10-06')
+        self.assertTrue(source['historical_snapshot']['original_revision_changed'])
+        self.assertEqual(source['historical_snapshot']['current_original_revision']['version'], '9')
+        self.assertEqual(source['historical_snapshot']['drive_file_id'], artifact['drive_file_id'])
+        self.assertEqual(self.report['provenance']['source_observations'], original_observations)
+
+    def test_native_snapshot_content_proof_survives_original_version_only_drift(self):
+        artifact = next(a for a in self.artifacts if a.get('source_file_id') == EARLIER)
+        native = 'application/vnd.google-apps.presentation'
+        proof = {'basis': 'native_presentation/v1', 'sha256': 'a' * 64, 'slides': 3, 'image_instances': 1}
+        artifact['mime'] = native; artifact['content_proof'] = proof
+        self.drive.items[artifact['drive_file_id']]['mimeType'] = native
+        self.drive.items[EARLIER]['mimeType'] = native
+        artifact['source_revision']['mimeType'] = native
+        self.snapshot(); self.drive.items[EARLIER]['version'] = '2'
+        with patch.object(archive, '_work_content', return_value=proof) as content:
+            result = self.file()
+        self.assertEqual(result['status'], 'verified', result)
+        self.assertTrue(any(call.args[1]['id'] == artifact['drive_file_id'] for call in content.call_args_list))
+
+    def test_snapshot_edit_wrong_copy_receipt_revision_or_missing_disclosure_refuse(self):
+        self.snapshot(); baseline = deepcopy(self.report)
+        for change in ('bytes', 'copy', 'record', 'revision', 'disclosure', 'label'):
+            self.report = deepcopy(baseline)
+            lesson = next(l for l in self.report['lessons'] if l['source_file_id'] == EARLIER)
+            if change == 'copy': lesson['archived_snapshot']['drive_file_id'] = 'DifferentCopy'
+            if change == 'record': lesson['archived_snapshot']['record_key'] = 'DifferentStudentReceipt'
+            if change == 'revision': lesson['archived_snapshot']['source_version'] = '9'
+            if change == 'disclosure': lesson['archived_snapshot']['disclosure'] = 'Current writing'
+            if change == 'label': lesson['title'] = 'Unlabeled original'
+            proof = {'sha256': 'f' * 64} if change == 'bytes' else next(a for a in self.artifacts if a.get('source_file_id') == EARLIER)['content_proof']
+            count = len(self.drive.created)
+            with patch.object(archive, '_work_content', return_value=proof):
+                result = self.file()
+            with self.subTest(change=change):
+                self.assertEqual(result['status'], 'held', result); self.assertEqual(len(self.drive.created), count)
+
+    def test_snapshot_cannot_relax_rated_source_freshness(self):
+        self.snapshot(SOURCE)
+        count = len(self.drive.created); result = self.file()
+        self.assertEqual(result['status'], 'held', result)
+        self.assertIn('unrated', result['problem']); self.assertEqual(len(self.drive.created), count)
+
     def test_archive_receipt_mutation_at_bookend_holds_without_creating_pdf(self):
         original = archive._science_chart_sources
         def mutate(*args):
