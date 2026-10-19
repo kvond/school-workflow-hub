@@ -11,6 +11,7 @@ import json
 import posixpath
 import re
 import uuid
+from copy import deepcopy
 from io import BytesIO
 from urllib.parse import quote, urlsplit
 from zipfile import ZipFile, BadZipFile
@@ -2767,8 +2768,59 @@ def _index_cell(value, *, link=False):
     return {"userEnteredValue": {"formulaValue" if link else "stringValue": str(value)}}
 
 
+def _index_entered(row):
+    values = [c.get("userEnteredValue", {}) for c in row.get("values", [])]
+    return values + [{}] * max(0, 14 - len(values))
+
+
+def _index_records(sheet, ident):
+    sheets = [s for s in sheet.get("sheets", []) if s.get("properties", {}).get("title") == "Records"]
+    if len(sheets) != 1 or sheet.get("spreadsheetId") != ident:
+        raise Held("The index's Records tab needs checking before refresh.")
+    return sheets[0]
+
+
+def _index_layout(cells, generated):
+    """Reserve manual rows in place; only keyed rows participate in the index."""
+    notes, old_keys, manual = {}, set(), {}
+    for number, row in enumerate(cells[1:], 1):
+        values = _index_entered(row)
+        record_key = values[13].get("stringValue")
+        if not record_key:
+            if values[13] and values[13] != {"stringValue": ""}:
+                raise Held("An index row has an invalid record key. Preserve teacher notes before refreshing.")
+            # Formatting alone can be a blank template row. Written values,
+            # cell notes and input controls instead reserve the entire row.
+            if any(values) or any(c.get("note") or c.get("dataValidation") or c.get("textFormatRuns")
+                                  for c in row.get("values", [])):
+                manual[number] = deepcopy(row)
+            continue
+        if record_key in old_keys:
+            raise Held("An index row has no unique record key. Preserve teacher notes before refreshing.")
+        old_keys.add(record_key)
+        if len(row.get("values", [])) > 12 and row["values"][12].get("dataValidation"):
+            raise Held("The index's teacher-note field has a new constraint; preserve it for review.")
+        notes[record_key] = values[12]
+    fresh_keys = {r[13] for r in generated}
+    if any(value and record_key not in fresh_keys for record_key, value in notes.items()):
+        raise Held("A noted student-record row is not in the fresh verified listing. Its teacher note is preserved.")
+    layout = {0: {"values": [_index_cell(v) for v in INDEX_HEADERS]}, **manual}
+    position = 1
+    for row in generated:
+        while position in manual:
+            position += 1
+        if position > INDEX_ROW_LIMIT:
+            raise Held("The work-and-feedback index and retained manual rows exceed its verified row limit.")
+        values = [_index_cell(value, link=col in {7, 8, 9, 10} and bool(value)) for col, value in enumerate(row)]
+        values[12] = _index_cell(notes.get(row[13], row[12] if row[11] == named_archival_work.STATUS else {}))
+        layout[position] = {"values": values}
+        position += 1
+    prepared = [layout.get(number, {"values": [{}] * 14}) for number in range(max(layout) + 1)]
+    return prepared, manual
+
+
 def refresh_work_index(token, write_token, config):
-    """Refresh only the configured private native Sheet, retaining keyed notes."""
+    """Refresh keyed records, retaining keyed notes and untouched manual rows."""
     claim = cloud = None
     try:
         ident = _index_sheet(config)
@@ -2777,7 +2829,7 @@ def refresh_work_index(token, write_token, config):
         root, _ = _configuration(config); scope = _scope_root(config, root)
         _private(google.drive_file(token, root, FIELDS), folder=True)
         meta = _private(google.drive_file(token, ident, FIELDS), parent=root)
-        if (meta.get("mimeType") != "application/vnd.google-apps.spreadsheet"
+        if (meta.get("id") != ident or meta.get("mimeType") != "application/vnd.google-apps.spreadsheet"
                 or (meta.get("properties") or {}).get("hubStudentWorkIndex") != scope):
             raise Held("The work-and-feedback index is not the verified private student-records Sheet.")
         # Archive reads may be long. Acquire the write lease and read editable
@@ -2790,68 +2842,59 @@ def refresh_work_index(token, write_token, config):
         request = "work-index-" + uuid.uuid4().hex
         claim = cloud.claim(task, owner="student-work-index", request_id=request, input_hash=content_hash([ident, request]))
         endpoint = "https://sheets.googleapis.com/v4/spreadsheets/" + quote(ident)
-        sheet = google.get_json(endpoint, token, {"ranges": "Records!A1:N20001", "includeGridData": "true",
-            "fields": "spreadsheetId,sheets(properties,data(startRow,startColumn,rowData(values(userEnteredValue,dataValidation))))"})
-        sheets = [s for s in sheet.get("sheets", []) if s.get("properties", {}).get("title") == "Records"]
-        if len(sheets) != 1 or sheet.get("spreadsheetId") != ident:
-            raise Held("The index's Records tab needs checking before refresh.")
-        current = sheets[0]; cells = (current.get("data") or [{}])[0].get("rowData", [])
-        def entered(row):
-            values = [c.get("userEnteredValue", {}) for c in row.get("values", [])]
-            return values + [{}] * max(0, 14 - len(values))
-        if not cells or [c.get("stringValue", "") for c in entered(cells[0])] != list(INDEX_HEADERS):
+        read_params = {"ranges": "Records!A1:N%d" % (INDEX_ROW_LIMIT + 1), "includeGridData": "true",
+            "fields": "spreadsheetId,sheets(properties,data(startRow,startColumn,rowData(values(userEnteredValue,note,textFormatRuns,userEnteredFormat,dataValidation))))"}
+        current = _index_records(google.get_json(endpoint, token, read_params), ident)
+        cells = (current.get("data") or [{}])[0].get("rowData", [])
+        if not cells or [c.get("stringValue", "") for c in _index_entered(cells[0])] != list(INDEX_HEADERS):
             raise Held("The index's column headers changed. Existing teacher entries are preserved.")
-        notes, old_keys = {}, set()
-        for row in cells[1:]:
-            values = entered(row)
-            if not any(values):
-                continue
-            record_key = values[13].get("stringValue")
-            if not record_key or record_key in old_keys:
-                raise Held("An index row has no unique record key. Preserve teacher notes before refreshing.")
-            old_keys.add(record_key)
-            if len(row.get("values", [])) > 12 and row["values"][12].get("dataValidation"):
-                raise Held("The index's teacher-note field has a new constraint; preserve it for review.")
-            notes[record_key] = values[12]
-        matrix = [list(INDEX_HEADERS)] + data["rows"]
-        prepared = []
-        for number, row in enumerate(matrix):
-            cells_out = [_index_cell(value, link=number > 0 and col in {7, 8, 9, 10} and bool(value)) for col, value in enumerate(row)]
-            if number:
-                cells_out[12] = _index_cell(notes.get(row[13], row[12] if row[11] == named_archival_work.STATUS else {}))
-            prepared.append({"values": cells_out})
-        fresh_keys = {r[13] for r in data["rows"]}
-        if any(value and record_key not in fresh_keys for record_key, value in notes.items()):
-            raise Held("A noted student-record row is not in the fresh verified listing. Its teacher note is preserved.")
-        normalized = [entered(row) for row in prepared]
-        existing = [entered(row) for row in cells[:len(prepared)]]
-        changed = existing != normalized or any(any(entered(row)) for row in cells[len(prepared):])
+        prepared, manual = _index_layout(cells, data["rows"])
+        needed = max(len(prepared), len(cells))
+        normalized = [_index_entered(row) for row in prepared] + [[{}] * 14 for _ in range(needed - len(prepared))]
+        existing = [_index_entered(row) for row in cells] + [[{}] * 14 for _ in range(needed - len(cells))]
+        changed_rows = [number for number in range(needed) if number not in manual and existing[number] != normalized[number]]
+        changed = bool(changed_rows)
         if changed:
             claim = cloud.renew(claim)
+            _private(google.drive_file(token, root, FIELDS), folder=True)
+            destination = _private(google.drive_file(token, ident, FIELDS), parent=root)
+            if (destination.get("id") != ident or destination.get("mimeType") != meta.get("mimeType")
+                    or (destination.get("properties") or {}).get("hubStudentWorkIndex") != scope):
+                raise Held("The private work-and-feedback index destination changed before refresh.")
+            if _index_records(google.get_json(endpoint, token, read_params), ident) != current:
+                raise Held("The work-and-feedback index changed during preparation. Existing teacher entries are preserved; refresh from a fresh read.")
             props = current["properties"]; sheet_id = props["sheetId"]
-            needed = max(len(prepared), len(cells)); requests = []
+            requests = []
             if props.get("gridProperties", {}).get("rowCount", 0) < needed:
                 requests.append({"appendDimension": {"sheetId": sheet_id, "dimension": "ROWS",
                     "length": needed - props["gridProperties"]["rowCount"]}})
             rows = prepared + [{"values": [{}] * 14} for _ in range(needed - len(prepared))]
-            requests.append({"updateCells": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": needed,
-                "startColumnIndex": 0, "endColumnIndex": 14}, "rows": rows, "fields": "userEnteredValue"}})
+            # Never send a manual row back in an update, even unchanged.
+            # This preserves its rich text, notes, validation and formatting.
+            spans = []
+            for number in changed_rows:
+                if spans and number == spans[-1][1]:
+                    spans[-1][1] = number + 1
+                else:
+                    spans.append([number, number + 1])
+            for start, end in spans:
+                requests.append({"updateCells": {"range": {"sheetId": sheet_id, "startRowIndex": start, "endRowIndex": end,
+                    "startColumnIndex": 0, "endColumnIndex": 14}, "rows": rows[start:end], "fields": "userEnteredValue"}})
             requests.append({"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0,
                 "endRowIndex": len(prepared), "startColumnIndex": 0, "endColumnIndex": 13}}}})
             try:
                 google.get_json(endpoint + ":batchUpdate", write_token, method="POST", body={"requests": requests})
             except google.GoogleError:
                 pass  # Exact readback decides; never blind retry a Sheet write.
-            fresh = google.get_json(endpoint, token, {"ranges": "Records!A1:N%d" % needed, "includeGridData": "true",
-                "fields": "spreadsheetId,sheets(data(rowData(values(userEnteredValue))))"})
-            actual = (fresh.get("sheets") or [{}])[0].get("data", [{}])[0].get("rowData", [])
-            observed = [entered(row) for row in actual]
+            fresh = _index_records(google.get_json(endpoint, token, {**read_params, "ranges": "Records!A1:N%d" % needed}), ident)
+            actual = (fresh.get("data") or [{}])[0].get("rowData", [])
+            observed = [_index_entered(row) for row in actual]
             observed += [[{}] * 14 for _ in range(needed - len(observed))]
-            expected = normalized + [[{}] * 14 for _ in range(needed - len(prepared))]
-            if fresh.get("spreadsheetId") != ident or observed != expected:
+            if (fresh["properties"].get("sheetId") != sheet_id or observed != normalized
+                    or any(number >= len(actual) or actual[number] != row for number, row in manual.items())):
                 raise Held("The work-and-feedback index update was not confirmed. Teacher notes remain protected; no automatic write retry.")
         result = {"configured": True, "status": "held" if data["holds"] else "verified", "url": config[WORK_INDEX_CONFIG],
-                  "rows": len(data["rows"]), "summary": data["summary"], "holds": data["holds"],
+                  "rows": len(data["rows"]), "retained_manual_rows": len(manual), "summary": data["summary"], "holds": data["holds"],
                   "changed": changed, "checked_at": data["checked_at"], "coverage": data["coverage"]}
         doc_key = key("workindexreceipt", [scope, ident]); _put(port, doc_key, result, _read(port, doc_key))
         cloud.finish(claim, records={"work_index": result})
