@@ -2797,7 +2797,6 @@ function feedbackBackup(form, ui) {
 }
 
 // Where this week's work was turned in: counts only, per assignment Form.
-const TURN_IN_PLACES = [['form', 'This Form'], ['folder', 'Turn-in folder'], ['shared', 'Earlier shared Form'], ['via', 'Another lesson’s Form']];
 function turnInPlace(row) {
   const files = row.files || [];
   if (files.some(f => f.via)) return 'via';
@@ -2807,6 +2806,7 @@ function turnInPlace(row) {
 }
 
 function renderTurnInSources(data, section = 'all') {
+  const TURN_IN_PLACES = [['form', 'This Form'], ['folder', 'Turn-in folder'], ['shared', 'Earlier shared Form'], ['via', 'Another lesson’s Form']];
   const inSection = r => !r.matched || section === 'all' || r.section === section;
   const rows = [];
   for (const lesson of data?.lessons || []) {
@@ -2846,7 +2846,8 @@ function renderWork() {
       data.folders.flatMap((f, i) => [i ? ', ' : '', link(f.name + ' ↗', f.url)]), '.'));
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
-  const sources = renderTurnInSources(data, work.section);
+  // Counts from a partial read would understate a source, so only show them when every source was read.
+  const sources = coverageIncomplete ? null : renderTurnInSources(data, work.section);
   if (sources) parts.push(sources);
   if (data.roster_check) parts.push(renderRosterCheck(data.roster_check, coverageIncomplete));
   if (data.folder_reviews?.length) {

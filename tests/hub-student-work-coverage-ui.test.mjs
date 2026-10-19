@@ -16,7 +16,8 @@ class Element {
 }
 const source = readFileSync(new URL('../src/hub_v2/static/app.js', import.meta.url), 'utf8');
 const functions = ['fileList', 'studentRow', 'scoreCells', 'assessmentRows', 'icStatus', 'marksLine',
-  'renderForm', 'teacherMaterialList', 'feedbackBackup', 'renderWork', 'renderRosterCheck']
+  'renderForm', 'teacherMaterialList', 'feedbackBackup', 'renderWork', 'renderRosterCheck',
+  'turnInPlace', 'renderTurnInSources']
   .map(name => {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, name);
