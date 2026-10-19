@@ -678,14 +678,22 @@ def save(config, ident, inputs, *, token=None, write_token=None):
     if student_archive.enabled(config):
         value = _file_saved(config, value, stored.version, token, write_token)
     response = {**reply(value), 'readback_verified': True}
+    if (value.get('archive') or {}).get('status') == 'verified':
+        from . import science_writing_native
+        response['science_writing'] = science_writing_native.ensure_saved(token, write_token, config, value['id'])
     from . import daily_feedback_packet
     if daily_feedback_packet.enabled(config) and (value.get('archive') or {}).get('status') == 'verified':
-        try:
-            response['daily_packet'] = daily_feedback_packet.build(token, write_token, config,
-                daily_feedback_packet.feedback_date(value['saved_at']))
-        except (daily_feedback_packet.Held, google.GoogleError, StoreUnavailable, Conflict) as error:
-            response['daily_packet'] = {'status': 'held', 'problem': str(error),
+        if (response.get('science_writing') or {}).get('status') != 'verified':
+            response['daily_packet'] = {'status': 'held', 'problem': 'CA feedback is saved; the separate writing report is not yet verified: ' +
+                str((response.get('science_writing') or {}).get('problem') or 'writing filing needs checking'),
                 'date': daily_feedback_packet.feedback_date(value['saved_at'])}
+        else:
+            try:
+                response['daily_packet'] = daily_feedback_packet.build(token, write_token, config,
+                    daily_feedback_packet.feedback_date(value['saved_at']))
+            except (daily_feedback_packet.Held, google.GoogleError, StoreUnavailable, Conflict) as error:
+                response['daily_packet'] = {'status': 'held', 'problem': str(error),
+                    'date': daily_feedback_packet.feedback_date(value['saved_at'])}
     analysis = _refresh_teacher_analysis(config, value, token, write_token)
     if analysis is not None:
         response['teacher_analysis'] = analysis

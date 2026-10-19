@@ -199,7 +199,7 @@ class NativeFeedbackTests(unittest.TestCase):
         file_feedback.assert_not_called()
 
     def test_successful_student_filing_updates_the_original_feedback_day_packet_without_rebilling(self):
-        from hub_v2 import daily_feedback_packet, student_archive
+        from hub_v2 import daily_feedback_packet, science_writing_native, student_archive
         with patch.object(fb, 'now', return_value='2026-10-07T18:00:00Z'):
             draft = fb.generate(OPENAI_CONFIG, inputs())
         artifact = {'status': 'verified', 'feedback_id': draft['id'], 'drive_file_id': 'FictionalPdf1234567890',
@@ -207,6 +207,7 @@ class NativeFeedbackTests(unittest.TestCase):
         with patch.object(fb, 'now', return_value='2026-10-07T18:00:00Z'), \
                 patch.object(student_archive, 'enabled', return_value=True), \
                 patch.object(student_archive, 'file_feedback', return_value=artifact), \
+                patch.object(science_writing_native, 'ensure_saved', return_value={'status': 'verified'}), \
                 patch.object(daily_feedback_packet, 'enabled', return_value=True), \
                 patch.object(daily_feedback_packet, 'build', return_value={'status': 'ready', 'date': '2026-10-07'}) as build:
             saved = fb.save(OPENAI_CONFIG, draft['id'], inputs(), token='read', write_token='write')
