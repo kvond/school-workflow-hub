@@ -244,3 +244,8 @@ button[disabled] { opacity: 0.6; cursor: default; }
 /* Lessons → Notes: per-lesson summary and the teacher's own notes. */
 .lesson-notes { margin-top: 12px; }
 .lesson-notes textarea { min-height: 140px; }
+
+/* Lessons → Week packet */
+#week-packet .week-packet { margin: 4px 0 10px; }
+#week-packet .week-packet h2 { font-size: 15px; margin: 0 0 2px; }
+#week-packet .week-packet p { margin: 2px 0; }

@@ -1424,6 +1424,9 @@ async function loadPlans(date, fresh = false) {
   $('week-closures').textContent = '';
   $('cards').replaceChildren();
   $('next-week-notes').replaceChildren();
+  // Lessons → Week packet is declared later; guard so a partial load stays safe.
+  const packetReady = typeof loadLessonPacket === 'function';
+  if (packetReady && $('week-packet')) { lessonPacket.seq++; $('week-packet').replaceChildren(); }
   setStatus('plans-status', 'Reading the Agenda…');
   try {
     const data = await getJSON(`api/day?date=${encodeURIComponent(date)}${fresh ? '&fresh=1' : ''}`);
@@ -1431,11 +1434,13 @@ async function loadPlans(date, fresh = false) {
     showAgendaLink(data.agenda);
     renderPlans(data);
     renderNextWeekNotes(data);
+    if (packetReady) loadLessonPacket(data.week?.monday || mondayOf(date));
     setStatus('plans-status', '');
   } catch (error) {
     if (seq !== plans.seq) return;
     setStatus('plans-status', error.message, true);
     $('cards').replaceChildren();
+    if (packetReady) loadLessonPacket(mondayOf(date));
   }
 }
 
@@ -3063,6 +3068,67 @@ async function missingWorkSheets() {
   } catch (error) {
     if (seq === sheets.seq) head.firstChild.replaceWith(note(error.message));
   }
+}
+
+// ---------- Lessons → Week packet ----------
+// The saved weekly lesson packet for the week on screen. It reads private
+// Hub state only (the same read as Today → Week ahead); it never runs a
+// check, builds a packet or writes anything. A packet that starts this
+// Monday (1 or 2 weeks), or a 2-week packet from the Monday before, counts.
+const lessonPacket = {seq: 0};
+const LESSON_PACKET_CANDIDATES = monday => [[monday, 1], [monday, 2], [addDays(monday, -7), 2]];
+const LESSON_PACKET_URL = /^\/v2\/api\/weekly-preflight\/packet\.pdf\?id=[A-Za-z0-9_-]+$/;
+
+// "No packet is saved" is said only when every candidate read succeeded and
+// none holds a packet. If any read failed (or returned a link the Hub would
+// not serve), the answer is unknown, not absent: say so and don't send the
+// teacher to rebuild a packet that may already exist.
+async function findLessonPacket(monday) {
+  let problem = '';
+  for (const [start, weeks] of LESSON_PACKET_CANDIDATES(monday)) {
+    try {
+      const reply = await getJSON(`api/weekly-preflight?start=${encodeURIComponent(start)}&weeks=${weeks}`);
+      const packet = reply?.packet;
+      if (packet?.status === 'ready' && LESSON_PACKET_URL.test(packet.pdf_url || '')) return {packet};
+      if (packet?.status === 'ready') problem ||= 'the saved packet link is not a Hub packet link.';
+      if (packet?.status === 'unconfigured') return {unconfigured: true};
+    } catch (error) {
+      problem ||= error.message || 'the read failed.';
+    }
+  }
+  return problem ? {problem} : {absent: true};
+}
+
+function renderLessonPacket(monday, found) {
+  const range = weekRange(monday);
+  const head = el('h2', {text: 'Week packet'});
+  if (!found) return el('div', {class: 'week-packet'}, head, el('p', {class: 'muted', text: `Looking for the saved packet for ${range}…`}));
+  if (found.packet) {
+    const p = found.packet;
+    const span = p.weeks > 1 ? ` · covers ${p.weeks} weeks from ${weekRange(p.start)}` : '';
+    return el('div', {class: 'week-packet'}, head,
+      el('p', {}, link(`Open week packet (PDF) · ${p.pages} pages`, p.pdf_url),
+        el('span', {class: 'muted', text: ` · built ${when(p.compiled_at)}${span}`})));
+  }
+  if (found.unconfigured) return el('div', {class: 'week-packet'}, head,
+    note('Week packets are not connected to their private folder yet, so none can be shown here.'));
+  if (found.problem) return el('div', {class: 'week-packet'}, head,
+    note(`Couldn't check for a saved week packet for ${range}: ${found.problem}`),
+    el('p', {class: 'muted'}, 'One may already be saved. Reload Lessons, or look in ',
+      el('a', {href: '#today'}, 'Today → Week ahead'), '. Don\'t rebuild it from this message.'));
+  return el('div', {class: 'week-packet'}, head,
+    el('p', {class: 'muted'}, `No week packet is saved for ${range} yet. Build it from `,
+      el('a', {href: '#today'}, 'Today → Week ahead'), ' after a finished check (Prepare Monday packet).'));
+}
+
+async function loadLessonPacket(monday) {
+  const box = $('week-packet');
+  if (!box) return;
+  const seq = ++lessonPacket.seq;
+  box.replaceChildren(renderLessonPacket(monday, null));
+  const found = await findLessonPacket(monday);
+  if (seq !== lessonPacket.seq) return;
+  box.replaceChildren(renderLessonPacket(monday, found));
 }
 
 // ---------- Lessons → Notes: Summarize this lesson ----------
