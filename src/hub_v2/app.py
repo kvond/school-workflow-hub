@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
-from . import deck_repair, system_notes, weekly_packet, weekly_preflight
+from . import deck_repair, lesson_summary, system_notes, weekly_packet, weekly_preflight
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -140,6 +140,11 @@ def api(sub, query, config):
         if query:
             raise ValueError()
         return system_notes.read(config)
+    if sub == 'api/lessons/summary':
+        # A saved lesson summary is a private store read: no Drive or AI access.
+        if set(query) != {'class', 'form'}:
+            raise ValueError()
+        return lesson_summary.read(config, {'class': _class_key(_one(query, 'class')), 'form': _one(query, 'form')})
     if sub == 'api/learning-report':
         return learning_report(config)
     token = google.service_token(config)
@@ -602,6 +607,45 @@ def system_notes_post(environ, respond, config):
         return respond('400 Bad Request', {'error': 'Notes must be plain text, at most 30,000 characters.'})
 
 
+def lesson_summary_post(environ, respond, config):
+    """Lessons → Notes. /summary makes at most one guarded AI call for an
+    unchanged lesson, only on the teacher's click; /summary/save stores her
+    edits. Neither writes to Drive, the Agenda, IC or student records."""
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
+    try:
+        actor = google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        if environ['PATH_INFO'].endswith('/save'):
+            payload = _json_body(environ, 120000)
+            if set(payload) != {'class', 'form', 'summary', 'notes', 'revision'}:
+                raise ValueError()
+            scope = {'class': _class_key(payload['class']), 'form': payload['form']}
+            return respond('200 OK', lesson_summary.save(config, scope, payload['summary'], payload['notes'],
+                                                         payload['revision'], actor=actor))
+        payload = _json_body(environ, 2000)
+        if set(payload) != {'class', 'week', 'form'}:
+            raise ValueError()
+        cls, week, form_id = _form_args(payload)
+        token = google.service_token(config)
+        agenda = load_agenda(token, config, fresh=True)
+        found = lesson_work(token, config, agenda, cls, week, fresh=True)
+        return respond('200 OK', lesson_summary.generate(config, {'class': cls, 'form': form_id}, found, actor=actor))
+    except lesson_summary.Held as error:
+        return respond('409 Conflict', {'error': str(error)})
+    except Conflict as error:
+        return respond('409 Conflict', {'error': str(error) or 'This lesson’s notes changed; reload before saving again.'})
+    except StoreUnavailable:
+        return respond('503 Service Unavailable', {'error': 'The private Hub store is unavailable. Your draft is still here; reload before retrying.'})
+    except google.GoogleError as error:
+        return respond('502 Bad Gateway', {'error': str(error)})
+    except (ValueError, KeyError, TypeError):
+        return respond('400 Bad Request', {'error': 'That lesson notes request was not understood.'})
+    except Exception:
+        return respond('503 Service Unavailable', {'error': 'The lesson summary could not finish. Reload before retrying; any AI call is held, not repeated.'})
+
+
 def agenda_post(environ, respond, config):
     """Save a lesson's edited plain-text cells to the Agenda. Signed-in teacher,
     same-origin JSON only; a cell changed in the Agenda meanwhile is a 409."""
@@ -838,6 +882,8 @@ def application(environ, start_response, config=None):
         return agenda_post(environ, respond, config)
     if method == 'POST' and path == '/v2/api/system/notes':
         return system_notes_post(environ, respond, config)
+    if method == 'POST' and path in ('/v2/api/lessons/summary', '/v2/api/lessons/summary/save'):
+        return lesson_summary_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda/move":
         return move_post(environ, respond, config)
     if method == "POST" and path in WEEKLY_POSTS:

@@ -57,6 +57,22 @@ the Agenda. Text is written as plain text, so bold or italics inside an edited
 cell are not kept, and each written cell is read back. The dashboard's account
 must be an Editor on the Agenda spreadsheet.
 
+**Lesson notes and "Summarize this lesson".** Each lesson card on Lessons has
+a **Notes** panel for each of its Turn-in Forms, saved privately in the Hub
+store (same on every computer, with history). **Summarize this lesson** makes
+one AI call, only when clicked, with the same school provider and the same
+call-reservation billing guard as feedback drafts. Its only input is the teacher
+notes in that lesson's saved, reviewed feedback drafts, with student names
+removed (names in the reply are removed too). It saves an editable summary: the
+misunderstandings and conflations the notes support, three to five follow-up
+questions for the next lesson, and an "Epistemic reframing" line only when the
+notes show one (rules from the Lesson review for tomorrow contract in
+[Class summary contract](docs/CLASS_SUMMARY_CONTRACT.md)). Clicking again for
+an unchanged lesson, a moved lesson, an interrupted call or a second tab never
+calls or bills again. New reviewed notes allow one new summary, which replaces
+the summary text (earlier versions stay in history); the teacher's own notes
+below it are kept. Nothing is written to Drive, the Agenda, IC or student files.
+
 **Moving a lesson.** In the editor, **Move this lesson to another week** works
 like reordering a list: the lesson goes to the week picked and the lessons in
 between slide one week to make room, skipping weeks with no class ([CLOSED …],
