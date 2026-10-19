@@ -686,7 +686,8 @@ def save(config, ident, inputs, *, token=None, write_token=None):
         packet_date = daily_feedback_packet.feedback_date(value['saved_at'])
         if ((response.get('science_writing') or {}).get('status') == 'verified'
                 and response['science_writing'].get('saved_at')):
-            packet_date = max(packet_date, daily_feedback_packet.feedback_date(response['science_writing']['saved_at']))
+            writing_day = response['science_writing'].get('feedback_day') or daily_feedback_packet.feedback_date(response['science_writing']['saved_at'])
+            packet_date = max(packet_date, writing_day)
         if (response.get('science_writing') or {}).get('status') != 'verified':
             response['daily_packet'] = {'status': 'held', 'problem': 'CA feedback is saved; the separate writing report is not yet verified: ' +
                 str((response.get('science_writing') or {}).get('problem') or 'writing filing needs checking'),
@@ -959,7 +960,7 @@ def _feedback_files(token, config):
                            'student_folder_url': 'https://drive.google.com/drive/folders/' + str(item.get('student_folder_id') or ''),
                            'created_at': created, 'created_day': created_day,
                            'saved_at': item.get('saved_at'),
-                           'feedback_day': item.get('date') or (feedback_date(item.get('saved_at')) if item.get('saved_at') else created_day),
+                           'feedback_day': item.get('feedback_day') or item.get('date') or (feedback_date(item.get('saved_at')) if item.get('saved_at') else created_day),
                            'url': item.get('url') or 'https://drive.google.com/open?id=' + ident,
                            'feedback_id': item.get('feedback_id'), 'archived': True,
                            **({'contract_evidence_expires_at': contract_expiry} if contract_expiry else {}),

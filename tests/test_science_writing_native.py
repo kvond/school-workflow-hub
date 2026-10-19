@@ -37,6 +37,13 @@ class NativeWritingTests(unittest.TestCase):
             observation['explanation'] = explanation
         self.provider = patch.object(native, '_call', return_value=(json.dumps(self.model_report), {'input_tokens': 10}))
         self.call = self.provider.start(); self.addCleanup(self.provider.stop)
+        def create(token, metadata, pdf=None):
+            value = self.drive.create(token, metadata, pdf)
+            value['createdTime'] = native.now()
+            self.drive.items[value['id']]['createdTime'] = value['createdTime']
+            return value
+        actual_creation = patch.object(archive.google, 'archive_create', side_effect=create)
+        actual_creation.start(); self.addCleanup(actual_creation.stop)
 
     def data(self, course='biology'):
         section = {'biology': 'A4 Biology', 'forensics': 'A2 Forensics', 'anatomy': 'B3 A&P'}[course]
@@ -280,3 +287,59 @@ class NativeWritingTests(unittest.TestCase):
         self.assertEqual(result['status'], 'held', result)
         self.assertIn('outside the current report roster', result['problem'])
         self.assertEqual(len(self.drive.created), count)
+
+    def catalog_day(self, receipt):
+        with patch.object(native, '_legacy_feedback_files', return_value={'configured': False, 'files': [], 'problem': None}), \
+                patch.object(archive, 'list_feedback', return_value=[receipt]):
+            return native._feedback_files('read', self.config)['files'][0]['feedback_day']
+
+    def test_monday_prepared_tuesday_first_publication_and_wednesday_replay_keep_tuesday_packet(self):
+        from hub_v2 import daily_feedback_packet
+        data, saved, _ = self.saved_ca()
+        with patch.object(native, 'now', return_value='2026-10-19T14:00:00Z'), \
+                patch.object(archive, 'file_science_writing', return_value={'status': 'held', 'problem': 'Writer unavailable'}):
+            held = writing.ensure_saved('read', 'write', self.config, saved['id'])
+        self.assertEqual(held['status'], 'held')
+        prepared = next(d.value['payload'] for d in self.port.rows.values() if d.value.get('schema') == writing.VERSION)
+        self.assertEqual(prepared['prepared_at'], '2026-10-19')
+        with patch.object(native, 'now', return_value='2026-10-20T14:00:00Z'), \
+                patch.object(daily_feedback_packet, 'enabled', return_value=True), \
+                patch.object(daily_feedback_packet, 'build', return_value={'status': 'verified'}) as packet:
+            first = native.save(self.config, saved['id'], data, token='read', write_token='write')
+        receipt = first['science_writing']
+        self.assertEqual(receipt['status'], 'verified', receipt)
+        self.assertEqual(receipt['saved_at'], '2026-10-19T14:00:00Z')
+        self.assertEqual(receipt['created_at'], '2026-10-20T14:00:00Z')
+        self.assertEqual(receipt['feedback_day'], '2026-10-20')
+        self.assertEqual(self.catalog_day(receipt), '2026-10-20')
+        packet.assert_called_once_with('read', 'write', self.config, '2026-10-20')
+        count = len(self.drive.created)
+        with patch.object(native, 'now', return_value='2026-10-21T14:00:00Z'), \
+                patch.object(daily_feedback_packet, 'enabled', return_value=True), \
+                patch.object(daily_feedback_packet, 'build', return_value={'status': 'verified'}) as packet:
+            replay = native.save(self.config, saved['id'], data, token='read', write_token='write')
+        self.assertEqual(replay['science_writing']['feedback_day'], '2026-10-20')
+        self.assertEqual(self.catalog_day(replay['science_writing']), '2026-10-20')
+        self.assertEqual(len(self.drive.created), count)
+        packet.assert_called_once_with('read', 'write', self.config, '2026-10-20')
+        self.assertEqual(self.call.call_count, 1)
+
+    def test_unmarked_manual_writing_preserves_its_original_report_day(self):
+        _, saved, _ = self.saved_ca()
+        student = self.port.rows[saved['archive']['student_key']].value
+        payload, _ = writing.prepare(saved, student, '2026-10-07', prepared_at='2026-10-19T14:00:00Z')
+        payload['provenance'].pop('publication_day_basis')
+        from hub_v2.feedback_pdf import render_science_writing
+        import hashlib
+        pdf = render_science_writing(payload); payload['pdf_sha256'] = hashlib.sha256(pdf).hexdigest()
+        with patch.object(native, 'now', return_value='2026-10-20T14:00:00Z'):
+            result = archive.file_science_writing('read', 'write', self.config, payload, pdf)
+        self.assertEqual(result['status'], 'verified', result)
+        self.assertNotIn('feedback_day', result)
+        self.assertEqual(result['date'], '2026-10-19')
+        self.assertEqual(self.catalog_day(result), '2026-10-19')
+        with patch.object(native, 'now', return_value='2026-10-21T14:00:00Z'):
+            reused = writing.ensure_saved('read', 'write', self.config, saved['id'])
+        self.assertTrue(reused['reused_existing'])
+        self.assertNotIn('feedback_day', reused)
+        self.assertEqual(self.catalog_day(reused), '2026-10-19')

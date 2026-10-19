@@ -1862,6 +1862,8 @@ def _feedback_metadata(artifact, student, course):
             "original_due_date": artifact.get("original_due_date"),
             "source_proof": artifact.get("source_proof"),
             "identity_status": artifact.get("identity_status", "verified"),
+            **({"feedback_day": _date(artifact["created_at"]), "feedback_day_basis": artifact["publication_day_basis"]}
+               if artifact.get("publication_day_basis") == "native-writing-first-drive-created-at/v1" else {}),
             "date": artifact["date"], "mime": PDF, "url": artifact["url"]}
 
 
@@ -2285,6 +2287,12 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
         payload = _science_payload(saved_report)
         report_hash = content_hash(payload)
         assessed_sources = _science_assessed_sources(saved_report, sources, report_hash)
+        provenance = saved_report.get('provenance') or {}
+        publication_day_basis = ("native-writing-first-drive-created-at/v1"
+            if (provenance.get('builder_version') == 'native-science-writing/v1'
+                and provenance.get('publication_day_basis') == "native-writing-first-drive-created-at/v1"
+                and re.fullmatch(r'feedbackdraft_[a-f0-9]{64}', str(provenance.get('native_feedback_id') or '')))
+            else None)
         run = _Run(token, write_token, config, cls)
         _private(google.drive_file(token, student["parent"], FIELDS), parent=run.course["id"], folder=True)
         _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True, write=True)
@@ -2309,6 +2317,7 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
                 "assignment": "Science writing across %d verified submission%s" % (len(sources), "" if len(sources) == 1 else "s"),
                 "source_records": list(sources.values()), "report_source_sha256": report_hash,
                 "assessed_sources": assessed_sources,
+                "publication_day_basis": publication_day_basis,
                 "presentation_version": version, "supersedes_report_id": prior_id,
                 "supersession_prior_payload_sha256": prior.value.get("report_source_sha256") if prior else None,
                 "presentation_assessment_sha256": assessment_hash,

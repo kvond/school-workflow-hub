@@ -12,6 +12,7 @@ from school_workflow_hub.core.runs import content_hash
 
 VERSION = 'native-science-writing/v1'
 RUBRIC = 'science-writing-four-dimensions/v1'
+PUBLICATION_DAY_BASIS = 'native-writing-first-drive-created-at/v1'
 KEYS = ('vocabulary', 'conceptual', 'evidence', 'reasoning')
 LABELS = ('Science vocabulary', 'Constructing an answer', 'Specific evidence', 'Explaining evidence')
 
@@ -160,6 +161,7 @@ def prepare(saved, student, source_date, *, prepared_at):
         'dimensions': dimensions, 'target': {'title': 'Your next writing move', 'text': saved['report']['question']},
         'note': 'This report describes this submitted source only. Earlier reports remain available in your student folder. It is not a grade.',
         'provenance': {'builder_version': VERSION, 'rubric_version': RUBRIC,
+            'publication_day_basis': PUBLICATION_DAY_BASIS,
             'native_feedback_id': saved['id'], 'submission_receipt': deepcopy(saved['submission_receipt']),
             'native_source_capture': deepcopy(saved['source']), 'lesson_reference': deepcopy(saved['reference']),
             'source_observations': observations, 'history_coverage': 'current_source_only',
