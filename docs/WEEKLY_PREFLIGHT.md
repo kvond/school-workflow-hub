@@ -98,8 +98,9 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   displayed Google file URL whose link opens a different exact Google file ID
   produces `deck_link_target_mismatch`, with both addresses, source revision,
   lesson, slide number and native slide link where available. PPTX findings use
-  the verified presentation order and existing file link; no viewer fragment is
-  invented. Split style runs with one target join; adjacent different links or
+  the verified complete presentation order and existing file link; no viewer fragment
+  is invented. Missing/malformed presentation relationships or unresolved slide
+  references make the outline unreadable, rather than falling back to filename order. Split style runs with one target join; adjacent different links or
   partly linked addresses are never combined. Same-ID edit/copy/fragment
   variants, ordinary labels and unsupported addresses do not imply a mismatch.
   Findings stay in repair-worker diagnostics, outside Next from Agenda's teaching

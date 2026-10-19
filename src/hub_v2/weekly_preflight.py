@@ -43,6 +43,7 @@ resumes where it stopped. A run that did not finish is "incomplete", never
 Ready, and a lesson is Ready only when every required check is verified.
 """
 import math
+import posixpath
 import re
 import time
 import zipfile
@@ -702,6 +703,47 @@ def outline_native(presentation):
     return out
 
 
+def _pptx_slide_order(archive):
+    """Prove the complete presentation order; filename fallback cannot locate a finding."""
+    problem = "This deck's complete presentation order could not be verified."
+    try:
+        parts = ("ppt/presentation.xml", "ppt/_rels/presentation.xml.rels")
+        if any(archive.getinfo(name).file_size > completion.MAX_SLIDE_BYTES for name in parts):
+            raise completion.Unreadable(problem)
+        pres, rels = (ET.fromstring(archive.read(name)) for name in parts)
+        order = pres.find(completion.P + "sldIdLst")
+        if order is None or not 0 < len(order) <= completion.MAX_SLIDES:
+            raise completion.Unreadable(problem)
+        targets = {}
+        for relationship in rels:
+            ident = relationship.get("Id")
+            if not ident or ident in targets:
+                raise completion.Unreadable(problem)
+            targets[ident] = relationship
+        names, used = [], set()
+        for slide in order:
+            ident = slide.get(completion.R + "id")
+            if slide.tag != completion.P + "sldId" or not ident or ident in used or ident not in targets:
+                raise completion.Unreadable(problem)
+            used.add(ident)
+            relationship = targets[ident]
+            target = relationship.get("Target", "")
+            name = posixpath.normpath(target.lstrip("/") if target.startswith("/") else "ppt/" + target)
+            kind = relationship.get("Type", "")
+            if (relationship.get("TargetMode") == "External" or (kind and not kind.endswith("/slide"))
+                    or not re.fullmatch(r"ppt/slides/slide\d+\.xml", name)
+                    or name not in archive.namelist() or name in names):
+                raise completion.Unreadable(problem)
+            names.append(name)
+        # The completion text must use this same order. Do not change its legacy
+        # tolerant parser or attach the new hyperlinks to a filename-order fallback.
+        if completion._slide_names(archive) != names:
+            raise completion.Unreadable(problem)
+        return names
+    except (KeyError, ET.ParseError) as error:
+        raise completion.Unreadable(problem) from error
+
+
 def outline_deck(deck, raw=None):
     """Keep completion text unchanged; retain PPTX hyperlink spans separately."""
     outline = [{"number": slide["number"], "object_id": "", "texts": [unit["text"] for unit in slide["units"]],
@@ -710,7 +752,10 @@ def outline_deck(deck, raw=None):
         return outline
     try:
         with zipfile.ZipFile(BytesIO(raw)) as archive:
-            for slide, name in zip(outline, completion._slide_names(archive)):
+            names = _pptx_slide_order(archive)
+            if len(names) != len(outline):
+                raise completion.Unreadable("This deck's complete presentation order could not be verified.")
+            for slide, name in zip(outline, names):
                 relname = name.rsplit("/", 1)[0] + "/_rels/" + name.rsplit("/", 1)[1] + ".rels"
                 targets = {}
                 if relname in archive.namelist():

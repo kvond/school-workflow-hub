@@ -671,6 +671,52 @@ class DeckLinkTargetTests(Base):
             wp.outline_deck(completion.read_deck(malformed), malformed)
 
 
+    def test_unproven_pptx_presentation_order_never_reports_a_guessed_slide(self):
+        raw = self.linked_pptx()  # the displayed link belongs to slide 2, not filename slide1.xml
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            original = {name: archive.read(name) for name in archive.namelist()}
+        relpath = 'ppt/_rels/presentation.xml.rels'
+        for failure in ('missing_relationships', 'malformed_relationships', 'unresolved_reference',
+                        'missing_slide_part', 'duplicate_reference', 'missing_slide_list'):
+            with self.subTest(failure=failure):
+                parts = dict(original)
+                if failure == 'missing_relationships':
+                    del parts[relpath]
+                elif failure == 'malformed_relationships':
+                    parts[relpath] = b'<broken'
+                elif failure == 'missing_slide_part':
+                    del parts['ppt/slides/slide2.xml']
+                else:
+                    pres = ET.fromstring(parts['ppt/presentation.xml'])
+                    order = pres.find(completion.P + 'sldIdLst')
+                    if failure == 'unresolved_reference':
+                        order[0].set(completion.R + 'id', 'missingRelationship')
+                    elif failure == 'duplicate_reference':
+                        order[0].set(completion.R + 'id', order[1].get(completion.R + 'id'))
+                    else:
+                        pres.remove(order)
+                    parts['ppt/presentation.xml'] = ET.tostring(pres)
+                out = io.BytesIO()
+                with zipfile.ZipFile(out, 'w') as archive:
+                    for name, data in parts.items():
+                        archive.writestr(name, data)
+                malformed = out.getvalue()
+                # The legacy completion reader remains tolerant; this new diagnostic must not be.
+                parsed = completion.read_deck(malformed)
+                with self.assertRaisesRegex(completion.Unreadable, 'presentation order'):
+                    wp.outline_deck(parsed, malformed)
+                self.src.files[FOR_DECK]['mimeType'] = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                ctx = wp._Run('read-token', self.port, 10**20, lambda *a: None)
+                node = wp._node(ctx, 'teacher_deck', FOR_DECK, deck_url(FOR_DECK))
+                with patch.object(google, 'deck_bytes', return_value=malformed):
+                    result = ctx.check('outline', node, wp._outline)
+                self.assertFalse(result['ok'])
+                self.assertIn('presentation order', result['problem'])
+                self.assertNotIn('link_mismatches', result)
+                cache = wp.check_id('outline', node['id'], node['revision'])
+                self.assertIsNone(self.port.read([cache]).documents[cache])
+
+
     def test_old_rules_and_changed_outline_source_do_not_reuse_a_clean_cached_check(self):
         with patch.object(wp, 'RULES', 'weekly-preflight-rules/4'):
             self.run_check()
