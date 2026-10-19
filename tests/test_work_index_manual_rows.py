@@ -14,7 +14,7 @@ SHEET = "FictionalManualIndexSheet001"
 
 def generated(key, **changes):
     row = ["Biology", "Fictional section", "Fictional learner", "Fictional lesson", "Wk 04",
-           46302, "", "", "", "", "", "Work saved", "", key]
+           46302, "", "", "", "", "", "Work saved", "", archive.key("workindexrow", [key])]
     for column, value in changes.items():
         row[int(column)] = value
     return row
@@ -32,6 +32,14 @@ def manual():
     row["values"][12] = {"userEnteredValue": {"boolValue": False},
         "dataValidation": {"condition": {"type": "BOOLEAN"}, "strict": True},
         "note": "Teacher-controlled historical mark"}
+    return row
+
+
+def legacy_hold(key="workindexhold_20320113_A4_biology_wk06_examplelesson"):
+    row = manual()
+    row["values"][2] = archive._index_cell("Class-level source hold")
+    row["values"][8] = archive._index_cell('=HYPERLINK("https://example.org/fictional-form","Original Form")', link=True)
+    row["values"][13] = archive._index_cell(key)
     return row
 
 
@@ -114,7 +122,7 @@ class ManualIndexTests(unittest.TestCase):
         self.assertEqual((result["status"], result["rows"], result["retained_manual_rows"]), ("verified", 2, 2))
         for n, before in original.items():
             self.assertEqual(self.rows[n], before)
-        self.assertEqual(archive._index_entered(self.rows[2])[13], {"stringValue": "FictionalKeyB"})
+        self.assertEqual(archive._index_entered(self.rows[2])[13], {"stringValue": generated("FictionalKeyB")[13]})
         self.assertEqual(archive._index_entered(self.rows[4])[12], {"stringValue": "Existing keyed teacher note"})
         self.assert_never_wrote(1, 3)
         again = self.refresh()
@@ -150,6 +158,80 @@ class ManualIndexTests(unittest.TestCase):
         result = self.refresh()
         self.assertEqual(result["retained_manual_rows"], 0)
         self.assertEqual(self.rows[1]["values"][0]["userEnteredFormat"], formatting)
+
+    def test_legacy_class_hold_preserves_key_links_and_cell_metadata_in_place_as_manual_history(self):
+        self.rows += [manual(), legacy_hold(), manual(), cells(self.generated[0]), manual()]
+        before = {n: deepcopy(self.rows[n]) for n in (1, 2, 3, 5)}
+        self.generated.append(generated("FictionalKeyB"))
+        result = self.refresh()
+        self.assertEqual((result["status"], result["rows"], result["retained_manual_rows"]), ("verified", 2, 4))
+        self.assertEqual(result["summary"], {"biology": {"work_copies": 2}})
+        for n, row in before.items():
+            self.assertEqual(self.rows[n], row)
+        self.assert_never_wrote(*before)
+        self.assertFalse(self.refresh()["changed"])
+        self.assertEqual(self.writes, 1)
+
+    def test_legacy_history_alone_is_not_a_verified_archive_artifact(self):
+        self.rows += [legacy_hold()]; before = deepcopy(self.rows)
+        self.generated = []
+        result = self.refresh()
+        self.assertEqual((result["rows"], result["retained_manual_rows"]), (0, 1))
+        self.assertEqual(result["summary"], {"biology": {"work_copies": 0}})
+        self.assertFalse(result["changed"]); self.assertEqual(self.rows, before); self.assertEqual(self.writes, 0)
+
+    def test_duplicate_legacy_keys_and_fresh_generated_collisions_hold_before_writes(self):
+        for duplicate in (True, False):
+            with self.subTest(duplicate=duplicate):
+                row = legacy_hold()
+                self.rows = [cells(archive.INDEX_HEADERS), row]
+                self.generated = [generated("FictionalKeyA")]
+                if duplicate:
+                    self.rows.append(deepcopy(row))
+                else:
+                    self.generated[0][13] = archive._index_entered(row)[13]["stringValue"]
+                before = deepcopy(self.rows)
+                self.assertEqual(self.refresh()["status"], "held")
+                self.assertEqual(self.rows, before); self.assertEqual(self.writes, 0)
+
+    def test_malformed_legacy_keys_and_unknown_keys_never_become_manual_history(self):
+        for key in ("workindexhold_20320230_A4_biology", "workindexhold_2032029_A4_biology",
+                    "workindexhold_20320113_", "workindexhold_20320113_A4__biology",
+                    "workindexhold_20320113_A4_biology/lesson", "workindexhold_20320113_A4_biológy",
+                    "workindexhold_20320113_" + "a" * 161, "workindexrow_not_a_hash", "unknown_record_key"):
+            with self.subTest(key=key):
+                row = legacy_hold(key)
+                row["values"][12] = {}  # Unknown keys also hold without a keyed note.
+                self.rows = [cells(archive.INDEX_HEADERS), row]
+                before = deepcopy(self.rows)
+                self.assertEqual(self.refresh()["status"], "held")
+                self.assertEqual(self.rows, before); self.assertEqual(self.writes, 0)
+
+    def test_legacy_namespace_does_not_exempt_student_artifacts_or_wrong_row_kind(self):
+        for column in (2, 7, 9, 10):
+            with self.subTest(column=column):
+                row = legacy_hold()
+                row["values"][column] = archive._index_cell("Fictional student artifact")
+                self.rows = [cells(archive.INDEX_HEADERS), row]
+                before = deepcopy(self.rows)
+                self.assertEqual(self.refresh()["status"], "held")
+                self.assertEqual(self.rows, before); self.assertEqual(self.writes, 0)
+
+    def test_missing_real_generated_record_with_note_is_not_reclassified_as_legacy(self):
+        row = legacy_hold(generated("MissingGeneratedRecord")[13])
+        row["values"][12] = archive._index_cell("Keep this teacher note on its generated record")
+        self.rows += [row]; before = deepcopy(self.rows)
+        result = self.refresh()
+        self.assertEqual(result["status"], "held"); self.assertIn("teacher note", result["problem"])
+        self.assertEqual(self.rows, before); self.assertEqual(self.writes, 0)
+
+    def test_legacy_note_change_during_write_is_unconfirmed_without_retry(self):
+        self.rows += [legacy_hold()]
+        self.after_write = lambda: self.rows[1]["values"][3].update(note="Concurrent historical annotation")
+        result = self.refresh()
+        self.assertEqual(result["status"], "held"); self.assertIn("not confirmed", result["problem"])
+        self.assertEqual(self.writes, 1); self.assert_never_wrote(1)
+        self.assertEqual(self.rows[1]["values"][3]["note"], "Concurrent historical annotation")
 
     def test_duplicate_keys_missing_keyed_notes_and_keyed_note_validation_still_hold(self):
         for cause in ("duplicate", "missing_note", "note_validation", "invalid_key"):
