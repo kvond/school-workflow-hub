@@ -182,7 +182,13 @@ class NamedArchive(unittest.TestCase):
         state["rows"][1]["values"][12]=a._index_cell("Teacher's existing note")
         def api(url,token,params=None,timeout=20,method="GET",body=None):
             if method=="POST":
-                state["writes"]+=1;state["rows"]=deepcopy(next(r["updateCells"]["rows"]for r in body["requests"]if "updateCells"in r));return {}
+                state["writes"]+=1
+                for request in body["requests"]:
+                    if "updateCells" not in request:continue
+                    update=request["updateCells"];start=update["range"]["startRowIndex"];end=update["range"]["endRowIndex"]
+                    state["rows"] += [{"values":[]} for _ in range(max(0,end-len(state["rows"])))]
+                    state["rows"][start:end]=deepcopy(update["rows"])
+                return {}
             return {"spreadsheetId":ident,"sheets":[{"properties":{"title":"Records","sheetId":17,"gridProperties":{"rowCount":200,"columnCount":14}},"data":[{"rowData":deepcopy(state["rows"])}]}]}
         with patch.object(google,"get_json",side_effect=api), patch.object(a,"work_index_rows",return_value=data):
             first=a.refresh_work_index("read","write",self.config);self.assertEqual(first["status"],"verified")

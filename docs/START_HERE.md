@@ -161,7 +161,10 @@ The teacher-facing Drive layout uses private class/section/student folders
 with dated submitted-work copies and saved student feedback. The original
 Form uploads retain their IDs and intake locations. A teacher work index joins
 class, lesson, student, submitted work and feedback without requiring folder
-searches. Teacher-only reports have
+searches. Refresh retains unkeyed manual historical rows in their existing Sheet
+positions, including notes, formatting and validation; they are not counted as
+verified student records. Generated records refresh around them, while duplicate
+keys and missing keyed records with teacher notes remain held. Teacher-only reports have
 separate private class folders. Source uploads and Form trees remain intact;
 only verified empty unused folders receive `~delete `. See
 [Student records](STUDENT_RECORDS.md) for runtime configuration, identity

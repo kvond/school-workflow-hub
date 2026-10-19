@@ -702,8 +702,13 @@ class StudentArchiveTests(unittest.TestCase):
         def sheet_api(url, token, params=None, timeout=20, method="GET", body=None):
             if method == "POST":
                 state["writes"] += 1
-                update = next(r["updateCells"] for r in body["requests"] if "updateCells" in r)
-                state["rows"] = deepcopy(update["rows"])
+                for request in body["requests"]:
+                    if "updateCells" not in request:
+                        continue
+                    update = request["updateCells"]
+                    start, end = update["range"]["startRowIndex"], update["range"]["endRowIndex"]
+                    state["rows"] += [{"values": []} for _ in range(max(0, end - len(state["rows"])))]
+                    state["rows"][start:end] = deepcopy(update["rows"])
                 return {}
             return {"spreadsheetId": ident, "sheets": [{"properties": {"title": "Records", "sheetId": 17,
                 "gridProperties": {"rowCount": 200, "columnCount": 14}}, "data": [{"rowData": deepcopy(state["rows"])}]}]}
