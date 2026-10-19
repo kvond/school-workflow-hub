@@ -244,3 +244,7 @@ button[disabled] { opacity: 0.6; cursor: default; }
 /* Lessons → Notes: per-lesson summary and the teacher's own notes. */
 .lesson-notes { margin-top: 12px; }
 .lesson-notes textarea { min-height: 140px; }
+
+/* Student work: where this week's work was turned in (counts only). */
+.turn-in-sources { margin: 12px 0; }
+.turn-in-sources > summary { cursor: pointer; font-weight: 600; }
