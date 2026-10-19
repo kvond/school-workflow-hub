@@ -88,9 +88,17 @@ weekly Agenda row contains several lesson topics; student filenames never do.
 
 A teacher-account Form respondent does not prove that the uploaded artifact is
 teacher material: a teacher may submit on behalf of a student absent from a stale
-roster. These rows retain the existing identity/source checks until exact material
-evidence is verified. Teacher-upload informational rendering remains compatible
-with verified records, but the reader never excludes work on email alone.
+roster. A trusted host may register an exact teacher artifact only after reading
+the complete original content and original Form event. Private immutable receipts
+bind the Agenda/Form scope, respondent, response, file ID, metadata/version and
+full content hash to the operator's content-review evidence. Registration rereads
+the proof and verifies the saved private record; there is no browser endpoint.
+Discovery rechecks that proof before routing signatures and student grouping.
+Only that exact file revision becomes informational teacher material. Mixed
+attachments, another response, newer revisions and unregistered work retain their
+normal identity/source checks. Provider/state failures preserve all originals and
+block assessment as availability failures. No source, roster, grade, sharing or
+delivery record is changed; school proof stays in private runtime state, never Git.
 
 A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
 review discovery or the Today feedback catalog is repeated once, only within the
