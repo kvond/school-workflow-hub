@@ -45,7 +45,8 @@ def shape(ident, text, y, x=20, width=400, height=15):
                                       'height': {'magnitude': height, 'unit': 'PT'}},
             'transform': {'scaleX': 1, 'scaleY': 1, 'shearX': 0, 'shearY': 0,
                           'translateX': x, 'translateY': y, 'unit': 'PT'},
-            'shape': {'shapeType': 'TEXT_BOX', 'shapeProperties': {'contentAlignment': 'TOP'},
+            'shape': {'shapeType': 'TEXT_BOX', 'shapeProperties': {'contentAlignment': 'TOP',
+                      'autofit': {'autofitType': 'NONE', 'fontScale': 1}},
                       'text': {'textElements': text_elements(values)}}}
 
 
@@ -427,6 +428,87 @@ class RepairTests(unittest.TestCase):
         with self.assertRaisesRegex(repair.Refused, 'auto-fitting label'):
             self.plan()
         self.assertEqual(self.source.writes, 0)
+
+    def test_active_response_autofit_refused_before_preparing_a_write(self):
+        for ident in ('InitialResponse', 'RevisedResponse'):
+            for kind in ('TEXT_AUTOFIT', 'SHAPE_AUTOFIT'):
+                with self.subTest(ident=ident, kind=kind):
+                    self.source = Source()
+                    response = repair._elements(self.source.native)[ident][2]
+                    response['shape']['shapeProperties']['autofit'] = {'autofitType': kind}
+                    with self.assertRaisesRegex(repair.Refused, 'auto-fitting response'):
+                        self.plan()
+                    self.assertEqual(self.source.writes, 0)
+                    self.assertFalse(self.port.rows)
+
+    def test_unresolved_or_effective_autofit_refused_for_every_mutated_shape(self):
+        for ident in ('InitialLabel', 'InitialResponse', 'RevisedResponse'):
+            for autofit in (None, {}, {'fontScale': .8}, {'autofitType': 'AUTOFIT_TYPE_UNSPECIFIED'},
+                            {'autofitType': 'NONE', 'fontScale': .8},
+                            {'autofitType': 'NONE', 'lineSpacingReduction': 5}):
+                with self.subTest(ident=ident, autofit=autofit):
+                    self.source = Source()
+                    element = repair._elements(self.source.native)[ident][2]
+                    element['shape']['placeholder'] = {'parentObjectId': 'InheritedLayoutShape'}
+                    props = element['shape']['shapeProperties']
+                    if autofit is None:
+                        props.pop('autofit')
+                    else:
+                        props['autofit'] = deepcopy(autofit)
+                    with self.assertRaisesRegex(repair.Refused, 'effective autofit'):
+                        self.plan()
+                    self.assertEqual(self.source.writes, 0)
+                    self.assertFalse(self.port.rows)
+
+    def test_unedited_response_autofit_is_preserved(self):
+        response = repair._elements(self.source.native)['BellResponse'][2]
+        response['shape']['shapeProperties']['autofit'] = {
+            'autofitType': 'TEXT_AUTOFIT', 'fontScale': .8, 'lineSpacingReduction': 5}
+        before = deepcopy(response)
+        self.assertEqual(self.apply()['status'], 'verified')
+        self.assertEqual(response, before)
+
+    def test_invalid_declared_inventory_refused_even_when_missing_id_is_known(self):
+        changes = (
+            ('NOTES_IDS=Q1,BELL', 'NOTES_IDS=Q1,Q1'),
+            ('NOTES_IDS=Q1,BELL', 'NOTES_IDS=Q1,Q1,BELL'),
+            ('NOTES=2', 'NOTES=3'),
+            ('DRAFT=1', 'DRAFT=2'),
+            ('NOTES_IDS=Q1,BELL', 'NOTES_IDS=Q1,BELL NOTES_IDS=Q1,BELL'),
+            ('NOTES=2', 'NOTES=2 NOTES=2'),
+            ('NOTES=2', 'NOTES=2.5'),
+            ('NOTES=2', 'NOTES=-2'),
+            ('BANK_TERMS=0', ''),
+            ('BANK_TERMS=0', 'BANK_TERMS=1'),
+            ('DRAFT_IDS=Q1', 'DRAFT_IDS=UNPAIRED'),
+            ('OPTIONAL_IDS=-', 'OPTIONAL_IDS=UNDECLARED'),
+        )
+        for old, new in changes:
+            with self.subTest(old=old, new=new):
+                self.source = Source()
+                inventory = repair._elements(self.source.native)['OriginalInventory'][2]
+                value = repair._text(inventory).replace(old, new)
+                inventory.clear(); inventory.update(shape('OriginalInventory', value, 10))
+                with self.assertRaisesRegex(repair.Refused, 'declared inventory|declared ID list'):
+                    self.plan()
+                self.assertEqual(self.source.writes, 0)
+                self.assertFalse(self.port.rows)
+
+    def test_inventory_on_another_slide_refused_before_preparing_a_write(self):
+        first, answer = self.source.native['slides'][:2]
+        answer['pageElements'].append(first['pageElements'].pop())
+        with self.assertRaisesRegex(repair.Refused, 'inventory must be unique and on slide 1'):
+            self.plan()
+        self.assertEqual(self.source.writes, 0)
+        self.assertFalse(self.port.rows)
+
+    def test_valid_observed_bank_count_without_id_list_still_supported(self):
+        inventory = repair._elements(self.source.native)['OriginalInventory'][2]
+        value = repair._text(inventory).replace('BANK_TERMS=0', 'BANK_TERMS=1')
+        inventory.clear(); inventory.update(shape('OriginalInventory', value, 10))
+        self.source.native['slides'].append({'objectId': 'BankPage', 'pageElements': [
+            shape('Term', '[[BANK:C09:Term]]', 30)]})
+        self.assertEqual(self.apply()['status'], 'verified')
 
     def test_mixed_original_character_styles_survive_shifted_utf16_ranges(self):
         response = repair._elements(self.source.native)['RevisedResponse'][2]

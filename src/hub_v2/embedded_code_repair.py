@@ -120,6 +120,55 @@ def _shape(elements, ident, page):
     return element
 
 
+def _fixed_text(element, role):
+    # Text edits deactivate autofit and bake its scale/spacing into existing
+    # styles. An omitted/unspecified type can inherit from a placeholder; do
+    # not assume it means NONE or learn this only after changing the source.
+    autofit = element['shape'].get('shapeProperties', {}).get('autofit', {})
+    _need(isinstance(autofit, dict) and autofit.get('autofitType') == 'NONE'
+          and type(autofit.get('fontScale', 1)) in (int, float) and autofit.get('fontScale', 1) == 1
+          and type(autofit.get('lineSpacingReduction', 0)) in (int, float)
+          and autofit.get('lineSpacingReduction', 0) == 0,
+          'An auto-fitting %s or unresolved effective autofit could restyle original text; '
+          'an explicitly fixed original text shape is required.' % role)
+
+
+def _declared_inventory(census, parsed_markers):
+    """Validate the declaration itself while allowing its known missing codes."""
+    _need(not {'marker_inventory_missing_or_duplicated', 'marker_inventory_not_on_first_slide'}
+          .intersection(census['issues']), 'The declared inventory must be unique and on slide 1.')
+    line, cycle = census['inventory_text'], census['inventory_cycle']
+    fields = re.findall(r'\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=([^\s]+)', line)
+    _need(len(fields) == len(completion.CATEGORIES)
+          and {k for k, _ in fields} == {'NOTES', 'DRAFT', 'OPTIONAL', 'BANK_TERMS'}
+          and all(re.fullmatch(r'[0-9]{1,6}', value) for _, value in fields),
+          'The declared inventory needs exactly one valid total per category.')
+    counts = {('BANK' if k == 'BANK_TERMS' else k): int(value) for k, value in fields}
+    declared = {}
+    for category, value in completion.ID_LIST.findall(line):
+        ids = [' '.join(v.split()) for v in re.split(r'[,\n]', value) if v.strip()]
+        if ids == ['-'] and counts[category] == 0:
+            ids = []
+        _need(category not in declared and len(ids) == len(set(ids))
+              and len(ids) == counts[category]
+              and all(ident != '-' and completion.MARKER.fullmatch(
+                  '[[%s:%s:%s]]' % (category, cycle, ident)) for ident in ids),
+              'The declared inventory repeats IDs/lists or its IDs do not match its own counts.')
+        declared[category] = ids
+    for category in completion.CATEGORIES:
+        actual = {m['id'] for m in parsed_markers if m['category'] == category}
+        if category not in declared:
+            # Existing inventories may omit BANK_IDS. Its complete observed
+            # census must then prove that count; no missing ID is invented.
+            _need(len(actual) == counts[category],
+                  'A missing declared ID list cannot prove the original question count.')
+            declared[category] = sorted(actual)
+        _need(actual <= set(declared[category]),
+              'An existing code is outside the declared inventory.')
+    _need(set(declared['DRAFT']) <= set(declared['NOTES']),
+          'The declared inventory has a revision without its original Notes ID.')
+
+
 def _box(element):
     def size(value):
         _need(value.get('unit') in ('PT', 'EMU'), 'Unverified native geometry unit.')
@@ -217,6 +266,7 @@ def _plan(before, operations):
     parsed_inventories = [m for s in before['parsed']['slides'] for u in s['units']
                           for m in completion.INVENTORY.finditer(u['text'])]
     _need(len(parsed_inventories) == 1, 'The normal source reader found an ambiguous inventory.')
+    _declared_inventory(census, parsed_markers)
     for op in operations:
         fields = {'marker', 'page_id', 'label_object_id', 'source_object_id', 'remove',
                   'response_object_ids', 'page_response_object_ids'}
@@ -231,9 +281,7 @@ def _plan(before, operations):
         _need('%s %s' % (marker.group(1), marker.group(3)) in census['missing_ids'],
               'The repair cannot invent inventory entries or change required question counts.')
         label = _shape(elements, op['label_object_id'], op['page_id'])
-        autofit = label['shape'].get('shapeProperties', {}).get('autofit', {})
-        _need(autofit.get('autofitType', 'NONE') == 'NONE',
-              'An auto-fitting label could restyle original text; use an existing fixed label.')
+        _fixed_text(label, 'label')
         response_ids, page_ids = op['response_object_ids'], op['page_response_object_ids']
         _need(isinstance(response_ids, list) and response_ids and isinstance(page_ids, list)
               and set(response_ids) <= set(page_ids) and len(set(page_ids)) == len(page_ids)
@@ -270,7 +318,9 @@ def _plan(before, operations):
             continue
         _need(source in response_ids and source not in edits and ranges,
               'The code fragments need one exact original response object.')
-        original = _text(_shape(elements, source, op['page_id']))
+        original_shape = _shape(elements, source, op['page_id'])
+        _fixed_text(original_shape, 'response')
+        original = _text(original_shape)
         fragments, last = [], -1
         for span in ranges:
             _need(isinstance(span, dict) and set(span) == {'start', 'end', 'text'}, 'Invalid exact code fragment.')
