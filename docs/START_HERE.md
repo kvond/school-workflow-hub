@@ -116,6 +116,30 @@ sources omitted from the Hub's current Agenda lesson links as a separate link
 discrepancy. This read-only check does not change scoring, assignment selection,
 embedded codes or distributed student copies.
 
+### Exact source roles in readiness
+
+A trusted host may import a teacher-confirmed role through
+`readiness_source_roles.import_verified` into the existing private CAS store.
+There is no HTTP writer, new setting or schedule. The record binds the current
+Agenda/year/class/week/row, complete Form/material fingerprint, exact linked
+source metadata/content and a complete stable folder-membership fingerprint
+where applicable. A source may be a literal Agenda material or an exact direct
+member of one currently linked folder; titles, shortcut targets and recursive
+or future descendants cannot establish that membership. Imports require an attributed instruction hash, CAS and saved
+readback, with immutable history. Changed scope, metadata, membership, policy
+or unavailable reads retain ordinary checks; another known folder cannot replace
+an unreadable Agenda pointer.
+
+The axes are independent: `assessment=ungraded` skips only that material's VT
+code inventory; `modality=paper` does not imply ungraded. Today and Week ahead
+show the exact exemption as **VT codes not required**, never as a passed code
+check. Other graded sources in the same row/Form retain their checks. Paper
+materials keep access, links, print, supply and content-readability checks. An
+exact verified paper-only folder needs no VT deck or digital submission Form;
+a missing or unreadable folder remains held. A role does not change assessment
+eligibility, feedback, Forms, submissions, grades, delivery marks or permissions.
+Private roles and source IDs never belong in GitHub task text.
+
 ## VT readiness repair loop
 
 Katherine's October 18 workflow starts with a fresh read of the current exact

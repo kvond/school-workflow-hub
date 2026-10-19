@@ -26,6 +26,7 @@ from . import completion
 from . import completion_holds
 from . import google
 from . import ledger
+from . import readiness_source_roles
 from . import work
 from .agenda import build_lesson, form_link, links, norm
 
@@ -241,6 +242,19 @@ def check(token, agenda, class_key, config=None):
                     ordinary = proof["source"]
                 except (google.GoogleError, completion.Unreadable, KeyError, ValueError):
                     pass  # Without exact proof retain the ordinary export/error contract.
+        r["source_roles"] = {}
+        candidates = {m.group(1) for item in r["lesson"]["materials"]
+                      if (m := re.search(r'/(?:d|folders)/([A-Za-z0-9_-]{10,200})(?:/|$|\?)', item.get("url", "")))}
+        candidates.update(d["id"] for unit in units for d in unit["source"]["decks"])
+        for ident in candidates:
+            role = readiness_source_roles.read(token, config or {}, agenda, class_key, r["week"], r["row"], ident)
+            if role:
+                r["source_roles"][ident] = role
+        material_ids = [m.group(1) for item in r["lesson"]["materials"]
+                        if (m := re.search(r'/(?:d|folders)/([A-Za-z0-9_-]{10,200})(?:/|$|\?)', item.get("url", "")))]
+        r["paper_only"] = len(material_ids) == len(r["lesson"]["materials"]) and set(material_ids) == set(r["source_roles"]) and bool(r["source_roles"]) and all(
+            role["axes"]["modality"] == "paper" for role in r["source_roles"].values()) and all(
+            m.get("label") in ("Lesson folder", "Teacher deck", "2nd deck", "Student copy") for m in r["lesson"]["materials"])
         for unit in units:
             unit["native_read_mode"] = "bound" if unit["binding"] else (
                 "ordinary_exact" if unit.get("ordinary_native_proof") else "export")
@@ -258,7 +272,7 @@ def check(token, agenda, class_key, config=None):
     # Bound, exact ordinary and unproven export reads are separate operands:
     # one Form or row cannot borrow another scope's native-read eligibility.
     release_keys = list(dict.fromkeys((d["id"], u["native_read_mode"]) for r in active_rows
-                    for u in r["release_units"] if not u["source"]["problem"] for d in u["source"]["decks"]))
+                    for u in r["release_units"] if not u["source"]["problem"] for d in u["source"]["decks"] if d["id"] not in r["source_roles"]))
     releases = {}
     if release_keys:
         with ThreadPoolExecutor(max_workers=3) as pool:
@@ -270,8 +284,23 @@ def check(token, agenda, class_key, config=None):
         form_results = []
         for unit in r["release_units"]:
             binding, source, fid = unit["binding"], unit["source"], unit["form_id"]
-            checks = [releases[(d["id"], unit["native_read_mode"])] for d in source["decks"]
-                      if (d["id"], unit["native_read_mode"]) in releases] if not source["problem"] else []
+            checks = [readiness_source_roles.result(r["source_roles"][d["id"]], d["id"])
+                      if d["id"] in r["source_roles"] else releases[(d["id"], unit["native_read_mode"])]
+                      for d in source["decks"] if d["id"] in r["source_roles"] or
+                      (d["id"], unit["native_read_mode"]) in releases] if not source["problem"] else []
+            for ident, role in r["source_roles"].items():
+                if readiness_source_roles.read(token, config or {}, agenda, class_key, r["week"], r["row"], ident) != role:
+                    source = {**source, "problem": "The exact readiness source role changed during this check."}
+            if r["paper_only"] and not any(d["status"] == "NOT_READY" for d in checks):
+                # No code-bearing deck is required for a verified paper-only folder.
+                # A different/inaccessible current folder cannot establish this role.
+                no_deck = source.get("problem") in (
+                    "No current deck is linked inside the verified lesson folder.",
+                    "No current handed-out deck is linked for this lesson.",
+                    "Cannot verify the actual Agenda lesson folder: The readable Agenda lesson folder contains no current slide deck.")
+                if not source.get("problem") or no_deck:
+                    source = {**source, "problem": None}
+                    checks = [readiness_source_roles.result(role, ident) for ident, role in r["source_roles"].items()]
             if binding and not source["problem"]:
                 templates = [(v["deck_id"], v["_teacher_source_metadata"], None)
                              for v in checks if "_teacher_source_metadata" in v]
@@ -301,7 +330,8 @@ def check(token, agenda, class_key, config=None):
                 result = {"status": "NOT_READY", "label": "Cannot read lesson", "issues": ["lesson_folder_unverified"],
                           "problem": source["problem"], "counts": {}, "readability": {"stage": "folder"}}
             else:
-                result = dict(next((v for v in checks if v["status"] != "READY"), checks[0] if checks else {}))
+                result = dict(next((v for v in checks if v["status"] not in ("READY", "NOT_REQUIRED")),
+                                        next((v for v in checks if v["status"] == "READY"), checks[0] if checks else {})))
             if not result:
                 result = {"status": "NOT_READY", "label": "Cannot read lesson", "issues": ["deck_release_unreadable"],
                           "problem": "No readable teacher source was verified for this exact collection.",
@@ -326,6 +356,8 @@ def check(token, agenda, class_key, config=None):
                               teacher_holds=active_holds, problem=context + ": " + active_holds[0]["problem"],
                               action=context + ": " + active_holds[0]["action"])
                 result["issues"] = ["teacher_readiness_hold"] + result["issues"]
+            elif result["status"] == "NOT_REQUIRED":
+                result["action"] = "VT codes are not required for this verified source role. Source access and lesson connections remain checked."
             elif result["status"] == "READY":
                 result["action"] = ("The linked deck's completion codes are ready; this does not verify distributed student copies. "
                                     "If their copies lack codes, run the embed-coding program on those copies, preserving answers, then rerun grading.")
@@ -349,9 +381,11 @@ def check(token, agenda, class_key, config=None):
                                   "This link-display discrepancy is separate from this Form's source readiness."}
             form_results.append(result)
         if r["form_collections"]:
-            failed = [v for v in form_results if v["status"] != "READY"]
+            failed = [v for v in form_results if v["status"] not in ("READY", "NOT_REQUIRED")]
+            not_required = bool(form_results) and all(v["status"] == "NOT_REQUIRED" for v in form_results)
             r["release_result"] = {
-                "status": "NOT_READY" if failed else "READY", "label": "Needs check" if failed else "Ready",
+                "status": "NOT_READY" if failed else "NOT_REQUIRED" if not_required else "READY",
+                "label": "Needs check" if failed else "VT codes not required" if not_required else "Ready",
                 "scope": "form_collections", "student_copies_checked": False,
                 "form_releases": form_results,
                 "issues": list(dict.fromkeys(issue for v in failed for issue in v.get("issues", []))),
@@ -368,7 +402,7 @@ def check(token, agenda, class_key, config=None):
     for r in rows:
         number = _week(r["week"])
         forms = r["visible"] + [f for f in r["second"] if f["form_id"] not in {v["form_id"] for v in r["visible"]}]
-        if not forms and not r["hidden"] and not r["week_policy"]["excluded"]:
+        if not forms and not r["hidden"] and not r["week_policy"]["excluded"] and not r.get("paper_only"):
             flag(r, "no-form", "No Turn-in Form.")
         seen = {f["form_id"] for f in forms if f["form_id"]}
         for f in forms + [f for f in r["hidden"] if not f["form_id"] or f["form_id"] not in seen]:
