@@ -18,9 +18,167 @@ def unit(key, text, box, **extra):
     return {"key": key, "text": text, "box": box, "title": False, **extra}
 
 
-def bind(student, teacher):
+def bind(student, teacher, *, panel_reference=None):
     written, _ = completion._written(student, teacher, SIZE)
-    return completion._assign(completion.markers({"slides": [student]}), written, teacher, SIZE, student_slide=student)
+    return completion._assign(completion.markers({"slides": [student]}), written, teacher, SIZE, student_slide=student, panel_reference=panel_reference)
+
+
+def original_panels():
+    teacher = {'number': 1, 'units': [
+        unit('prompt', 'Explain the evidence in your own words.', (20, 10, 900, 25)),
+        unit('first-label', 'Your first answer', (20, 60, 400, 25)),
+        unit('first', '[[NOTES:C09:Q1]]', (20, 100, 400, 450)),
+        unit('revised-label', 'Your revised answer', (550, 60, 400, 25)),
+        unit('revised', '[[DRAFT:C09:Q1]]', (550, 100, 400, 450))]}
+    student = deepcopy(teacher)
+    for category, name in (('NOTES', 'first'), ('DRAFT', 'revised')):
+        label = next(u for u in student['units'] if u['key'] == name + '-label')
+        marker = {'category': category, 'code': 'C09', 'id': 'Q1'}
+        label['binding'] = response_binding.panel_binding(marker, teacher, label, SIZE, completion._plain, completion.MARKER)
+        label['text'] += '\n[[%s:C09:Q1]]' % category
+        next(u for u in student['units'] if u['key'] == name)['text'] = ''
+    student['units'].append(unit('added-answer', 'My independently written explanation uses the measured evidence.', (70, 400, 200, 50)))
+    return teacher, student
+
+
+def panel_authority(teacher):
+    return response_binding.OriginalPanelReference({'slides': [teacher], 'size': SIZE},
+        source_id='FictionalHandedOutReference', revision='frozen-7', provenance_sha256='a' * 64)
+
+
+class OriginalPanelBindingTests(unittest.TestCase):
+    def test_real_score_file_caller_has_no_original_reference_loader_and_stays_held(self):
+        from hub_v2 import google
+        from test_completion_readiness import single_assignment_agenda, work_result, FORM, STUDENT, TEMPLATE
+        teacher, student = original_panels()
+        header = {'number': 1, 'units': [unit('inventory', '[[MARKER-INVENTORY:C09]] '
+            'NOTES=1 DRAFT=1 OPTIONAL=0 BANK_TERMS=0 NOTES_IDS=Q1 DRAFT_IDS=Q1 OPTIONAL_IDS=-', (0, 0, 900, 40))]}
+        teacher['number'] = student['number'] = 2
+        reference = {'slides': [deepcopy(header), teacher], 'size': SIZE}
+        received = {'slides': [deepcopy(header), student], 'size': SIZE}
+        completion._results.clear()
+        self.addCleanup(completion._results.clear)
+        with patch.object(completion, 'student_coding_required', return_value=False), \
+             patch.object(completion, '_template', return_value=({'id': TEMPLATE, 'name': 'Fictional original',
+                 'mimeType': google.PPTX, 'version': '7', 'modifiedTime': 'frozen-time'}, reference)), \
+             patch.object(google, 'drive_file', return_value={'id': STUDENT, 'mimeType': google.PPTX,
+                 'version': '8', 'modifiedTime': 'after-repair'}), \
+             patch.object(completion, '_read', return_value=received), patch.object(completion, 'score') as score:
+            result = completion.score_file('read', single_assignment_agenda(), 'forensics', 'Wk 04', FORM, STUDENT, work_result())
+        self.assertEqual(result['code'], 'C09')
+        self.assertIsNone(result['notes_score'])
+        self.assertIsNone(result['revision_score'])
+        self.assertIn('frozen original-source reference', result['note'])
+        score.assert_not_called()
+
+    def test_default_normal_assessment_and_description_only_spoof_are_held(self):
+        teacher, student = original_panels()
+        for authority in (None, {'verified': True, 'source': teacher}, student['units'][1]['binding']):
+            with self.subTest(authority=type(authority).__name__), patch.object(completion, 'score') as score:
+                result = completion.assess({'slides': [student], 'size': SIZE},
+                    {'slides': [teacher], 'size': SIZE}, panel_reference=authority)
+                self.assertIsNone(result['notes_score'])
+                self.assertIsNone(result['revision_score'])
+                self.assertTrue(result['note'])
+                score.assert_not_called()
+
+    def test_reference_capability_does_not_follow_mutated_or_newer_source(self):
+        teacher, student = original_panels()
+        authority = panel_authority(teacher)
+        teacher['units'][0]['text'] = 'A newly updated question.'
+        # Even reissuing internally consistent student metadata cannot update
+        # the independently frozen source capability.
+        for name, category in (('first', 'NOTES'), ('revised', 'DRAFT')):
+            label = next(u for u in student['units'] if u['key'] == name + '-label')
+            label['binding'] = response_binding.panel_binding({'category': category, 'code': 'C09', 'id': 'Q1'},
+                teacher, label, SIZE, completion._plain, completion.MARKER)
+        self.assertEqual(bind(student, teacher, panel_reference=authority)[2], response_binding.REVIEW)
+
+    def test_added_answer_far_from_label_binds_only_inside_original_panel(self):
+        teacher, student = original_panels()
+        assigned, loose, basis = bind(student, teacher, panel_reference=panel_authority(teacher))
+        self.assertEqual(basis, 'authenticated original response panels')
+        self.assertEqual([u['key'] for u, _ in assigned[('NOTES', 'Q1')]], ['added-answer'])
+        self.assertEqual(assigned[('DRAFT', 'Q1')], [])
+        self.assertEqual(loose, [])
+        result = completion.assess({'slides': [student], 'size': SIZE}, {'slides': [teacher], 'size': SIZE}, panel_reference=panel_authority(teacher))
+        self.assertEqual(result['counts']['NOTES']['done'], 1)
+        self.assertEqual(result['counts']['DRAFT']['done'], 0)
+
+    def test_unbound_added_answer_does_not_gain_global_proximity_fallback(self):
+        teacher, student = original_panels()
+        for u in student['units']:
+            u.pop('binding', None)
+        assigned, loose, _ = bind(student, teacher, panel_reference=panel_authority(teacher))
+        self.assertFalse(any(assigned.values()))
+        self.assertEqual([u['key'] for u, _ in loose], ['added-answer'])
+
+    def test_missing_changed_or_duplicate_reference_never_falls_back_to_position(self):
+        teacher, student = original_panels()
+        changed = deepcopy(teacher)
+        changed['units'][0]['text'] = 'A newer different question must not authorize the original.'
+        duplicate = deepcopy(teacher); duplicate['number'] = 2
+        wrong_cycle = deepcopy(teacher)
+        wrong_cycle['units'][2]['text'] = '[[NOTES:C10:Q1]]'
+        for pages in ([], [changed], [teacher, duplicate], [wrong_cycle], [student]):
+            with self.subTest(pages=len(pages)):
+                pairs = completion._align({'slides': [student], 'size': SIZE}, {'slides': pages, 'size': SIZE}, panel_reference=panel_authority(teacher))
+                self.assertNotIn(1, pairs)
+                assigned, _, basis = bind(student, pairs.get(1), panel_reference=panel_authority(teacher))
+                self.assertEqual(basis, response_binding.REVIEW)
+                self.assertFalse(any(assigned.values()))
+
+    def test_tampered_description_cannot_choose_another_panel_or_cycle(self):
+        teacher, baseline = original_panels()
+        for mutation in ('panel', 'cycle', 'extra', 'label', 'fingerprint'):
+            student = deepcopy(baseline)
+            data = student['units'][1]['binding']
+            if mutation == 'panel': data['panels'][1]['box'][0] += 20
+            elif mutation == 'cycle': data['cycle'] = 'C10'
+            elif mutation == 'extra': data['authorized'] = True
+            elif mutation == 'label': data['label']['text'] = 'Another label'
+            else: data['source_sha256'] = '0' * 64
+            with self.subTest(mutation=mutation):
+                self.assertEqual(bind(student, teacher, panel_reference=panel_authority(teacher))[2], response_binding.REVIEW)
+
+    def test_cross_panel_response_discards_even_earlier_valid_assignments(self):
+        teacher, student = original_panels()
+        student['units'].append(unit('crossing', 'A later response crosses both fields.', (400, 300, 200, 30)))
+        assigned, loose, basis = bind(student, teacher, panel_reference=panel_authority(teacher))
+        self.assertEqual(basis, response_binding.REVIEW)
+        self.assertFalse(any(assigned.values()))
+        self.assertEqual({u['key'] for u, _ in loose}, {'added-answer', 'crossing'})
+
+    def test_moved_duplicate_missing_panel_and_changed_label_are_refused(self):
+        teacher, baseline = original_panels()
+        for change in ('moved', 'duplicate', 'missing', 'label'):
+            student = deepcopy(baseline)
+            if change == 'moved': student['units'][2]['box'] = (30, 100, 400, 450)
+            elif change == 'duplicate': student['units'].append(deepcopy(student['units'][2]))
+            elif change == 'missing': student['units'].pop(2)
+            else: student['units'][1]['text'] = 'Changed label [[NOTES:C09:Q1]]'
+            with self.subTest(change=change):
+                self.assertEqual(bind(student, teacher, panel_reference=panel_authority(teacher))[2], response_binding.REVIEW)
+
+    def test_overlapping_or_duplicate_original_panels_cannot_issue_binding(self):
+        teacher, _ = original_panels()
+        for change in ('overlap', 'duplicate', 'other-code'):
+            ref = deepcopy(teacher)
+            if change == 'overlap': ref['units'][4]['box'] = (400, 100, 400, 450)
+            elif change == 'duplicate': ref['units'].append(deepcopy(ref['units'][2]))
+            else: ref['units'].append(unit('another', '[[NOTES:C09:OTHER]]', (20, 600, 200, 30)))
+            with self.subTest(change=change):
+                self.assertIsNone(response_binding.panel_binding({'category': 'NOTES', 'code': 'C09', 'id': 'Q1'},
+                    ref, teacher['units'][1], SIZE, completion._plain, completion.MARKER))
+
+    def test_blank_panels_and_outside_text_remain_blank_or_unassigned(self):
+        teacher, student = original_panels()
+        student['units'].pop()
+        student['units'].append(unit('unrelated', 'Some writing outside either original response panel.', (20, 650, 500, 30)))
+        assigned, loose, basis = bind(student, teacher, panel_reference=panel_authority(teacher))
+        self.assertEqual(basis, 'authenticated original response panels')
+        self.assertFalse(any(assigned.values()))
+        self.assertEqual([u['key'] for u, _ in loose], ['unrelated'])
 
 
 def fields():
