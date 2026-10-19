@@ -344,14 +344,15 @@ def candidates(form, *, include_late=False):
     return deepcopy(state['current' if include_late else 'on_time'])
 
 
-def feedback_rows(form):
-    """Only the selected on-time original of each cycle, with its own receipt.
+def feedback_rows(form, *, include_late=False):
+    """Only the selected original of each cycle, with its own receipt.
 
     The raw current/earlier histories are never promoted or changed. A file
     superseded within its cycle is not an eligible writing-report source.
+    Grading callers keep the on-time default; feedback can request current late work.
     """
     rows = []
-    for candidate in candidates(form):
+    for candidate in candidates(form, include_late=include_late):
         if candidate.get('selection_problem'):
             rows.append(candidate)
             continue
