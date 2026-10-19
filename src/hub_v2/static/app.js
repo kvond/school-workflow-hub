@@ -1648,6 +1648,24 @@ async function saveLesson() {
   }
 }
 
+// Last week's lesson links, for a lesson that ran over. Closed by default so
+// this week's plan stays first; the summary names the lesson so one tap opens it.
+function renderPreviousLessons(cls) {
+  const previous = cls.previous;
+  if (!previous?.lessons?.length) return null;
+  const topics = previous.lessons.map(l => l.topic).filter(Boolean).join(' / ');
+  return el('details', {class: 'previous-lessons'},
+    el('summary', {text: `Last week’s lessons · ${previous.week}${topics ? ' · ' + topics : ''}`}),
+    ...previous.lessons.map(lesson => el('div', {class: 'previous-lesson'},
+      el('p', {class: 'label', text: lesson.topic || 'Untitled lesson'}),
+      (lesson.materials?.length || lesson.forms?.length)
+        ? el('div', {class: 'links'},
+            ...(lesson.materials || []).map(m => link(m.label + ' ↗', m.url, 'chip')),
+            ...(lesson.forms || []).map(f => link(`📤 ${f.label} ↗`, f.url, 'chip')))
+        : el('p', {class: 'muted', text: 'No links in the Agenda for this lesson.'}),
+      lesson.edit_url ? el('p', {}, link('Open this row in the Agenda ↗', lesson.edit_url, 'edit')) : null)));
+}
+
 function renderPlans(data) {
   plans.data = data;
   const editing = plans.editing;
@@ -1657,6 +1675,8 @@ function renderPlans(data) {
   const cards = data.classes.map(cls => {
     const card = el('details', {class: 'card ' + cls.key, open: true}, el('summary', {}, el('h2', {text: cls.name})));
     if (cls.problem) card.append(note(cls.problem));
+    const previous = renderPreviousLessons(cls);
+    if (previous) card.append(previous);
     cls.lessons.forEach(lesson => card.append(plans.editing?.key === `${cls.key}|${lesson.row}`
       ? lessonEditor(cls, lesson) : renderLesson(cls, lesson, data.weekday)));
     return card;
