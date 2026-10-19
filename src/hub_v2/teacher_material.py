@@ -76,11 +76,14 @@ def capture(token, config, agenda, cls, week, form_id, response_id, file_id):
             or not md.get('version') or not md.get('modifiedTime') or not md.get('name')):
         raise Unverified('Teacher-material metadata/revision is incomplete or unavailable.')
     if md['mimeType'] == SLIDES:
-        native = google.native_presentation(token, file_id)
-        if (native.get('presentationId') != file_id or not native.get('revisionId')
-                or not isinstance(native.get('slides'), list) or not native['slides']):
-            raise Unverified('Teacher-material native content is incomplete.')
-        digest = content_hash(native)
+        # Slides revisionId and image contentUrl are temporary API values.
+        # Reuse the full archive proof, including decoded image content, and
+        # bind it to the stable Drive revision bookends below.
+        from . import student_archive
+        try:
+            digest = student_archive._native_presentation_proof(token, file_id)['sha256']
+        except student_archive.Held:
+            raise Unverified('Teacher-material native content is incomplete.') from None
     else:
         data = google.deck_bytes(token, file_id, md['mimeType'])
         if not data:

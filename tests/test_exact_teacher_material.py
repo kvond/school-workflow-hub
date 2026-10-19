@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import unittest
 from unittest.mock import patch
 
-from hub_v2 import agenda, google, teacher_material as tm, work, review_context
+from hub_v2 import agenda, google, teacher_material as tm, work, review_context, student_archive
 from school_workflow_hub.core.cloud_state import Conflict, Document, Snapshot, StoreUnavailable
 from test_hub_v2 import fixture, response, ROSTER
 
@@ -138,10 +138,21 @@ class ExactMaterialTests(unittest.TestCase):
 
     def test_complete_native_content_is_required(self):
         self.md['mimeType']=tm.SLIDES
-        with patch.object(google,'native_presentation',return_value={'presentationId':FILE,'revisionId':'r1','slides':[{'objectId':'fictional-slide'}]}):
+        with patch.object(student_archive,'_native_presentation_proof',return_value={'sha256':'b'*64}):
             self.register();entries=self.entries();self.assertIsNone(self.classify(entries))
-        with patch.object(google,'native_presentation',return_value={'presentationId':FILE,'revisionId':'r1'}):
+        with patch.object(student_archive,'_native_presentation_proof',side_effect=student_archive.Held('incomplete')):
             with self.assertRaises(tm.Unverified):self.proof()
+
+    def test_native_temporary_image_urls_do_not_expire_exact_content_proof(self):
+        self.md['mimeType']=tm.SLIDES
+        urls=iter(['https://fictional.googleusercontent.com/temporary-one','https://fictional.googleusercontent.com/temporary-two'])
+        def get(url,token,params=None,**kwargs):
+            if 'slides.googleapis.com' not in url:return deepcopy(self.event)
+            self.assertEqual(params['fields'],'pageSize,slides,masters,layouts,notesMaster')
+            return {'slides':[{'objectId':'fictional-slide','pageElements':[{'image':{'contentUrl':next(urls)}}]}]}
+        with patch.object(google,'get_json',side_effect=get),patch.object(student_archive,'_native_image_proof',return_value={'sha256':'b'*64}):
+            first=self.proof();second=self.proof()
+        self.assertEqual(first,second)
 
     def test_nearby_cache_does_not_lose_excluded_attachments(self):
         work._responses_cache.clear()
