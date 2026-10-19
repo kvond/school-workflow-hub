@@ -105,6 +105,46 @@ def pptx(native):
     return out.getvalue()
 
 
+def edit_pptx_shape(raw, ident, attribute, value):
+    """Mutate real fictional OOXML, not the parser's derived unit objects."""
+    output = BytesIO()
+    with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w') as target:
+        changed = False
+        for name in source.namelist():
+            content = source.read(name)
+            if name.startswith('ppt/slides/slide') and name.endswith('.xml'):
+                root = ET.fromstring(content)
+                if name == 'ppt/slides/slide2.xml' and ident == 'SlideTree':
+                    tree = root.find(completion.P + 'cSld/' + completion.P + 'spTree')
+                    props = ET.SubElement(ET.SubElement(tree, completion.P + 'nvGrpSpPr'), completion.P + 'cNvPr')
+                    props.set(attribute, value)
+                    changed = True
+                elif name == 'ppt/slides/slide2.xml' and ident == 'Slide':
+                    root.set(attribute, value)
+                    changed = True
+                for element in root.iter():
+                    if element.tag not in (completion.P + 'sp', completion.P + 'grpSp'):
+                        continue
+                    grouped = element.tag == completion.P + 'grpSp'
+                    props = element.find(completion.P + ('nvGrpSpPr' if grouped else 'nvSpPr') + '/' + completion.P + 'cNvPr')
+                    if props is None or props.get('name') != ident:
+                        continue
+                    if attribute == 'hidden':
+                        props.set(attribute, value)
+                    elif attribute in ('text-rot', 'vert'):
+                        body = element.find(completion.P + 'txBody')
+                        body_props = ET.SubElement(body, completion.A + 'bodyPr')
+                        body_props.set('rot' if attribute == 'text-rot' else attribute, value)
+                    else:
+                        transform = element.find(completion.P + ('grpSpPr' if grouped else 'spPr') + '/' + completion.A + 'xfrm')
+                        transform.set(attribute, value)
+                    changed = True
+                content = ET.tostring(root)
+            target.writestr(name, content)
+        assert changed, ident
+    return output.getvalue()
+
+
 class Source:
     def __init__(self):
         self.native = {'presentationId': FILE, 'revisionId': 'revision-7',
@@ -280,6 +320,109 @@ class RepairTests(unittest.TestCase):
             score.assert_not_called()
         self.assertFalse(plan['full_census_complete'])
         self.assertFalse(plan['grading_authorized'])
+
+    def test_actual_pptx_rotated_flipped_or_hidden_panel_evidence_is_never_scored(self):
+        old = repair._elements(self.source.native)['InitialResponse'][2]
+        old.clear(); old.update(shape('InitialResponse', '[[NOTES:C0  9:Q1]]', 70, height=50))
+        ops, spec = self.panel_fixture(grouped=True)
+        self.apply(self.plan(ops, panel_reference=spec))
+        reference = repair._reference('read', self.proof, spec, FILE)
+        raw = pptx(self.source.native)
+        baseline = completion.assess(completion.read_deck(raw), reference['parsed'], panel_reference=reference['authority'])
+        self.assertEqual(baseline['notes_score'], 5)
+        for ident in ('AddedAnswer', 'InitialResponse', 'InitialLabel', 'InnerGroup', 'OuterGroup'):
+            for attribute, value in (('rot', '5400000'), ('flipH', '1'), ('flipV', 'true'), ('hidden', '1')):
+                with self.subTest(ident=ident, attribute=attribute), patch.object(completion, 'score') as score:
+                    changed = completion.read_deck(edit_pptx_shape(raw, ident, attribute, value))
+                    result = completion.assess(changed, reference['parsed'], panel_reference=reference['authority'])
+                    self.assertIsNone(result['notes_score'])
+                    self.assertIsNone(result['revision_score'])
+                    self.assertIn('verified panel match', result['note'])
+                    score.assert_not_called()
+
+    def test_actual_pptx_text_orientation_is_unsupported_panel_geometry(self):
+        ops, spec = self.panel_fixture()
+        self.apply(self.plan(ops, panel_reference=spec))
+        reference = repair._reference('read', self.proof, spec, FILE)
+        raw = pptx(self.source.native)
+        for attribute, value in (('text-rot', '5400000'), ('vert', 'vert270')):
+            with self.subTest(attribute=attribute), patch.object(completion, 'score') as score:
+                changed = completion.read_deck(edit_pptx_shape(raw, 'AddedAnswer', attribute, value))
+                result = completion.assess(changed, reference['parsed'], panel_reference=reference['authority'])
+                self.assertIsNone(result['notes_score'])
+                self.assertIsNone(result['revision_score'])
+                score.assert_not_called()
+
+    def test_hidden_slide_or_root_tree_cannot_supply_visible_response_proof(self):
+        ops, spec = self.panel_fixture()
+        self.apply(self.plan(ops, panel_reference=spec))
+        reference = repair._reference('read', self.proof, spec, FILE)
+        raw = pptx(self.source.native)
+        for ident, attribute, value in (('SlideTree', 'hidden', '1'), ('Slide', 'show', '0')):
+            with self.subTest(ident=ident), patch.object(completion, 'score') as score:
+                changed = completion.read_deck(edit_pptx_shape(raw, ident, attribute, value))
+                result = completion.assess(changed, reference['parsed'], panel_reference=reference['authority'])
+                self.assertIsNone(result['notes_score'])
+                self.assertIsNone(result['revision_score'])
+                score.assert_not_called()
+
+    def test_table_cell_cannot_bypass_deferred_panel_geometry_support(self):
+        ops, spec = self.panel_fixture()
+        self.apply(self.plan(ops, panel_reference=spec))
+        reference = repair._reference('read', self.proof, spec, FILE)
+        raw, output = pptx(self.source.native), BytesIO()
+        P, A = completion.P, completion.A
+        with ZipFile(BytesIO(raw)) as source, ZipFile(output, 'w') as target:
+            for name in source.namelist():
+                content = source.read(name)
+                if name == 'ppt/slides/slide2.xml':
+                    root = ET.fromstring(content)
+                    tree = root.find(P + 'cSld/' + P + 'spTree')
+                    frame = ET.SubElement(tree, P + 'graphicFrame')
+                    ET.SubElement(ET.SubElement(frame, P + 'nvGraphicFramePr'), P + 'cNvPr', name='TableAnswer', hidden='1')
+                    transform = ET.SubElement(frame, P + 'xfrm', rot='5400000')
+                    ET.SubElement(transform, A + 'off', x=str(60 * 12700), y=str(270 * 12700))
+                    ET.SubElement(transform, A + 'ext', cx=str(210 * 12700), cy=str(45 * 12700))
+                    table = ET.SubElement(ET.SubElement(ET.SubElement(frame, A + 'graphic'), A + 'graphicData'), A + 'tbl')
+                    ET.SubElement(ET.SubElement(table, A + 'tblGrid'), A + 'gridCol', w=str(210 * 12700))
+                    cell = ET.SubElement(ET.SubElement(table, A + 'tr', h=str(45 * 12700)), A + 'tc')
+                    paragraph = ET.SubElement(ET.SubElement(cell, A + 'txBody'), A + 'p')
+                    ET.SubElement(ET.SubElement(paragraph, A + 'r'), A + 't').text = 'An unsupported table answer cannot count.'
+                    content = ET.tostring(root)
+                target.writestr(name, content)
+        with patch.object(completion, 'score') as score:
+            result = completion.assess(completion.read_deck(output.getvalue()), reference['parsed'],
+                                       panel_reference=reference['authority'])
+        self.assertIsNone(result['notes_score'])
+        self.assertIsNone(result['revision_score'])
+        score.assert_not_called()
+
+    def test_unsupported_original_or_reference_geometry_is_refused_before_repair_write(self):
+        ops, spec = self.panel_fixture(grouped=True)
+        for file_id, ident in ((FILE, 'AddedAnswer'), (FILE, 'InitialResponse'), (FILE, 'InitialLabel'),
+                               (FILE, 'OuterGroup'), (REFERENCE, 'InitialResponse'),
+                               (REFERENCE, 'InitialLabel'), (REFERENCE, 'InnerGroup')):
+            for attribute, value in (('rot', '5400000'), ('flipH', 'true'), ('hidden', '1')):
+                def exported(token, requested, *args):
+                    raw = pptx((self.source if requested == FILE else self.reference).native)
+                    return edit_pptx_shape(raw, ident, attribute, value) if requested == file_id else raw
+                with self.subTest(file_id=file_id, ident=ident, attribute=attribute), \
+                     patch.object(repair.google, 'deck_bytes', side_effect=exported), self.assertRaises(repair.Refused):
+                    self.plan(ops, panel_reference=spec)
+                self.assertEqual(self.source.writes, 0)
+                self.assertFalse(self.port.rows)
+
+    def test_explicit_zero_rotation_false_flips_and_visible_groups_remain_supported(self):
+        ops, spec = self.panel_fixture(grouped=True)
+        self.apply(self.plan(ops, panel_reference=spec))
+        reference = repair._reference('read', self.proof, spec, FILE)
+        raw = pptx(self.source.native)
+        for ident in ('AddedAnswer', 'InitialResponse', 'InitialLabel', 'InnerGroup', 'OuterGroup'):
+            for attribute, value in (('rot', '0'), ('flipH', 'false'), ('flipV', '0'), ('hidden', 'false')):
+                raw = edit_pptx_shape(raw, ident, attribute, value)
+        result = completion.assess(completion.read_deck(raw), reference['parsed'], panel_reference=reference['authority'])
+        self.assertEqual(result['notes_score'], 5)
+        self.assertIsNone(result['note'])
 
     def test_panel_repair_incomplete_census_remains_ineligible(self):
         ops, spec = self.panel_fixture()

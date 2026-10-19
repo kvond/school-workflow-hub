@@ -89,7 +89,7 @@ def _intersects(a, b):
 def _panel_source_fingerprint(template):
     # Include the complete actual source page, including its printed question,
     # without depending on export-generated object names or traversal order.
-    units = [json.dumps({k: u[k] for k in ('text', 'box', 'picture', 'binding', 'title') if k in u},
+    units = [json.dumps({k: u[k] for k in ('text', 'box', 'picture', 'binding', 'title', 'panel_geometry_unverified') if k in u},
                         sort_keys=True, separators=(',', ':')) for u in template.get('units', [])]
     return hashlib.sha256(json.dumps(sorted(units), separators=(',', ':')).encode()).hexdigest()
 
@@ -110,14 +110,15 @@ def panel_binding(marker, template, label, size, plain, marker_pattern):
     panels = []
     for unit, (category, _, _) in sorted(codes, key=lambda item: item[1][0]):
         box = unit.get('box')
-        if (unit.get('picture') or unit.get('binding') or not rectangle(box, size)
+        if (unit.get('picture') or unit.get('binding') or unit.get('panel_geometry_unverified') or not rectangle(box, size)
                 or len([u for u in units if not u.get('picture') and same_box(u.get('box'), box, size)]) != 1):
             return None
         panels.append({'category': category, 'box': list(box), 'text': plain(unit['text'])})
     if _intersects(panels[0]['box'], panels[1]['box']):
         return None
     box, text = label.get('box'), plain(label.get('text', ''))
-    original_labels = [u for u in units if not u.get('picture') and not marker_pattern.search(u.get('text', ''))
+    original_labels = [u for u in units if not u.get('picture') and not u.get('panel_geometry_unverified')
+                       and not marker_pattern.search(u.get('text', ''))
                        and same_box(u.get('box'), box, size) and plain(u.get('text', '')) == text]
     if not text or not rectangle(box, size) or len(original_labels) != 1:
         return None
@@ -170,17 +171,20 @@ def panel_answers(markers, written, template, student, size, plain, marker_patte
         return bad()
     units = student.get('units', [])
     for panel in panels:
-        if len([u for u in units if not u.get('picture') and same_box(u.get('box'), panel['box'], size)]) != 1:
+        matching = [u for u in units if not u.get('picture') and same_box(u.get('box'), panel['box'], size)]
+        if len(matching) != 1 or matching[0].get('panel_geometry_unverified'):
             return bad()
     for marker in markers:
         if marker.get('binding', {}).get('kind') == PANEL_KIND:
             label = marker['binding']['label']
-            found = [u for u in units if u['key'] == marker['key'] and not u.get('picture')
+            found = [u for u in units if u['key'] == marker['key'] and not u.get('picture') and not u.get('panel_geometry_unverified')
                      and plain(u.get('text', '')) == label['text'] and same_box(u.get('box'), label['box'], size)]
             if len(found) != 1:
                 return bad()
     loose = []
     for unit, words in written:
+        if unit.get('panel_geometry_unverified'):
+            return bad()  # Its true visible extent cannot be inferred from the parsed box.
         box = unit.get('box')
         targets = [p for p in panels if _contains(p['box'], box, size)]
         if len(targets) == 1 and not unit.get('picture') and not words.startswith('moved: '):

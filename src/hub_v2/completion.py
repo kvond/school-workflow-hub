@@ -122,7 +122,41 @@ def _highlight_shape(node, orientation):
     return {"sha256": hashlib.sha256(raw).hexdigest()}
 
 
-def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=(), highlighters=False):
+def _unsupported_panel_geometry(xfrm, properties, body=None, *, group=False):
+    """The panel contract uses axis-aligned visible text only, not guessed bounds.
+
+    Retain a refusal signal for attributes the ordinary rectangle reader does
+    not compose. This adds no rotation/flip/visibility support to other readers.
+    """
+    if xfrm is None or any(xfrm.find(A + name) is None for name in ('off', 'ext')):
+        return True
+    if group and any(xfrm.find(A + name) is None for name in ('chOff', 'chExt')):
+        return True
+    try:
+        if any(int(xfrm.find(A + name).get(axis, '0')) <= 0
+               for name in (('ext', 'chExt') if group else ('ext',)) for axis in ('cx', 'cy')):
+            return True
+    except ValueError:
+        return True
+    def nonzero(value):
+        try:
+            return int(value or '0') != 0
+        except ValueError:
+            return True
+    def active(value):
+        return value is not None and value.strip().lower() not in ('0', 'false')
+    if (nonzero(xfrm.get('rot')) or any(active(xfrm.get(k)) for k in ('flipH', 'flipV'))
+            or (properties is not None and active(properties.get('hidden')))):
+        return True
+    return body is not None and (nonzero(body.get('rot')) or body.get('vert', 'horz') != 'horz')
+
+
+def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=(), highlighters=False,
+          panel_geometry_unverified=False):
+    # The root slide tree is also a group and may carry its own hidden flag.
+    group_props = node.find(P + 'nvGrpSpPr/' + P + 'cNvPr')
+    if group_props is not None and group_props.get('hidden', '0').strip().lower() not in ('0', 'false'):
+        panel_geometry_unverified = True
     for child in node:
         if child.tag == P + "sp":
             ph = child.find(P + "nvSpPr/" + P + "nvPr/" + P + "ph")
@@ -130,6 +164,9 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
                           "box": _box(child.find(P + "spPr/" + A + "xfrm"), transform),
                           "title": ph is not None and ph.get("type") in ("title", "ctrTitle")}
             properties = child.find(P + "nvSpPr/" + P + "cNvPr")
+            if panel_geometry_unverified or _unsupported_panel_geometry(child.find(P + 'spPr/' + A + 'xfrm'),
+                    properties, child.find(P + 'txBody/' + A + 'bodyPr')):
+                unit['panel_geometry_unverified'] = True
             binding = response_binding.description(properties.get("descr") if properties is not None else None)
             if binding is not None:
                 unit["binding"] = binding
@@ -150,6 +187,8 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
                               "appearance": appearance}})
         elif child.tag == P + "grpSp":
             xfrm = child.find(P + "grpSpPr/" + A + "xfrm")
+            group_properties = child.find(P + 'nvGrpSpPr/' + P + 'cNvPr')
+            unsupported = panel_geometry_unverified or _unsupported_panel_geometry(xfrm, group_properties, group=True)
             orientation = {k: xfrm.get(k) for k in ("rot", "flipH", "flipV") if xfrm is not None and xfrm.get(k)}
             if highlighters:
                 properties = child.find(P + "nvGrpSpPr/" + P + "cNvPr")
@@ -161,7 +200,7 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
                     orientation["group_effects"] = effects
             _walk(child, units, _affine(xfrm, transform, group=True),
                   prefix + _name(child, P + "nvGrpSpPr") + "/", pictures,
-                  picture_orientation + ((orientation,) if orientation else ()), highlighters)
+                  picture_orientation + ((orientation,) if orientation else ()), highlighters, unsupported)
         elif child.tag == P + "graphicFrame":
             table = child.find(".//" + A + "tbl")
             frame = _box(child.find(P + "xfrm"), transform)
@@ -176,7 +215,10 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
                 for c, cell in enumerate(row.findall(A + "tc")):
                     width = widths[c] if c < len(widths) else 0
                     units.append({"key": "%s/r%dc%d" % (key, r, c), "text": _text(cell.find(A + "txBody")),
-                                  "box": (x, y, width, height)})
+                                  "box": (x, y, width, height),
+                                  # Cell/graphic-frame rendering is not an existing
+                                  # fixed text-shape proof for the panel contract.
+                                  "panel_geometry_unverified": True})
                     x += width
                 y += height
 
@@ -253,7 +295,8 @@ def read_deck(raw):
                     if binding and binding.get("kind") == "raster-highlight-activity":
                         explicit_highlights = True
                         break
-                _walk(tree, units, (1, 1, 0, 0), pictures=pictures, highlighters=explicit_highlights)
+                _walk(tree, units, (1, 1, 0, 0), pictures=pictures, highlighters=explicit_highlights,
+                      panel_geometry_unverified=root.get('show', '1').strip().lower() not in ('1', 'true'))
             seen = {}
             for unit in units:  # keep keys unique on a slide
                 seen[unit["key"]] = seen.get(unit["key"], 0) + 1
