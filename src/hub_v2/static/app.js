@@ -393,7 +393,7 @@ function renderSourceReviewNotice(notice, scope, includeContext = true, retained
   const student = notice.student || {};
   const name = [student.last, student.first].filter(value => typeof value === 'string' && value.trim()).join(', ');
   const teacherMaterial = notice.kind === 'teacher_material';
-  const identity = teacherMaterial ? 'Teacher’s own upload · not a student submission'
+  const identity = teacherMaterial ? 'Verified original teacher example · not a student submission'
     : notice.kind === 'lesson' || notice.affected_scope === 'lesson' ? 'Lesson-wide source check · no individual student'
     : formerWork ? `${name} · Former student`
     : student.verified === true && student.last && student.first
@@ -1672,6 +1672,15 @@ function renderPlans(data) {
 // ---------- Student work ----------
 const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}, reviewContexts: new Map()};
 const sourceMatchesHeld = () => !!work.data?.other_files?.length;
+// Display availability only: an incomplete discovery result cannot establish
+// absence. Keep received rows and the existing assessment/IC rules unchanged.
+function studentWorkCoverageIncomplete(form = null, data = work.data) {
+  return Boolean(data?.problem || data?.problems?.length || data?.assessment_problem
+    || data?.folder_note || data?.read_timeouts?.length || data?.shared_form?.problem
+    || data?.week_policy?.problem || form?.problem
+    || data?.lessons?.some(lesson => lesson.forms?.some(item => item.problem)));
+}
+const STUDENT_WORK_COVERAGE = 'Source coverage is incomplete. Available submissions are shown below; submission totals and who has not turned in work are not yet known.';
 function weekAssessmentHold(data = work.data) {
   if (data?.assessment_problem) return 'This week’s submission route needs confirmation before scoring or IC entry.';
   const policy = data?.week_policy;
@@ -2615,12 +2624,12 @@ function studentRow(row, scores, formId) {
     el('td', {}, fileList(row.files), earlier), ...scoreCells(row, scores, formId));
 }
 
-// The teacher's own Form uploads: visible, linked and left out of every
-// student list, count, missing-work check and score. Nothing is moved.
+// Only exact originals verified by the backend are teacher material; the
+// respondent's account alone does not establish this classification.
 function teacherMaterialList(rows) {
   return el('details', {class: 'teacher-material'},
     el('summary', {text: `Teacher material — not student work (${rows.length})`}),
-    el('p', {class: 'muted', text: 'Uploaded from your own school account, so it is not counted as a student submission, a missing student or an unmatched student. The originals stay where they are. If one was meant for a student, resubmit it with that student’s name.'}),
+    el('p', {class: 'muted', text: 'These exact original files were verified as teacher examples, not student submissions. They are excluded from student submission counts and scores. The originals stay where they are; no action is needed.'}),
     el('ul', {}, rows.map(r => el('li', {},
       el('small', {class: 'muted', text: when(r.submitted_at) + (r.to ? ` · ${r.to}` : '')}), fileList(r.files || [])))));
 }
@@ -2631,7 +2640,9 @@ function renderForm(form, lesson) {
   const box = el('details', {class: 'form-work', open: true},
     el('summary', {class: 'form-head'}, el('h3', {text: form.label})), link('Open Form ↗', form.url, 'chip'));
   if (form.problem) box.append(note(form.problem));
-  if (!form.form_id || (form.problem && !form.students.length)) return box;
+  if (!form.form_id) return box;
+  const coverageIncomplete = studentWorkCoverageIncomplete(form);
+  if (coverageIncomplete) box.append(note(STUDENT_WORK_COVERAGE, 'info'));
   const recheck = closedRecheck(form);
   const selected = form.combined_assessment || (recheck && !entryHistoryHold(form)) ? assessmentRows(form) : form.students;
   const matched = selected.filter(r => r.matched && !r.late && inSection(r));
@@ -2643,9 +2654,11 @@ function renderForm(form, lesson) {
     .filter(r => !r.matched || inSection(r));
   const lateMatched = late.filter(r => r.matched).length;
   box.append(el('p', {class: 'summary'},
-    el('strong', {text: recheck ? `${matched.length + lateMatched} matched submission${matched.length + lateMatched === 1 ? '' : 's'}`
+    el('strong', {text: coverageIncomplete ? matched.length + lateMatched
+      ? `${matched.length + lateMatched} known matched submission${matched.length + lateMatched === 1 ? '' : 's'}` : 'Submission totals not verified'
+      : recheck ? `${matched.length + lateMatched} matched submission${matched.length + lateMatched === 1 ? '' : 's'}`
       : `${matched.length} of ${matched.length + lateMatched + missing.length}`}),
-    recheck ? ' retained for the current recheck; original response history is preserved' : form.window ? ' turned in on time' : ' turned in',
+    coverageIncomplete ? ' from the sources read' : recheck ? ' retained for the current recheck; original response history is preserved' : form.window ? ' turned in on time' : ' turned in',
     late.length ? el('span', {class: 'badge warn', text: `${late.length} late${recheck ? ' — retained for recheck' : ' — not graded'}`}) : null,
     unmatched.length ? el('span', {class: 'badge warn', text: `${unmatched.length} not matched to the roster`}) : null,
     form.folder_files ? el('span', {class: 'badge', text: `includes ${form.folder_files} file(s) found in the turn-in folder`}) : null,
@@ -2668,12 +2681,12 @@ function renderForm(form, lesson) {
   }
   const marks = marksLine(form);
   if (marks) box.append(marks);
-  const standing = icStatus(form);
+  const standing = coverageIncomplete ? {kind: 'held', text: 'IC eligibility cannot be confirmed from incomplete source reads.'} : icStatus(form);
   if (standing) box.append(el('p', {class: 'ic-status ' + standing.kind, text: standing.text}));
   if (work.ui[form.form_id]?.saved) box.append(note(work.ui[form.form_id].saved, 'info'));
   const scores = weekAssessmentHold() || recheckSelectionHold(form) ? null : work.scores[form.form_id];
   const ui = work.ui[form.form_id] || {};
-  const scoredAll = scores && !ui.progress && !sourceMatchesHeld();
+  const scoredAll = scores && !ui.progress && !sourceMatchesHeld() && !coverageIncomplete;
   box.append(...[
     ui.progress ? el('p', {class: 'muted', text: ui.progress}) : null,
     scoredAll ? el('details', {class: 'manual', open: ui.open === 'ic' || ui.open === 'answers'},
@@ -2705,7 +2718,7 @@ function renderForm(form, lesson) {
         coding.missing.length ? ` on the code list but no box has it — ${coding.missing.join(', ')}.` : '',
         coding.extra.length ? ` A box has a code that isn’t on the list — ${coding.extra.join(', ')}.` : ''].join(''), 'info'));
     }
-    if (ui.open === 'ic') box.append(icPanel(form, scores, lesson));
+    if (ui.open === 'ic' && !coverageIncomplete) box.append(icPanel(form, scores, lesson));
     if (ui.open === 'answers') box.append(answersPanel(form, scores));
   }
   const listed = [...matched, ...unmatched];
@@ -2713,7 +2726,7 @@ function renderForm(form, lesson) {
     box.append(el('div', {class: 'table-wrap'}, el('table', {},
       el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work', ...(scores ? ['Notes /10', 'Revision /10'] : [])].map(h => el('th', {text: h})))),
       el('tbody', {}, listed.map(r => studentRow(r, scores, form.form_id))))));
-  } else {
+  } else if (!coverageIncomplete) {
     box.append(note(recheck && late.length ? 'Current selected submissions are listed below; their original response history is retained.'
       : late.length ? 'No on-time responses.' : form.teacher_uploads?.length ? 'No student responses yet.' : 'No responses yet.', 'info'));
   }
@@ -2735,7 +2748,7 @@ function renderForm(form, lesson) {
       excused.map(m => `${m.last}, ${m.first} (added ${m.added})`).join('; '),
       '. They joined after this assignment began, so it isn’t counted for them.'));
   }
-  if (missing.length && !weekAssessmentHold()) {
+  if (missing.length && !weekAssessmentHold() && !coverageIncomplete) {
     const held = sourceMatchesHeld() || missing.some(m => m.unsorted);
     box.append(el('div', {class: 'missing'}, el('h4', {text: held ? `No confirmed submission for this assignment (${missing.length}) — scoring held`
       : gradeReadinessHold(form) ? `Not turned in yet (${missing.length})`
@@ -2761,15 +2774,16 @@ function feedbackBackup(form, ui) {
 function renderWork() {
   const data = work.data;
   if (!data) return;
+  const coverageIncomplete = studentWorkCoverageIncomplete();
   const parts = data.problems.map(p => note(p));
   if (weekAssessmentHold(data)) parts.push(note(weekAssessmentHold(data), 'info'));
-  if (!data.roster_size) parts.push(note('No roster students were found for this class, so nobody can be listed as missing.'));
+  if (!data.roster_size && !coverageIncomplete) parts.push(note('No roster students were found for this class, so nobody can be listed as missing.'));
   if (data.folders?.length) {
-    parts.push(el('p', {class: 'muted'}, `Read the Form uploads and ${data.folder_files} file(s) in `,
+    parts.push(el('p', {class: 'muted'}, coverageIncomplete ? 'Source folders for this check: ' : `Read the Form uploads and ${data.folder_files} file(s) in `,
       data.folders.flatMap((f, i) => [i ? ', ' : '', link(f.name + ' ↗', f.url)]), '.'));
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
-  if (data.roster_check) parts.push(renderRosterCheck(data.roster_check));
+  if (data.roster_check) parts.push(renderRosterCheck(data.roster_check, coverageIncomplete));
   if (data.folder_reviews?.length) {
     parts.push(el('section', {class: 'folder-review'},
       el('h3', {text: 'Check this shared lesson folder'}),
@@ -2793,12 +2807,12 @@ function renderWork() {
           el('tbody', {}, other.map(r => studentRow(r))))))));
   }
   if (data.teacher_uploads?.length) parts.push(el('section', {class: 'form-work'}, teacherMaterialList(data.teacher_uploads)));
-  const entry = weekEntryBox();
+  const entry = coverageIncomplete ? null : weekEntryBox();
   if (entry) parts.push(entry);
   $('work-body').replaceChildren(...parts);
 }
 
-function renderRosterCheck(check) {
+function renderRosterCheck(check, coverageIncomplete = false) {
   const sections = Object.entries(check.sections).map(([name, n]) => `${name} ${n}`).join(' · ');
   const updated = check.updated_at ? `Rosters sheet last changed ${when(check.updated_at)}.` : '';
   const flags = check.flags;
@@ -2807,7 +2821,9 @@ function renderRosterCheck(check) {
     el('p', {class: 'muted', text: [`Students: ${sections}.`, updated].filter(Boolean).join(' ')}));
   if (check.stale) box.append(note(`The Rosters sheet hasn’t changed in over ${check.stale_days} days. Check that your roster job is still running.`));
   if (!flags.length) {
-    box.append(el('p', {class: 'ok', text: '✓ Nothing to check: everyone who turned in work in the last week is on this class’s roster.'}));
+    box.append(el('p', {class: coverageIncomplete ? 'muted' : 'ok', text: coverageIncomplete
+      ? 'No roster conflicts were returned from the submissions read. Source coverage is incomplete; the full submission check is not verified.'
+      : '✓ Nothing to check: everyone who turned in work in the last week is on this class’s roster.'}));
     return box;
   }
   const say = {
