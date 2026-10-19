@@ -41,6 +41,18 @@ WORK_CACHE_SECONDS = 600
 _cache = {"agenda": None, "at": 0.0}
 _cache_lock = threading.Lock()
 _work_cache = {}
+# Feedback reads, drafts and saves re-bind a whole combined Form; reuse its
+# unchanged, fresh-checked source exports instead of exporting every original again.
+_feedback_sources = None
+
+
+def feedback_sources():
+    global _feedback_sources
+    from . import combined_assessment
+    with _cache_lock:
+        if _feedback_sources is None:
+            _feedback_sources = combined_assessment.RetainedSources()
+        return combined_assessment.retained_sources(_feedback_sources)
 
 
 def lesson_work(token, config, agenda, class_key, week, fresh=True):
@@ -292,13 +304,15 @@ def api(sub, query, config):
         return audit.check(token, agenda, _class_key(_one(query, "class")), config)
     if sub == "api/feedback/native":
         class_key, week, form_id = _form_args(query)
-        found = lesson_work(token, config, agenda, class_key, week, fresh=True)
+        with feedback_sources():
+            found = lesson_work(token, config, agenda, class_key, week, fresh=True)
         return native_feedback.listing(config, native_feedback.target(class_key, week, form_id, ''), found)
     if sub in ("api/ledger", "api/feedback"):
         class_key, week, form_id = _form_args(query)
         if sub == "api/ledger":
             return ledger.read(token, config, form_id)
-        return feedback_list(token, config, agenda, class_key, week, form_id)
+        with feedback_sources():
+            return feedback_list(token, config, agenda, class_key, week, form_id)
     return None
 
 
@@ -505,8 +519,9 @@ def native_feedback_post(environ, respond, config):
                 raise ValueError()
             token = google.service_token(config)
             agenda = load_agenda(token, config, fresh=True)
-            found = lesson_work(token, config, agenda, scope['class'], scope['week'], fresh=True)
-            inputs = native_feedback.evidence(assertion, token, config, agenda, scope, found)
+            with feedback_sources():
+                found = lesson_work(token, config, agenda, scope['class'], scope['week'], fresh=True)
+                inputs = native_feedback.evidence(assertion, token, config, agenda, scope, found)
             archive_tokens = ({'token': token, 'write_token': google.service_token(config, write=True)}
                               if student_archive.enabled(config) else {})
             return respond('200 OK', native_feedback.save(config, payload['id'], inputs, **archive_tokens))
@@ -517,8 +532,9 @@ def native_feedback_post(environ, respond, config):
             raise ValueError()
         token = google.service_token(config)
         agenda = load_agenda(token, config, fresh=True)
-        found = lesson_work(token, config, agenda, cls, week, fresh=True)
-        inputs = native_feedback.evidence(assertion, token, config, agenda, payload, found)
+        with feedback_sources():
+            found = lesson_work(token, config, agenda, cls, week, fresh=True)
+            inputs = native_feedback.evidence(assertion, token, config, agenda, payload, found)
         return respond('200 OK', native_feedback.generate(config, inputs))
     except (native_feedback.Held, daily_feedback_packet.Held, feedback_print_preview.Held) as error:
         return respond('409 Conflict', {'error': str(error)})
