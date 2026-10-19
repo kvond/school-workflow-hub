@@ -2071,6 +2071,9 @@ def _science_chart_sources(token, report, student, artifacts, sources):
                 or lesson.get("date_basis") != artifact.get("date_basis")
                 or ("submitted_at" in lesson and lesson["submitted_at"] != artifact.get("submitted_at"))):
             raise Held("A chart sample's date or receipt differs from its verified original.")
+        snapshot = lesson.get("archived_snapshot")
+        if snapshot is not None and (ident in sources or artifact.get("source_kind") != "submitted_work_copy"):
+            raise Held("An archived snapshot is only supported for an unrated submitted-work gap.")
         if artifact.get("source_kind") == IMPORTED_ORIGINAL:
             meta = google.drive_file(token, ident, FIELDS)
             _verify_imported_original(meta, artifact)
@@ -2094,7 +2097,7 @@ def _science_chart_sources(token, report, student, artifacts, sources):
                     or not artifact.get("form_id") or artifact.get("lesson_status") != "verified"):
                 raise Held("A submitted chart sample needs its verified original Form receipt and lesson.")
             meta = google.drive_file(token, ident, SOURCE_FIELDS)
-            if (_source_revision(meta) != artifact.get("source_revision")
+            if snapshot is None and (_source_revision(meta) != artifact.get("source_revision")
                     or meta.get("modifiedTime") != artifact.get("source_modified_at")):
                 raise Held("A submitted chart original changed after its archived revision was verified.")
             copy_meta = google.drive_file(token, artifact["drive_file_id"], FIELDS)
@@ -2106,6 +2109,20 @@ def _science_chart_sources(token, report, student, artifacts, sources):
             bookends.append((artifact["drive_file_id"], FIELDS, copy_meta, artifact))
             canonical = {k: artifact.get(k) for k in ("source_file_id", "source_version", "source_modified_at",
                 "submitted_at", "date", "date_basis", "form_id", "assignment_form_id", "assignment", "lesson_status", "source_context")}
+            if snapshot is not None:
+                expected = {"schema": "writing-gap-archived-snapshot/v1", "record_key": artifact["record_key"],
+                    "drive_file_id": artifact["drive_file_id"], "content_proof": artifact.get("content_proof"),
+                    "source_file_id": ident, "source_version": revision,
+                    "source_modified_at": artifact.get("source_modified_at"),
+                    "disclosure": "Archived submitted revision; the current original may differ."}
+                if (snapshot != expected or not str(lesson.get("title", "")).endswith(" [archived snapshot]")
+                        or meta.get("trashed") is not False
+                        or artifact.get("source_revision", {}).get("version") != revision
+                        or _work_content(token, copy_meta) != artifact.get("content_proof")):
+                    raise Held("The historical gap needs its exact owned archived snapshot and unchanged content proof.")
+                canonical["historical_snapshot"] = {**deepcopy(expected),
+                    "current_original_revision": _source_revision(meta),
+                    "original_revision_changed": _source_revision(meta) != artifact.get("source_revision")}
         if ident in sources and sources[ident] != canonical:
             raise Held("The chart sample disagrees with its rated source evidence.")
         checked[ident] = canonical
