@@ -2801,6 +2801,44 @@ function feedbackBackup(form, ui) {
     shown ? feedbackPanel(form) : null);
 }
 
+// Where this week's work was turned in: counts only, per assignment Form.
+function turnInPlace(row) {
+  const files = row.files || [];
+  if (row.source === 'folder' || files.some(f => f.from_folder)) return 'folder';
+  if (files.some(f => f.from_shared)) return 'shared';
+  if (files.some(f => f.via)) return 'via';
+  return 'form';
+}
+
+function renderTurnInSources(data, section = 'all') {
+  const TURN_IN_PLACES = [['form', 'This Form'], ['folder', 'Turn-in folder'], ['shared', 'Earlier shared Form'], ['via', 'Another lesson’s Form']];
+  const inSection = r => !r.matched || section === 'all' || r.section === section;
+  const rows = [];
+  for (const lesson of data?.lessons || []) {
+    for (const form of lesson.forms || []) {
+      if (!form.form_id) continue;
+      const counts = {form: 0, folder: 0, shared: 0, via: 0};
+      for (const r of [...(form.students || []), ...(form.late || [])].filter(inSection)) counts[turnInPlace(r)] += 1;
+      const notHere = (form.elsewhere || []).filter(e => e.accepted_intake !== true
+        && (section === 'all' || !e.section || e.section === section)).length;
+      rows.push({label: form.label || lesson.topic || '', counts, notHere});
+    }
+  }
+  const waiting = (data?.other_files || []).filter(inSection).length;
+  if (!rows.length && !waiting) return null;
+  const total = rows.reduce((n, r) => n + Object.values(r.counts).reduce((a, b) => a + b, 0), 0);
+  const head = ['Assignment', ...TURN_IN_PLACES.map(([, label]) => label), 'Another lesson’s deck (not counted)'];
+  const body = rows.map(r => el('tr', {}, el('td', {text: r.label}),
+    ...TURN_IN_PLACES.map(([key]) => el('td', {text: String(r.counts[key])})), el('td', {text: String(r.notHere)})));
+  return el('details', {class: 'turn-in-sources'},
+    el('summary', {text: `Where work was turned in · ${total} submission${total === 1 ? '' : 's'}${waiting ? ` · ${waiting} awaiting a lesson match` : ''}`}),
+    el('p', {class: 'muted', text: 'Counts each student’s current submission once, on time or late. Read-only; nothing is moved.'}),
+    el('div', {class: 'table-wrap'}, el('table', {},
+      el('thead', {}, el('tr', {}, head.map(h => el('th', {text: h})))),
+      el('tbody', {}, body))),
+    waiting ? el('p', {class: 'note info', text: `${waiting} current submission${waiting === 1 ? ' is' : 's are'} in the turn-in folders without a confirmed lesson match (listed below under “Confirm these submission matches”).`}) : null);
+}
+
 function renderWork() {
   const data = work.data;
   if (!data) return;
@@ -2813,6 +2851,9 @@ function renderWork() {
       data.folders.flatMap((f, i) => [i ? ', ' : '', link(f.name + ' ↗', f.url)]), '.'));
   }
   if (data.folder_note) parts.push(note(data.folder_note, 'info'));
+  // Counts from a partial read would understate a source, so only show them when every source was read.
+  const sources = coverageIncomplete ? null : renderTurnInSources(data, work.section);
+  if (sources) parts.push(sources);
   if (data.roster_check) parts.push(renderRosterCheck(data.roster_check, coverageIncomplete));
   if (data.folder_reviews?.length) {
     parts.push(el('section', {class: 'folder-review'},

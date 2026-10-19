@@ -16,7 +16,8 @@ class Element {
 }
 const source = readFileSync(new URL('../src/hub_v2/static/app.js', import.meta.url), 'utf8');
 const functions = ['fileList', 'studentRow', 'scoreCells', 'assessmentRows', 'icStatus', 'marksLine',
-  'renderForm', 'teacherMaterialList', 'feedbackBackup', 'renderWork', 'renderRosterCheck']
+  'renderForm', 'teacherMaterialList', 'feedbackBackup', 'renderWork', 'renderRosterCheck',
+  'turnInPlace', 'renderTurnInSources']
   .map(name => {
     const start = source.indexOf(`function ${name}(`);
     assert.ok(start >= 0, name);
@@ -75,6 +76,7 @@ function boot({form = {}, data = {}, section = 'all', scores = null, panel = nul
 
 function assertNoAbsence(element) {
   assert.doesNotMatch(element.textContent, /\d+ of \d+ turned in|No (?:student |on-time )?responses|Not turned in yet|Nothing turned in on time|these are 0 now|0 until they turn it in|including the 0s|Nothing to check: everyone/);
+  assert.doesNotMatch(element.textContent, /Where work was turned in/);
   assert.equal(allNodes(element).filter(node => node.className === 'missing').length, 0);
   assert.equal(allNodes(element).filter(node => node.tagName === 'week-entry').length, 0);
 }
