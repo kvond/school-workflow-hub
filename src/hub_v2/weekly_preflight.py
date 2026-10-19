@@ -55,6 +55,7 @@ from io import BytesIO
 from urllib.parse import parse_qs, urlsplit
 
 from . import agenda as agenda_module, audit, completion, google, roster, work
+from . import readiness_source_roles
 from .agenda import first_link, lesson_kind, links, norm, plain, text
 from .agenda_edit import REF, _cell_range, _linked_cell, _write_error, column_letter
 from school_workflow_hub.adapters.firestore_state import configured_store
@@ -1432,6 +1433,19 @@ def run(token, config, agenda, start, weeks, roster_counts, *, port=None, budget
     for week_plan in plans:
         for lesson in week_plan["lessons"]:
             _resolve_sources(ctx, lesson)
+            for node in lesson["sources"]:
+                role = readiness_source_roles.read(token, config, agenda, lesson["class_key"],
+                    lesson["week"], lesson["row"], node["id"], port=port)
+                if role:
+                    node["readiness_role"] = role
+                    if role["axes"]["modality"] == "paper":
+                        lesson["exceptions"] = [e for e in lesson["exceptions"] if not (
+                            e.get("kind") == "student_link_not_copy" and file_id(e.get("source_url", "")) == node["id"])]
+                    if role["axes"]["modality"] == "paper" and node["mimeType"] == google.FOLDER:
+                        exact = {node["id"], *role["member_ids"]}
+                        lesson["exceptions"] = [e for e in lesson["exceptions"] if not (
+                            e.get("kind") == "unlinked_deck_in_folder" and e.get("source_url") == node["url"]
+                            and {d["id"] for d in e.get("evidence", {}).get("decks", [])} <= exact)]
     wanted = list(dict.fromkeys(
         _check_identity(kind, node) for week_plan in plans for lesson in week_plan["lessons"]
         for node in lesson["sources"] if node.get("accessible") and not node.get("trashed")
@@ -1441,6 +1455,12 @@ def run(token, config, agenda, start, weeks, roster_counts, *, port=None, budget
     for week_plan in plans:
         for lesson in week_plan["lessons"]:
             _content(ctx, lesson, counts)
+            for node in lesson["sources"]:
+                if node.get("readiness_role") and readiness_source_roles.read(token, config, agenda,
+                        lesson["class_key"], lesson["week"], lesson["row"], node["id"], port=port) != node["readiness_role"]:
+                    lesson["exceptions"].append(_exception("source_role_changed", "needs_decision", lesson,
+                        "The exact source role changed while readiness was checked.",
+                        "Refresh the exact source checks; no role waiver is confirmed.", url=node["url"], sources=[node["id"]]))
         results.append(_finish_week(week_plan, sheet, port))
     status = "incomplete" if ctx.counts["pending"] or any(w["status"] == "incomplete" for w in results) else "complete"
     progress(ctx.counts, status)
@@ -1906,7 +1926,8 @@ def _content(ctx, lesson, counts):
         if not node["accessible"] or node["trashed"] or not _content_kinds(node):
             continue
         if "readiness" in _content_kinds(node):
-            ready = ctx.check("readiness", node, _readiness)
+            ready = (readiness_source_roles.result(node["readiness_role"], node["id"])
+                     if node.get("readiness_role") else ctx.check("readiness", node, _readiness))
             outline = ctx.check("outline", node, _outline)
             if ready is None or outline is None:
                 lesson["pending"].append(node["id"])
@@ -1925,7 +1946,7 @@ def _content(ctx, lesson, counts):
                     "Check the deck's link and sharing, then run the check again.", url=node["url"],
                     sources=[node["id"]], revision_key=node["revision"], detail="outline",
                     evidence={"stage": outline.get("stage"), "http_status": outline.get("http_status")}))
-            if ready.get("status") != "READY":
+            if ready.get("status") not in ("READY", "NOT_REQUIRED"):
                 slides_of = (outline or {}).get("code_slides") or {}
                 readability = ready.get("readability")
                 if readability:

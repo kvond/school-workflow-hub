@@ -145,3 +145,17 @@ test('Lessons navigation and Reload read plans without starting a hidden readine
   assert.equal(app.document.getElementById('page-plans').hidden, true);
   assert.match(app.document.getElementById('lesson-readiness-body').textContent, /Biology · Wk 09/);
 });
+
+test('verified source-role exemption is neutral and never shown as Ready or a coding repair', () => {
+  const app = boot();
+  vm.runInContext(`globalThis.roleView = {
+    badge: releaseBadge({status: 'NOT_REQUIRED', label: 'Paper activity — VT codes not required'}),
+    notice: lessonReviewNotice({release: {status: 'NOT_REQUIRED', label: 'Paper activity — VT codes not required',
+      action: 'Keep existing links.', issues: []}, decks: [], forms: []})
+  };`, app.context);
+  assert.equal(app.context.roleView.badge.className, 'release-badge neutral');
+  assert.match(app.context.roleView.badge.textContent, /Paper activity.*not required/);
+  assert.doesNotMatch(app.context.roleView.badge.textContent, /Ready/);
+  assert.match(app.context.roleView.notice.reason, /Paper activity/);
+  assert.equal(app.context.roleView.notice.next_action, 'Keep existing links.');
+});

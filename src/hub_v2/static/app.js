@@ -99,7 +99,7 @@ function releaseLabel(release) {
 
 function releaseBadge(release) {
   if (!release) return el('span', {class: 'release-badge neutral', text: 'Not checked'});
-  const kind = release.status === 'READY' ? 'ready' : release.status === 'NOT_READY' ? 'blocked' : 'stale';
+  const kind = release.status === 'NOT_REQUIRED' ? 'neutral' : release.status === 'READY' ? 'ready' : release.status === 'NOT_READY' ? 'blocked' : 'stale';
   return el('span', {class: 'release-badge ' + kind, text: releaseLabel(release)});
 }
 
@@ -712,6 +712,7 @@ function lessonCodeAdvisory(row) {
     && release.issues.every(issue => MISSING_CODE_ADVISORIES.has(issue));
 }
 function lessonReviewAction(row) {
+  if (row.release?.status === 'NOT_REQUIRED') return row.release.action || 'VT codes are not required for this verified source role. Keep the lesson connections and source access checks.';
   const photo = lessonPhotosynthesis(row);
   if (photo) {
     const conditional = 'Wait for received Photosynthesis originals. When an original is received, repair any missing embedded codes without changing answers before grading it. No student-copy verification is needed before an original arrives. This linked-source check does not establish submission status.';
@@ -741,7 +742,8 @@ function lessonReviewNotice(row) {
     ids.add(key); if (url) urls.add(url);
     return true;
   });
-  return {kind: 'lesson', student: {verified: false}, reason: lessonCodeAdvisory(row)
+  return {kind: 'lesson', student: {verified: false}, reason: release.status === 'NOT_REQUIRED'
+    ? release.label || 'VT codes are not required for this verified source role.' : lessonCodeAdvisory(row)
     ? 'The linked source’s code inventory needs checking. Missing codes alone are advisory for this lesson; only usable coded items in correctly matched copies count.'
     : release.problem || (release.status === 'READY' ? 'The linked source passed its code check; student copies are checked separately.'
       : (release.issues || []).map(releaseIssue).join(' ') || 'The exact linked-source issue was not returned.'),
