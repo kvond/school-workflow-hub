@@ -94,6 +94,8 @@ def import_verified(token, config, agenda, cls, week, row, source, *, assessment
         raise ValueError('An attributed teacher instruction is required.')
     scope = _scope(token, agenda, cls, week, row, source, config)
     proof = capture(token, source)
+    if _scope(token, agenda, cls, week, row, source, config) != scope:
+        raise ValueError('The exact Agenda folder membership changed while source contents were read.')
     port = port if port is not None else configured_store(config)
     ident = _ident(scope)
     snapshot = port.read([ident]); old = snapshot.documents[ident]
@@ -126,6 +128,8 @@ def read(token, config, agenda, cls, week, row, source, *, port=None):
                 or not HASH.fullmatch(value['instruction_sha256']) or not isinstance(value['actor'], str) or not value['actor'].strip()
                 or not isinstance(value['verified_at'], str)
                 or value['proof'] != capture(token, source)):
+            return None
+        if _scope(token, agenda, cls, week, row, source, config) != scope:
             return None
         return {'axes': axes, 'revision': content_hash(value), 'metadata': value['proof']['metadata'],
                 'member_ids': value['proof']['member_ids']}

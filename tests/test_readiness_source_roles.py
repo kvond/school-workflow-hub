@@ -128,3 +128,18 @@ class SourceRoleTests(TestCase):
             with patch.object(google, 'drive_file', return_value=folder), \
                  patch.object(google, 'folder_listing', return_value=(members, True)):
                 self.assertIsNone(self.read())
+
+    def test_parent_membership_is_rechecked_after_member_content_is_consumed(self):
+        self.a = agenda(FOLDER, folder=True)
+        folder = meta(FOLDER, mimeType=google.FOLDER)
+        item = meta(SOURCE, parents=[FOLDER]); changed = {'value': False}
+        def consume(*_a):
+            changed['value'] = True
+            return item, {'slides': []}
+        def listing(*_a):
+            return ([item, meta('NEW_MEMBER_1234567890')] if changed['value'] else [item], True)
+        with patch.object(google, 'drive_file', side_effect=lambda _t, ident, *_a: deepcopy(folder if ident == FOLDER else item)), \
+             patch.object(completion, '_teacher_template', side_effect=consume), \
+             patch.object(google, 'folder_listing', side_effect=listing), self.assertRaises(ValueError):
+            self.write(assessment='ungraded')
+        self.assertEqual(self.port.rows, {})
