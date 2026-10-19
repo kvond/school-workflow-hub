@@ -1,11 +1,12 @@
 """Initial comparison, latest-only narration, full source history and paper CER."""
 import copy
+import hashlib
 import io
 import unittest
 
 from pypdf import PdfReader
 from hub_v2.feedback_pdf import _science_writing_history, render_science_writing
-from hub_v2.science_writing_display import context, validate, prepare_presentation
+from hub_v2.science_writing_display import context, validate, prepare_presentation, GAP_CAPTION
 from hub_v2.native_feedback import Held, TEACHER_DIMENSIONS
 from hub_v2.student_archive import _science_assessment, _science_presentation_context
 
@@ -40,6 +41,37 @@ def practice():
 
 
 class WritingDisplayTests(unittest.TestCase):
+    def test_missing_historical_levels_use_bounded_caption_without_changing_observations(self):
+        old = fixture(7); old['id'] = 'feedbacksource_' + 'b' * 64
+        old['provenance']['source_observations'] = [row for row in old['provenance']['source_observations']
+                                                    if row['source_file_id'] in {'source-5', 'source-6'}]
+        before = copy.deepcopy(old)
+        legacy, _ = prepare_presentation(old, practice(), prepared_date='2026-10-13', saved_at='2026-10-13T14:00:00Z')
+        value, raw = prepare_presentation(old, practice(), prepared_date='2026-10-13', saved_at='2026-10-13T14:00:00Z',
+                                          gap_caption=GAP_CAPTION)
+        self.assertEqual(old, before)
+        self.assertEqual(_science_assessment(value), _science_assessment(old))
+        self.assertEqual(_science_writing_history(value), _science_writing_history(legacy))
+        self.assertNotEqual(value['id'], legacy['id'])
+        reader = PdfReader(io.BytesIO(raw))
+        self.assertEqual(len(reader.pages), 3)
+        chart = reader.pages[1].extract_text()
+        self.assertIn('Submitted sources', chart)
+        self.assertEqual(chart.count('No level plotted:'), 4)
+        self.assertNotIn('unassessed', chart)
+        for index in range(1, 8):
+            self.assertIn('S%d |' % index, chart)
+        for invalid in ('This student is improving.', '', None, {'text': GAP_CAPTION}):
+            changed = copy.deepcopy(value)
+            changed['presentation_context']['writing_display']['gap_caption'] = invalid
+            with self.subTest(invalid=invalid), self.assertRaises(Held):
+                render_science_writing(changed)
+
+    def test_frozen_report_without_gap_caption_reproduces_original_pdf_bytes(self):
+        value = fixture(); value['presentation_context'] = context(value, practice())
+        self.assertEqual(hashlib.sha256(render_science_writing(value)).hexdigest(),
+                         'c584dd83fb2333577c1778d17c91f95a93baad1c30801afb81a21d044317f27e')
+
     def test_actual_author_pipeline_renders_latest_cer_and_new_immutable_id_without_mutating_old_report(self):
         old = fixture(); old['id'] = 'feedbacksource_' + 'a' * 64
         before = copy.deepcopy(old)
