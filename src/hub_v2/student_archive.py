@@ -2769,9 +2769,25 @@ def _index_row(class_name, student, submitted, report, status, ident):
             status, submitted.get("filing_note", "") if imported or named_archive else "", ident]
 
 
+def _writing_index_work(works, source_record):
+    if source_record.get("source_kind") == IMPORTED_ORIGINAL:
+        candidates = [a for a in works if a.get("source_kind") == IMPORTED_ORIGINAL
+            and a.get("record_key") == source_record.get("source_record_key")
+            and a.get("drive_file_id") == source_record.get("source_file_id")
+            and str((a.get("imported_file_revision") or {}).get("version")) == source_record.get("source_version")
+            and (a.get("copied_content_proof") or {}).get("sha256") == source_record.get("source_sha256")
+            and a.get("date") == source_record.get("date")
+            and a.get("import_provenance") == source_record.get("import_provenance")]
+    else:
+        candidates = [a for a in works if a.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE}
+            and a.get("source_file_id") == source_record.get("source_file_id")
+            and a.get("source_version") == source_record.get("source_version")]
+    return next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
+
+
 def work_index_rows(token, config):
     """All verified histories; pair by source/student/assignment IDs only."""
-    rows, summary, holds = [], {}, []
+    rows, summary, holds, imported_anchor_feedback = [], {}, [], {}
     for cls, class_name in CLASSES.items():
         try:
             _, students = _indexed(token, config, cls, include_history=True)
@@ -2782,6 +2798,25 @@ def work_index_rows(token, config):
                 works = [a for a in artifacts if a["kind"] == "work"]
                 feedback = [a for a in artifacts if a["kind"] == "feedback"]
                 current_feedback = [a for a in feedback if not a.get("supersession_verified")]
+                imported_reports = {}
+                for report in current_feedback:
+                    if report.get("report_type") != "science_writing":
+                        continue
+                    for source_record in report.get("source_records", []):
+                        if source_record.get("source_kind") != IMPORTED_ORIGINAL:
+                            continue
+                        linked = _writing_index_work(works, source_record)
+                        if linked:
+                            imported_reports.setdefault(linked["record_key"], {})[report["record_key"]] = report
+                # The first saved independent report retains the established
+                # work anchor. Later reports are additional coverage, not an
+                # inferred supersession of that report or its teacher note.
+                anchor_owners = {ident: min(reports.values(), key=lambda r: (r["created_at"], r["record_key"]))
+                                 for ident, reports in imported_reports.items()}
+                for ident, reports in imported_reports.items():
+                    if len(reports) > 1:
+                        imported_anchor_feedback[key("workindexrow", [student["student_key"], ident])] = _link(
+                            anchor_owners[ident]["url"], "Open feedback")
                 actual = [a for a in works if a.get("mime") != SHORTCUT]
                 copied += len(actual); feedback_count += len(current_feedback)
                 history_count += len(feedback) - len(current_feedback)
@@ -2791,28 +2826,17 @@ def work_index_rows(token, config):
                     if report.get("report_type") == "science_writing" and report.get("source_records"):
                         for source_record in report["source_records"]:
                             imported = source_record.get("source_kind") == IMPORTED_ORIGINAL
-                            if imported:
-                                candidates = [a for a in works if a.get("source_kind") == IMPORTED_ORIGINAL
-                                    and a.get("record_key") == source_record.get("source_record_key")
-                                    and a.get("drive_file_id") == source_record.get("source_file_id")
-                                    and str((a.get("imported_file_revision") or {}).get("version")) == source_record.get("source_version")
-                                    and (a.get("copied_content_proof") or {}).get("sha256") == source_record.get("source_sha256")
-                                    and a.get("date") == source_record.get("date")
-                                    and a.get("import_provenance") == source_record.get("import_provenance")]
-                            else:
-                                candidates = [a for a in works if a.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE}
-                                    and a.get("source_file_id") == source_record.get("source_file_id")
-                                    and a.get("source_version") == source_record.get("source_version")]
-                            linked = next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
+                            linked = _writing_index_work(works, source_record)
                             if linked:
                                 used.add(linked["record_key"])
                             status = "Science writing feedback covers this submission" if linked else "Science writing feedback; work not located"
                             if report.get("supersession_verified"):
                                 status = "Superseded feedback; previous version retained. " + status
-                            # The current imported-work row keeps its original key
-                            # and teacher note; historical reports retain separate keys.
+                            # Only the established independent report owns the
+                            # imported-work key; other coverage keeps its report ID.
                             row_key = (key("workindexrow", [student["student_key"], linked["record_key"]])
                                 if imported and linked and not report.get("supersession_verified")
+                                    and anchor_owners[linked["record_key"]]["record_key"] == report["record_key"]
                                 else key("workindexrow", [student["student_key"], report["record_key"], source_record.get("source_file_id")]))
                             rows.append(_index_row(class_name, student, linked, report, status, row_key))
                         continue
@@ -2889,6 +2913,7 @@ def work_index_rows(token, config):
     if len({r[13] for r in rows}) != len(rows):
         raise Held("Two student-record index rows claim the same immutable record.")
     return {"headers": list(INDEX_HEADERS), "rows": rows, "summary": summary, "holds": holds,
+            "imported_anchor_feedback": imported_anchor_feedback,
             "checked_at": datetime.now(timezone.utc).isoformat(), "coverage": "verified_archive_and_recorded_scans_only"}
 
 
@@ -2938,7 +2963,7 @@ def _legacy_index_hold(values):
             and all(value in ({}, {"stringValue": ""}) for value in (values[7], values[9], values[10])))
 
 
-def _index_layout(cells, generated):
+def _index_layout(cells, generated, *, imported_anchor_feedback=None):
     """Reserve manual history in place; refresh only generated record rows."""
     notes, old_keys, manual = {}, set(), {}
     fresh_keys = {r[13] for r in generated}
@@ -2959,6 +2984,10 @@ def _index_layout(cells, generated):
         if record_key in old_keys:
             raise Held("An index row has no unique record key. Preserve teacher notes before refreshing.")
         old_keys.add(record_key)
+        expected_feedback = (imported_anchor_feedback or {}).get(record_key)
+        if (expected_feedback and values[9]
+                and values[9] != _index_cell(expected_feedback, link=True)["userEnteredValue"]):
+            raise Held("An overlapping writing report would rebind an existing index anchor. Its feedback link and teacher note are preserved.")
         if record_key.startswith("workindexhold_"):
             if not _legacy_index_hold(values):
                 raise Held("A legacy index key is not a verified class-level history row. Existing teacher entries are preserved.")
@@ -3018,7 +3047,8 @@ def refresh_work_index(token, write_token, config):
         cells = (current.get("data") or [{}])[0].get("rowData", [])
         if not cells or [c.get("stringValue", "") for c in _index_entered(cells[0])] != list(INDEX_HEADERS):
             raise Held("The index's column headers changed. Existing teacher entries are preserved.")
-        prepared, manual = _index_layout(cells, data["rows"])
+        prepared, manual = _index_layout(cells, data["rows"],
+            imported_anchor_feedback=data.get("imported_anchor_feedback"))
         needed = max(len(prepared), len(cells))
         normalized = [_index_entered(row) for row in prepared] + [[{}] * 14 for _ in range(needed - len(prepared))]
         existing = [_index_entered(row) for row in cells] + [[{}] * 14 for _ in range(needed - len(cells))]
