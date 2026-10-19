@@ -683,17 +683,21 @@ def save(config, ident, inputs, *, token=None, write_token=None):
         response['science_writing'] = science_writing_native.ensure_saved(token, write_token, config, value['id'])
     from . import daily_feedback_packet
     if daily_feedback_packet.enabled(config) and (value.get('archive') or {}).get('status') == 'verified':
+        packet_date = daily_feedback_packet.feedback_date(value['saved_at'])
+        if ((response.get('science_writing') or {}).get('status') == 'verified'
+                and response['science_writing'].get('saved_at')):
+            packet_date = max(packet_date, daily_feedback_packet.feedback_date(response['science_writing']['saved_at']))
         if (response.get('science_writing') or {}).get('status') != 'verified':
             response['daily_packet'] = {'status': 'held', 'problem': 'CA feedback is saved; the separate writing report is not yet verified: ' +
                 str((response.get('science_writing') or {}).get('problem') or 'writing filing needs checking'),
-                'date': daily_feedback_packet.feedback_date(value['saved_at'])}
+                'date': packet_date}
         else:
             try:
                 response['daily_packet'] = daily_feedback_packet.build(token, write_token, config,
-                    daily_feedback_packet.feedback_date(value['saved_at']))
+                    packet_date)
             except (daily_feedback_packet.Held, google.GoogleError, StoreUnavailable, Conflict) as error:
                 response['daily_packet'] = {'status': 'held', 'problem': str(error),
-                    'date': daily_feedback_packet.feedback_date(value['saved_at'])}
+                    'date': packet_date}
     analysis = _refresh_teacher_analysis(config, value, token, write_token)
     if analysis is not None:
         response['teacher_analysis'] = analysis

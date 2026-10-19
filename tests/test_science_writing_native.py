@@ -154,6 +154,17 @@ class NativeWritingTests(unittest.TestCase):
             native.save(self.config, saved['id'], data, token='read', write_token='write')
         self.assertEqual(order, ['writing', 'packet'])
 
+    def test_later_writing_backfill_finalizes_its_actual_day_without_redating_ca(self):
+        from hub_v2 import daily_feedback_packet
+        data, saved, _ = self.saved_ca()
+        with patch.object(native, 'now', return_value='2026-10-10T14:00:00Z'), \
+                patch.object(daily_feedback_packet, 'enabled', return_value=True), \
+                patch.object(daily_feedback_packet, 'build', return_value={'status': 'verified'}) as packet:
+            result = native.save(self.config, saved['id'], data, token='read', write_token='write')
+        self.assertEqual(result['saved_at'], '2026-10-09T14:00:00Z')
+        self.assertEqual(result['science_writing']['saved_at'], '2026-10-10T14:00:00Z')
+        packet.assert_called_once_with('read', 'write', self.config, '2026-10-10')
+
     def test_missing_work_snapshot_does_not_claim_separate_writing_complete(self):
         _, saved, _ = self.saved_ca()
         owner = self.port.rows[saved['archive']['student_key']].value
