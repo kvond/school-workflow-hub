@@ -13,6 +13,7 @@ from .native_feedback import Held, LEVELS, TEACHER_DIMENSIONS
 SCHEMA = 'science-writing-display/v1'
 KEYS = ('vocabulary', 'conceptual', 'evidence', 'reasoning')
 LABELS = ('Science vocabulary', 'Conceptual explanation', 'Specific evidence', 'Scientific reasoning')
+GAP_CAPTION = 'No level plotted: earlier saved feedback remains available; its levels were not imported here.'
 
 
 def _reviewed(slots):
@@ -45,7 +46,7 @@ def _lesson_reference(saved, latest):
     return refs.pop()
 
 
-def context(saved, cer, *, comparison=False):
+def context(saved, cer, *, comparison=False, gap_caption=None):
     """Build the new presentation overlay; default to latest-work narration.
 
     The trusted author supplies reviewed lesson practice facts. This function
@@ -66,11 +67,13 @@ def context(saved, cer, *, comparison=False):
     result['writing_display'] = {'schema': SCHEMA, 'mode': 'comparison' if comparison else 'latest',
         'latest_source': {'source_file_id': latest['source_file_id'], 'source_revision': latest['source_revision']},
         'cer': practice}
+    if gap_caption is not None:
+        result['writing_display']['gap_caption'] = gap_caption
     validate({**saved, 'presentation_context': result}, slots)
     return result
 
 
-def prepare_presentation(saved, cer, *, prepared_date, saved_at, comparison=False):
+def prepare_presentation(saved, cer, *, prepared_date, saved_at, comparison=False, gap_caption=None):
     """Author a new immutable presentation using the existing archive contract.
 
     This is the trusted author pipeline: choose the latest actual reviewed
@@ -99,7 +102,7 @@ def prepare_presentation(saved, cer, *, prepared_date, saved_at, comparison=Fals
     value.update(prepared_at=prepared_date, saved_at=saved_at,
         presentation_version=version + 1,
         supersedes_report_id=saved['id'], supersession_previous_payload=deepcopy(saved))
-    value['presentation_context'] = context(value, cer, comparison=comparison)
+    value['presentation_context'] = context(value, cer, comparison=comparison, gap_caption=gap_caption)
     basis = {k: v for k, v in value.items() if k != 'supersession_previous_payload'}
     value['report_source_sha256'] = content_hash([SCIENCE_WRITING_RENDER_VERSION, basis])
     value['id'] = 'feedbacksource_' + value['report_source_sha256']
@@ -112,9 +115,12 @@ def validate(saved, slots=None):
     from .feedback_pdf import _science_writing_history
     slots = slots if slots is not None else _science_writing_history(saved)[0]
     display = (saved.get('presentation_context') or {}).get('writing_display')
-    if (not isinstance(display, dict) or set(display) != {'schema', 'mode', 'latest_source', 'cer'}
+    if (not isinstance(display, dict) or not {'schema', 'mode', 'latest_source', 'cer'} <= set(display)
+            or set(display) - {'schema', 'mode', 'latest_source', 'cer', 'gap_caption'}
             or display['schema'] != SCHEMA or display['mode'] not in {'comparison', 'latest'}):
         raise Held('The writing presentation needs its supported narrative scope and teacher-provided CER.')
+    if 'gap_caption' in display and display['gap_caption'] != GAP_CAPTION:
+        raise Held('Choose the supported factual missing-level caption.')
     reviewed = _reviewed(slots)
     latest = reviewed[-1]
     if any(not _before(previous, latest) for previous in reviewed[:-1]):
@@ -220,7 +226,8 @@ def render(saved, slots, charts):
                     word, first, last), y - 3, 'small')
     footer(1)
     for page_index, indices in enumerate(graph_chunks, 2):
-        y = header('Every reviewed submission - four writing areas')
+        y = header('Submitted sources - four writing areas' if 'gap_caption' in display
+                   else 'Every reviewed submission - four writing areas')
         y = p('S = one exact submitted source revision. First responses and revisions in one file are not separate time points.', y - 8, 'small')
         for sample_index in indices:
             slot = slots[sample_index]
@@ -251,10 +258,14 @@ def render(saved, slots, charts):
                 if chart['points'][sample_index] is not None:
                     c.circle(*point(sample_index), 3.3, stroke=0, fill=1)
                 else:
-                    c.setFont('Helvetica', 6.5); c.drawCentredString(positions[sample_index], bottom + 7, 'unassessed')
+                    if 'gap_caption' in display:
+                        c.setStrokeColor(color); c.setLineWidth(1)
+                        c.circle(positions[sample_index], bottom - 6, 2.5, stroke=1, fill=0)
+                    else:
+                        c.setFont('Helvetica', 6.5); c.drawCentredString(positions[sample_index], bottom + 7, 'unassessed')
                 c.setFillColor(muted); c.setFont('Helvetica', 7)
                 c.drawCentredString(positions[sample_index], bottom - 14, 'S%d' % (sample_index + 1))
-            p('Missing observations remain unassessed. Same-day samples connect only with verified times.', bottom - 26,
+            p(display.get('gap_caption', 'Missing observations remain unassessed. Same-day samples connect only with verified times.'), bottom - 26,
               'small', x=x, width=245, floor=40)
         footer(page_index)
     y = header('CER practice - claim, evidence, reasoning')
