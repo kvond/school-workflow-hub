@@ -1862,6 +1862,8 @@ def _feedback_metadata(artifact, student, course):
             "original_due_date": artifact.get("original_due_date"),
             "source_proof": artifact.get("source_proof"),
             "identity_status": artifact.get("identity_status", "verified"),
+            **({"feedback_day": _date(artifact["created_at"]), "feedback_day_basis": artifact["publication_day_basis"]}
+               if artifact.get("publication_day_basis") == "native-writing-first-drive-created-at/v1" else {}),
             "date": artifact["date"], "mime": PDF, "url": artifact["url"]}
 
 
@@ -2137,6 +2139,34 @@ def _science_chart_bookend(token, port, bookends):
         if (google.drive_file(token, ident, fields) != meta or not saved or saved.value != artifact):
             raise Held("A writing-chart original or its archive receipt changed during filing.")
 
+def _science_assessed_sources(report, sources, report_hash):
+    """Bind actual complete four-dimension assessments, never chart-only gaps."""
+    from .feedback_pdf import _science_writing_history
+    from .native_feedback import TEACHER_DIMENSIONS, LEVELS, Held as FeedbackHeld
+    try:
+        _science_writing_history(report)
+    except (FeedbackHeld, KeyError, TypeError, ValueError):
+        # Older filing callers need not carry the newer chart payload. Their
+        # PDF remains valid historical feedback, without inferred assessed coverage.
+        return None
+    observations = report['provenance']['source_observations']
+    assessed = []
+    for ident, source in sources.items():
+        rows = [row for row in observations if row.get('source_file_id') == ident
+                and str(row.get('source_revision')) == str(source['source_version'])]
+        if (len(rows) != 4 or {row.get('dimension') for row in rows} != set(TEACHER_DIMENSIONS)
+                or any(row.get('level') not in LEVELS for row in rows)):
+            continue
+        assessed.append({'source_file_id': ident, 'source_version': str(source['source_version']),
+            'source_modified_at': source.get('source_modified_at'), 'date': source.get('date'),
+            'date_basis': source.get('date_basis'), 'submitted_at': source.get('submitted_at'),
+            'source_form_id': source.get('form_id'), 'assignment_form_id': source.get('assignment_form_id'),
+            'source_response_id': (source.get('source_context') or {}).get('source_response_id'),
+            'observations_sha256': content_hash(rows)})
+    return {'schema': 'science-writing-assessed-sources/v1', 'payload_sha256': report_hash,
+            'observations_sha256': content_hash(observations), 'sources': assessed}
+
+
 def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
                          imported_review_sha256=None, imported_teacher_reference_sha256=None, refresh_index=True):
     """File teacher-authorized science-writing feedback in one existing folder."""
@@ -2256,6 +2286,13 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
             raise Held("A later presentation version needs its exact prior saved report proof.")
         payload = _science_payload(saved_report)
         report_hash = content_hash(payload)
+        assessed_sources = _science_assessed_sources(saved_report, sources, report_hash)
+        provenance = saved_report.get('provenance') or {}
+        publication_day_basis = ("native-writing-first-drive-created-at/v1"
+            if (provenance.get('builder_version') == 'native-science-writing/v1'
+                and provenance.get('publication_day_basis') == "native-writing-first-drive-created-at/v1"
+                and re.fullmatch(r'feedbackdraft_[a-f0-9]{64}', str(provenance.get('native_feedback_id') or '')))
+            else None)
         run = _Run(token, write_token, config, cls)
         _private(google.drive_file(token, student["parent"], FIELDS), parent=run.course["id"], folder=True)
         _private(google.drive_file(token, student["drive_file_id"], FIELDS), parent=student["parent"], folder=True, write=True)
@@ -2279,6 +2316,8 @@ def file_science_writing(token, write_token, config, saved_report, pdf_bytes, *,
                 "student_key": student["student_key"], "class_key": cls, "saved_at": saved_at,
                 "assignment": "Science writing across %d verified submission%s" % (len(sources), "" if len(sources) == 1 else "s"),
                 "source_records": list(sources.values()), "report_source_sha256": report_hash,
+                "assessed_sources": assessed_sources,
+                "publication_day_basis": publication_day_basis,
                 "presentation_version": version, "supersedes_report_id": prior_id,
                 "supersession_prior_payload_sha256": prior.value.get("report_source_sha256") if prior else None,
                 "presentation_assessment_sha256": assessment_hash,

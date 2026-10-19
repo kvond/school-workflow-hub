@@ -73,6 +73,12 @@ class WritingGapFilingTests(unittest.TestCase):
         self.assertEqual(next(s for s in sources if s['source_file_id'] == EARLIER)['submitted_at'], '2026-10-06T13:00:00Z')
         imported = next(s for s in sources if s['source_file_id'] == FILE)
         self.assertIsNone(imported['submitted_at']); self.assertNotIn('source_review_sha256', imported)
+        artifact = next(d.value for d in self.port.rows.values() if d.value.get('drive_file_id') == result['drive_file_id'])
+        proof = artifact['assessed_sources']
+        self.assertEqual(proof['payload_sha256'], artifact['report_source_sha256'])
+        self.assertEqual({s['source_file_id'] for s in proof['sources']}, {SOURCE})
+        self.assertNotIn(EARLIER, {s['source_file_id'] for s in proof['sources']})
+        self.assertNotIn(FILE, {s['source_file_id'] for s in proof['sources']})
         repeated = self.file(); self.assertEqual(result['drive_file_id'], repeated['drive_file_id'])
 
     def test_wrong_owner_identity_date_revision_or_receipt_reject_before_pdf_create(self):
