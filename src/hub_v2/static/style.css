@@ -236,3 +236,7 @@ button[disabled] { opacity: 0.6; cursor: default; }
   .cockpit-grid { grid-template-columns: 1fr; }
   .readiness-head { display: block; }
 }
+
+/* Lessons → Notes: per-lesson summary and the teacher's own notes. */
+.lesson-notes { margin-top: 12px; }
+.lesson-notes textarea { min-height: 140px; }

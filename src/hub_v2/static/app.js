@@ -1388,7 +1388,8 @@ const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, r
 
 async function refreshVisiblePlans() {
   if (location.hash.slice(1).split('/')[0] !== 'plans' || document.visibilityState === 'hidden'
-      || plans.editing || plans.refreshing) return;
+      || plans.editing || plans.refreshing
+      || (typeof lessonNotesUnsaved === 'function' && lessonNotesUnsaved())) return;
   // Returning from the Agenda must not keep an indefinitely old lesson. An
   // active editor retains its original revision and draft for guarded saving.
   plans.refreshing = true;
@@ -1485,6 +1486,8 @@ function renderLesson(cls, lesson, weekday) {
   box.append(el('details', {class: 'week'}, el('summary', {text: 'Whole week'}),
     lesson.plans.map(p => el('div', {class: 'week-day'}, el('strong', {text: p.day}),
       el('p', {class: 'plan', text: p.plan || '—'}), p.note ? el('p', {class: 'teacher-note', text: p.note}) : null))));
+  // Lessons → Notes: one private, editable summary per lesson Form.
+  for (const form of (lesson.forms || []).filter(f => f.form_id)) box.append(lessonNotesPanel(cls, lesson, form));
   if (Object.keys(lesson.editable || {}).length) {
     box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => startEdit(cls, lesson)}, 'Edit here')));
   }
@@ -3040,6 +3043,113 @@ async function missingWorkSheets() {
   } catch (error) {
     if (seq === sheets.seq) head.firstChild.replaceWith(note(error.message));
   }
+}
+
+// ---------- Lessons → Notes: Summarize this lesson ----------
+// One private, editable summary per lesson Form, saved in the Hub. The AI is
+// called only when the teacher clicks, at most once for an unchanged lesson;
+// it reads only teacher notes from saved, reviewed student feedback, with no
+// student names. Her own notes below the summary are never replaced.
+const lessonNotes = {};
+function lessonNotesState(clsKey, formId) {
+  const key = `${clsKey}|${formId}`;
+  return lessonNotes[key] ||= {cls: clsKey, form: formId, week: '', open: false, loaded: false, loading: false,
+    busy: '', error: '', info: '', saved: null, draft: null, body: null};
+}
+const lessonNotesDirty = state => Boolean(state.loaded && state.draft && state.saved
+  && (state.draft.summary !== state.saved.summary || state.draft.notes !== state.saved.notes));
+function lessonNotesUnsaved() { return Object.values(lessonNotes).some(lessonNotesDirty); }
+
+function lessonNotesPanel(cls, lesson, form) {
+  const state = lessonNotesState(cls.key, form.form_id);
+  state.week = lesson.week;
+  state.body = el('div', {class: 'lesson-notes-body', 'aria-live': 'polite'});
+  const box = el('details', {class: 'lesson-notes notes-panel', open: state.open,
+    ontoggle: event => { state.open = event.target.open; if (state.open) loadLessonNotes(state); }},
+    el('summary', {}, el('h3', {text: `Notes${form.label ? ' · ' + form.label : ''}`})), state.body);
+  renderLessonNotes(state);
+  return box;
+}
+
+function renderLessonNotes(state) {
+  const body = state.body;
+  if (!body) return;
+  if (!state.loaded) {
+    body.replaceChildren(state.error ? note(state.error)
+      : el('p', {class: 'muted', text: state.loading ? 'Reading this lesson’s saved notes…' : 'Open to read this lesson’s saved notes.'}));
+    return;
+  }
+  const busy = Boolean(state.busy);
+  const area = (field, label, rows) => {
+    const input = el('textarea', {rows, 'aria-label': label, disabled: busy});
+    input.value = state.draft[field];
+    input.addEventListener('input', () => { state.draft[field] = input.value; });
+    return [el('p', {class: 'label', text: label}), input];
+  };
+  const cov = state.saved.coverage;
+  body.replaceChildren(...[
+    el('p', {class: 'muted', text: 'Summarize this lesson makes one AI call with the school provider, only when you click. '
+      + 'It reads the teacher notes from this lesson’s saved, reviewed student feedback, with student names removed, '
+      + 'and saves a private summary here that you can edit. Clicking again for an unchanged lesson reuses the saved summary '
+      + 'and is not billed again. When the notes have changed, a new summary replaces the summary text (earlier versions '
+      + 'are kept in the Hub’s history); your own notes are kept.'}),
+    el('div', {class: 'action-row'}, el('button', {type: 'button', class: 'primary', disabled: busy,
+      onclick: () => summarizeLesson(state)}, state.busy === 'summarize' ? 'Summarizing…' : 'Summarize this lesson')),
+    state.error ? note(state.error) : null,
+    state.info ? note(state.info, 'info') : null,
+    cov ? el('p', {class: 'muted', text: `From ${cov.teacher_notes} teacher note${cov.teacher_notes === 1 ? '' : 's'} in `
+      + `${cov.reviewed_feedback} reviewed feedback draft${cov.reviewed_feedback === 1 ? '' : 's'} `
+      + `(${cov.students_on_form} matched student${cov.students_on_form === 1 ? '' : 's'} on this Form)`
+      + `${state.saved.generated_at ? ' · summarized ' + when(state.saved.generated_at) : ''}.`}) : null,
+    ...area('summary', 'Lesson summary (editable)', 10),
+    ...area('notes', 'Your notes', 8),
+    el('div', {class: 'action-row'},
+      el('button', {type: 'button', disabled: busy, onclick: () => saveLessonNotes(state)}, state.busy === 'save' ? 'Saving…' : 'Save notes'),
+      state.saved.updated_at ? el('small', {class: 'muted', text: 'Last saved ' + when(state.saved.updated_at)}) : null),
+  ].filter(Boolean));
+}
+
+async function loadLessonNotes(state, force = false) {
+  if (state.loading || (state.loaded && !force)) { renderLessonNotes(state); return; }
+  state.loading = true; state.error = ''; renderLessonNotes(state);
+  try {
+    const saved = await getJSON(`api/lessons/summary?class=${encodeURIComponent(state.cls)}&form=${encodeURIComponent(state.form)}`);
+    state.saved = saved; state.draft = {summary: saved.summary, notes: saved.notes}; state.loaded = true;
+  } catch (error) {
+    state.error = `${error.message} Saved notes are unchanged.`;
+  }
+  state.loading = false; renderLessonNotes(state);
+}
+
+async function summarizeLesson(state) {
+  if (state.busy || !state.loaded) return;
+  if (lessonNotesDirty(state)) {
+    state.error = 'Save your edits first, so a new summary can’t replace unsaved text.'; state.info = '';
+    renderLessonNotes(state); return;
+  }
+  state.busy = 'summarize'; state.error = ''; state.info = ''; renderLessonNotes(state);
+  try {
+    const saved = await postJSON('api/lessons/summary', {class: state.cls, week: state.week, form: state.form});
+    state.saved = saved; state.draft = {summary: saved.summary, notes: saved.notes};
+    state.info = saved.cached ? 'This lesson is unchanged: the saved summary was kept. No new AI call was made.'
+      : 'Summary saved privately in the Hub. You can edit it below.';
+  } catch (error) {
+    state.error = error.message;
+  }
+  state.busy = ''; renderLessonNotes(state);
+}
+
+async function saveLessonNotes(state) {
+  if (state.busy || !state.loaded) return;
+  state.busy = 'save'; state.error = ''; state.info = ''; renderLessonNotes(state);
+  try {
+    const saved = await postJSON('api/lessons/summary/save', {class: state.cls, form: state.form,
+      summary: state.draft.summary, notes: state.draft.notes, revision: state.saved.revision || ''});
+    state.saved = saved; state.draft = {summary: saved.summary, notes: saved.notes}; state.info = 'Saved in the Hub.';
+  } catch (error) {
+    state.error = error.message;
+  }
+  state.busy = ''; renderLessonNotes(state);
 }
 
 // ---------- Shared System notes ----------
