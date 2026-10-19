@@ -192,10 +192,21 @@ def classify_entries(token, config, agenda, class_key, entries):
                         # A registered proof that cannot be checked is an
                         # availability failure, never an identity question.
                         raise StoreUnavailable('Registered teacher-material proof cannot be verified.') from None
-                    plans.append((entry, submitted, upload, ident))
-    except (google.GoogleError, StoreUnavailable, Unverified):
+                    plans.append((entry, submitted, upload, ident, proof))
+        if plans:
+            # A later artifact can take time to read. Recheck all earlier
+            # staged originals before excluding any of them from this batch.
+            from . import agenda as agenda_module
+            fresh_agenda = agenda_module.load(token, agenda.spreadsheet_id)
+            for entry, submitted, upload, ident, proof in plans:
+                s = proof['scope']; event = proof['event']
+                if (scope(fresh_agenda, config, class_key, entry['week'], s['form_id']) != s
+                        or google.drive_file(token, proof['file_id'], META) != proof['metadata']
+                        or _event(token, s['form_id'], event['response_id'], proof['file_id'], config) != event):
+                    raise Unverified('Teacher material changed before the batch was applied.')
+    except (google.GoogleError, StoreUnavailable, Unverified, ValueError, KeyError, TypeError):
         return 'The exact teacher-material verification is unavailable. Originals are preserved; no identity decision or grade is inferred.'
-    for entry, submitted, upload, ident in plans:
+    for entry, submitted, upload, ident, proof in plans:
         # Never remove a whole response: mixed teacher/student uploads survive.
         submitted['files'].remove(upload)
         if entry.get('current'):

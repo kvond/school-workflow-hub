@@ -95,6 +95,22 @@ class ExactMaterialTests(unittest.TestCase):
                 problem=self.classify(entries)
             self.assertIn('verification is unavailable',problem);self.assertEqual(entries,before)
 
+    def test_later_capture_cannot_hide_change_to_an_earlier_planned_artifact(self):
+        metadata={FILE:deepcopy(self.md),OTHER:{**self.md,'id':OTHER}}
+        with patch.object(google,'drive_file',side_effect=lambda token,ident,*a:deepcopy(metadata[ident])):
+            self.register()
+            value=self.receipt();proof=tm.capture('read',CONFIG,self.a,'forensics','Wk 04',FORM,RID,OTHER)
+            value.update(proof=proof,record_key=tm.record_key(proof))
+            tm.import_verified('read',CONFIG,self.a,value,port=self.port)
+            entries=self.entries();before=deepcopy(entries);capture=tm.capture
+            def late_change(*args,**kwargs):
+                result=capture(*args,**kwargs)
+                if args[-1]==OTHER:metadata[FILE]['version']='12'
+                return result
+            with patch.object(tm,'capture',side_effect=late_change):
+                self.assertIn('verification is unavailable',self.classify(entries))
+        self.assertEqual(entries,before)
+
     def test_changed_source_during_read_cannot_register(self):
         value=self.receipt()
         with patch.object(google,'drive_file',side_effect=[self.md,{**self.md,'version':'12'}]):
