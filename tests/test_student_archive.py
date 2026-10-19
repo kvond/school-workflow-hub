@@ -2025,6 +2025,29 @@ class OverlappingWritingIndexTests(unittest.TestCase):
         self.assertEqual(row[11], "Science writing feedback; work not located")
         self.assertEqual(row[7:9], ["", ""])
 
+    def test_whole_class_read_failure_is_distinct_from_recorded_source_holds(self):
+        scan = {"week": "Wk 04", "held": [{"problem": "One original needs its existing source check"}], "problems": []}
+        for error in (google.GoogleError("Google didn't answer in time. Try again."),
+                      archive.Held("Class folder unavailable"), archive.Conflict("Class history changed"),
+                      archive.StoreUnavailable("state unavailable")):
+            with self.subTest(error=type(error).__name__):
+                def indexed(token, config, cls, **kwargs):
+                    if cls == "anatomy":
+                        raise error
+                    return {}, []
+                with patch.object(archive, "_indexed", side_effect=indexed), patch.object(archive, "_filing",
+                        side_effect=lambda config, cls: {"scans": [scan] if cls == "forensics" else []}):
+                    partial = archive.work_index_rows("read", {})
+                self.assertEqual([f["class_key"] for f in partial["failed_class_histories"]], ["anatomy"])
+                self.assertEqual(len(partial["holds"]), 2)
+                self.assertTrue(any("Listing held:" in row[11] for row in partial["rows"]))
+        with patch.object(archive, "_indexed", return_value=({}, [])), patch.object(archive, "_filing",
+                side_effect=lambda config, cls: {"scans": [scan] if cls == "forensics" else []}):
+            readable = archive.work_index_rows("read", {})
+        self.assertEqual(readable["failed_class_histories"], [])
+        self.assertEqual(len(readable["holds"]), 1)
+        self.assertIn("Filing held:", readable["rows"][0][11])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2788,6 +2788,7 @@ def _writing_index_work(works, source_record):
 def work_index_rows(token, config):
     """All verified histories; pair by source/student/assignment IDs only."""
     rows, summary, holds, imported_anchor_feedback = [], {}, [], {}
+    failed_class_histories = []
     for cls, class_name in CLASSES.items():
         try:
             _, students = _indexed(token, config, cls, include_history=True)
@@ -2882,7 +2883,9 @@ def work_index_rows(token, config):
             summary[cls] = {"student_folders": len(students), "work_copies": copied,
                             "feedback_files": feedback_count, "historical_feedback_files": history_count, **categories}
         except (Held, google.GoogleError, Conflict, StoreUnavailable) as error:
-            holds.append({"class_key": cls, "problem": _problem(error)})
+            failure = {"class_key": cls, "problem": _problem(error)}
+            holds.append(failure)
+            failed_class_histories.append(failure)
             rows.append([class_name, "", "", "", "", "", "", "", "", "", "", "Listing held: " + _problem(error), "",
                          key("workindexrow", [cls, "listing-held"])] )
         filing = _filing(config, cls)
@@ -2914,6 +2917,7 @@ def work_index_rows(token, config):
         raise Held("Two student-record index rows claim the same immutable record.")
     return {"headers": list(INDEX_HEADERS), "rows": rows, "summary": summary, "holds": holds,
             "imported_anchor_feedback": imported_anchor_feedback,
+            "failed_class_histories": failed_class_histories,
             "checked_at": datetime.now(timezone.utc).isoformat(), "coverage": "verified_archive_and_recorded_scans_only"}
 
 
@@ -3034,6 +3038,13 @@ def refresh_work_index(token, write_token, config):
         # Archive reads may be long. Acquire the write lease and read editable
         # notes only after that work, keeping the actual Sheet mutation bounded.
         data = work_index_rows(token, config)
+        if data.get("failed_class_histories"):
+            unavailable = ", ".join(CLASSES.get(item["class_key"], item["class_key"])
+                                    for item in data["failed_class_histories"])
+            return {"configured": True, "status": "held", "url": config[WORK_INDEX_CONFIG], "changed": False,
+                    "failed_class_histories": data["failed_class_histories"],
+                    "problem": "The index was not refreshed because complete archived history could not be read for: "
+                               + unavailable + ". Existing Sheet rows are preserved."}
         _private(google.drive_file(token, ident, FIELDS), parent=root)
         port = configured_store(config); cloud = CloudState(port)
         task = cloud.create_task({"workflow": "student-work-index", "class_key": "all-classes",

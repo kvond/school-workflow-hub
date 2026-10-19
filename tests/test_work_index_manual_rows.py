@@ -359,6 +359,39 @@ class ManualIndexTests(unittest.TestCase):
         self.assertEqual(self.writes, 1)
         self.assert_never_wrote(1)
 
+    def test_failed_whole_class_history_holds_before_lease_and_preserves_unnoted_rows(self):
+        history = [generated("UnnotedClassHistory%d" % n, **{"0": "Anatomy"}) for n in range(20)]
+        self.rows += [cells(row) for row in history] + [manual()]
+        before = deepcopy(self.rows)
+        data = {"rows": [generated("OtherReadableClass")], "summary": {}, "holds": [],
+                "failed_class_histories": [{"class_key": "anatomy", "problem": "Google read timed out"}]}
+        with patch.object(archive, "work_index_rows", return_value=data), patch.object(archive, "CloudState") as cloud:
+            result = self.refresh()
+        self.assertEqual(result["status"], "held")
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["failed_class_histories"], data["failed_class_histories"])
+        self.assertIn(archive.CLASSES["anatomy"], result["problem"])
+        cloud.assert_not_called()
+        self.assertEqual((self.reads, self.writes), (0, 0))
+        self.assertEqual(self.rows, before)
+        self.assertEqual(self.port.rows, {})
+
+    def test_recorded_source_holds_with_readable_histories_allow_canonical_refresh(self):
+        history = [generated("ReadableClassHistory%d" % n, **{"0": "Anatomy"}) for n in range(20)]
+        self.rows += [cells(row) for row in history]
+        self.generated = history + [generated("AdditionalVerifiedReport")]
+        self.holds = [{"class_key": "anatomy", "week": "Wk 04", "problem": "One source held; class history read"}]
+        data = {"rows": self.generated, "summary": {}, "holds": self.holds, "failed_class_histories": [],
+                "checked_at": "2032-01-19T12:00:00Z", "coverage": "verified_archive_and_recorded_scans_only"}
+        with patch.object(archive, "work_index_rows", return_value=data):
+            result = self.refresh()
+        self.assertEqual(result["status"], "held")
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["rows"], 21)
+        self.assertEqual(self.writes, 1)
+        self.assertEqual({archive._index_entered(row)[13].get("stringValue") for row in self.rows[1:]},
+                         {row[13] for row in self.generated})
+
 
 if __name__ == "__main__":
     unittest.main()
