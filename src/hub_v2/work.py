@@ -29,6 +29,7 @@ import json
 import re
 import threading
 import time
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
@@ -786,11 +787,11 @@ def recent_submissions(token, form_id):
     with _responses_lock:
         hit = _responses_cache.get(form_id)
         if hit and time.time() - hit[0] < RESPONSES_SECONDS:
-            return list(hit[1])
+            return deepcopy(hit[1])
     found = submissions(google.form_responses(token, form_id), form_id)
     with _responses_lock:
         _responses_cache[form_id] = (time.time(), found)
-    return list(found)
+    return deepcopy(found)
 
 
 def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None):
@@ -1476,6 +1477,15 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
         mine |= {p for q in questions for p in holders[q].get("parents") or [] if p in outer}
         form["folders"] = mine
 
+    # Preserve response_ids for folder de-duplication, but remove proven
+    # teacher material before names/signatures can affect student routing.
+    from . import teacher_material
+    material_problem = teacher_material.classify_entries(token, config, agenda, class_key,
+        [{'current':True, 'form':f, 'week':week_label, 'found':f['found']} for f in forms])
+    if material_problem:
+        problems.append(material_problem)
+        route_problem = material_problem
+
     # Settle each roster section's first/last column order from the school
     # usernames in this lesson's submissions (only where it was assumed).
     usernames = {roster.username_key(s["email"], prefix) for form in forms for s in form["found"] + shared
@@ -1553,6 +1563,11 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                             "teacher_source_verified": bool(form.get("_teacher_source_verified"))})
         index += len(lesson["forms"])
     for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}, config=config):
+        material_problem = teacher_material.classify_entries(token, config, agenda, class_key,
+            [{**near, 'current':False}])
+        if material_problem:
+            problems.append(material_problem)
+            route_problem = material_problem
         base, words = lesson_words(near["topic"], near["label"], [], near["found"])
         entries.append({"current": False, "week": near["week"], "label": near["label"], "found": near["found"],
                         "base": base, "words": words,
@@ -1639,6 +1654,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                               **({"teacher_source_binding": form["teacher_source_binding"]} if form.get("teacher_source_binding") else {}),
                               "folder_files": sum(1 for s in form["found"] if s["source"] == "folder"),
                               "shared_files": sum(1 for s in form["found"] if s.get("shared")),
+                              **({"teacher_uploads": form["teacher_uploads"]} if form.get("teacher_uploads") else {}),
                               "students": [r for r in rows if not r["late"]],
                               "late": [r for r in rows if r["late"]], "missing": missing,
                               "elsewhere": elsewhere, "excused": excused,
