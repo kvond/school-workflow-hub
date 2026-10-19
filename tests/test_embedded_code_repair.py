@@ -10,6 +10,7 @@ from hub_v2 import completion, embedded_code_repair as repair
 from tests.test_cloud_state import MemoryCAS
 
 FILE = 'FictionalOriginalPresentation12345'
+REFERENCE = 'FictionalHandedOutReference12345'
 STYLE = {'fontFamily': 'Arial', 'fontSize': {'magnitude': 18, 'unit': 'PT'}, 'bold': False}
 PARAGRAPH = {'style': {'alignment': 'START', 'spaceAbove': {'magnitude': 0, 'unit': 'PT'}}}
 
@@ -50,6 +51,12 @@ def shape(ident, text, y, x=20, width=400, height=15):
                       'text': {'textElements': text_elements(values)}}}
 
 
+def group(ident, children, *, scale=.8, x=25, y=10):
+    return {'objectId': ident, 'transform': {'scaleX': scale, 'scaleY': scale,
+        'shearX': 0, 'shearY': 0, 'translateX': x, 'translateY': y, 'unit': 'PT'},
+        'elementGroup': {'children': children}}
+
+
 def pptx(native):
     """The real normal parser reads an actual synthetic OOXML archive."""
     P, A = completion.P, completion.A
@@ -61,12 +68,26 @@ def pptx(native):
         for index, page in enumerate(native['slides'], 1):
             root = ET.Element(P + 'sld')
             tree = ET.SubElement(ET.SubElement(root, P + 'cSld'), P + 'spTree')
-            for element in page['pageElements']:
+            def emit(element, tree):
+                if 'elementGroup' in element:
+                    group = ET.SubElement(tree, P + 'grpSp')
+                    nv = ET.SubElement(group, P + 'nvGrpSpPr')
+                    ET.SubElement(nv, P + 'cNvPr', name=element['objectId'], id=str(len(tree)))
+                    xf = ET.SubElement(ET.SubElement(group, P + 'grpSpPr'), A + 'xfrm')
+                    tr = element['transform']; factor = 12700 if tr['unit'] == 'PT' else 1
+                    ET.SubElement(xf, A + 'off', x=str(int(tr['translateX'] * factor)), y=str(int(tr['translateY'] * factor)))
+                    ET.SubElement(xf, A + 'ext', cx=str(int(9144000 * tr['scaleX'])), cy=str(int(5143500 * tr['scaleY'])))
+                    ET.SubElement(xf, A + 'chOff', x='0', y='0')
+                    ET.SubElement(xf, A + 'chExt', cx='9144000', cy='5143500')
+                    for child in element['elementGroup']['children']:
+                        emit(child, group)
+                    return
                 if 'shape' not in element:
-                    continue
+                    return
                 sp = ET.SubElement(tree, P + 'sp')
                 nv = ET.SubElement(sp, P + 'nvSpPr')
-                ET.SubElement(nv, P + 'cNvPr', name=element['objectId'], id=str(len(tree)))
+                ET.SubElement(nv, P + 'cNvPr', name=element['objectId'], id=str(len(tree)),
+                              descr=element.get('description', ''))
                 x, y, w, h = repair._box(element)
                 xf = ET.SubElement(ET.SubElement(sp, P + 'spPr'), A + 'xfrm')
                 ET.SubElement(xf, A + 'off', x=str(int(x)), y=str(int(y)))
@@ -78,6 +99,8 @@ def pptx(native):
                         if n:
                             ET.SubElement(p, A + 'br')
                         ET.SubElement(ET.SubElement(p, A + 'r'), A + 't').text = segment
+            for element in page['pageElements']:
+                emit(element, tree)
             archive.writestr('ppt/slides/slide%d.xml' % index, ET.tostring(root))
     return out.getvalue()
 
@@ -114,6 +137,9 @@ class Source:
         for request in requests:
             kind, operation = next(iter(request.items()))
             element = objects[operation['objectId']][2]
+            if kind == 'updatePageElementAltText':
+                element['description'] = operation['description']
+                continue
             chars = repair._chars(element)
             if kind == 'insertText':
                 at = operation['insertionIndex']
@@ -160,6 +186,7 @@ class Source:
 class RepairTests(unittest.TestCase):
     def setUp(self):
         self.source, self.port = Source(), MemoryCAS()
+        self.reference = None
         self.proof = {'class': 'fictional-bio', 'week': 'Wk 09', 'school_year': '2026-27',
                       'assignment_form_id': 'FictionalForm', 'source_form_id': 'FictionalForm',
                       'source_response_id': 'FictionalResponse', 'source_file_id': FILE,
@@ -168,21 +195,167 @@ class RepairTests(unittest.TestCase):
                       'question_set_status': 'complete'}
         self.guard_result = {k: self.proof[k] for k in ('original_proof_sha256', 'question_set_sha256', 'question_set_status')}
         self.guard = lambda: deepcopy(self.guard_result)
-        patches = [patch.object(repair.google, 'drive_file', side_effect=lambda *a: deepcopy(self.source.meta)),
-                   patch.object(repair.google, 'native_presentation', side_effect=lambda *a: deepcopy(self.source.native)),
-                   patch.object(repair.google, 'deck_bytes', side_effect=lambda *a: pptx(self.source.native)),
+        def source(file_id):
+            self.assertIn(file_id, (FILE, REFERENCE))
+            return self.source if file_id == FILE else self.reference
+        patches = [patch.object(repair.google, 'drive_file', side_effect=lambda t, f, *a: deepcopy(source(f).meta)),
+                   patch.object(repair.google, 'native_presentation', side_effect=lambda t, f: deepcopy(source(f).native)),
+                   patch.object(repair.google, 'deck_bytes', side_effect=lambda t, f, *a: pptx(source(f).native)),
                    patch.object(repair.google, 'slides_batch_update', side_effect=self.source.write)]
         for p in patches:
             p.start(); self.addCleanup(p.stop)
 
-    def plan(self, operations=None, snapshot=None):
+    def plan(self, operations=None, snapshot=None, panel_reference=None):
         snap = snapshot or repair.capture('read', FILE)
         return repair.prepare('read', FILE, self.proof, snap['native']['revisionId'],
                               snap['native_sha256'], snap['metadata_sha256'],
-                              self.source.operations() if operations is None else operations, guard=self.guard)
+                              self.source.operations() if operations is None else operations, guard=self.guard,
+                              panel_reference=panel_reference)
 
     def apply(self, plan=None):
         return repair.apply('read', 'write', plan or self.plan(), self.port, guard=self.guard, dry_run=False)
+
+    def panel_fixture(self, *, grouped=False):
+        page = self.source.native['slides'][1]
+        for ident, x in (('InitialLabel', 20), ('InitialResponse', 20), ('RevisedLabel', 380), ('RevisedResponse', 380)):
+            old = repair._elements(self.source.native)[ident][2]
+            label = ident.endswith('Label')
+            old['transform'].update(translateX=x, translateY=50 if label else 75)
+            old['size']['width']['magnitude'] = 300
+            old['size']['height']['magnitude'] = 15 if label else 300
+        self.reference = Source()
+        self.reference.meta['id'] = self.reference.native['presentationId'] = REFERENCE
+        self.reference.native['slides'][1] = deepcopy(page)
+        for ident, category, x in (('InitialResponse', 'NOTES', 20), ('RevisedResponse', 'DRAFT', 380)):
+            old = repair._elements(self.reference.native)[ident][2]
+            old.clear(); old.update(shape(ident, '[[%s:C09:Q1]]' % category, 75, x=x, width=300, height=300))
+        page['pageElements'].append(shape('AddedAnswer', 'An independently added explanation far inside the first panel.',
+                                         270, x=60, width=210, height=45))
+        if grouped:
+            for source in (self.source, self.reference):
+                source.native['slides'][1]['pageElements'] = [group('OuterGroup', [group('InnerGroup',
+                    source.native['slides'][1]['pageElements'], scale=.9, x=10, y=5)], scale=.8)]
+        ops = self.source.operations()
+        ops[0]['response_object_ids'].append('AddedAnswer')
+        for op, ident in zip(ops[:2], ('InitialResponse', 'RevisedResponse')):
+            op['panel_object_id'] = ident
+            # operations() shares this list between the two same-page records.
+            if 'AddedAnswer' not in op['page_response_object_ids']:
+                op['page_response_object_ids'].append('AddedAnswer')
+        snap = repair.capture('read', REFERENCE)
+        spec = {'file_id': REFERENCE, 'revision': snap['native']['revisionId'],
+                'native_sha256': snap['native_sha256'], 'metadata_sha256': snap['metadata_sha256']}
+        self.proof.update(panel_reference_sha256=repair.digest(spec), panel_reference_proof_sha256='c' * 64)
+        self.guard_result.update(panel_reference_sha256=self.proof['panel_reference_sha256'],
+                                 panel_reference_proof_sha256=self.proof['panel_reference_proof_sha256'])
+        return ops, spec
+
+    def test_nested_grouped_code_repair_preserves_groups_and_normal_reader_geometry(self):
+        page = self.source.native['slides'][1]
+        page['pageElements'] = [group('OuterGroup', [group('InnerGroup', page['pageElements'], scale=.9, x=10, y=5)])]
+        before = repair.capture('read', FILE)
+        plan = self.plan(snapshot=before)
+        self.assertEqual(self.apply(plan)['status'], 'verified')
+        after = repair.capture('read', FILE)
+        repair._preserved(before, after, plan['edits'])
+        self.assertEqual(after['native']['slides'][1]['pageElements'][0]['transform'],
+                         before['native']['slides'][1]['pageElements'][0]['transform'])
+        self.assertEqual(repair._element_box(repair._elements(after['native']), 'InitialLabel'),
+                         repair._element_box(repair._elements(before['native']), 'InitialLabel'))
+
+    def test_grouped_original_panels_bind_added_answer_with_frozen_host_reference_only(self):
+        ops, spec = self.panel_fixture(grouped=True)
+        plan = self.plan(ops, panel_reference=spec)
+        self.assertEqual(self.apply(plan)['status'], 'verified')
+        after = repair.capture('read', FILE)
+        reference = repair._reference('read', self.proof, spec, FILE)
+        repair._bindings(after, ops, reference)
+        result = completion.assess(after['parsed'], reference['parsed'], panel_reference=reference['authority'])
+        answer = next(i for i in result['items'] if i['category'] == 'NOTES' and i['id'] == 'Q1')
+        self.assertIn('independently added explanation', answer['answer'])
+        with patch.object(completion, 'score') as score:
+            ordinary = completion.assess(after['parsed'], reference['parsed'])
+            self.assertIsNone(ordinary['notes_score'])
+            self.assertIsNone(ordinary['revision_score'])
+            score.assert_not_called()
+        self.assertFalse(plan['full_census_complete'])
+        self.assertFalse(plan['grading_authorized'])
+
+    def test_panel_repair_incomplete_census_remains_ineligible(self):
+        ops, spec = self.panel_fixture()
+        self.proof['question_set_status'] = self.guard_result['question_set_status'] = 'incomplete'
+        plan = self.plan(ops, panel_reference=spec)
+        self.assertFalse(plan['apply_eligible'])
+        with self.assertRaisesRegex(repair.Refused, 'census is unfinished'):
+            self.apply(plan)
+        self.assertEqual(self.source.writes, 0)
+
+    def test_panel_reference_missing_or_self_attested_is_refused(self):
+        ops, spec = self.panel_fixture()
+        with self.assertRaisesRegex(repair.Refused, 'reference is missing'):
+            self.plan(ops)
+        spec['file_id'] = FILE
+        self.proof['panel_reference_sha256'] = self.guard_result['panel_reference_sha256'] = repair.digest(spec)
+        with self.assertRaisesRegex(repair.Refused, 'independently proven'):
+            self.plan(ops, panel_reference=spec)
+        self.assertEqual(self.source.writes, 0)
+
+    def test_changed_reference_revision_content_or_provenance_refused_before_writes(self):
+        for change in ('revision', 'content', 'proof'):
+            self.source = Source()
+            ops, spec = self.panel_fixture()
+            if change == 'revision': self.reference.native['revisionId'] = 'newer-revision'
+            elif change == 'content': self.reference.native['slides'][1]['pageElements'].append(shape('NewTask', 'A newer task.', 10))
+            else: self.guard_result['panel_reference_proof_sha256'] = 'd' * 64
+            with self.subTest(change=change), self.assertRaises(repair.Refused):
+                self.plan(ops, panel_reference=spec)
+            self.assertEqual(self.source.writes, 0)
+
+    def test_changed_reference_last_bookend_stops_before_source_write(self):
+        ops, spec = self.panel_fixture()
+        plan = self.plan(ops, panel_reference=spec)
+        commit = self.port.commit
+        def race(changes):
+            commit(changes)
+            self.reference.meta['version'] = '8'
+        with patch.object(self.port, 'commit', side_effect=race), self.assertRaisesRegex(repair.Uncertain, 'reference changed'):
+            self.apply(plan)
+        self.assertEqual(self.source.writes, 0)
+
+    def test_postwrite_reference_change_and_description_corruption_remain_uncertain(self):
+        for change in ('reference', 'description', 'group'):
+            self.source, self.port = Source(), MemoryCAS()
+            ops, spec = self.panel_fixture(grouped=True)
+            plan = self.plan(ops, panel_reference=spec)
+            def corrupt(source):
+                if change == 'reference': self.reference.native['revisionId'] = 'newer-revision'
+                elif change == 'group': source.native['slides'][1]['pageElements'][0]['transform']['translateX'] += 1
+                else: repair._elements(source.native)['InitialLabel'][2]['description'] += 'unexpected'
+            self.source.after_write = corrupt
+            with self.subTest(change=change), patch.object(repair.google, 'slides_batch_update', side_effect=self.source.write), self.assertRaises(repair.Uncertain):
+                self.apply(plan)
+            self.assertEqual(self.source.writes, 1)
+            self.assertEqual(next(iter(self.port.rows.values())).value['status'], 'attempting')
+
+    def test_existing_label_description_is_preserved_not_replaced(self):
+        ops, spec = self.panel_fixture()
+        repair._elements(self.source.native)['InitialLabel'][2]['description'] = 'Original accessible label'
+        with self.assertRaisesRegex(repair.Refused, 'descriptions must be preserved'):
+            self.plan(ops, panel_reference=spec)
+        self.assertEqual(self.source.writes, 0)
+
+    def test_group_shear_reflection_missing_transform_and_duplicate_identity_refused(self):
+        for change in ('shear', 'reflection', 'missing', 'duplicate'):
+            native = deepcopy(self.source.native)
+            elements = native['slides'][1]['pageElements']
+            wrapper = group('Wrapper', elements)
+            native['slides'][1]['pageElements'] = [wrapper]
+            if change == 'shear': wrapper['transform']['shearX'] = .2
+            elif change == 'reflection': wrapper['transform']['scaleX'] = -1
+            elif change == 'missing': wrapper.pop('transform')
+            else: elements.append(deepcopy(elements[0]))
+            with self.subTest(change=change), self.assertRaises(repair.Refused):
+                repair._element_box(repair._elements(native), 'InitialLabel')
 
     def test_dry_run_is_default_and_writes_no_source_or_state(self):
         plan = self.plan()
@@ -384,10 +557,10 @@ class RepairTests(unittest.TestCase):
     def test_post_write_normal_parser_binding_mismatch_is_uncertain(self):
         plan = self.plan()
         real = repair._bindings
-        def binding(snapshot, operations):
+        def binding(snapshot, operations, reference=None):
             if snapshot['native']['revisionId'] == 'revision-8':
                 raise repair.Refused('normal parsed response binding changed')
-            return real(snapshot, operations)
+            return real(snapshot, operations, reference)
         with patch.object(repair, '_bindings', side_effect=binding):
             with self.assertRaisesRegex(repair.Uncertain, 'response binding changed'):
                 self.apply(plan)

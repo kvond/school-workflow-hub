@@ -1,4 +1,5 @@
 """Explicit graphical completion bindings; never a source of student writing."""
+import hashlib
 import json
 import math
 import re
@@ -10,6 +11,36 @@ from . import received_rows
 PREFIX = "HUB_COMPLETION_BINDING_V1\n"
 HEADER = PREFIX.rstrip("\n")
 REVIEW = "Response binding needs review"
+PANEL_KIND = "original-response-panel"
+
+
+class OriginalPanelReference:
+    """Host-only capability for a freshly verified handed-out source revision.
+
+    Never deserialize this from deck descriptions. The trusted caller must
+    authenticate the original distribution, capture the exact revision and
+    bookend it independently. Current score_file has no such receipt adapter,
+    so its ordinary reads intentionally cannot use this capability yet.
+    """
+    def __init__(self, parsed, *, source_id, revision, provenance_sha256):
+        if (not isinstance(source_id, str) or not source_id or not isinstance(revision, str) or not revision
+                or not isinstance(provenance_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', provenance_sha256)):
+            raise ValueError('An authenticated original reference revision and provenance are required.')
+        self._size = tuple(parsed['size'])
+        self._pages = Counter(_panel_source_fingerprint(p) for p in parsed['slides'])
+        self._order = tuple((p['number'], _panel_source_fingerprint(p)) for p in parsed['slides'])
+
+    def matches_deck(self, parsed):
+        return (tuple(parsed['size']) == self._size
+                and tuple((p['number'], _panel_source_fingerprint(p)) for p in parsed['slides']) == self._order)
+
+    def authorizes(self, page, size):
+        return (page is not None and tuple(size) == self._size
+                and self._pages[_panel_source_fingerprint(page)] == 1)
+
+
+def _panel_authorized(authority, template, size):
+    return type(authority) is OriginalPanelReference and authority.authorizes(template, size)
 
 
 def description(raw):
@@ -40,6 +71,125 @@ def rectangle(value, size):
 
 def same_box(a, b, size):
     return a and b and max(abs(x - y) for x, y in zip(a, b)) <= 0.001 * max(size)
+
+
+def _contains(outer, inner, size):
+    margin = .001 * max(size)
+    return (rectangle(outer, size) and rectangle(inner, size)
+            and inner[0] >= outer[0] - margin and inner[1] >= outer[1] - margin
+            and inner[0] + inner[2] <= outer[0] + outer[2] + margin
+            and inner[1] + inner[3] <= outer[1] + outer[3] + margin)
+
+
+def _intersects(a, b):
+    return (a[0] < b[0] + b[2] and b[0] < a[0] + a[2]
+            and a[1] < b[1] + b[3] and b[1] < a[1] + a[3])
+
+
+def _panel_source_fingerprint(template):
+    # Include the complete actual source page, including its printed question,
+    # without depending on export-generated object names or traversal order.
+    units = [json.dumps({k: u[k] for k in ('text', 'box', 'picture', 'binding', 'title') if k in u},
+                        sort_keys=True, separators=(',', ':')) for u in template.get('units', [])]
+    return hashlib.sha256(json.dumps(sorted(units), separators=(',', ':')).encode()).hexdigest()
+
+
+def panel_binding(marker, template, label, size, plain, marker_pattern):
+    """Derive one binding only from the authenticated original Notes/Draft pair.
+
+    A submitted description never supplies its own source. The caller must pass
+    the actual handed-out reference, with its original coded response panels.
+    """
+    if not template or marker.get('category') not in ('NOTES', 'DRAFT'):
+        return None
+    units = template.get('units', [])
+    codes = [(u, m.groups()) for u in units for m in marker_pattern.finditer(u.get('text', ''))]
+    expected = {(c, marker.get('code'), marker.get('id')) for c in ('NOTES', 'DRAFT')}
+    if len(codes) != 2 or {code for _, code in codes} != expected:
+        return None
+    panels = []
+    for unit, (category, _, _) in sorted(codes, key=lambda item: item[1][0]):
+        box = unit.get('box')
+        if (unit.get('picture') or unit.get('binding') or not rectangle(box, size)
+                or len([u for u in units if not u.get('picture') and same_box(u.get('box'), box, size)]) != 1):
+            return None
+        panels.append({'category': category, 'box': list(box), 'text': plain(unit['text'])})
+    if _intersects(panels[0]['box'], panels[1]['box']):
+        return None
+    box, text = label.get('box'), plain(label.get('text', ''))
+    original_labels = [u for u in units if not u.get('picture') and not marker_pattern.search(u.get('text', ''))
+                       and same_box(u.get('box'), box, size) and plain(u.get('text', '')) == text]
+    if not text or not rectangle(box, size) or len(original_labels) != 1:
+        return None
+    panel = next(p['box'] for p in panels if p['category'] == marker['category'])
+    if (any(_intersects(box, p['box']) for p in panels) or box[1] + box[3] > panel[1]
+            or panel[1] - box[1] - box[3] > .08 * size[1]
+            or max(box[0], panel[0]) >= min(box[0] + box[2], panel[0] + panel[2])):
+        return None
+    return {'kind': PANEL_KIND, 'category': marker['category'], 'cycle': marker['code'], 'id': marker['id'],
+            'label': {'box': list(box), 'text': text}, 'panels': panels,
+            'source_sha256': _panel_source_fingerprint(template)}
+
+
+def panel_source(markers, template, size, plain, marker_pattern):
+    """Authenticate every panel against the reference, never student metadata."""
+    bound = [m for m in markers if m.get('binding', {}).get('kind') == PANEL_KIND]
+    if not bound or len(markers) != 2:
+        return None
+    panels = None
+    for marker in bound:
+        data = marker['binding']
+        label = data.get('label')
+        if not isinstance(label, dict):
+            return None
+        expected = panel_binding(marker, template, label, size, plain, marker_pattern)
+        if expected is None or data != expected or not same_box(marker.get('box'), label.get('box'), size):
+            return None
+        if panels is not None and panels != data['panels']:
+            return None
+        panels = data['panels']
+    first = bound[0]
+    if {(m['category'], m['code'], m['id']) for m in markers} != {
+            (c, first['code'], first['id']) for c in ('NOTES', 'DRAFT')}:
+        return None
+    for marker in markers:
+        if marker in bound:
+            continue
+        panel = next(p for p in panels if p['category'] == marker['category'])
+        if marker.get('binding') or not same_box(marker.get('box'), panel['box'], size):
+            return None
+    return panels
+
+
+def panel_answers(markers, written, template, student, size, plain, marker_pattern, *, authority=None):
+    result = {(m['category'], m['id']): [] for m in markers}
+    def bad():
+        return {key: [] for key in result}, list(written), REVIEW
+    panels = panel_source(markers, template, size, plain, marker_pattern)
+    if panels is None or not student or not _panel_authorized(authority, template, size):
+        return bad()
+    units = student.get('units', [])
+    for panel in panels:
+        if len([u for u in units if not u.get('picture') and same_box(u.get('box'), panel['box'], size)]) != 1:
+            return bad()
+    for marker in markers:
+        if marker.get('binding', {}).get('kind') == PANEL_KIND:
+            label = marker['binding']['label']
+            found = [u for u in units if u['key'] == marker['key'] and not u.get('picture')
+                     and plain(u.get('text', '')) == label['text'] and same_box(u.get('box'), label['box'], size)]
+            if len(found) != 1:
+                return bad()
+    loose = []
+    for unit, words in written:
+        box = unit.get('box')
+        targets = [p for p in panels if _contains(p['box'], box, size)]
+        if len(targets) == 1 and not unit.get('picture') and not words.startswith('moved: '):
+            result[(targets[0]['category'], markers[0]['id'])].append((unit, words))
+        elif box and rectangle(box, size) and any(_intersects(box, p['box']) for p in panels):
+            return bad()  # Cross-panel, partial, picture or moved objects are not writing proof.
+        else:
+            loose.append((unit, words))
+    return result, loose, 'authenticated original response panels'
 
 
 def tiny_points(markers, size):

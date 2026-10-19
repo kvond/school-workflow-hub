@@ -415,7 +415,7 @@ def _printed(slide):
     return " ".join(_plain(u["text"]) for u in slide["units"] if not MARKER.search(u["text"]))[:600]
 
 
-def _align(student, template):
+def _align(student, template, *, panel_reference=None):
     """{student slide number: template slide} by the codes each slide carries,
     then by position for slides without codes when the decks are the same
     length, then by the slide's printed text: a copy of an older version of the
@@ -430,6 +430,17 @@ def _align(student, template):
             if best[1] is not None and best[0] & mine:
                 pairs[s["number"]] = best[1]
         bound = [m for m in markers({"slides": [s]}) if "binding" in m]
+        if any(m.get("binding", {}).get("kind") == response_binding.PANEL_KIND for m in bound):
+            source_bound.add(s["number"])
+            originals = [t for t in template["slides"] if response_binding._panel_authorized(panel_reference, t, student['size'])
+                         and panel_reference.matches_deck(template)
+                         and response_binding.panel_source(markers({"slides": [s]}), t,
+                                                           student["size"], _plain, MARKER) is not None]
+            if len(originals) == 1:
+                pairs[s["number"]] = originals[0]
+            else:
+                pairs.pop(s["number"], None)
+            continue
         if any(m.get("binding", {}).get("kind") in ("drag-sort", "picture-activity", "raster-card-activity", "numeric-record-group",
                                                      "conditional-response-row", "raster-highlight-activity", graphical_choice.KIND,
                                                      workspace_binding.KIND) for m in bound):
@@ -505,11 +516,14 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
     return out, exact
 
 
-def _assign(slide_markers, written, template_slide, size, *, student_slide=None):
+def _assign(slide_markers, written, template_slide, size, *, student_slide=None, panel_reference=None):
     """{(category, id): [(unit, words)]} plus uncoded [(unit, words)] and how it was matched."""
     result = {(m["category"], m["id"]): [] for m in slide_markers}
     if not slide_markers:
         return result, list(written), "no code"
+    if any(m.get("binding", {}).get("kind") == response_binding.PANEL_KIND for m in slide_markers):
+        return response_binding.panel_answers(slide_markers, written, template_slide, student_slide,
+                                              size, _plain, MARKER, authority=panel_reference)
     if any("binding" in m for m in slide_markers):
         if all(m.get("binding", {}).get("kind") == writing_fields.KIND for m in slide_markers):
             return writing_fields.answers(slide_markers, written, template_slide, student_slide, size, _plain)
@@ -898,7 +912,7 @@ def teacher_readiness(deck, *, revision="", require_complete_codes=True):
             "problem": None, "action": None}
 
 
-def assess(student, template, *, found_codes_only=False):
+def assess(student, template, *, found_codes_only=False, panel_reference=None):
     """The completion counts for one student deck against the distributed copy."""
     code, required, basis, note = inventory(template or student)
     if template:
@@ -914,13 +928,14 @@ def assess(student, template, *, found_codes_only=False):
         required = {category: list(dict.fromkeys(marker["id"] for marker in codes
                                                 if marker["category"] == category)) for category in CATEGORIES}
         basis = "found_codes"
-    pairs = _align(student, template) if template else {}
+    pairs = _align(student, template, panel_reference=panel_reference) if template else {}
     template_text = {s["number"]: " ".join(t for u in s["units"] for t in _tokens(u["text"]))
                      for s in (template or {"slides": []})["slides"]}
     found = {}
     uncoded, how = [], set()
     bank_unbound = False
     response_unbound = False
+    panel_unbound = False
     numeric_unbound = False
     choice_unbound = False
     draft_unbound = False
@@ -933,6 +948,7 @@ def assess(student, template, *, found_codes_only=False):
         if template and match is None:
             if any("binding" in m for m in mine):
                 response_unbound = True
+                panel_unbound |= any(m.get('binding', {}).get('kind') == response_binding.PANEL_KIND for m in mine)
                 response_review_slides.add(slide["number"])
                 numeric_unbound |= any(m.get("binding", {}).get("kind") == "numeric-record-group" for m in mine)
                 choice_unbound |= any(m.get("binding", {}).get("kind") == graphical_choice.KIND for m in mine)
@@ -946,12 +962,14 @@ def assess(student, template, *, found_codes_only=False):
         else:
             written = [(u, _plain(u["text"])) for u in slide["units"] if MARKER.search(u["text"]) and _plain(u["text"])]
             exact = {u["key"]: " ".join(words.split()) for u, words in written}
-        assigned, loose, basis_here = _assign(mine, written, match, student["size"], student_slide=slide)
+        assigned, loose, basis_here = _assign(mine, written, match, student["size"], student_slide=slide,
+                                             panel_reference=panel_reference)
         if basis_here == "BANK term labels need review":
             bank_unbound = True
             bank_review_slides.add(slide["number"])
         if basis_here == response_binding.REVIEW:
             response_unbound = True
+            panel_unbound |= any(m.get('binding', {}).get('kind') == response_binding.PANEL_KIND for m in mine)
             response_review_slides.add(slide["number"])
             draft_unbound |= any(m["category"] == "DRAFT" and not any(
                 n["category"] == "NOTES" and n["id"] == m["id"] for n in mine) for m in mine)
@@ -1029,7 +1047,9 @@ def assess(student, template, *, found_codes_only=False):
         student_note = ("These BANK responses do not have a unique printed term label. "
                         "Check the term-to-response match by hand before scoring or entering grades.")
     if response_unbound:
-        student_note = ("This revision response needs its original labeled answer box checked before scoring or entering grades.") if draft_unbound else (
+        student_note = ("This response panel is waiting for its frozen original-source reference and verified panel match. "
+                        "The source integration must be completed before scoring or entering grades.") if panel_unbound else (
+                       "This revision response needs its original labeled answer box checked before scoring or entering grades.") if draft_unbound else (
                        "This YES/NO activity needs its original question, visible choice mark and separate revision box checked "
                         "before scoring or entering grades.") if choice_unbound else (
                        "This numeric activity needs its original printed instructions and response blanks checked "

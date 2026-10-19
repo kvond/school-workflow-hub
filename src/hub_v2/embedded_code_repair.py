@@ -5,6 +5,11 @@ manifest for each affected page. This module does not discover identity, decide
 which question was assigned, synchronize inventory or authorize assessment.
 There is deliberately no browser endpoint. ``guard`` must reread the host's
 original Form/Agenda/ownership and question-set proofs and return their unchanged digests.
+Grouped fixed text shapes may use exact original response-panel containment only
+with a separate frozen handed-out reference and fresh provenance proof. This is
+a preparation contract: the production score_file caller has no immutable
+original-reference receipt loader yet, so ordinary assessment of this binding
+stays held. Repair-only injected proof is not operational integration.
 
 Dry-run is the default. Apply first saves an uncertainty fence in the existing
 private CAS port. Once a Slides request may have started, no failure is retried
@@ -17,7 +22,7 @@ import json
 import math
 import re
 
-from . import completion, google, response_binding, student_archive
+from . import completion, google, native_teacher_source, response_binding, student_archive
 from school_workflow_hub.core.cloud_state import key
 
 FIELDS = 'id,name,mimeType,trashed,version,modifiedTime,parents,owners,permissions'
@@ -102,12 +107,28 @@ def _chars(element):
 
 def _elements(native):
     result = {}
-    for number, page in enumerate(native['slides'], 1):
-        for element in page.get('pageElements', []):
+
+    def visit(elements, number, page, parent, depth):
+        _need(isinstance(elements, list) and depth <= 20 and len(result) <= 20_000,
+              'The original object tree exceeds the bounded group proof.')
+        for element in elements:
+            _need(len(result) < 20_000, 'The original object tree exceeds the bounded group proof.')
             ident = element.get('objectId')
             _need(isinstance(ident, str) and ID.fullmatch(ident) and ident not in result,
                   'Ambiguous original object identity.')
-            result[ident] = (number, page['objectId'], element)
+            matrix = None
+            if parent is not None and element.get('transform'):
+                try:
+                    matrix = native_teacher_source._compose(
+                        parent, native_teacher_source._transform(element['transform']))
+                except native_teacher_source.Unreadable as error:
+                    raise Refused(str(error)) from error
+            result[ident] = (number, page, element, matrix)
+            if 'elementGroup' in element:
+                visit(element['elementGroup'].get('children'), number, page, matrix, depth + 1)
+
+    for number, page in enumerate(native['slides'], 1):
+        visit(page.get('pageElements', []), number, page['objectId'], (1, 0, 0, 1, 0, 0), 0)
     return result
 
 
@@ -115,7 +136,7 @@ def _shape(elements, ident, page):
     _need(ident in elements and elements[ident][1] == page, 'The exact original object is absent.')
     element = elements[ident][2]
     _need('shape' in element and 'table' not in element and 'elementGroup' not in element,
-          'Only existing direct text shapes are supported; tables and groups are refused.')
+          'Only existing text shapes are supported; tables and groups themselves are refused.')
     _chars(element)
     return element
 
@@ -173,21 +194,28 @@ def _declared_inventory(census, parsed_markers, parsed):
           'The declared inventory has a revision without its original Notes ID.')
 
 
-def _box(element):
+def _box(element, matrix=None):
     def size(value):
         _need(value.get('unit') in ('PT', 'EMU'), 'Unverified native geometry unit.')
         n = value.get('magnitude')
         _need(type(n) in (int, float) and math.isfinite(n), 'Unverified native geometry.')
         return n * (12700 if value['unit'] == 'PT' else 1)
-    transform = element.get('transform', {})
-    _need(transform.get('shearX', 0) == transform.get('shearY', 0) == 0
-          and transform.get('scaleX') == transform.get('scaleY') == 1,
-          'Rotated or scaled response regions require separate verification.')
-    x, y = [size({'magnitude': transform.get(k, 0), 'unit': transform.get('unit')})
-            for k in ('translateX', 'translateY')]
+    if matrix is None:
+        try:
+            matrix = native_teacher_source._transform(element.get('transform', {}))
+        except native_teacher_source.Unreadable as error:
+            raise Refused(str(error)) from error
+    a, b, c, d, x, y = matrix
+    _need(b == c == 0 and a > 0 and d > 0,
+          'Rotated, sheared or reflected response regions require separate verification.')
     w, h = [size(element.get('size', {}).get(k, {})) for k in ('width', 'height')]
     _need(w > 0 and h > 0, 'The original response region is empty.')
-    return x, y, w, h
+    return x, y, a * w, d * h
+
+
+def _element_box(elements, ident):
+    _need(elements[ident][3] is not None, 'The original shape or ancestor group has no verified transform.')
+    return _box(elements[ident][2], elements[ident][3])
 
 
 def _media(native):
@@ -242,18 +270,65 @@ def _scope(proof, file_id):
     fields = {'class', 'week', 'school_year', 'assignment_form_id', 'source_form_id',
               'source_response_id', 'source_file_id', 'submitted_at', 'operator', 'original_proof_sha256',
               'question_set_status', 'question_set_sha256'}
-    _need(isinstance(proof, dict) and set(proof) == fields
+    optional = {'panel_reference_sha256', 'panel_reference_proof_sha256'}
+    _need(isinstance(proof, dict) and (set(proof) == fields or set(proof) == fields | optional)
           and all(isinstance(v, str) and v.strip() for v in proof.values())
           and proof['source_file_id'] == file_id and HASH.fullmatch(proof['original_proof_sha256'])
           and proof['question_set_status'] in ('complete', 'incomplete') and HASH.fullmatch(proof['question_set_sha256']),
           'Exact host-verified original/Form/Agenda proof is required.')
+    _need(not optional.intersection(proof) or all(HASH.fullmatch(proof[k]) for k in optional),
+          'A host-verified handed-out reference proof is required.')
 
 
 def _guard(guard, proof):
-    return guard() == {k: proof[k] for k in ('original_proof_sha256', 'question_set_sha256', 'question_set_status')}
+    fields = ('original_proof_sha256', 'question_set_sha256', 'question_set_status',
+              'panel_reference_sha256', 'panel_reference_proof_sha256')
+    return guard() == {k: proof[k] for k in fields if k in proof}
 
 
-def _plan(before, operations):
+def _reference(token, proof, spec, file_id):
+    if spec is None:
+        _need('panel_reference_sha256' not in proof, 'The proven handed-out reference is missing.')
+        return None
+    _need(isinstance(spec, dict) and set(spec) == {'file_id', 'revision', 'native_sha256', 'metadata_sha256'}
+          and isinstance(spec['file_id'], str) and ID.fullmatch(spec['file_id']) and spec['file_id'] != file_id
+          and spec['revision'] and all(isinstance(spec[k], str) and HASH.fullmatch(spec[k])
+                                      for k in ('native_sha256', 'metadata_sha256'))
+          and digest(spec) == proof.get('panel_reference_sha256') and proof.get('panel_reference_proof_sha256'),
+          'The actual handed-out reference must be independently proven and revision-bound.')
+    reference = capture(token, spec['file_id'])
+    _need(reference['native']['revisionId'] == spec['revision']
+          and all(reference[k] == spec[k] for k in ('native_sha256', 'metadata_sha256')),
+          'The authenticated handed-out reference changed or is unavailable.')
+    reference['authority'] = response_binding.OriginalPanelReference(reference['parsed'],
+        source_id=spec['file_id'], revision=spec['revision'], provenance_sha256=proof['panel_reference_proof_sha256'])
+    return reference
+
+
+def _panel_binding(before, reference, op, elements, label):
+    _need(reference is not None, 'Panel containment requires the authenticated handed-out reference.')
+    _need(before['parsed']['size'] == reference['parsed']['size'],
+          'The original and handed-out reference page sizes differ.')
+    ident = op['panel_object_id']
+    _need(ident in op['response_object_ids'], 'The exact original panel must be in its response manifest.')
+    _shape(elements, ident, op['page_id'])
+    panel_box = _element_box(elements, ident)
+    marker = completion.MARKER.fullmatch(op['marker'])
+    code = dict(zip(('category', 'code', 'id'), marker.groups()))
+    label_unit = {'text': _text(label), 'box': _element_box(elements, op['label_object_id'])}
+    options = [response_binding.panel_binding(code, slide, label_unit, before['parsed']['size'],
+                                            completion._plain, completion.MARKER)
+               for slide in reference['parsed']['slides']]
+    options = [data for data in options if data and any(p['category'] == code['category']
+               and response_binding.same_box(p['box'], panel_box, before['parsed']['size']) for p in data['panels'])]
+    _need(len(options) == 1, 'The exact original panel has no unique authenticated handed-out source.')
+    _need(all(response_binding._contains(panel_box, _element_box(elements, i), before['parsed']['size'])
+              for i in op['response_object_ids']), 'A response leaves its exact original panel.')
+    _need(label.get('description', '') == '', 'Existing label descriptions must be preserved.')
+    return options[0]
+
+
+def _plan(before, operations, reference=None):
     _need(isinstance(operations, list) and 1 <= len(operations) <= MAX_OPERATIONS,
           'A bounded exact code manifest is required.')
     native = before['native']
@@ -274,7 +349,8 @@ def _plan(before, operations):
     for op in operations:
         fields = {'marker', 'page_id', 'label_object_id', 'source_object_id', 'remove',
                   'response_object_ids', 'page_response_object_ids'}
-        _need(isinstance(op, dict) and set(op) == fields, 'Unexpected code-repair operation fields.')
+        _need(isinstance(op, dict) and set(op) in (fields, fields | {'panel_object_id'}),
+              'Unexpected code-repair operation fields.')
         marker = completion.MARKER.fullmatch(op['marker']) if isinstance(op['marker'], str) else None
         _need(marker is not None and marker.group(1) in ('NOTES', 'DRAFT')
               and marker.group(2) == inventories[0].group(1) and marker.group(3) == marker.group(3).strip(),
@@ -296,9 +372,10 @@ def _plan(before, operations):
         _need(op['page_id'] not in pages or pages[op['page_id']] == set(page_ids),
               'Each repaired page needs one consistent complete response-region manifest.')
         pages[op['page_id']] = set(page_ids)
-        lx, ly, lw, lh = _box(label)
-        for ident in response_ids:
-            x, y, w, _ = _box(elements[ident][2])
+        binding = _panel_binding(before, reference, op, elements, label) if 'panel_object_id' in op else None
+        lx, ly, lw, lh = _element_box(elements, op['label_object_id'])
+        for ident in [op['panel_object_id']] if binding else response_ids:
+            x, y, w, _ = _element_box(elements, ident)
             _need(ly + lh <= y + 127 and y - (ly + lh) <= .08 * before['parsed']['size'][1]
                   and max(lx, x) < min(lx + lw, x + w),
                   'The verified code label must be separate and immediately above its response region.')
@@ -309,6 +386,10 @@ def _plan(before, operations):
         _need(text.endswith('\n') and text.strip(), 'An existing printed label is required.')
         index, insertion = len(_units(text[:-1])), ' ' + op['marker']
         edits[op['label_object_id']] = {'remove': [], 'insert': (index, insertion)}
+        if binding:
+            description = response_binding.PREFIX + json.dumps(binding, sort_keys=True, separators=(',', ':'))
+            edits[op['label_object_id']]['description'] = description
+            requests.append({'updatePageElementAltText': {'objectId': op['label_object_id'], 'description': description}})
         requests += [{'insertText': {'objectId': op['label_object_id'], 'insertionIndex': index, 'text': insertion}},
                      {'updateTextStyle': {'objectId': op['label_object_id'], 'textRange': {
                          'type': 'FIXED_RANGE', 'startIndex': index, 'endIndex': index + len(_units(insertion))},
@@ -346,16 +427,16 @@ def _plan(before, operations):
     return requests, edits
 
 
-def _preview_bindings(before, operations, edits):
+def _preview_bindings(before, operations, edits, reference=None):
     """Predict the real reader's binding before a source write can start."""
     projected = deepcopy(before)
     old, new = _elements(before['native']), _elements(projected['native'])
     for ident, edit in edits.items():
-        number, _, original = old[ident]
+        number, _, original, _ = old[ident]
         text = _text(original)
         slide = next(s for s in projected['parsed']['slides'] if s['number'] == number)
         units = [u for u in slide['units'] if not u.get('picture')
-                 and response_binding.same_box(u.get('box'), _box(original), projected['parsed']['size'])
+                 and response_binding.same_box(u.get('box'), _element_box(old, ident), projected['parsed']['size'])
                  and u['text'].strip() == _reader_text(text)]
         _need(len(units) == 1, 'The original target has no unique exported-source region.')
         for span in reversed(edit['remove']):
@@ -366,10 +447,13 @@ def _preview_bindings(before, operations, edits):
             at = _boundary(text, at)
             text = text[:at] + insertion + text[at:]
         units[0]['text'] = _reader_text(text)
+        if 'description' in edit:
+            units[0]['binding'] = response_binding.description(edit['description'])
+            new[ident][2]['description'] = edit['description']
         # This in-memory projection is only for binding, never a source write
         # or a preservation proof. Apply uses native range edits and readback.
         new[ident][2]['shape']['text'] = {'textElements': [{'textRun': {'content': text}}]}
-    _bindings(projected, operations)
+    _bindings(projected, operations, reference)
 
 
 def _preserved(before, after, edits):
@@ -393,6 +477,13 @@ def _preserved(before, after, edits):
                   'The unobtrusive code styling did not read back.')
             del new_chars[at:at + n]
         _need(old_chars == new_chars, 'Original non-code text or its styling changed.')
+        if 'description' in edit:
+            _need(a.get('description', '') == '' and b.get('description') == edit['description'],
+                  'The exact authenticated panel description did not read back.')
+            if 'description' in a:
+                b['description'] = a['description']
+            else:
+                b.pop('description', None)
         a['shape'].pop('text', None); b['shape'].pop('text', None)
     _need(old == new, 'Original geometry, media, notes or other native content changed.')
     a, b = deepcopy(before['metadata']), deepcopy(after['metadata'])
@@ -401,10 +492,12 @@ def _preserved(before, after, edits):
     _need(bv > av and bt >= at and a == b, 'Original identity, access or location changed.')
 
 
-def _bindings(after, operations):
+def _bindings(after, operations, reference=None):
     """Use the normal exported-source parser and the real response assigner."""
     elements, parsed = _elements(after['native']), after['parsed']
     all_markers = completion.markers(parsed)
+    authority = reference['authority'] if reference is not None else None
+    pairs = completion._align(parsed, reference['parsed'], panel_reference=authority) if reference is not None else {}
     for op in operations:
         number = elements[op['label_object_id']][0]
         slides = [s for s in parsed['slides'] if s['number'] == number]
@@ -412,11 +505,11 @@ def _bindings(after, operations):
         slide = slides[0]
         def mapped(ident):
             native = elements[ident][2]
-            x, y, w, h = _box(native)
+            x, y, w, h = _element_box(elements, ident)
             _need(x >= 0 and y >= 0 and x + w <= parsed['size'][0] and y + h <= parsed['size'][1],
                   'The existing label/response must be on the original teaching page.')
             units = [u for u in slide['units'] if not u.get('picture')
-                     and response_binding.same_box(u.get('box'), _box(native), parsed['size'])
+                     and response_binding.same_box(u.get('box'), _element_box(elements, ident), parsed['size'])
                      and u['text'].strip() == _reader_text(_text(native))]
             _need(len(units) == 1, 'The exact native response/label has no unique exported-source region.')
             return units[0]
@@ -430,8 +523,13 @@ def _bindings(after, operations):
         # converting a placeholder or code into a student completion score.
         written = [(u, 'verified original field') for u in fields]
         markers = [m for m in all_markers if m['slide'] == number]
-        assigned, _, basis = completion._assign(markers, written, slide, parsed['size'], student_slide=slide)
-        _need(basis in ('box labels', 'one question on the slide', 'code on the box'),
+        has_panel = any(m.get('binding', {}).get('kind') == response_binding.PANEL_KIND for m in markers)
+        template = pairs.get(number) if has_panel else slide
+        _need(template is not None, 'The actual handed-out panel reference no longer matches.')
+        assigned, _, basis = completion._assign(markers, written, template, parsed['size'], student_slide=slide,
+                                                panel_reference=authority)
+        _need(basis in ('box labels', 'one question on the slide', 'code on the box',
+                       'authenticated original response panels'),
               'The actual parser cannot bind these response regions unambiguously.')
         if basis == 'box labels':
             first = [u for u in slide['units'] if re.match(r'\s*(?:your\s+)?first\s+answer\b', u['text'], re.I)]
@@ -451,21 +549,22 @@ def _bindings(after, operations):
 
 
 def prepare(token, file_id, proof, expected_revision, expected_native_sha256,
-            expected_metadata_sha256, operations, *, guard):
+            expected_metadata_sha256, operations, *, guard, panel_reference=None):
     _scope(proof, file_id)
     _need(callable(guard) and _guard(guard, proof), 'Original host proof changed or is unavailable.')
     before = capture(token, file_id)
     _need(before['native']['revisionId'] == expected_revision
           and before['native_sha256'] == expected_native_sha256
           and before['metadata_sha256'] == expected_metadata_sha256, 'The original changed since it was inspected.')
-    requests, edits = _plan(before, operations)
-    _preview_bindings(before, operations, edits)
+    reference = _reference(token, proof, panel_reference, file_id)
+    requests, edits = _plan(before, operations, reference)
+    _preview_bindings(before, operations, edits, reference)
     _need(_guard(guard, proof), 'Original Form/Agenda ownership changed during preparation.')
     manifest = {'file_id': file_id, 'proof': deepcopy(proof), 'operations': deepcopy(operations),
                 'revision': expected_revision, 'native_sha256': expected_native_sha256,
-                'metadata_sha256': expected_metadata_sha256}
+                'metadata_sha256': expected_metadata_sha256, 'panel_reference': deepcopy(panel_reference)}
     return {'status': 'prepared', 'dry_run': True, 'plan_id': digest(manifest), 'manifest': manifest,
-            'requests': requests, 'edits': edits, 'before': before,
+            'requests': requests, 'edits': edits, 'before': before, 'reference': reference,
             'apply_eligible': proof['question_set_status'] == 'complete',
             'full_census_complete': False, 'grading_authorized': False}
 
@@ -474,7 +573,8 @@ def apply(token, write_token, prepared, port, *, guard, dry_run=True):
     manifest = prepared['manifest']
     _need(prepared['plan_id'] == digest(manifest), 'The prepared manifest changed.')
     fresh = prepare(token, manifest['file_id'], manifest['proof'], manifest['revision'],
-                    manifest['native_sha256'], manifest['metadata_sha256'], manifest['operations'], guard=guard)
+                    manifest['native_sha256'], manifest['metadata_sha256'], manifest['operations'], guard=guard,
+                    panel_reference=manifest['panel_reference'])
     if dry_run:
         return fresh
     _need(manifest['proof']['question_set_status'] == 'complete',
@@ -493,13 +593,17 @@ def apply(token, write_token, prepared, port, *, guard, dry_run=True):
         _need(_guard(guard, manifest['proof']), 'Original host proof changed before apply.')
         _need(google.drive_file(token, manifest['file_id'], FIELDS) == fresh['before']['metadata'],
               'The original changed before apply.')
+        if fresh['reference'] is not None:
+            _need(google.drive_file(token, manifest['panel_reference']['file_id'], FIELDS)
+                  == fresh['reference']['metadata'], 'The handed-out reference changed before apply.')
         owned = port.read([gate]).documents[gate]
         _need(owned and owned.version == claimed.version and owned.value == attempt,
               'The private write fence changed before apply.')
         google.slides_batch_update(write_token, manifest['file_id'], fresh['requests'], manifest['revision'])
         after = capture(token, manifest['file_id'])
         _preserved(fresh['before'], after, fresh['edits'])
-        _bindings(after, manifest['operations'])
+        reference = _reference(token, manifest['proof'], manifest['panel_reference'], manifest['file_id'])
+        _bindings(after, manifest['operations'], reference)
         _need(_guard(guard, manifest['proof']), 'Original proof changed during verification.')
         receipt = {'status': 'verified', 'plan_id': fresh['plan_id'], 'manifest': manifest,
                    'before_native_sha256': fresh['before']['native_sha256'],
