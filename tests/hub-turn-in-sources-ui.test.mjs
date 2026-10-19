@@ -54,6 +54,27 @@ test('a section filter keeps unmatched work and that section only', () => {
   assert.match(all(box).find(n => n.tagName === 'summary').textContent, /4 submissions · 1 awaiting/);
 });
 
+test('routed folder and shared submissions retain their actual intake source', () => {
+  const routed = {lessons: [{forms: [{form_id: 'F2', label: 'Routed work', students: [
+    row('A1', 'folder', {from_folder: true, via: 'Another lesson'}),
+    row('A1', 'form', {from_folder: true, via: 'Another lesson'}),
+    row('A1', 'form', {from_shared: true, via: 'Another lesson'}),
+    row('A1', 'form', {via: 'Another lesson'}),
+  ]}]}]};
+  const cells = all(load().renderTurnInSources(routed)).filter(n => n.tagName === 'td').map(n => n.textContent);
+  assert.deepEqual(cells, ['Routed work', '0', '2', '1', '1', '0']);
+});
+
+test('waiting work counts current submissions rather than their files or history', () => {
+  const waiting = {lessons: [], other_files: [{matched: false,
+    files: [{name: 'Current one'}, {name: 'Current two'}],
+    earlier: [{files: [{name: 'Earlier work'}]}],
+  }]};
+  const box = load().renderTurnInSources(waiting);
+  assert.match(box.textContent, /1 current submission is in the turn-in folders/);
+  assert.doesNotMatch(box.textContent, /1 file|2 current submissions|3 current submissions/);
+});
+
 test('nothing is shown without a Form or waiting file', () => {
   const ui = load();
   assert.equal(ui.renderTurnInSources({lessons: [], other_files: []}), null);

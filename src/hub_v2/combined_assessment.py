@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 from threading import Lock
+import time
 
 from . import completion, google, work
 
@@ -32,6 +33,88 @@ class Held(ValueError):
 
 SOURCE_FIELDS = google.FILE_FIELDS + ',version,md5Checksum,size,headRevisionId'
 _request_captures = ContextVar('combined_request_captures', default=None)
+_retained_store = ContextVar('combined_retained_sources', default=None)
+RETAIN_SECONDS = 600
+RETAIN_ENTRIES = 256
+
+
+def _reusable(metadata):
+    # Binary source bytes are reusable only with the provider checksum.
+    return metadata['mimeType'] == completion.SLIDES or bool(metadata.get('md5Checksum'))
+
+
+class RetainedSources:
+    """Validated captures kept across requests for one reader identity.
+
+    A capture is returned only when fresh metadata equals the metadata it was
+    read under, before and after the reuse, so a changed, trashed, moved or
+    unreadable source is never hidden. Identical concurrent reads share one
+    export. Office bytes without a provider checksum are never retained.
+    """
+    def __init__(self, seconds=RETAIN_SECONDS, entries=RETAIN_ENTRIES, clock=time.monotonic):
+        self.seconds, self.entries, self.clock = seconds, entries, clock
+        self.lock = Lock()
+        self.flights = {}
+        self.values = {}
+
+    def clear(self):
+        with self.lock:
+            self.values.clear()
+
+    def _key(self, token, fid):
+        return hashlib.sha256(token.encode()).hexdigest(), fid
+
+    def _fresh(self, key, before):
+        with self.lock:
+            entry = self.values.get(key)
+            if entry is None:
+                return None
+            if self.clock() - entry[0] >= self.seconds or entry[1]['metadata'] != before:
+                del self.values[key]
+                return None
+            return deepcopy(entry[1])
+
+    def capture(self, token, fid, before):
+        key = self._key(token, fid)
+        with self.lock:
+            flight = self.flights.setdefault(key, [Lock(), 0])
+            flight[1] += 1
+        try:
+            with flight[0]:
+                cached = self._fresh(key, before) if _reusable(before) else None
+                if cached is not None:
+                    if _source_metadata(token, fid) != before:
+                        with self.lock:
+                            self.values.pop(key, None)
+                        raise Held('A combined-assignment source changed while it was being read.')
+                    return cached
+                captured = _capture_source(token, fid, before)
+                if _reusable(before):
+                    with self.lock:
+                        if key not in self.values and len(self.values) >= self.entries:
+                            del self.values[min(self.values, key=lambda k: self.values[k][0])]
+                        self.values[key] = (self.clock(), deepcopy(captured))
+                return captured
+        finally:
+            with self.lock:
+                flight[1] -= 1
+                if not flight[1]:
+                    self.flights.pop(key, None)
+
+
+@contextmanager
+def retained_sources(store):
+    """Let source reads in this scope reuse validated captures from store."""
+    context = _retained_store.set(store)
+    try:
+        yield
+    finally:
+        _retained_store.reset(context)
+
+
+def _capture(token, fid, before):
+    store = _retained_store.get()
+    return store.capture(token, fid, before) if store is not None else _capture_source(token, fid, before)
 
 
 @contextmanager
@@ -74,7 +157,7 @@ class _RequestCaptures:
                     if after != before:
                         raise Held('A combined-assignment source changed while it was being read.')
                     return deepcopy(cached)
-            captured = _capture_source(token, fid, before)
+            captured = _capture(token, fid, before)
             # Binary source bytes are reusable only with the provider checksum.
             # Without it, every use retains the original full-byte read guard.
             self.values[fid] = deepcopy(captured)
@@ -198,7 +281,7 @@ def read_source(token, fid):
     """Bracket source bytes; reuse only within a fresh-checked request scope."""
     captures = _request_captures.get()
     return (captures.read(token, fid) if captures is not None
-            else _capture_source(token, fid, _source_metadata(token, fid)))
+            else _capture(token, fid, _source_metadata(token, fid)))
 
 
 def source_basis(capture):
