@@ -173,9 +173,9 @@ def _row(found, form_id, file_id):
         raise Held('This file is not the current submission for exactly one student. Reload student work.')
     row = rows[0]
     if row.get('selection_problem'):
-        raise Held('This combined assignment’s original submission selection needs review before feedback.')
-    if not row.get('matched') or row.get('matched_by') != 'email' or row.get('source') != 'form' or row.get('late'):
-        raise Held('This submission needs its school-email identity and on-time Form record verified first.')
+        raise Held('This assignment’s original submission selection needs review before feedback.')
+    if not row.get('matched') or row.get('matched_by') != 'email' or row.get('source') != 'form':
+        raise Held('This submission needs its school-email identity and original Form record verified first.')
     files = [f for f in row['files'] if f.get('mime') in (completion.SLIDES, google.PPTX)
              and not f.get('trashed') and not f.get('other_week')]
     if len(files) != 1 or files[0]['id'] != file_id:
@@ -186,17 +186,15 @@ def _row(found, form_id, file_id):
 def _feedback_students(form):
     if form.get('combined_assessment'):
         from . import combined_assessment
-        return combined_assessment.feedback_rows(form)
-    return form['students']
+        return combined_assessment.feedback_rows(form, include_late=True)
+    return completion.scoring_candidates(form, include_late=True)
 
 
 def _feedback_name(form, row):
-    if not form.get('combined_assessment'):
-        return feedback.short_names([r for r in form['students'] if r.get('matched')])[id(row)]
     # One name anchor per real student, rather than one per component/report.
-    # The component row is a derived copy and must not use object identity to
+    # A selected revision/component is a derived copy and must not use object identity to
     # borrow a different student's short name.
-    students = completion.scoring_candidates(form)
+    students = completion.scoring_candidates(form, include_late=True)
     identity = lambda r: (r.get('section'), r.get('email'), r.get('first'), r.get('last'))
     owners = [student for student in students if identity(student) == identity(row)]
     if len(owners) != 1:
@@ -310,6 +308,7 @@ def evidence(assertion, token, config, agenda, scope, found):
     row, form = _row(found, scope['form'], scope['file'])
     receipt = _submission_receipt(row, scope)
     score = completion.score_file(token, agenda, scope['class'], scope['week'], scope['form'], scope['file'], found,
+                include_late=True,
                 **({'component_only': True} if form.get('combined_assessment') else {}))
     if score.get('problem') or not score.get('compared'):
         raise Held(score.get('problem') or 'The submitted deck could not be matched to its lesson.')

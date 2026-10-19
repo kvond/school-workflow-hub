@@ -6,7 +6,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hub_v2 import app, feedback_pdf, google, native_feedback as fb
+from hub_v2 import app, combined_assessment, completion, feedback_pdf, google, native_feedback as fb
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable
 from tests.test_cloud_state import MemoryCAS
 from tests.test_assessment_provider import OPENAI_CONFIG
@@ -449,8 +449,8 @@ class NativeFeedbackTests(unittest.TestCase):
     def test_teacher_identity_must_come_from_unique_school_email_form(self):
         row = {'files': [{'id': 'file', 'mime': google.PPTX}], 'matched': True, 'matched_by': 'email', 'source': 'form', 'late': False}
         found = {'lessons': [{'forms': [{'form_id': 'form', 'students': [row]}]}]}
-        self.assertIs(fb._row(found, 'form', 'file')[0], row)
-        for field, value in [('matched_by', 'name typed in the Form'), ('late', True), ('matched', False), ('source', 'folder')]:
+        self.assertEqual(fb._row(found, 'form', 'file')[0], row)
+        for field, value in [('matched_by', 'name typed in the Form'), ('matched', False), ('source', 'folder')]:
             wrong = deepcopy(found); wrong['lessons'][0]['forms'][0]['students'][0][field] = value
             with self.subTest(field=field), self.assertRaises(fb.Held):
                 fb._row(wrong, 'form', 'file')
@@ -519,7 +519,7 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
         if selected_problem:
             selected['selection_problem'] = 'This selected original needs review.'
         form['students'] = [selected, other]
-        form['combined_assessment'] = {'on_time': [selected, other],
+        form['combined_assessment'] = {'on_time': [selected, other], 'current': [selected, other],
             'problem': 'Assignment-wide source scope changed.' if global_problem else None}
         return form
 
@@ -566,14 +566,102 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
         self.assertEqual({card['file_id'] for card in selected}, {'file', 'earlier-component'})
         self.assertTrue(all(card['hold'] == '' for card in selected))
 
+    def test_late_only_feedback_preserves_original_event_and_grading_candidates(self):
+        form = self.found['lessons'][0]['forms'][0]
+        self.row['late'] = True
+        form.update(students=[], late=[self.row])
+        before = deepcopy(self.found)
+        self.assertEqual(completion.scoring_candidates(form), [])
+        selected, _ = fb._row(self.found, 'form', 'file')
+        self.assertTrue(selected['late'])
+        receipt = fb._submission_receipt(selected, self.scope)
+        self.assertEqual(receipt['submitted_at'], self.row['submitted_at'])
+        self.assertEqual(receipt['source_response_id'], 'FictionalResponse12345')
+        with patch.object(fb, 'configured_store', return_value=MemoryCAS()):
+            listed = fb.listing({}, self.scope, self.found)
+        self.assertEqual([(r['name'], r['file_id'], r['hold']) for r in listed['students']], [('Ana R.', 'file', '')])
+        self.read()
+        self.assertEqual(self.scoring_call.kwargs, {'include_late': True})
+        self.assertEqual(self.found, before)
+        self.assertEqual(completion.scoring_candidates(form), [])
+
+    def test_feedback_selects_meaningful_late_revision_without_promoting_old_source(self):
+        original = deepcopy(self.row)
+        later = deepcopy(self.row)
+        later.update(submitted_at='2026-10-01T15:00:00Z', late=True)
+        later['files'][0].update(id='new-file', source_response_id='NewFictionalResponse12345',
+                                source_submitted_at=later['submitted_at'])
+        self.row['earlier'] = [later]
+        before = deepcopy(self.found)
+        self.scope['file'] = 'new-file'
+        selected, _ = fb._row(self.found, 'form', 'new-file')
+        self.assertTrue(selected['late'])
+        self.assertEqual(fb._submission_receipt(selected, self.scope)['source_response_id'], 'NewFictionalResponse12345')
+        with self.assertRaisesRegex(fb.Held, 'exactly one student'):
+            fb._row(self.found, 'form', original['files'][0]['id'])
+        self.assertEqual(completion.scoring_candidates(self.found['lessons'][0]['forms'][0])[0]['files'], original['files'])
+        self.assertEqual(self.found, before)
+
+    def test_late_feedback_keeps_identity_history_and_original_receipt_holds(self):
+        for issue in ('identity', 'receipt', 'conflicting_history'):
+            with self.subTest(issue=issue):
+                row = deepcopy(self.row); row['late'] = True
+                if issue == 'identity': row['matched_by'] = 'file name'
+                if issue == 'receipt': row['files'][0]['source_response_id'] = ''
+                if issue == 'conflicting_history':
+                    wrong = deepcopy(row); wrong['email'] = 'different@example.test'
+                    row['earlier'] = [wrong]
+                self.found['lessons'][0]['forms'][0].update(students=[], late=[row])
+                with patch.object(fb.completion, 'score_file') as score:
+                    with self.assertRaises(fb.Held):
+                        fb.evidence('signed', 'token', {}, SimpleNamespace(), self.scope, self.found)
+                score.assert_not_called()
+
+    def test_combined_late_feedback_selects_each_current_component_with_default_unchanged(self):
+        form = self.found['lessons'][0]['forms'][0]
+        form['window'] = {'at': '2026-09-30T23:59:59Z'}
+        def event(fid, at, late):
+            value = deepcopy(self.row); value.update(submitted_at=at, late=late, earlier=[])
+            value['files'][0].update(id=fid, source_submitted_at=at, source_response_id='FictionalResponse-' + fid,
+                                    from_folder=False, from_shared=False, trashed=False)
+            return value
+        first = event('file', '2026-09-30T15:00:00Z', False)
+        second = event('other-component', '2026-09-30T16:00:00Z', False)
+        later = event('new-file', '2026-10-01T15:00:00Z', True)
+        first['earlier'] = [second, later, deepcopy(later)]
+        form['students'] = [first]
+        scope = {'form_id': 'form', 'components': [{'cycle': 'A'}, {'cycle': 'B'}]}
+        sources = {'file': {'cycle': 'A', 'basis': {}}, 'new-file': {'cycle': 'A', 'basis': {}},
+                   'other-component': {'cycle': 'B', 'basis': {}}}
+        on_time = combined_assessment.select_rows(form, scope, sources)
+        current = combined_assessment.select_rows(form, scope, sources, include_late=True)
+        form['combined_assessment'] = {'on_time': on_time, 'current': current}
+        before = deepcopy(self.found)
+        self.assertEqual({r['files'][0]['id'] for r in combined_assessment.feedback_rows(form)}, {'file', 'other-component'})
+        rows = fb._feedback_students(form)
+        self.assertEqual({r['files'][0]['id'] for r in rows}, {'new-file', 'other-component'})
+        chosen = next(r for r in rows if r['files'][0]['id'] == 'new-file')
+        self.assertTrue(chosen['late'])
+        self.scope['file'] = 'new-file'
+        self.assertEqual(fb._submission_receipt(chosen, self.scope)['submitted_at'], later['submitted_at'])
+        with patch.object(fb, 'configured_store', return_value=MemoryCAS()):
+            cards = fb.listing({}, self.scope, self.found)['students']
+        self.assertEqual({r['file_id'] for r in cards}, {'new-file', 'other-component'})
+        self.assertTrue(all(r['hold'] == '' for r in cards))
+        self.read()
+        self.assertEqual(self.scoring_call.kwargs, {'include_late': True, 'component_only': True})
+        self.assertEqual(self.found, before)
+
     def read(self, decks=None):
-        with patch.object(fb.completion, 'score_file', return_value=self.score), \
+        with patch.object(fb.completion, 'score_file', return_value=self.score) as scoring, \
              patch.object(fb.grading_records, 'read_records', return_value={'assignments': [self.assignment]}), \
              patch.object(fb.completion, 'lesson_decks', return_value=['template'] if decks is None else decks), \
              patch.object(fb.assessment_save, 'capture', side_effect=self.captures), \
              patch.object(fb.feedback, 'load_prompt', return_value=('Live policy', 'policy-url')):
             agenda = getattr(self, 'agenda', SimpleNamespace(lessons=lambda *args: self.found['lessons']))
-            return fb.evidence('signed', 'token', {}, agenda, self.scope, self.found)
+            result = fb.evidence('signed', 'token', {}, agenda, self.scope, self.found)
+            self.scoring_call = scoring.call_args
+            return result
 
     def registered_sources(self, mime=google.PPTX):
         self.binding = {'source_folder_id': 'FictionalFolder', 'teacher_ids': ['template']}
