@@ -319,6 +319,46 @@ class ManualIndexTests(unittest.TestCase):
         self.assertEqual(result["status"], "held"); self.assertIn("row limit", result["problem"])
         self.assertEqual(self.writes, 0)
 
+    def test_overlapping_report_cannot_silently_rebind_existing_nonfirst_anchor_link_or_note(self):
+        anchor = generated("ExistingImportedAnchor", **{"9": '=HYPERLINK("https://example.org/older","Open feedback")'})
+        existing = cells(anchor)
+        existing["values"][9] = archive._index_cell(anchor[9], link=True)
+        existing["values"][12] = archive._index_cell("Teacher note belongs to the established report")
+        self.rows += [manual(), existing]
+        before = deepcopy(self.rows)
+        replacement = deepcopy(anchor)
+        replacement[9] = '=HYPERLINK("https://example.org/sorted-first","Open feedback")'
+        independent = generated("OtherIndependentReport", **{"9": anchor[9]})
+        data = {"rows": [replacement, independent], "summary": {}, "holds": [],
+                "checked_at": "2032-01-19T12:00:00Z", "coverage": "verified_archive_only",
+                "imported_anchor_feedback": {anchor[13]: replacement[9]}}
+        with patch.object(archive, "work_index_rows", return_value=data):
+            result = self.refresh()
+        self.assertEqual(result["status"], "held")
+        self.assertIn("rebind", result["problem"])
+        self.assertEqual(self.writes, 0)
+        self.assertEqual(self.rows, before)
+
+    def test_matching_overlap_anchor_preserves_note_and_manual_metadata_on_replay(self):
+        anchor = generated("ExistingImportedAnchor", **{"9": '=HYPERLINK("https://example.org/established","Open feedback")'})
+        existing = cells(anchor); existing["values"][12] = archive._index_cell("Original anchored teacher note")
+        existing["values"][9] = archive._index_cell(anchor[9], link=True)
+        self.rows += [manual(), existing]
+        original_manual = deepcopy(self.rows[1])
+        extra = generated("LaterIndependentReport", **{"9": '=HYPERLINK("https://example.org/later","Open feedback")'})
+        data = {"rows": [extra, anchor], "summary": {}, "holds": [],
+                "checked_at": "2032-01-19T12:00:00Z", "coverage": "verified_archive_only",
+                "imported_anchor_feedback": {anchor[13]: anchor[9]}}
+        with patch.object(archive, "work_index_rows", return_value=data):
+            self.assertEqual(self.refresh()["status"], "verified")
+            self.assertFalse(self.refresh()["changed"])
+        preserved = next(r for r in self.rows if archive._index_entered(r)[13] == {"stringValue": anchor[13]})
+        self.assertEqual(archive._index_entered(preserved)[12], {"stringValue": "Original anchored teacher note"})
+        self.assertEqual(archive._index_entered(preserved)[9], {"formulaValue": anchor[9]})
+        self.assertEqual(self.rows[1], original_manual)
+        self.assertEqual(self.writes, 1)
+        self.assert_never_wrote(1)
+
 
 if __name__ == "__main__":
     unittest.main()

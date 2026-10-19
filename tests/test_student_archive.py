@@ -1,5 +1,6 @@
 """Private archival acceptance using fictional Drive and disposable CAS state."""
 from copy import deepcopy
+from itertools import permutations
 from collections import Counter
 from datetime import datetime, timezone
 import hashlib
@@ -1932,6 +1933,97 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(len(self.drive.created), count)
         meta["version"] = "1"; meta["properties"]["hubCopiedSource"] = EARLIER
         self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "held")
+
+
+class OverlappingWritingIndexTests(unittest.TestCase):
+    """Verified archive inputs; only the derived index projection is exercised."""
+
+    def setUp(self):
+        self.student = {"student_key": "FictionalStudentKey", "name": "Example, Learner",
+                        "section": "Fictional section", "drive_file_id": "FictionalStudentFolder001"}
+        self.works, self.prior = [], []
+        for number in range(3):
+            ident = "FictionalImportedOriginal%02d" % number
+            original = {"kind": "work", "record_key": archive.key("archiveimportedwork", [ident]),
+                "source_kind": archive.IMPORTED_ORIGINAL, "drive_file_id": ident, "mime": archive.PDF,
+                "imported_file_revision": {"version": "2"}, "copied_content_proof": {"sha256": "a" * 64},
+                "date": "2032-01-02", "import_provenance": {"fictional_receipt": ident},
+                "assignment": "Fictional worksheet %d" % number, "url": archive._url(ident)}
+            source = {"source_kind": archive.IMPORTED_ORIGINAL, "source_record_key": original["record_key"],
+                "source_file_id": ident, "source_version": "2", "source_sha256": "a" * 64,
+                "date": original["date"], "import_provenance": deepcopy(original["import_provenance"])}
+            report = {"kind": "feedback", "report_type": "science_writing", "record_key": "FictionalPriorReport%d" % number,
+                "created_at": "2032-01-10T12:00:00Z", "date": "2032-01-10", "source_records": [source],
+                "url": archive._url("FictionalPriorFeedback%02d" % number)}
+            self.works.append(original); self.prior.append(report)
+        self.later = {"kind": "feedback", "report_type": "science_writing", "record_key": "FictionalCombinedReport",
+            "created_at": "2032-01-19T12:00:00Z", "date": "2032-01-19",
+            "source_records": [deepcopy(r["source_records"][0]) for r in self.prior],
+            "url": archive._url("FictionalCombinedFeedback001")}
+
+    def project(self, reports, works=None):
+        artifacts = (self.works if works is None else works) + reports
+        with patch.object(archive, "_indexed", side_effect=lambda token, config, cls, **kwargs:
+                ({}, [(self.student, artifacts)] if cls == "biology" else [])), \
+                patch.object(archive, "_filing", return_value={"scans": []}):
+            result = archive.work_index_rows("read", {})
+            result.pop("checked_at")
+            return result
+
+    def test_three_overlapping_originals_keep_old_anchor_report_and_new_independent_rows(self):
+        prior = self.project(self.prior)
+        current = self.project(self.prior + [self.later])
+        old_by_key = {r[13]: r for r in prior["rows"]}
+        new_by_key = {r[13]: r for r in current["rows"]}
+        self.assertEqual(len(new_by_key), 6)
+        self.assertEqual(len(current["rows"]), 6)
+        self.assertEqual(current["summary"]["biology"]["feedback_files"], 4)
+        for original, report in zip(self.works, self.prior):
+            anchor = archive.key("workindexrow", [self.student["student_key"], original["record_key"]])
+            self.assertEqual(old_by_key[anchor], new_by_key[anchor])
+            self.assertEqual(current["imported_anchor_feedback"][anchor], archive._link(report["url"], "Open feedback"))
+            extra = archive.key("workindexrow", [self.student["student_key"], self.later["record_key"], original["drive_file_id"]])
+            self.assertEqual(new_by_key[extra][9], archive._link(self.later["url"], "Open feedback"))
+            self.assertEqual(new_by_key[extra][11], "Science writing feedback covers this submission")
+        cells = [{"values": [archive._index_cell(v) for v in archive.INDEX_HEADERS]}]
+        for row in prior["rows"]:
+            cells.append({"values": [archive._index_cell(v, link=c in {7, 8, 9, 10} and bool(v))
+                                      for c, v in enumerate(row)]})
+            cells[-1]["values"][12] = archive._index_cell("Existing teacher note for " + row[13])
+        prepared, _ = archive._index_layout(cells, current["rows"], imported_anchor_feedback=current["imported_anchor_feedback"])
+        for row in prepared[1:]:
+            key = archive._index_entered(row)[13]["stringValue"]
+            if key in old_by_key:
+                self.assertEqual(archive._index_entered(row)[12], {"stringValue": "Existing teacher note for " + key})
+                self.assertEqual(archive._index_entered(row)[9], archive._index_cell(old_by_key[key][9], link=True)["userEnteredValue"])
+
+    def test_overlap_keys_and_report_pairing_are_stable_across_order_and_replay(self):
+        expected = self.project(self.prior + [self.later])
+        for reports in permutations(self.prior + [self.later]):
+            self.assertEqual(self.project(list(reports), list(reversed(self.works))), expected)
+        # Even equal timestamps have a stable immutable-record tie breaker.
+        for report in self.prior:
+            report["created_at"] = self.later["created_at"]
+        self.assertEqual(self.project(self.prior + [self.later]), self.project([self.later] + list(reversed(self.prior))))
+
+    def test_superseded_report_remains_history_and_does_not_compete_for_anchor(self):
+        earlier = deepcopy(self.prior[0]); earlier["supersession_verified"] = True
+        current = self.project([earlier, self.later])
+        anchor = archive.key("workindexrow", [self.student["student_key"], self.works[0]["record_key"]])
+        self.assertEqual(next(r for r in current["rows"] if r[13] == anchor)[9], archive._link(self.later["url"], "Open feedback"))
+        historical = next(r for r in current["rows"] if r[9] == archive._link(earlier["url"], "Open feedback"))
+        self.assertIn("Superseded feedback; previous version retained", historical[11])
+        self.assertNotIn(anchor, current["imported_anchor_feedback"])
+        self.assertEqual(current["summary"]["biology"]["historical_feedback_files"], 1)
+
+    def test_foreign_imported_source_proof_never_borrows_the_old_work_anchor(self):
+        foreign = deepcopy(self.later)
+        foreign["source_records"][0]["source_version"] = "9"
+        current = self.project(self.prior + [foreign])
+        row = next(r for r in current["rows"] if r[13] == archive.key("workindexrow", [
+            self.student["student_key"], foreign["record_key"], self.works[0]["drive_file_id"]]))
+        self.assertEqual(row[11], "Science writing feedback; work not located")
+        self.assertEqual(row[7:9], ["", ""])
 
 
 if __name__ == "__main__":
