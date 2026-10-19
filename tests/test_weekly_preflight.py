@@ -7,6 +7,8 @@ import io
 import json
 import re
 import unittest
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import Counter
 from copy import deepcopy
 from unittest.mock import patch
@@ -494,6 +496,194 @@ class DeckTextTests(unittest.TestCase):
             {'slide': 3, 'count': 1, 'note': '[verify verbatim against the text]'},
             {'slide': 6, 'count': 2, 'note': '[TODO: add the graph]'}])
         self.assertEqual(summary['teacher_only_slides'], [4])
+
+
+class DeckLinkTargetTests(Base):
+    shown_url = 'https://docs.google.com/document/d/FICTIONALDISPLAYEDFILE0001/edit'
+    actual_url = 'https://drive.google.com/file/d/FICTIONALOTHERFILE00000001/view'
+
+    def linked_runs(self, shown=None, target=None):
+        shown, target = shown or self.shown_url, target or self.actual_url
+        split = len(shown) // 2
+        return [{'textRun': {'content': 'Open this resource: '}}] + [
+            {'textRun': {'content': part, 'style': {'link': {'url': target}}}}
+            for part in (shown[:split], shown[split:])]
+
+    def presentation_with_link(self, token, ident):
+        pres = self.src.native_presentation(token, ident)
+        if ident == FOR_DECK:
+            pres['slides'][0]['pageElements'].append({'shape': {'text': {'textElements': self.linked_runs()}}})
+        return pres
+
+    def test_native_split_runs_groups_and_tables_keep_exact_hyperlinks(self):
+        shape = {'shape': {'text': {'textElements': self.linked_runs()}}}
+        table = {'table': {'tableRows': [{'tableCells': [{'text': {'textElements': self.linked_runs()}}]}]}}
+        outline = wp.outline_native({'slides': [{'objectId': 'actual-slide', 'pageElements': [
+            {'elementGroup': {'children': [shape, table]}}]}]})
+        self.assertEqual(wp.deck_summary(outline)['link_mismatches'], [
+            {'slide': 1, 'displayed_url': self.shown_url, 'target_url': self.actual_url}])
+        self.assertEqual(outline[0]['links'][0]['at'], len('Open this resource: '))
+
+    def test_equivalent_addresses_labels_unsupported_hosts_and_partial_spans_do_not_guess(self):
+        variants = [
+            (self.shown_url, self.shown_url.replace('/edit', '/copy#slide=id.abc')),
+            (self.shown_url, 'https://drive.google.com/open?id=FICTIONALDISPLAYEDFILE0001'),
+            ('Worksheet', self.actual_url),
+            (self.shown_url, 'https://elsewhere.example/file/d/FICTIONALOTHERFILE00000001/view'),
+            (self.shown_url.replace('docs.google.com', 'docs.google.com.evil.example'), self.actual_url),
+            ('https://docs.google.com/forms/d/e/FICTIONALPUBLISHEDFORM0001/viewform', self.actual_url)]
+        for shown, target in variants:
+            with self.subTest(shown=shown, target=target):
+                outline = wp.outline_native({'slides': [{'pageElements': [
+                    {'shape': {'text': {'textElements': self.linked_runs(shown, target)}}}]}]})
+                self.assertEqual(wp.deck_link_mismatches(outline), [])
+        runs = self.linked_runs()
+        runs[-1]['textRun'].pop('style')
+        outline = wp.outline_native({'slides': [{'pageElements': [{'shape': {'text': {'textElements': runs}}}]}]})
+        self.assertEqual(wp.deck_link_mismatches(outline), [], 'a partial URL link is not a whole-address target')
+
+    def test_adjacent_links_never_borrow_the_other_targets(self):
+        runs = self.linked_runs(self.shown_url, self.shown_url)
+        runs += [{'textRun': {'content': ' then '}}] + self.linked_runs(self.actual_url, self.actual_url)
+        outline = wp.outline_native({'slides': [{'pageElements': [{'shape': {'text': {'textElements': runs}}}]}]})
+        self.assertEqual(wp.deck_link_mismatches(outline), [])
+        runs[-1]['textRun']['style']['link']['url'] = self.shown_url
+        self.assertEqual(wp.deck_link_mismatches(wp.outline_native({'slides': [{'pageElements': [
+            {'shape': {'text': {'textElements': runs}}}]}]})), [], 'different targets across one URL are ambiguous')
+
+    def linked_pptx(self):
+        raw = pptx([[('first', self.shown_url, (0, 0, 900, 50))], [('second', 'Other slide', (0, 0, 900, 50))]])
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            parts = {name: archive.read(name) for name in archive.namelist()}
+        root = ET.fromstring(parts['ppt/slides/slide1.xml'])
+        tree = root.find(completion.P + 'cSld/' + completion.P + 'spTree')
+        shape = tree.find(completion.P + 'sp')
+        body = shape.find(completion.P + 'txBody')
+        body.clear()
+        paragraph = ET.SubElement(body, completion.A + 'p')
+        for text in (self.shown_url[:30], self.shown_url[30:]):
+            run = ET.SubElement(paragraph, completion.A + 'r')
+            props = ET.SubElement(run, completion.A + 'rPr')
+            ET.SubElement(props, completion.A + 'hlinkClick', {completion.R + 'id': 'link1'})
+            ET.SubElement(run, completion.A + 't').text = text
+        tree.remove(shape)
+        group = ET.SubElement(tree, completion.P + 'grpSp')
+        group.append(shape)
+        # A table text body has the DrawingML namespace, unlike a shape body.
+        frame = ET.SubElement(tree, completion.P + 'graphicFrame')
+        graphic = ET.SubElement(frame, completion.A + 'graphic')
+        data = ET.SubElement(graphic, completion.A + 'graphicData')
+        table = ET.SubElement(data, completion.A + 'tbl')
+        row = ET.SubElement(table, completion.A + 'tr', {'h': '50'})
+        cell_node = ET.SubElement(row, completion.A + 'tc')
+        table_body = deepcopy(body)
+        table_body.tag = completion.A + 'txBody'
+        cell_node.append(table_body)
+        parts['ppt/slides/slide1.xml'] = ET.tostring(root)
+        rels = ET.Element('Relationships', {'xmlns': 'http://schemas.openxmlformats.org/package/2006/relationships'})
+        ET.SubElement(rels, 'Relationship', {'Id': 'link1', 'Type':
+            'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink',
+            'TargetMode': 'External', 'Target': self.actual_url})
+        parts['ppt/slides/_rels/slide1.xml.rels'] = ET.tostring(rels)
+        # Presentation order differs from slide filenames; the diagnostic must follow it.
+        pres = ET.fromstring(parts['ppt/presentation.xml'])
+        order = pres.find(completion.P + 'sldIdLst')
+        order[:] = list(reversed(list(order)))
+        parts['ppt/presentation.xml'] = ET.tostring(pres)
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, 'w') as archive:
+            for name, data in parts.items():
+                archive.writestr(name, data)
+        return out.getvalue()
+
+    def test_pptx_groups_tables_and_presentation_order_retain_link_pairs(self):
+        raw = self.linked_pptx()
+        deck = completion.read_deck(raw)
+        outline = wp.outline_deck(deck, raw)
+        self.assertEqual([s['texts'] for s in outline], [[u['text'] for u in s['units']] for s in deck['slides']])
+        self.assertEqual(wp.deck_summary(outline)['link_mismatches'], [
+            {'slide': 2, 'displayed_url': self.shown_url, 'target_url': self.actual_url}])
+        node = self.src.files[FOR_DECK]
+        node['mimeType'] = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+        with patch.object(google, 'deck_bytes', return_value=raw):
+            summary = wp._outline('read-token', wp._node(wp._Run('read-token', self.port, 10**20, lambda *a: None),
+                                                        'teacher_deck', FOR_DECK, deck_url(FOR_DECK)))
+        self.assertTrue(summary['ok'])
+        self.assertEqual(summary['link_mismatches'][0]['slide'], 2)
+
+    def test_live_path_preserves_lesson_scope_revision_cache_and_native_slide_link(self):
+        with patch.object(google, 'native_presentation', side_effect=self.presentation_with_link):
+            result = self.run_check()
+            found = [e for e in self.exceptions(result, 'forensics') if e['kind'] == 'deck_link_target_mismatch']
+            self.assertEqual(len(found), 1)
+            self.assertEqual((found[0]['row'], found[0]['slides']), (5, [1]))
+            self.assertEqual(found[0]['evidence']['target_url'], self.actual_url)
+            self.assertEqual(found[0]['source_url'], deck_url(FOR_DECK) + '#slide=id.' + FOR_DECK[-4:] + '_p1')
+            self.assertNotIn(found[0]['fingerprint'], self.lesson(result, 'forensics', 6)['exceptions'])
+            count = self.src.calls['native:' + FOR_DECK]
+            self.assertEqual([e['fingerprint'] for e in self.run_check()['exceptions']
+                              if e['kind'] == 'deck_link_target_mismatch'], [found[0]['fingerprint']])
+            self.assertEqual(self.src.calls['native:' + FOR_DECK], count)
+            self.src.bump(FOR_DECK)
+            updated = [e for e in self.run_check()['exceptions'] if e['kind'] == 'deck_link_target_mismatch']
+            self.assertNotEqual(updated[0]['fingerprint'], found[0]['fingerprint'])
+            self.assertEqual(self.src.calls['native:' + FOR_DECK], count + 1)
+        self.assertEqual((result['external_writes'], result['model_calls'], len(self.writes)), (0, 0, 0))
+
+    def test_same_source_in_two_lesson_rows_keeps_two_scoped_findings(self):
+        cells = self.grids['🔬 Forensics']
+        cells[6, 17] = cell(deck_url(FOR_DECK))
+        cells[6, 13] = shown('Q', 6, LABELS['teacher'], deck_url(FOR_DECK))
+        cells[6, 16] = cell(deck_url(FOR_DECK).replace('/edit', '/copy'))
+        cells[6, 12] = shown('P', 6, LABELS['student'], deck_url(FOR_DECK).replace('/edit', '/copy'))
+        with patch.object(google, 'native_presentation', side_effect=self.presentation_with_link):
+            found = [e for e in self.run_check()['exceptions'] if e['kind'] == 'deck_link_target_mismatch']
+        self.assertEqual([e['row'] for e in found], [5, 6])
+        self.assertEqual(len({e['fingerprint'] for e in found}), 2)
+
+    def test_wrong_native_identity_and_source_change_during_outline_are_not_cached(self):
+        for failure in ('wrong_identity', 'changed_source'):
+            with self.subTest(failure=failure):
+                ctx = wp._Run('read-token', self.port, 10**20, lambda *a: None)
+                node = wp._node(ctx, 'teacher_deck', FOR_DECK, deck_url(FOR_DECK))
+                def read(token, ident):
+                    pres = self.presentation_with_link(token, ident)
+                    if failure == 'wrong_identity':
+                        pres['presentationId'] = FOR_DECK2
+                    else:
+                        self.src.bump(ident)
+                    return pres
+                with patch.object(google, 'native_presentation', side_effect=read):
+                    result = ctx.check('outline', node, wp._outline)
+                self.assertFalse(result['ok'])
+                self.assertNotIn('link_mismatches', result)
+                cache = wp.check_id('outline', node['id'], node['revision'])
+                self.assertIsNone(self.port.read([cache]).documents[cache])
+
+    def test_malformed_pptx_relationships_are_unreadable_not_a_clean_link_check(self):
+        raw = self.linked_pptx()
+        out = io.BytesIO()
+        with zipfile.ZipFile(io.BytesIO(raw)) as source, zipfile.ZipFile(out, 'w') as target:
+            for name in source.namelist():
+                target.writestr(name, b'<broken' if name.endswith('slide1.xml.rels') else source.read(name))
+        malformed = out.getvalue()
+        with self.assertRaises(completion.Unreadable):
+            wp.outline_deck(completion.read_deck(malformed), malformed)
+
+
+    def test_old_rules_and_changed_outline_source_do_not_reuse_a_clean_cached_check(self):
+        with patch.object(wp, 'RULES', 'weekly-preflight-rules/4'):
+            self.run_check()
+        with patch.object(google, 'native_presentation', side_effect=self.presentation_with_link):
+            found = [e for e in self.run_check()['exceptions'] if e['kind'] == 'deck_link_target_mismatch']
+        self.assertEqual(len(found), 1)
+        node = wp._node(wp._Run('read-token', self.port, 10**20, lambda *a: None),
+                        'teacher_deck', FOR_DECK, deck_url(FOR_DECK))
+        self.src.bump(FOR_DECK)
+        ctx = wp._Run('read-token', self.port, 10**20, lambda *a: None)
+        result = ctx.check('outline', node, wp._outline)
+        self.assertFalse(result['ok'])
+        self.assertIn('changed', result['problem'])
 
 
 class NativeReadinessTests(Base):

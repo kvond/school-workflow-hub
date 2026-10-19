@@ -93,6 +93,18 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   sentence-case prompts (“[Note: use mL]”), `[[codes]]` and boxes holding a
   code are never read for notes. An unreadable deck names the stage that
   failed.
+- **Explicit deck addresses (bounded G2).** Native Slides and PPTX text runs
+  retain their actual hyperlinks separately from displayed text. A whole
+  displayed Google file URL whose link opens a different exact Google file ID
+  produces `deck_link_target_mismatch`, with both addresses, source revision,
+  lesson, slide number and native slide link where available. PPTX findings use
+  the verified presentation order and existing file link; no viewer fragment is
+  invented. Split style runs with one target join; adjacent different links or
+  partly linked addresses are never combined. Same-ID edit/copy/fragment
+  variants, ordinary labels and unsupported addresses do not imply a mismatch.
+  Findings stay in repair-worker diagnostics, outside Next from Agenda's teaching
+  choices. Neither target is automatically selected or rewritten. This does not
+  establish full G2 coverage, G1/G3/G4/G5 parity or retirement acceptance.
 - **Print list.** Quantities from current roster counts per section ("1 per
   student", "1 per group" = ceil(n/4), optional "if needed" / support copies),
   matched to folder PDFs and Google Docs by name, with page counts and sides.
@@ -140,10 +152,10 @@ rules version, and saved as each finishes; a run that runs out of time is
 reviews, repair receipts and packet manifests use content-derived keys, so
 reruns write no duplicates.
 
-Readiness rules v4 discard earlier cached checks. Teacher readiness has a
+Rules v5 discard earlier cached checks, including outlines without hyperlink spans. Teacher readiness has a
 separate cache identity from ordinary/student-only readiness, even for the same
 file and revision. Before and after a new check, and before reusing cached
-readiness, fresh Drive metadata must match the complete source snapshot from
+readiness or outlines, fresh Drive metadata must match the complete source snapshot from
 the current run. A teacher read must also prove that its consumed source
 metadata matches that snapshot. Incomplete metadata or changed identity, name,
 parents, revision or modification time produces an unavailable check, never a

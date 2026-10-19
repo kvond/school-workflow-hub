@@ -45,10 +45,13 @@ Ready, and a lesson is Ready only when every required check is verified.
 import math
 import re
 import time
+import zipfile
+import xml.etree.ElementTree as ET
 from collections import Counter
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
+from urllib.parse import parse_qs, urlsplit
 
 from . import agenda as agenda_module, audit, completion, google, roster, work
 from .agenda import first_link, lesson_kind, links, norm, plain, text
@@ -58,7 +61,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/4"
+RULES = "weekly-preflight-rules/5"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -662,7 +665,7 @@ def _container_text(runs, links, index):
         piece = (run or {}).get("textRun") or {}
         url = (((piece.get("style") or {}).get("link") or {}).get("url") or "")
         if url:
-            links.append({"text": index, "at": len(value), "url": url})
+            links.append({"text": index, "at": len(value), "end": len(value) + len(piece.get("content", "")), "url": url})
         value += piece.get("content", "")
     # A soft line break (Shift+Enter) is \v in Slides; read it as a line break.
     # Same length, so the link offsets above still hold.
@@ -687,7 +690,7 @@ def _native_texts(elements, out, links, depth=0):
 
 def outline_native(presentation):
     """[{"number", "object_id", "texts", "links"}] from a presentations.get
-    response; links are the linked runs as {"text": index, "at": offset, "url"}."""
+    response; links retain their exact text index, start/end offsets and URL."""
     slides = presentation.get("slides") if isinstance(presentation, dict) else None
     if not isinstance(slides, list):
         raise completion.Unreadable("The native deck has no readable slide list.")
@@ -699,10 +702,102 @@ def outline_native(presentation):
     return out
 
 
-def outline_deck(deck):
-    """The same outline from completion.read_deck's parsed .pptx (typed URLs only)."""
-    return [{"number": slide["number"], "object_id": "", "texts": [unit["text"] for unit in slide["units"]],
-             "links": []} for slide in deck["slides"]]
+def outline_deck(deck, raw=None):
+    """Keep completion text unchanged; retain PPTX hyperlink spans separately."""
+    outline = [{"number": slide["number"], "object_id": "", "texts": [unit["text"] for unit in slide["units"]],
+                "links": []} for slide in deck["slides"]]
+    if raw is None:
+        return outline
+    try:
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            for slide, name in zip(outline, completion._slide_names(archive)):
+                relname = name.rsplit("/", 1)[0] + "/_rels/" + name.rsplit("/", 1)[1] + ".rels"
+                targets = {}
+                if relname in archive.namelist():
+                    if archive.getinfo(relname).file_size > completion.MAX_SLIDE_BYTES:
+                        raise completion.Unreadable("This deck's hyperlink relationships are too large to read.")
+                    targets = {r.get("Id"): r.get("Target", "") for r in ET.fromstring(archive.read(relname))
+                               if r.get("Type", "").endswith("/hyperlink") and r.get("TargetMode") == "External"}
+                root = ET.fromstring(archive.read(name))
+                slide["linked_texts"] = []
+                for body in root.iter():
+                    if body.tag not in (completion.P + "txBody", completion.A + "txBody"):
+                        continue
+                    value, spans = "", []
+                    for paragraph in body.findall(completion.A + "p"):
+                        if value:
+                            value += "\n"
+                        for run in paragraph:
+                            if run.tag == completion.A + "br":
+                                value += "\n"
+                                continue
+                            content = "".join(t.text or "" for t in run.iter(completion.A + "t"))
+                            link = run.find(completion.A + "rPr/" + completion.A + "hlinkClick")
+                            target = targets.get(link.get(completion.R + "id")) if link is not None else None
+                            if target:
+                                spans.append({"at": len(value), "end": len(value) + len(content), "url": target})
+                            value += content
+                    if spans:
+                        slide["linked_texts"].append({"value": value, "links": spans})
+    except (zipfile.BadZipFile, KeyError, ET.ParseError) as error:
+        raise completion.Unreadable("This deck's hyperlink relationships could not be read.") from error
+    return outline
+
+
+def _google_file_id(url):
+    """Exact supported Google file address; never extract an ID from another host."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https") or parsed.netloc.lower() not in ("docs.google.com", "drive.google.com"):
+        return ""
+    match = re.fullmatch(r"/(?:presentation|document|spreadsheets|forms|file)/d/([A-Za-z0-9_-]{20,})(?:/[^/]*)?/?",
+                         parsed.path)
+    if match:
+        return match.group(1)
+    if parsed.netloc.lower() == "drive.google.com" and parsed.path in ("/open", "/uc"):
+        ids = parse_qs(parsed.query).get("id", [])
+        if len(ids) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{20,}", ids[0]):
+            return ids[0]
+    return ""
+
+
+def deck_link_mismatches(outline):
+    """Only a whole displayed Google file URL covered by one actual link can disagree.
+
+    Adjacent style runs with the same target join; distinct links or an unlinked
+    part of an address never get borrowed to manufacture a target.
+    """
+    found = {}
+    for slide in outline:
+        containers = slide.get("linked_texts", []) + [
+            {"value": value, "links": [link for link in slide.get("links", []) if link["text"] == i]}
+            for i, value in enumerate(slide["texts"])]
+        for container in containers:
+            spans = []
+            for link in sorted(container["links"], key=lambda item: item["at"]):
+                if "end" not in link or link["end"] <= link["at"]:
+                    continue
+                if spans and spans[-1]["end"] == link["at"] and spans[-1]["url"] == link["url"]:
+                    spans[-1]["end"] = link["end"]
+                else:
+                    spans.append(dict(link))
+            for match in WEB.finditer(container["value"]):
+                shown = match.group(0).rstrip(".,;)")
+                shown_id = _google_file_id(shown)
+                if not shown_id:
+                    continue
+                covering = [link for link in spans if link["at"] <= match.start()
+                            and link["end"] >= match.start() + len(shown)]
+                if len(covering) != 1:
+                    continue
+                target = covering[0]["url"]
+                target_id = _google_file_id(target)
+                if target_id and target_id != shown_id:
+                    found[(slide["number"], shown, target)] = {
+                        "slide": slide["number"], "displayed_url": shown, "target_url": target}
+    return list(found.values())
 
 
 def web_links(slide):
@@ -793,7 +888,8 @@ def deck_summary(outline):
     return {"slide_count": len(outline), "teacher_only_slides": teacher, "blocks": blocks,
             "code_slides": {k: sorted(set(v)) for k, v in codes.items()},
             "page_ids": {str(s["number"]): s["object_id"] for s in outline if s["object_id"]},
-            "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes}
+            "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes,
+            "link_mismatches": deck_link_mismatches(outline)}
 
 
 def _native_teacher(node):
@@ -847,15 +943,19 @@ def _check_identity(kind, node):
 def _outline(token, node):
     stage = "native_read" if node["mimeType"] == completion.SLIDES else "download"
     try:
+        _readiness_source(token, node)
         if node["mimeType"] == completion.SLIDES:
             presentation = google.native_presentation(token, node["id"])
             stage = "parse"
+            if presentation.get("presentationId") != node["id"]:
+                raise completion.Unreadable("The native deck identity does not match the current Agenda source.")
             outline = outline_native(presentation)
             revision_id = str(presentation.get("revisionId") or "")
         else:
             raw = google.deck_bytes(token, node["id"], node["mimeType"])
             stage = "parse"
-            outline, revision_id = outline_deck(completion.read_deck(raw)), ""
+            outline, revision_id = outline_deck(completion.read_deck(raw), raw), ""
+        _readiness_source(token, node)
         return {"ok": True, **deck_summary(outline), "revision_id": revision_id}
     except (google.GoogleError, completion.Unreadable) as error:
         return {"ok": False, "stage": stage, "http_status": getattr(error, "status", None), "problem": str(error)}
@@ -1197,10 +1297,13 @@ class _Run:
         if ident not in self.looked:
             self._remember(ident, self.port.read([check_id(*ident)]).documents[check_id(*ident)])
         if ident in self.checks:
-            if kind == "readiness":
+            if kind in ("readiness", "outline"):
                 try:
                     _readiness_source(self.token, node)
                 except (google.GoogleError, completion.Unreadable) as error:
+                    if kind == "outline":
+                        return {"ok": False, "stage": "metadata", "problem": str(error),
+                                "http_status": getattr(error, "status", None)}
                     return _readiness_failure(error)
             return self.checks[ident]
         if time.monotonic() > self.deadline:
@@ -1813,6 +1916,17 @@ def _content(ctx, lesson, counts):
                                           "slide": line["slide"], "deck_id": node["id"], "url": line.get("url")})
         lesson.setdefault("deck_links", {})[node["id"]] = outline.get("web_links") or []
         pages = outline.get("page_ids") or {}
+        for mismatch in outline.get("link_mismatches") or []:
+            page = pages.get(str(mismatch["slide"]))
+            lesson["exceptions"].append(_exception(
+                "deck_link_target_mismatch", "needs_decision", lesson,
+                "Slide %d displays %s, but that hyperlink opens %s." % (
+                    mismatch["slide"], mismatch["displayed_url"], mismatch["target_url"]),
+                "Repair worker: verify the intended existing resource before correcting this slide's link; "
+                "neither address is assumed correct.",
+                url=node["url"] + ("#slide=id." + page if page and node["url"].endswith("/edit") else ""),
+                sources=[node["id"]], revision_key=node["revision"],
+                detail=content_hash(mismatch), slides=[mismatch["slide"]], evidence=mismatch))
         for note in outline.get("authoring_notes") or []:
             page = pages.get(str(note["slide"]))
             lesson["exceptions"].append(_exception(
