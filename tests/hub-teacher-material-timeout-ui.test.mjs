@@ -1,4 +1,4 @@
-// Teacher-account uploads and timed-out source reads on Today, on fictional
+// Verified teacher examples and timed-out source reads on Today, on fictional
 // data. The production rendering functions run in a VM with a fake DOM; no
 // browser, network, Drive, IC or model call is made.
 import assert from 'node:assert/strict';
@@ -47,7 +47,7 @@ const studentNotice = {affected_scope: 'student', student: {first: 'Ann', last: 
   slides: [], next_action: 'Open this exact original and check its availability; preserve existing grades.'};
 const teacherEntry = {kind: 'teacher_material', issue_kind: 'teacher_material', affected_scope: 'lesson',
   student: {first: '', last: '', section: '', verified: false},
-  reason: 'Uploaded through this Form from the teacher’s own school account. It is teacher material, not a student submission.',
+  reason: 'The exact original file and Form event were verified as a teacher example, not student work.',
   sources: [{file_id: 'FICTIONALTEACHER1', label: 'Fictional example deck', url: 'https://drive.google.com/open?id=FICTIONALTEACHER1'}],
   slides: [{file_id: 'FICTIONALTEACHER1', numbers: [], verified: false}], source_basis: {kind: 'current_selection'}};
 const timeout = {reason: 'read_timeout', reads: ['turn_in_folders'], attempts: 2, retry: true};
@@ -59,7 +59,7 @@ test('teacher material is listed as not student work, with no identity question 
   const {ui} = boot();
   const data = context(scope, [], {status: 'waiting', intake_status: 'waiting', teacher_actionable: false, teacher_material: [teacherEntry]});
   const rendered = ui.renderSourceReviewContext(data, scope);
-  assert.match(rendered.textContent, /Teacher material · not student work.*Teacher’s own upload · not a student submission/);
+  assert.match(rendered.textContent, /Teacher material · not student work.*Verified original teacher example · not a student submission/);
   assert.match(rendered.textContent, /Fictional example deck/);
   assert.doesNotMatch(rendered.textContent, /Next action:|Student identity not verified|Confirm the student|Reason:|Waiting for original/);
   assert.equal(nodes(rendered).filter(node => node.className === 'attention-list').length, 0);
@@ -76,7 +76,7 @@ test('Today never turns teacher material into a teacher action; the full view st
   const today = ui.currentSourceReviewPanel(true, {teacherActionsOnly: true}); await tick();
   assert.match(today.children[0].textContent, /1 exact lesson scopes read · 0 teacher actions/);
   assert.match(today.textContent, /No current teacher action was returned/);
-  assert.doesNotMatch(today.textContent, /Teacher’s own upload|Student identity not verified|Fictional example deck/);
+  assert.doesNotMatch(today.textContent, /Verified original teacher example|Student identity not verified|Fictional example deck/);
   const full = ui.currentSourceReviewPanel(); await tick();
   assert.match(full.textContent, /A&P · Wk 07 · Fictional tissues.*Teacher material · not student work.*Fictional example deck/);
   assert.match(full.children[0].textContent, /1 exact lesson scopes read · 0 current source notices/);
@@ -203,16 +203,16 @@ test('a gateway timeout on the feedback read becomes a retry that rereads only t
   assert.doesNotMatch(card.textContent, /timed out/);
 });
 
-test('Student work lists teacher uploads as teacher material with their links', () => {
+test('Student work describes exact verified teacher examples without an email exemption or resubmission request', () => {
   const list = source.slice(source.indexOf('function fileList('), source.indexOf('// ---------- Completion scores'));
   const material = source.slice(source.indexOf('function teacherMaterialList('), source.indexOf('function renderForm('));
   const {context: vmContext} = boot(list + '\n' + material + '\nglobalThis.work = {teacherMaterialList};');
   const rendered = vmContext.work.teacherMaterialList([{submitted_at: '2026-10-13T15:38:00Z', to: '',
     files: [{id: 'FICTIONALTEACHER1', name: 'Fictional example deck', url: 'https://drive.google.com/open?id=FICTIONALTEACHER1'}]}]);
   assert.match(rendered.textContent, /Teacher material — not student work \(1\)/);
-  assert.match(rendered.textContent, /not counted as a student submission, a missing student or an unmatched student.*originals stay where they are/);
+  assert.match(rendered.textContent, /exact original files were verified as teacher examples, not student submissions.*originals stay where they are; no action is needed/);
   assert.ok(nodes(rendered).some(node => node.tagName === 'a' && node.href === 'https://drive.google.com/open?id=FICTIONALTEACHER1'));
-  assert.doesNotMatch(rendered.textContent, /Not on roster|not matched to the roster/);
+  assert.doesNotMatch(rendered.textContent, /Not on roster|not matched to the roster|school account|email|resubmit/);
 });
 
 for (const failure of [{checking: true}, {source_problem: 'Permission read unavailable'},
