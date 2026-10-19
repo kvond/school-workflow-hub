@@ -504,6 +504,68 @@ class NativeFeedbackEvidenceTests(unittest.TestCase):
                          {'file': {'modified_at': 'lesson-time'}, 'sha256': 'b',
                           'text': 'CRITICAL ASPECTS\n1. Carbon moves\n[[MARKER-INVENTORY:C04]]'}]
 
+    def combined_selection(self, *, selected_problem=False, duplicate_owner=False, global_problem=False):
+        form = self.found['lessons'][0]['forms'][0]
+        selected = deepcopy(self.row)
+        selected['combined_components'] = [{'file': deepcopy(selected['files'][0]),
+            'submitted_at': selected['submitted_at'], 'late': False}]
+        other = deepcopy(selected)
+        other.update(first='Bea', last='Liu', email='other@example.test')
+        other['files'][0]['id'] = 'other-file'
+        other['combined_components'][0]['file']['id'] = 'file' if duplicate_owner else 'other-file'
+        other['selection_problem'] = 'A different original upload could not be read.'
+        if duplicate_owner:
+            other.pop('selection_problem')
+        if selected_problem:
+            selected['selection_problem'] = 'This selected original needs review.'
+        form['students'] = [selected, other]
+        form['combined_assessment'] = {'on_time': [selected, other],
+            'problem': 'Assignment-wide source scope changed.' if global_problem else None}
+        return form
+
+    def test_other_combined_student_selection_hold_does_not_block_selected_evidence(self):
+        self.combined_selection()
+        evidence = self.read()
+        self.assertEqual(evidence['scope'], self.scope)
+        self.assertEqual(evidence['aspects'][0]['answer'], 'Carbon moves.')
+
+    def test_selected_combined_student_selection_hold_still_blocks_before_scoring(self):
+        self.combined_selection(selected_problem=True)
+        with patch.object(fb.completion, 'score_file') as score:
+            with self.assertRaisesRegex(fb.Held, 'original submission selection'):
+                fb.evidence('signed', 'token', {}, SimpleNamespace(), self.scope, self.found)
+        score.assert_not_called()
+
+    def test_combined_selection_still_requires_one_exact_file_owner(self):
+        self.combined_selection(duplicate_owner=True)
+        with self.assertRaisesRegex(fb.Held, 'exactly one student'):
+            fb._row(self.found, 'form', 'file')
+
+    def test_assignment_wide_combined_selection_hold_still_blocks_selected_row(self):
+        self.combined_selection(global_problem=True)
+        with self.assertRaisesRegex(fb.Held, 'original submission selection'):
+            fb._row(self.found, 'form', 'file')
+
+    def test_combined_listing_surfaces_only_the_selected_rows_selection_hold(self):
+        self.combined_selection()
+        with patch.object(fb, 'configured_store', return_value=MemoryCAS()):
+            listed = fb.listing({}, self.scope, self.found)
+        cards = {card['file_id']: card for card in listed['students']}
+        self.assertEqual(cards['file']['hold'], '')
+        self.assertIn('original submission selection', cards['other-file']['hold'])
+        self.assertIsNone(listed['problem'])
+
+    def test_combined_listing_preserves_distinct_component_source_cards(self):
+        form = self.combined_selection()
+        component = deepcopy(form['combined_assessment']['on_time'][0]['combined_components'][0])
+        component['file']['id'] = 'earlier-component'
+        form['combined_assessment']['on_time'][0]['combined_components'].append(component)
+        with patch.object(fb, 'configured_store', return_value=MemoryCAS()):
+            listed = fb.listing({}, self.scope, self.found)
+        selected = [card for card in listed['students'] if card['name'] == 'Ana R.']
+        self.assertEqual({card['file_id'] for card in selected}, {'file', 'earlier-component'})
+        self.assertTrue(all(card['hold'] == '' for card in selected))
+
     def read(self, decks=None):
         with patch.object(fb.completion, 'score_file', return_value=self.score), \
              patch.object(fb.grading_records, 'read_records', return_value={'assignments': [self.assignment]}), \

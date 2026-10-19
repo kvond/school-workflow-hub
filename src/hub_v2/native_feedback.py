@@ -168,12 +168,12 @@ def _row(found, form_id, file_id):
     if len(forms) != 1 or found.get('problems') or forms[0].get('problem'):
         raise Held('The current lesson sources need review before feedback can be generated.')
     students = _feedback_students(forms[0])
-    if any(row.get('selection_problem') for row in students):
-        raise Held('This combined assignment’s original submission selection needs review before feedback.')
     rows = [r for r in students if any(f['id'] == file_id for f in r['files'])]
     if len(rows) != 1:
         raise Held('This file is not the current submission for exactly one student. Reload student work.')
     row = rows[0]
+    if row.get('selection_problem'):
+        raise Held('This combined assignment’s original submission selection needs review before feedback.')
     if not row.get('matched') or row.get('matched_by') != 'email' or row.get('source') != 'form' or row.get('late'):
         raise Held('This submission needs its school-email identity and on-time Form record verified first.')
     files = [f for f in row['files'] if f.get('mime') in (completion.SLIDES, google.PPTX)
