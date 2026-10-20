@@ -9,6 +9,7 @@ agenda_edit.py.
 """
 import re
 from datetime import date, datetime, timedelta
+from urllib.parse import quote
 
 from . import google
 
@@ -17,6 +18,8 @@ DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri")
 LAST_ROW = 80
 # How many Agenda weeks back "Last week's lessons" may look past breaks.
 PREVIOUS_LOOK_BACK = 3
+WORKSHEET_HEADERS = ("course", "wk", "topic", "document", "type", "link", "fileid")
+WORKSHEET_MAX_ROWS, WORKSHEET_MAX_COLUMNS = 1000, 26
 URL = re.compile(r"https://[^\s\"'<>]+")
 FORM = re.compile(r"https://docs\.google\.com/forms/d/(e/)?([A-Za-z0-9_-]{20,})")
 
@@ -321,6 +324,7 @@ def lesson_forms(visible, hidden, second=None):
 
 class Agenda:
     def __init__(self, spreadsheet_id, title, tabs, grids):
+        self.tabs = dict(tabs)
         self.spreadsheet_id, self.title, self.problems = spreadsheet_id, title, []
         weeks_tab = find_tab(tabs, "Weeks")
         self.weeks = []
@@ -425,3 +429,87 @@ def load(token, spreadsheet_id):
     ranges = ["'%s'!A1:Z%d" % (t.replace("'", "''"), LAST_ROW) for t in wanted]
     grids = google.sheet_grid(token, spreadsheet_id, ranges) if ranges else {}
     return Agenda(spreadsheet_id, title, tabs, grids)
+
+
+def read_worksheets(token, agenda, *, can_read=lambda: True):
+    """Lazy, bounded index read for Week ahead only; never part of load/day.
+
+    Grid dimensions distinguish complete coverage from a capped read. The
+    historical Course/Wk columns locate index rows, not current assignments.
+    Nothing is cached on the possibly long-lived Agenda instance.
+    """
+    base_url = "https://docs.google.com/spreadsheets/d/%s/edit" % agenda.spreadsheet_id
+    result = {"status": "unavailable", "reason": "", "source_url": base_url, "rows": [],
+              "tab": None, "header_row": None, "columns": {}}
+    matches = [t for t in agenda.tabs if norm(t) == "worksheets"]
+    if len(matches) != 1:
+        result["reason"] = "Worksheets tab is missing or its name is ambiguous; index coverage is unverified."
+        return result
+    title = matches[0]
+    result.update(tab=title, source_url=base_url + "#gid=%s" % agenda.tabs[title])
+    try:
+        if not can_read():
+            return result | {"status": "pending", "reason": "The run budget ended before the Worksheets index read."}
+        data = google.get_json("https://sheets.googleapis.com/v4/spreadsheets/" + quote(agenda.spreadsheet_id), token,
+            {"fields": "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"})
+        found = [s.get("properties", {}) for s in data.get("sheets", [])
+                 if s.get("properties", {}).get("title") == title]
+        props = found[0] if len(found) == 1 else {}
+        grid = props.get("gridProperties") or {}
+        rows, cols = grid.get("rowCount"), grid.get("columnCount")
+        if (props.get("sheetId") != agenda.tabs[title] or type(rows) is not int or type(cols) is not int
+                or rows < 1 or cols < 1):
+            result["reason"] = "Worksheets tab identity or grid dimensions could not be verified."
+            return result
+        height, width = min(rows, WORKSHEET_MAX_ROWS), min(cols, WORKSHEET_MAX_COLUMNS)
+        result.update(grid_rows=rows, grid_columns=cols, rows_read=height, columns_read=width)
+        if not can_read():
+            return result | {"status": "pending", "reason": "The run budget ended before the Worksheets grid read."}
+        grids = google.sheet_grid(token, agenda.spreadsheet_id,
+            ["'%s'!A1:%s%d" % (title.replace("'", "''"), chr(64 + width), height)])
+        if title not in grids:
+            result["reason"] = "The Worksheets grid was not returned; index coverage is unverified."
+            return result
+    except google.GoogleError as error:
+        return result | {"reason": "The Worksheets index could not be read: " + str(error), "http_status": error.status}
+    return parse_worksheets(grids[title], result)
+
+
+def parse_worksheets(cells, result):
+    """Parse the seven named columns, keeping source cells and row addresses."""
+    width, height = result["columns_read"], result["rows_read"]
+    required = set(WORKSHEET_HEADERS)
+    candidates = []
+    for row in range(1, min(height, 7) + 1):
+        names = [norm(text(cells.get((row, c)))) for c in range(1, width + 1)]
+        if required <= set(names):
+            candidates.append((row, names))
+    if len(candidates) != 1 or any(candidates[0][1].count(h) != 1 for h in required):
+        return result | {"status": "malformed", "reason": "Worksheets needs one unambiguous header row with "
+                        "Course, Wk, Topic, Document, Type, Link and _fileID; index coverage is unverified."}
+    header, names = candidates[0]
+    columns = {h: names.index(h) + 1 for h in WORKSHEET_HEADERS}
+    rows = []
+    for row in range(header + 1, height + 1):
+        source = {h: cells.get((row, c), {}) for h, c in columns.items()}
+        if not any(text(c).strip() or links(c) for c in source.values()):
+            continue
+        values = {h: text(c).strip() for h, c in source.items()}
+        # Keep unsupported addresses as evidence too. They are never declared
+        # missing just because the Drive reader cannot understand their URL.
+        link_cell = source["link"]
+        urls = [u for u, _ in links(link_cell)]
+        urls += [link_cell.get("hyperlink", "")]
+        urls += [((r.get("format") or {}).get("link") or {}).get("uri", "")
+                 for r in link_cell.get("textFormatRuns", [])]
+        formula = (link_cell.get("userEnteredValue") or {}).get("formulaValue", "")
+        urls += re.findall(r'HYPERLINK\(\s*"([^"]+)"', formula, re.I)
+        urls += re.findall(r'https?://[^\s"<>]+', values["link"])
+        rows.append(values | {"row": row, "urls": list(dict.fromkeys(u for u in urls if u)),
+            "source_cells": source,
+            "source_url": result["source_url"] + "&range=A%d:%s%d" % (row, chr(64 + width), row),
+            "link_cell": "%s%d" % (chr(64 + columns["link"]), row),
+            "id_cell": "%s%d" % (chr(64 + columns["fileid"]), row)})
+    truncated = result["grid_rows"] > height or result["grid_columns"] > width
+    return result | {"status": "truncated" if truncated else "complete", "header_row": header, "columns": columns,
+        "rows": rows, "reason": "The bounded Worksheets read does not cover the whole grid." if truncated else ""}

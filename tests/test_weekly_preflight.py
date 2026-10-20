@@ -114,6 +114,15 @@ BIO_PREP = ('🧪 LAB (Mon/Wed) Yeast Fermentation Lab (CO₂) · BUY: Active dr
             'PULL: Plastic bottles, measuring spoons, warm-water bath · ✔ on order — yeast, balloons, water bath, straws; 🛒 sugar')
 AP_PREP = '⚠ PREP by Thu 10/22 → LAB (Tue/Thu/Fri) Bone Fractures with Carrots · BUY: Carrots · PULL: Trays'
 MWF, TTF = ('Mon', 'Wed', 'Fri'), ('Tue', 'Thu', 'Fri')
+WORKSHEET_TAB = '📝 Worksheets'
+WORKSHEET_HEADERS = ('Course', 'Wk', 'Topic', 'Document', 'Type', 'Link', '_fileID')
+
+
+def worksheet_grid(rows=(), headers=WORKSHEET_HEADERS, header_row=1):
+    grid = {(header_row, c): cell(h) for c, h in enumerate(headers, 1)}
+    for r, values in enumerate(rows, header_row + 1):
+        grid.update({(r, c): v if isinstance(v, dict) else cell(v) for c, v in enumerate(values, 1)})
+    return grid
 
 
 def grids():
@@ -154,10 +163,11 @@ def grids():
             ('Wk 10', '10/26/2026', 'Oct 26 – Oct 30, 2026\nFri 10/30 = B Friday → A&P'),
             ('Wk 11', '11/02/2026', 'Nov 2 – Nov 6, 2026')], 3):
         weeks.update({(row, 3): cell(label), (row, 4): cell(monday), (row, 5): cell(closures)})
-    return {'🗂 Weeks': weeks, '🌿 Biology': bio, '🔬 Forensics': forensics, '🫀 A&P': anatomy}
+    return {'🗂 Weeks': weeks, '🌿 Biology': bio, '🔬 Forensics': forensics, '🫀 A&P': anatomy,
+            WORKSHEET_TAB: worksheet_grid()}
 
 
-TABS = {'🗂 Weeks': 1, '🌿 Biology': 2, '🔬 Forensics': 3, '🫀 A&P': 4}
+TABS = {'🗂 Weeks': 1, '🌿 Biology': 2, '🔬 Forensics': 3, '🫀 A&P': 4, WORKSHEET_TAB: 5}
 
 
 def ready_deck(cycle):
@@ -273,6 +283,8 @@ class Base(unittest.TestCase):
         self.config = {'HUB_AGENDA_SPREADSHEET_ID': SHEET, 'HUB_STATE_PROBE_ORIGINS': ORIGIN,
                        'HUB_ALLOWED_EMAILS': 'teacher@school.example'}
         self.writes = []
+        self.index_reads = Counter()
+        self.index_dimensions = {'rowCount': 200, 'columnCount': 8}
         patches = [patch.dict(completion._templates, {}, clear=True),
                    patch.dict(completion._native_teacher_templates, {}, clear=True),
                    patch.object(google, 'drive_file', side_effect=self.src.drive_file),
@@ -286,6 +298,7 @@ class Base(unittest.TestCase):
                    patch.object(google, 'append_rows', side_effect=AssertionError('no grade or ledger write')),
                    patch.object(google, 'slides_batch_update', side_effect=AssertionError('no deck write')),
                    patch.object(google, 'sheet_grid', side_effect=self.sheet_grid),
+                   patch.object(google, 'get_json', side_effect=self.sheet_properties),
                    patch.object(google, 'batch_update', side_effect=self.batch_update),
                    patch.object(wp, 'configured_store', return_value=self.port),
                    patch.object(weekly_packet, 'configured_store', return_value=self.port)]
@@ -300,11 +313,22 @@ class Base(unittest.TestCase):
         return wp.run('read-token', self.config, self.agenda(), start, weeks, COUNTS, port=self.port, **kwargs)
 
     # A fictional Sheets API over self.grids for the guarded link repair.
+    def sheet_properties(self, url, token, params=None, **kwargs):
+        self.assertTrue(url.startswith('https://sheets.googleapis.com/v4/spreadsheets/'))
+        self.assertEqual(params, {'fields': 'sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))'})
+        self.index_reads['dimensions'] += 1
+        return {'sheets': [{'properties': {'sheetId': 5, 'title': WORKSHEET_TAB,
+                                          'gridProperties': self.index_dimensions}}]}
+
     def sheet_grid(self, token, spreadsheet_id, ranges):
         out = {}
         for value in ranges:
             match = re.fullmatch(r"'(.+)'!([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?", value)
             name, c1, r1 = match.group(1).replace("''", "'"), match.group(2), int(match.group(3))
+            if name == WORKSHEET_TAB:
+                self.index_reads['grid'] += 1
+            if name not in self.grids:
+                continue
             c2, r2 = match.group(4) or c1, int(match.group(5) or r1)
             first, last = wp._column_index(c1), wp._column_index(c2)
             target = out.setdefault(name, {})
@@ -338,6 +362,247 @@ class Base(unittest.TestCase):
     def exceptions(self, result, class_key=None, row=None):
         return [e for e in result['exceptions'] if (class_key is None or e['class_key'] == class_key)
                 and (row is None or e['row'] == row)]
+
+
+class WorksheetIndexTests(Base):
+    DOC1, DOC2 = 'FICTIONALWORKSHEET000001', 'FICTIONALWORKSHEET000002'
+
+    def setUp(self):
+        super().setUp()
+        for ident in (self.DOC1, self.DOC2):
+            self.src.add(ident, 'Worksheet ' + ident[-1], google.DOC)
+
+    def index_row(self, *, course='Biology', week='W09', document='Fermentation guide', ident=None, url=None):
+        ident = self.DOC1 if ident is None else ident
+        url = 'https://docs.google.com/document/d/%s/edit' % ident if url is None else url
+        return [course, week, 'Historical topic', document, 'Guide', url, ident]
+
+    def diagnostics(self, result, kind=None):
+        return [e for e in result['exceptions'] if e['kind'].startswith('worksheet_') and (not kind or e['kind'] == kind)]
+
+    def coverage(self, result, number=0):
+        return result['coverage']['worksheet_index'][number]
+
+    def test_real_shaped_index_and_reordered_named_columns_preserve_row_provenance(self):
+        row = self.index_row(url=cell('Open guide', hyperlink='https://docs.google.com/document/d/%s/edit' % self.DOC1))
+        order = (6, 3, 0, 4, 5, 1, 2)
+        self.grids[WORKSHEET_TAB] = worksheet_grid([[row[i] for i in order]],
+                                                  [WORKSHEET_HEADERS[i] for i in order], header_row=3)
+        table = agenda.read_worksheets('read-token', self.agenda())
+        self.assertEqual((table['status'], table['header_row']), ('complete', 3))
+        self.assertEqual((table['rows'][0]['row'], table['rows'][0]['link_cell'], table['rows'][0]['id_cell']), (4, 'E4', 'A4'))
+        self.assertIn('gid=5&range=A4:H4', table['rows'][0]['source_url'])
+        result = self.run_check()
+        self.assertEqual((self.coverage(result)['scoped_rows'], self.coverage(result)['status']), (1, 'complete'))
+        self.assertEqual(self.diagnostics(result), [])
+
+    def test_index_load_is_lazy_once_per_run_and_not_cached_on_agenda(self):
+        with patch.object(google, 'sheet_tabs', return_value=('Fictional Agenda', TABS)):
+            loaded = agenda.load('read', SHEET)
+        loaded.day(wp.date(2026, 10, 19))
+        self.assertEqual(self.index_reads, {})
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row()])
+        wp.run('read', self.config, loaded, '2026-10-19', 2, COUNTS, port=self.port)
+        self.assertEqual(self.index_reads, {'dimensions': 1, 'grid': 1})
+        self.grids[WORKSHEET_TAB][2, 6] = cell('')
+        result = wp.run('read', self.config, loaded, '2026-10-19', 2, COUNTS, port=self.port)
+        self.assertEqual(self.index_reads, {'dimensions': 2, 'grid': 2})
+        self.assertTrue(self.diagnostics(result, 'worksheet_reference_conflict'))
+
+    def test_missing_ambiguous_failed_and_absent_grids_are_not_successful_empty(self):
+        for change in ('missing_tab', 'ambiguous_tab', 'missing_grid', 'read_failure', 'dimensions'):
+            with self.subTest(change=change):
+                source = self.agenda()
+                if change == 'missing_tab':
+                    del source.tabs[WORKSHEET_TAB]
+                elif change == 'ambiguous_tab':
+                    source.tabs['Worksheets'] = 6
+                with patch.object(google, 'sheet_grid', return_value={}) if change == 'missing_grid' else patch.object(
+                        google, 'sheet_grid', side_effect=self.sheet_grid):
+                    failure = google.GoogleError('Unavailable', 403)
+                    with patch.object(google, 'get_json', side_effect=failure) if change == 'read_failure' else patch.object(
+                            google, 'get_json', return_value={}) if change == 'dimensions' else patch.object(
+                            google, 'get_json', side_effect=self.sheet_properties):
+                        table = agenda.read_worksheets('read', source)
+                self.assertEqual(table['status'], 'unavailable')
+        with patch.object(google, 'sheet_grid', return_value={}):
+            result = self.run_check()
+        self.assertIsNone(self.coverage(result)['scoped_rows'])
+        self.assertEqual(self.coverage(result)['status'], 'unverified')
+        self.assertTrue(self.diagnostics(result, 'worksheet_index_unverified'))
+
+    def test_malformed_duplicate_headers_and_valid_empty_are_distinct(self):
+        for headers in (WORKSHEET_HEADERS[:-1], WORKSHEET_HEADERS + ('Document',), ('Course', 'Document')):
+            with self.subTest(headers=headers):
+                self.grids[WORKSHEET_TAB] = worksheet_grid(headers=headers)
+                self.assertEqual(agenda.read_worksheets('read', self.agenda())['status'], 'malformed')
+        self.grids[WORKSHEET_TAB] = worksheet_grid()
+        result = self.run_check()
+        self.assertEqual((self.coverage(result)['table_status'], self.coverage(result)['scoped_rows']), ('complete', 0))
+        self.assertEqual(self.diagnostics(result), [])
+
+    def test_bounded_grid_coverage_reports_truncation_without_discarding_read_rows(self):
+        self.index_dimensions = {'rowCount': 1200, 'columnCount': 40}
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(url='')])
+        result = self.run_check()
+        self.assertEqual((self.coverage(result)['table_status'], self.coverage(result)['rows_read']), ('truncated', 1000))
+        self.assertEqual(self.coverage(result)['scoped_rows'], 1)
+        self.assertTrue(self.diagnostics(result, 'worksheet_reference_conflict'))
+
+    def test_suffix_weeks_and_courses_are_explicit_historical_locators(self):
+        self.grids['🗂 Weeks'][4, 3] = cell('Wk 09b')
+        self.grids[WORKSHEET_TAB] = worksheet_grid([
+            self.index_row(week='W09', url=''), self.index_row(week='Week 09b', course='A&P', url=''),
+            self.index_row(week='W09b', course='Biology club', url=''), self.index_row(week='W10', url='')])
+        result = self.run_check()
+        findings = self.diagnostics(result, 'worksheet_reference_conflict')
+        self.assertEqual(len(findings), 1)
+        self.assertEqual((findings[0]['class_key'], findings[0]['row']), ('anatomy', None))
+        self.assertIn('Worksheets index Week 09b, row 3', findings[0]['reason'])
+        self.assertEqual(self.coverage(result)['unscoped_rows'], 1)
+        self.assertNotEqual(wp._worksheet_week('W08'), wp._worksheet_week('W08b'))
+        self.assertEqual({wp._worksheet_week(v) for v in ('W8b', 'Wk 08b', 'Week08B')}, {'08b'})
+        self.assertIsNone(wp._worksheet_week('W08b Ecology'))
+
+    def test_no_matching_historical_week_does_not_claim_no_current_worksheets(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(week='W08')])
+        result = self.run_check()
+        self.assertEqual(self.coverage(result)['scoped_rows'], 0)
+        self.assertIn('not current lesson membership', self.coverage(result)['scope'])
+        self.assertEqual(self.diagnostics(result), [])
+        self.assertEqual(self.src.calls['meta:' + self.DOC1], 0)
+
+    def test_missing_references_malformed_ids_and_exact_conflicts_are_reported(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([
+            self.index_row(url='', ident=''), self.index_row(url=''),
+            self.index_row(ident='', url=deck_url(self.DOC1)),
+            self.index_row(ident='bad ID', url=deck_url(self.DOC1)),
+            self.index_row(ident=self.DOC2, url=deck_url(self.DOC1)),
+            self.index_row(url=cell(deck_url(self.DOC1), hyperlink=deck_url(self.DOC2)))])
+        result = self.run_check()
+        findings = self.diagnostics(result, 'worksheet_reference_conflict')
+        self.assertEqual(len(findings), 6)
+        self.assertTrue(all(not e['blocking'] and e['row'] is None for e in findings))
+        self.assertEqual(findings[-1]['evidence']['worksheet_rows'][0]['row'], 7)
+        self.assertIn('neither reference', findings[-1]['reason'])
+        self.assertEqual((self.src.calls['meta:' + self.DOC1], self.src.calls['meta:' + self.DOC2]), (1, 1))
+
+    def test_same_id_url_variants_do_not_conflict_or_trigger_duplicate_within_one_row(self):
+        urls = [deck_url(self.DOC1), deck_url(self.DOC1).replace('/edit', '/copy#slide=id.a'),
+                'https://drive.google.com/open?id=' + self.DOC1]
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(url=' '.join(urls))])
+        result = self.run_check()
+        self.assertEqual(self.diagnostics(result), [])
+        self.assertEqual(self.src.calls['meta:' + self.DOC1], 1)
+
+    def test_unsupported_links_are_unverified_not_missing_and_are_never_fetched(self):
+        urls = ['https://public.example/guide', 'http://public.example/guide', 'https://forms.gle/fictional',
+                'https://docs.google.com/document/d/short', 'https://evil.example/document/d/' + self.DOC1]
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(url=u, ident='') for u in urls])
+        result = self.run_check()
+        self.assertEqual(len(self.diagnostics(result, 'worksheet_reference_unverified')), len(urls))
+        self.assertEqual(self.diagnostics(result, 'worksheet_reference_conflict'), [])
+        self.assertEqual((self.coverage(result)['metadata_checked'], self.coverage(result)['unsupported_rows']), (0, len(urls)))
+
+    def test_duplicate_candidates_keep_all_rows_across_selected_weeks_and_exact_titles(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([
+            self.index_row(), self.index_row(week='W10'),
+            self.index_row(ident=self.DOC2, document='  FERMENTATION   guide '),
+            self.index_row(ident=self.DOC2, document='Other guide')])
+        result = self.run_check(weeks=2)
+        repeated = [e for e in self.diagnostics(result, 'worksheet_duplicate_candidate') if 'Repeated' in e['reason']]
+        titles = [e for e in self.diagnostics(result, 'worksheet_duplicate_candidate') if 'Identical' in e['reason']]
+        self.assertEqual({tuple(r['row'] for r in e['evidence']['worksheet_rows']) for e in repeated}, {(2, 3), (4, 5)})
+        self.assertTrue(all([r['row'] for r in e['evidence']['worksheet_rows']] == [2, 3, 4] for e in titles))
+        self.assertTrue(all(not e['blocking'] for e in repeated + titles))
+        self.assertEqual((self.src.calls['meta:' + self.DOC1], self.src.calls['meta:' + self.DOC2]), (1, 1))
+
+    def test_unreadable_trashed_or_incomplete_metadata_is_not_healthy(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(), self.index_row(ident=self.DOC2)])
+        self.src.files[self.DOC1]['trashed'] = True
+        del self.src.files[self.DOC2]
+        result = self.run_check()
+        findings = self.diagnostics(result, 'worksheet_source_unverified')
+        self.assertEqual(len(findings), 2)
+        self.assertTrue(any('in the trash' in e['reason'] for e in findings))
+        self.assertEqual(self.coverage(result)['metadata_unverified'], 1)
+        self.src.files[self.DOC1].pop('trashed')
+        result = self.run_check()
+        self.assertEqual(self.coverage(result)['metadata_unverified'], 2)
+
+    def test_cell_edits_change_fingerprint_and_metadata_is_refreshed_next_run(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(url='')])
+        first = self.diagnostics(self.run_check(), 'worksheet_reference_conflict')[0]
+        self.grids[WORKSHEET_TAB][2, 4] = cell('Changed guide name')
+        second = self.diagnostics(self.run_check(), 'worksheet_reference_conflict')[0]
+        self.assertNotEqual(first['fingerprint'], second['fingerprint'])
+        self.src.files[self.DOC1]['trashed'] = True
+        self.assertTrue(self.diagnostics(self.run_check(), 'worksheet_source_unverified'))
+        self.assertEqual(self.src.calls['meta:' + self.DOC1], 3)
+
+    def test_folder_and_shortcut_references_are_not_verified_worksheet_files(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(), self.index_row(ident=self.DOC2)])
+        self.src.files[self.DOC1]['mimeType'] = google.FOLDER
+        self.src.files[self.DOC2].update(mimeType=google.SHORTCUT,
+                                        shortcutDetails={'targetId': 'FICTIONALTARGETNOTFOLLOWED0001'})
+        result = self.run_check()
+        findings = self.diagnostics(result, 'worksheet_source_unverified')
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(self.coverage(result)['metadata_unverified'], 2)
+        self.assertTrue(any('folder, not a worksheet file' in e['reason'] for e in findings))
+        self.assertTrue(any('was not followed' in e['reason'] for e in findings))
+        self.assertEqual(self.src.calls['meta:FICTIONALTARGETNOTFOLLOWED0001'], 0)
+
+    def test_same_id_is_memoized_even_when_row_metadata_is_unreadable(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(), self.index_row(week='W10')])
+        del self.src.files[self.DOC1]
+        result = self.run_check(weeks=2)
+        self.assertEqual(self.src.calls['meta:' + self.DOC1], 1)
+        self.assertEqual(len(self.diagnostics(result, 'worksheet_source_unverified')), 2)
+
+    def test_different_titles_are_not_duplicate_candidates_based_on_partial_words(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(document='Sketching worksheet'),
+            self.index_row(document='Evidence collection worksheet', ident=self.DOC2)])
+        self.assertEqual(self.diagnostics(self.run_check(), 'worksheet_duplicate_candidate'), [])
+
+    def test_metadata_budget_is_shared_across_weeks_and_retry_is_explicit(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(), self.index_row(week='W10', ident=self.DOC2)])
+        with patch.object(wp, 'WORKSHEET_METADATA_LIMIT', 1):
+            result = self.run_check(weeks=2)
+        self.assertEqual(self.coverage(result, 1)['pending_ids'], 1)
+        self.assertEqual(self.src.calls['meta:' + self.DOC2], 0)
+        done = self.run_check(weeks=2)
+        self.assertEqual(self.coverage(done, 1)['pending_ids'], 0)
+        with patch.object(google, 'get_json', side_effect=AssertionError('no read after deadline')):
+            pending = agenda.read_worksheets('read', self.agenda(), can_read=lambda: False)
+        self.assertEqual(pending['status'], 'pending')
+
+    def test_bounded_row_audit_keeps_unchecked_rows_explicit(self):
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(), self.index_row(week='W10', ident=self.DOC2)])
+        with patch.object(wp, 'WORKSHEET_ROW_LIMIT', 1):
+            result = self.run_check(weeks=2)
+        self.assertEqual((self.coverage(result, 1)['scoped_rows'], self.coverage(result, 1)['rows_checked'],
+                          self.coverage(result, 1)['deferred_rows']), (1, 0, 1))
+        self.assertEqual(self.coverage(result, 1)['status'], 'unverified')
+        self.assertEqual(self.src.calls['meta:' + self.DOC2], 0)
+
+    def test_index_never_changes_lesson_forms_print_membership_or_teacher_controls(self):
+        before = self.run_check()
+        self.grids[WORKSHEET_TAB] = worksheet_grid([self.index_row(url=''), self.index_row(ident=self.DOC2)])
+        after = self.run_check()
+        for field in ('lessons', 'print_items', 'supplies', 'status'):
+            self.assertEqual(before[field], after[field])
+        self.assertTrue(all(e['kind'] not in {'needs_content', 'calendar_conflict', 'calendar_friday_unknown',
+                                            'print_item_ambiguous'} for e in self.diagnostics(after)))
+        self.assertEqual((after['external_writes'], after['model_calls'], self.writes), (0, 0, []))
+        self.index_reads.clear()
+        saved = wp.status(self.config, SHEET, '2026-10-19', 1, port=self.port)
+        self.assertEqual(self.coverage(saved), self.coverage(after))
+        self.assertEqual(self.index_reads, {})
+        old = deepcopy(self.port.read([wp.week_id(SHEET, '2026-10-19', 'latest')]).documents[
+            wp.week_id(SHEET, '2026-10-19', 'latest')].value)
+        old.pop('worksheet_index')
+        self.assertEqual(wp.compose([old], '2026-10-19', 1)['coverage']['worksheet_index'][0]['table_status'], 'not_checked')
 
 
 class CalendarTests(unittest.TestCase):

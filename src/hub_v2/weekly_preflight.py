@@ -63,7 +63,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/5"
+RULES = "weekly-preflight-rules/6"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -78,6 +78,8 @@ NODE_FIELDS = ("id,name,mimeType,trashed,parents,modifiedTime,version,md5Checksu
                "shortcutDetails(targetId,targetMimeType)")
 EXCEPTION_STATUSES = ("needs_decision", "inaccessible", "repairable", "repaired_and_verified")
 LESSON_ORDER = ("inaccessible", "incomplete", "needs_decision", "repaired_and_verified", "ready")
+WORKSHEET_METADATA_LIMIT = 40
+WORKSHEET_ROW_LIMIT = 80
 
 
 class Held(ValueError):
@@ -1451,7 +1453,6 @@ def run(token, config, agenda, start, weeks, roster_counts, *, port=None, budget
         for node in lesson["sources"] if node.get("accessible") and not node.get("trashed")
         for kind in _content_kinds(node)))
     ctx.prefetch(wanted)
-    results = []
     for week_plan in plans:
         for lesson in week_plan["lessons"]:
             _content(ctx, lesson, counts)
@@ -1461,7 +1462,10 @@ def run(token, config, agenda, start, weeks, roster_counts, *, port=None, budget
                     lesson["exceptions"].append(_exception("source_role_changed", "needs_decision", lesson,
                         "The exact source role changed while readiness was checked.",
                         "Refresh the exact source checks; no role waiver is confirmed.", url=node["url"], sources=[node["id"]]))
-        results.append(_finish_week(week_plan, sheet, port))
+    # Historical worksheet rows are independent of lesson/packet identity.
+    # Read lazily after lesson checks, once per run, within the same budget.
+    _check_worksheets(ctx, agenda, plans)
+    results = [_finish_week(week_plan, sheet, port) for week_plan in plans]
     status = "incomplete" if ctx.counts["pending"] or any(w["status"] == "incomplete" for w in results) else "complete"
     progress(ctx.counts, status)
     remember_labels(port, sheet, results)
@@ -1471,6 +1475,163 @@ def run(token, config, agenda, start, weeks, roster_counts, *, port=None, budget
                     last_successful=min(d.value["checked_at"] for d in complete) if all(complete) else None)
     attach_reviews(port, reply)
     return reply
+
+
+def _worksheet_week(value):
+    match = re.fullmatch(r"(?:w(?:k|eek)?\s*)?0*(\d{1,2})([a-z]?)", str(value).strip(), re.I)
+    return "%02d%s" % (int(match[1]), match[2].lower()) if match else None
+
+
+def _worksheet_course(value):
+    # Explicit aliases only. Titles, folders and partial text never bind a row.
+    return {"biology": "biology", "forensics": "forensics", "a&p": "anatomy", "anatomy": "anatomy",
+            "anatomy&physiology": "anatomy", "anatomyandphysiology": "anatomy"}.get(norm(value))
+
+
+def _worksheet_evidence(row):
+    return {k: row[k] for k in ("row", "course", "wk", "topic", "document", "type", "link", "fileid",
+                                "urls", "source_url", "link_cell", "id_cell")}
+
+
+def _check_worksheets(ctx, agenda, plans):
+    """Worker-only index diagnostics; never assign a worksheet to a lesson.
+
+    Metadata is exact-ID, memoized across all selected weeks and bounded both
+    by request count and the existing run deadline. No public URLs are fetched.
+    """
+    table = agenda_module.read_worksheets(ctx.token, agenda, can_read=lambda: time.monotonic() <= ctx.deadline)
+    readable = table["status"] in ("complete", "truncated")
+    selected = {_worksheet_week(p["label"]) for p in plans if p["label"]}
+    selected.discard(None)
+    unscoped = [r for r in table["rows"] if not _worksheet_week(r["wk"]) or not _worksheet_course(r["course"])]
+    selected_rows = [r for r in table["rows"] if _worksheet_week(r["wk"]) in selected and _worksheet_course(r["course"])]
+    rows = selected_rows[:WORKSHEET_ROW_LIMIT]
+    metadata, reads = {}, 0
+    for row in rows:
+        row["class_key"] = _worksheet_course(row["course"])
+        row["index_week"] = _worksheet_week(row["wk"])
+        row["visible_ids"] = sorted({ident for url in row["urls"] if (ident := _google_file_id(url))})
+        backing = row["fileid"] if re.fullmatch(r"[A-Za-z0-9_-]{20,}", row["fileid"]) else ""
+        row["exact_ids"] = sorted(set(row["visible_ids"] + ([backing] if backing else [])))
+        row["unsupported"] = bool(any(not _google_file_id(u) for u in row["urls"])
+                                  or (row["link"] and not row["urls"]))
+        row["issues"] = []
+        if not row["document"]:
+            row["issues"].append("The Document name is blank.")
+        if row["fileid"] and not backing:
+            row["issues"].append("The _fileID cell is not one exact supported Drive file ID.")
+        if not row["fileid"] and row["visible_ids"]:
+            row["issues"].append("The backing _fileID cell is blank; the visible exact reference is checked without filling it in.")
+        if not row["urls"] and not row["link"]:
+            row["issues"].append("The visible Link cell is blank." if backing else "Both the visible Link and exact file ID are missing.")
+        if len(row["visible_ids"]) > 1 or (backing and any(i != backing for i in row["visible_ids"])):
+            row["issues"].append("Visible Link targets and/or _fileID disagree; neither reference is selected as correct.")
+        for ident in row["exact_ids"]:
+            if ident in metadata:
+                continue
+            if ident in ctx.meta:
+                metadata[ident] = ctx.file(ident)
+            elif reads < WORKSHEET_METADATA_LIMIT and time.monotonic() <= ctx.deadline:
+                metadata[ident] = ctx.file(ident)
+                reads += 1
+            else:
+                metadata[ident] = {"id": ident, "pending": True}
+    # A repeated reference is only a candidate, even across selected index
+    # weeks. All source rows remain visible; nothing is merged or removed.
+    groups = []
+    by_id, by_title = {}, {}
+    for row in rows:
+        for ident in row["exact_ids"]:
+            by_id.setdefault(ident, []).append(row)
+        if row["document"]:
+            by_title.setdefault((row["class_key"], " ".join(row["document"].casefold().split())), []).append(row)
+    groups += [("repeated_id", ident, members) for ident, members in by_id.items() if len(members) > 1]
+    groups += [("same_title", title, members) for title, members in by_title.items()
+               if len(members) > 1 and len({i for r in members for i in r["exact_ids"]}) > 1]
+    for plan in plans:
+        scoped = [r for r in rows if r["index_week"] == _worksheet_week(plan["label"])]
+        scoped_count = sum(_worksheet_week(r["wk"]) == _worksheet_week(plan["label"]) for r in selected_rows)
+        deferred = scoped_count - len(scoped)
+        ids = {i for r in scoped for i in r["exact_ids"]}
+        pending = {i for i in ids if metadata[i].get("pending")}
+        unknown = {i for i in ids if metadata[i].get("error") or metadata[i].get("pending")
+                   or metadata[i].get("id") != i or type(metadata[i].get("trashed")) is not bool
+                   or not metadata[i].get("mimeType") or metadata[i].get("mimeType") in (google.FOLDER, google.SHORTCUT)}
+        unsupported = sum(r["unsupported"] for r in scoped)
+        coverage = {"table_status": table["status"], "source_url": table["source_url"],
+                    "index_week": plan["label"], "scope": "Historical index locators only; not current lesson membership",
+                    "rows_read": table.get("rows_read"), "indexed_rows": len(table["rows"]) if readable else None,
+                    "scoped_rows": scoped_count if readable and plan["label"] else None,
+                    "rows_checked": len(scoped) if readable else None, "deferred_rows": deferred,
+                    "unscoped_rows": len(unscoped) if readable else None,
+                    "exact_ids": len(ids), "metadata_checked": len(ids - unknown),
+                    "metadata_unverified": len(unknown), "unsupported_rows": unsupported, "pending_ids": len(pending),
+                    "status": "complete" if table["status"] == "complete" and plan["label"]
+                              and not (unknown or unsupported or unscoped or deferred) else "unverified"}
+        plan["worksheet_index"] = coverage
+        base = {"class": "All classes", "week": plan["label"], "topic": "Worksheets index", "row": None}
+
+        def emit(kind, reason, members=(), *, inaccessible=False, detail="", meta=None):
+            context = base.copy()
+            courses = {r["class_key"] for r in members if r.get("class_key")}
+            if len(courses) == 1:
+                context.update(class_key=next(iter(courses)),
+                               **{"class": dict(agenda_module.CLASSES)[next(iter(courses))]})
+            proof = [_worksheet_evidence(r) for r in members]
+            origin = members[0]["source_url"] if members else table["source_url"]
+            evidence = {"worksheet_rows": proof, "coverage": coverage}
+            if meta:
+                evidence["metadata"] = meta
+            plan["week_exceptions"].append(_exception(kind, "inaccessible" if inaccessible else "needs_decision", context,
+                reason, "Repair worker: inspect these exact Worksheets index cells; preserve lesson/Form and packet ownership.",
+                url=origin, blocking=False,
+                sources=[i for r in members for i in r.get("exact_ids", [])],
+                revision_key=content_hash({"tab": table["tab"], "columns": table["columns"],
+                    "cells": [[r["row"], r["source_cells"]] for r in members], "metadata": meta}),
+                detail=detail or table["status"], evidence=evidence))
+
+        if table["status"] != "complete":
+            emit("worksheet_index_unverified", table["reason"], inaccessible=True)
+        if deferred:
+            emit("worksheet_index_unverified", "%s selected Worksheets index rows were not checked because the bounded "
+                 "run row limit was reached; their references and duplicate coverage remain unverified." % deferred,
+                 inaccessible=True, detail="row_limit")
+        if unscoped:
+            emit("worksheet_index_scope_unverified", "Some Worksheets index rows have an unsupported course or week locator; "
+                 "their relevance to selected weeks is unverified.", unscoped, detail="unscoped")
+        for row in scoped:
+            label = "Worksheets index %s, row %s (%s)" % (row["wk"], row["row"], row["document"] or "unnamed document")
+            if row["issues"]:
+                emit("worksheet_reference_conflict", label + ": " + " ".join(row["issues"]), [row], detail="references")
+            if row["unsupported"]:
+                emit("worksheet_reference_unverified", label + ": the Link contains an unsupported address or unresolved label; "
+                     "its target is unverified, not missing.", [row], detail="unsupported")
+            for ident in row["exact_ids"]:
+                meta = metadata[ident]
+                if meta.get("pending"):
+                    reason = "exact-ID metadata was deferred when the run's time or request budget ended."
+                elif meta.get("error") or meta.get("id") != ident or type(meta.get("trashed")) is not bool:
+                    reason = "the exact-ID metadata could not be verified; this is not proof that the file is missing."
+                elif meta["trashed"]:
+                    reason = "the exact referenced file is in the trash."
+                elif meta.get("mimeType") == google.FOLDER:
+                    reason = "the exact reference is a folder, not a worksheet file. No folder member is selected."
+                elif meta.get("mimeType") == google.SHORTCUT:
+                    reason = "the exact reference is a shortcut; its target is unverified and was not followed."
+                elif not meta.get("mimeType"):
+                    reason = "the referenced file's type is unverified."
+                else:
+                    continue
+                emit("worksheet_source_unverified", label + ": " + reason, [row], inaccessible=True, detail=ident,
+                     meta={k: meta[k] for k in ("id", "version", "modifiedTime", "mimeType", "trashed", "http_status", "pending") if k in meta})
+        for kind, identity, members in groups:
+            if not any(r in scoped for r in members):
+                continue
+            reason = ("Repeated exact file ID" if kind == "repeated_id" else "Identical explicit Document name with different file IDs")
+            emit("worksheet_duplicate_candidate", reason + " in selected Worksheets index rows "
+                 + ", ".join(str(r["row"]) for r in members) + "; candidate only, no canonical copy chosen.",
+                 members, detail=[kind, identity])
+        coverage["diagnostics"] = sum(e["kind"].startswith("worksheet_") for e in plan["week_exceptions"])
 
 
 def _content_kinds(node):
@@ -2128,7 +2289,7 @@ def _finish_week(week_plan, sheet, port):
               "label": week_plan["label"], "calendar": week_plan["calendar"], "problems": week_plan["problems"],
               "status": "incomplete" if incomplete else ("needs_decision" if blocking else "ready"),
               "checked_at": checked_at, "lessons": lessons, "exceptions": list(unique.values()),
-              "print_items": print_items, "supply_rows": supply_rows}
+              "print_items": print_items, "supply_rows": supply_rows, "worksheet_index": week_plan["worksheet_index"]}
     record = _bounded(record)
     _put(port, previous_id, record, previous)
     if record["status"] != "incomplete":
@@ -2184,6 +2345,8 @@ def compose(weeks, monday, count, *, run_counts=None, last_successful=None):
                          "unresolved": sum(e["status"] != "repaired_and_verified" for e in exceptions),
                          "blocking": sum(e["blocking"] and e["status"] != "repaired_and_verified" for e in exceptions),
                          "run": run_counts or {}, "access_evidence": ACCESS,
+                         "worksheet_index": [{"monday": w["monday"], **w.get("worksheet_index",
+                             {"status": "unverified", "table_status": "not_checked", "scoped_rows": None})} for w in weeks],
                          "excluded_weeks": [{"class": l["class"], "week": l["week"], "reason": l["week_policy"]["reason"]}
                                             for l in lessons if l["week_policy"].get("excluded")]},
             "checked_at": min((w["checked_at"] for w in weeks), default=None),
