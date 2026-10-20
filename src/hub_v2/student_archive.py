@@ -2503,6 +2503,28 @@ def _filing(config, cls):
             "coverage": "holds_remain" if held_count else "scanned_weeks_only" if receipts else "unverified"}
 
 
+def _listing_feedback(artifact):
+    """Saved-report metadata only; a work/source timestamp is never a report date."""
+    if artifact.get("kind") != "feedback":
+        return {}
+    origin = artifact.get("feedback_origin", "native_saved")
+    report_type = artifact.get("report_type")
+    if (not report_type and origin == "native_saved"
+            and re.fullmatch(r"feedbackdraft_[a-f0-9]{64}", str(artifact.get("feedback_id") or ""))):
+        report_type = "critical_aspects"
+    day, basis = None, "unverified"
+    if origin in {"native_saved", "teacher_science_writing", "current_source_work_check"}:
+        publication = artifact.get("publication_day_basis") == "native-writing-first-drive-created-at/v1"
+        stamp = artifact.get("created_at") if publication else artifact.get("saved_at")
+        try:
+            day = _date(stamp)
+            basis = "native-writing-first-drive-created-at/v1" if publication else "saved_at"
+        except Held:
+            pass
+    return {"report_type": report_type, "feedback_date": day, "feedback_date_basis": basis,
+            "historical": bool(artifact.get("superseded_by"))}
+
+
 def archive_listing(token, config, class_key, section=None):
     base = {"schema": SCHEMA, "class_key": class_key, "class_name": CLASSES.get(class_key, ""),
             "configured": enabled(config), "status": "unconfigured", "students": [],
@@ -2511,7 +2533,7 @@ def archive_listing(token, config, class_key, section=None):
     if not base["configured"]:
         return base
     try:
-        course, indexed = _indexed(token, config, class_key)
+        course, indexed = _indexed(token, config, class_key, include_history=True)
         canonical = _roster(config)
         for student, artifacts in indexed:
             if section and student["section"] != section:
@@ -2523,6 +2545,7 @@ def archive_listing(token, config, class_key, section=None):
                         "drive_file_id": a["drive_file_id"], "source_file_id": a.get("source_file_id"),
                         "feedback_id": a.get("feedback_id"), "identity_status": a.get("identity_status", "verified"),
                         "date_basis": a.get("date_basis"), "lesson_status": a.get("lesson_status", "verified"),
+                        **_listing_feedback(a),
                         "original_filename": a.get("original_filename"), "source_context": a.get("source_context"),
                         **({"source_created_at": a["source_created_at"], "grade_eligible": False,
                             "date_label": "Original file created " + a["source_created_at"][:10]}

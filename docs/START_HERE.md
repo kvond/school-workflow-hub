@@ -18,14 +18,14 @@ manual visible links too, and refuse ambiguous multi-link or literal-formula
 replacement. This leaves separate Forms, dates, plans and explicit teacher-source
 registrations intact; it does not merge assignments or rewrite Agenda content.
 
-Long Today panels, class/lesson plans, assignment work tables and System reports
+Long Today panels, class/lesson plans, assignment work tables and Data reports
 have keyboard-accessible collapsible headings. Lesson planning Notes keeps its
 existing class/next-week browser storage and now offers a full-width, resizable
 editor. Those notes remain local to that browser; they are not silently moved or
 merged into another store.
 
-Operational **System notes** now belong in the configured Slack channel, linked
-from Lessons through authenticated `GET /v2/api/teacher-links` and private
+Operational **System notes** belong in the configured Slack channel, linked
+from Data through authenticated `GET /v2/api/teacher-links` and private
 `HUB_SYSTEM_NOTES_SLACK_URL` (an exact Slack workspace/channel URL). Existing
 private Hub notes stay available under the collapsed Earlier private Hub notes;
 opening the page never copies their contents into Slack or modifies them.
@@ -51,9 +51,26 @@ teacher-action check is pending; it does not claim no issues remain.
 **Daily feedback document** shows one configured feedback-list link and Updated,
 Not updated, Checking, or Update not verified. Only a complete current-source
 read proves today's update; a saved older PDF or Printed/Handed mark cannot.
-Full report history, delivery evidence and existing optional print controls
-remain under the closed Hub tools / Feedback backup tools. No delivery marks
-are changed by the compact view. The list link is independent of Biology growth
+The checklist link, collapsed **Saved feedback by date** and **All student
+folders**, and **Check lesson links** start Lessons. The two lists read all three
+connected class archive indexes only on expansion and reuse that read briefly.
+X means saved general/critical-aspect feedback, W science writing and C contracts;
+unknown types remain `?`. Dates come from saved report metadata, including the
+explicit first-publication basis for native writing reports. Original-file,
+submission and lesson-name dates never become feedback dates. Earlier report
+versions remain linked after the existing successor and private-history-folder
+checks; the archive listing's feedback count includes those saved versions.
+Known dates sort newest first, with undated reports last. Indexed folders do not prove complete folder/submission
+coverage, current-roster completeness or that the newest submission is covered;
+partial and unread classes remain unverified.
+
+Full report history, delivery evidence, optional print controls, morning helper
+receipts, source diagnostics and private records now live on **Data**. Old
+`#routine` and `#system` bookmarks open Data. Today keeps lesson readiness, Week
+ahead and Next from Agenda. The AI runtime and Morning score check presentations
+and Hub tools wrapper are removed; their backend jobs and receipts are preserved.
+Student work ends with one **Biology growth and DTGSS** link. No delivery marks
+are changed by these views, and the checklist link is independent of the growth
 report configuration.
 
 ## Teacher review context
@@ -74,10 +91,10 @@ unchanged. Exempt flags and zero-denominator N/A components do not create a
 teacher review. Not-yet-submitted work is waiting for submissions.
 
 Submitted student files and named source-review details remain in Student work,
-using its exact current class/week/Form review route. Today and its Hub tools do
+using its exact current class/week/Form review route. Today and Data do
 not request or display the student source overview. Today retains lesson-focused
-VT readiness and feedback-code checks, Week ahead, Next from Agenda, morning
-receipts and the compact feedback-list status. Lesson-source readiness does not verify
+VT readiness and feedback-code checks, Week ahead and Next from Agenda.
+Lessons holds the compact feedback-list status. Lesson-source readiness does not verify
 submitted student copies or completed grading.
 
 Current source discovery rereads the roster and Agenda before publishing named

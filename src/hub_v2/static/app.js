@@ -955,7 +955,7 @@ function renderTodayFeedback(data) {
     : !known ? 'Update not verified' : updated ? `Updated · ${data.date}` : `Not updated · ${requested}`;
   const url = cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
   panel.append(el('p', {role: 'status', text: status}), url
-    ? link('Feedback list', url) : el('p', {class: 'muted', text: 'Feedback list link unavailable'}));
+    ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}));
   return panel;
 }
 
@@ -1056,18 +1056,13 @@ function renderFeedbackTools(data) {
 
 function renderLearningReport(data) {
   if (!data?.configured) return null;
-  return cockpitPanel('Biology growth and DTGSS',
-    el('p', {text: data.as_of ? `Biology report · initial review ${data.as_of}.` : 'Saved Biology learning report.'}),
-    el('div', {class: 'action-row'}, link('Biology report · start here', data.url), link('Biology teaching actions', data.teaching_url),
-      data.analysis_url ? link('Biology analysis', data.analysis_url) : null,
-      data.work_index_url ? link('All student work · index', data.work_index_url) : null),
-    el('p', {class: 'muted', text: 'Current-roster percentages, Beginning and Developing counts, and paired comparisons. The report states its evidence dates.'}));
+  return el('p', {}, link('Biology growth and DTGSS', data.url));
 }
 
 function renderTodayFeedbackArea(seq) {
   if (seq !== cockpit.seq) return;
-  $('today-feedback').replaceChildren(...[renderLearningReport(cockpit.learningData),
-    cockpit.feedbackData ? renderTodayFeedback(cockpit.feedbackData) : null].filter(Boolean));
+  $('today-feedback').replaceChildren(...[cockpit.feedbackData ? renderTodayFeedback(cockpit.feedbackData) : null].filter(Boolean));
+  $('student-growth')?.replaceChildren(...[renderLearningReport(cockpit.learningData)].filter(Boolean));
   const tools = $('today-feedback-tools');
   if (tools) tools.replaceChildren(...(cockpit.feedbackData ? [renderFeedbackTools(cockpit.feedbackData)] : []));
 }
@@ -1092,6 +1087,106 @@ async function loadTodayFeedback(seq) {
     ? {date: saved.date, files: [], daily_packet: saved, source_problem: problem,
        ...(data.timed_out ? {source_check: {status: 'timed_out'}} : {})} : data;
   renderTodayFeedbackArea(seq);
+}
+
+// Saved artifacts across all connected class indexes. Opening these lists only
+// reads existing records; names, lesson labels and source dates prove no report.
+const feedbackArchive = {seq: 0, loading: false, readAt: 0, courses: {}, failures: []};
+const FEEDBACK_TYPES = {critical_aspects: ['X', 'General / critical-aspect feedback'],
+  general_feedback: ['X', 'General feedback'], science_writing: ['W', 'Science writing'],
+  missing_work_contract: ['C', 'Contract']};
+function feedbackArtifact(record) {
+  const [code, label] = Object.hasOwn(FEEDBACK_TYPES, record.report_type) ? FEEDBACK_TYPES[record.report_type] : ['?', 'Feedback type unverified'];
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(record.feedback_date || '')
+    && ['saved_at', 'native-writing-first-drive-created-at/v1'].includes(record.feedback_date_basis) ? record.feedback_date : null;
+  const url = reviewSourceURL({file_id: record.drive_file_id, url: record.url});
+  return {record, code, label, date, url};
+}
+function feedbackArtifactLink(item) {
+  const text = `${item.code} · ${item.label}${item.record.historical ? ' · previous version' : ''}`;
+  const name = recordLabel(item.record.name);
+  return el('span', {}, item.url ? link(text, item.url) : el('span', {text: text + ' · link unverified'}),
+    name ? el('small', {class: 'feedback-file-name', text: 'Saved file: ' + name}) : null);
+}
+function renderFeedbackArchive() {
+  const dates = $('saved-feedback-body'), folders = $('all-student-folders-body');
+  if (!dates || !folders) return;
+  dates.replaceChildren(); folders.replaceChildren();
+  const state = feedbackArchive;
+  const notice = state.loading ? 'Reading saved feedback and student folders… Coverage is unverified until the read finishes.'
+    : !state.readAt ? 'Open a list to read the saved class indexes.'
+    : 'Archive index only · full submission and folder coverage is unverified. A saved report does not prove that the newest submission is covered.';
+  for (const body of [dates, folders]) {
+    body.append(el('p', {class: 'muted', role: 'status', text: notice}));
+    body.append(el('p', {class: 'feedback-key', text: 'X = general / critical-aspect feedback · W = science writing · C = contracts · ? = type unverified'}));
+    for (const name of state.failures) body.append(note(`${name}: source unavailable · feedback dates and folders unverified.`, 'info'));
+  }
+  const reports = [], students = [];
+  for (const [cls, name] of CLASSES) {
+    const data = state.courses[cls];
+    if (!data) continue;
+    const gap = !data.configured || data.status === 'unconfigured' ? 'not connected'
+      : data.status !== 'verified' ? 'partial / held' : data.filing?.coverage !== 'complete' ? 'recorded index only' : '';
+    for (const body of [dates, folders]) if (gap) body.append(el('p', {class: 'muted', text: `${name}: ${gap}; complete coverage unverified.`}));
+    for (const student of data.students) {
+      const items = (Array.isArray(student.records) ? student.records : []).filter(record => record?.kind === 'feedback').map(feedbackArtifact);
+      students.push({name, student, items});
+      reports.push(...items.map(item => ({...item, student, className: name})));
+    }
+  }
+  const days = [...new Set(reports.filter(item => item.date).map(item => item.date))].sort().reverse();
+  if (reports.some(item => !item.date)) days.push('Date unverified');
+  for (const day of days) {
+    const items = reports.filter(item => (item.date || 'Date unverified') === day);
+    dates.append(el('details', {class: 'feedback-date'}, el('summary', {text: `${day} · ${items.length} saved report${items.length === 1 ? '' : 's'}`}),
+      el('ul', {}, ...items.map(item => el('li', {}, el('span', {text: `${item.className} · ${item.student.section || 'Section unverified'} · ${item.student.name}: `}),
+        feedbackArtifactLink(item), !item.date ? ' · actual feedback date unverified' : null)))));
+  }
+  if (students.length) folders.append(el('div', {class: 'table-wrap'}, el('table', {class: 'feedback-folder-table'},
+    el('thead', {}, el('tr', {}, ['Student folder', 'Class / section', 'Saved feedback dates'].map(text => el('th', {text})))),
+    el('tbody', {}, ...students.map(({name, student, items}) => {
+      const folder = recordFolderURL(student.folder_url);
+      return el('tr', {}, el('td', {}, folder ? link(student.name, folder) : el('span', {text: student.name + ' · folder unverified'}),
+        el('small', {class: 'muted', text: studentRecordStatus(student)})),
+      el('td', {text: `${name} · ${student.section || 'Section unverified'}`}),
+      el('td', {}, items.length ? el('ul', {}, ...items.sort((a, b) => (b.date || '').localeCompare(a.date || '')).map(item => el('li', {},
+        el('span', {text: `${item.date || 'Date unverified'} · `}), feedbackArtifactLink(item))))
+        : el('span', {class: 'muted', text: 'No saved feedback confirmed in this index; coverage unverified.'})));
+    })))));
+  if (state.readAt && !state.loading && !reports.length) dates.append(el('p', {class: 'muted', text: 'No dated saved feedback could be confirmed in the available indexes. Unread sources remain unverified.'}));
+  if (state.readAt && !state.loading && !students.length) folders.append(el('p', {class: 'muted', text: 'No student folders could be confirmed in the available indexes. Unread sources remain unverified.'}));
+}
+async function loadFeedbackArchive(fresh = false) {
+  if (!$('saved-feedback')?.open && !$('all-student-folders')?.open) return;
+  if (feedbackArchive.loading) return;
+  if (!fresh && feedbackArchive.readAt && Date.now() - feedbackArchive.readAt < 60_000) { renderFeedbackArchive(); return; }
+  const seq = ++feedbackArchive.seq;
+  feedbackArchive.loading = true; feedbackArchive.courses = {}; feedbackArchive.failures = []; renderFeedbackArchive();
+  const results = await Promise.allSettled(CLASSES.map(async ([cls]) => {
+    const data = await getJSON(`api/student-records?class=${encodeURIComponent(cls)}`);
+    if (data?.schema !== 'hub-student-archive/v1' || data.class_key !== cls || !Array.isArray(data.students)) throw new Error('Unverified class index');
+    return data;
+  }));
+  if (seq !== feedbackArchive.seq) return;
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') feedbackArchive.courses[CLASSES[index][0]] = result.value;
+    else feedbackArchive.failures.push(CLASSES[index][1]);
+  });
+  feedbackArchive.loading = false; feedbackArchive.readAt = Date.now(); renderFeedbackArchive();
+}
+function loadLessonAccess() {
+  const seq = ++cockpit.seq;
+  loadTodayFeedback(seq);
+  getJSON('api/teacher-links').catch(() => ({})).then(data => {
+    if (seq !== cockpit.seq) return;
+    cockpit.teacherLinks = data; renderTodayFeedbackArea(seq);
+  });
+  loadFeedbackArchive();
+}
+async function loadGrowthLink() {
+  const data = await getJSON('api/learning-report').catch(() => ({configured: false}));
+  cockpit.learningData = data;
+  $('student-growth')?.replaceChildren(...[renderLearningReport(data)].filter(Boolean));
 }
 
 // ---------- Week ahead: lesson preflight ----------
@@ -1319,6 +1414,7 @@ async function weekAheadRepair(item, preview) {
 async function loadToday(force = false) {
   const seq = ++cockpit.seq;
   setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
+  setStatus('data-status', 'Reading operational sources…');
   $('today-next-agenda').replaceChildren();
   $('lesson-readiness-body').replaceChildren(el('p', {class: 'muted', text: 'Checking embedded codes in current and upcoming lessons…'}));
   if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
@@ -1357,9 +1453,11 @@ async function loadToday(force = false) {
         renderNeedsYou(report)));
     $('today-next-agenda').replaceChildren(nextAgenda);
     setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
+    setStatus('data-status', `Updated ${when(new Date().toISOString())}.`);
   } catch (error) {
     if (seq !== cockpit.seq) return;
     setStatus('today-status', error.message, true);
+    setStatus('data-status', 'Operational source read unavailable: ' + error.message, true);
     $('today-body').replaceChildren();
     $('lesson-readiness-body').replaceChildren(note('Deck readiness could not be checked: ' + error.message));
   }
@@ -1814,7 +1912,7 @@ function studentRecordStatus(student) {
 async function loadStudentRecords(fresh = false) {
   const panel = $('student-records');
   if (!panel) return;
-  const cls = work.cls;
+  const cls = $('records-class')?.value || work.cls;
   if (studentRecords.cls !== cls) {
     studentRecords.cls = cls; studentRecords.data = null; studentRecords.readAt = 0; studentRecords.seq++;
     $('student-records-body').replaceChildren();
@@ -1826,13 +1924,13 @@ async function loadStudentRecords(fresh = false) {
   $('student-records-body').replaceChildren(el('p', {class: 'muted', text: 'Reading student records…'}));
   try {
     const data = await getJSON(`api/student-records?class=${encodeURIComponent(cls)}`);
-    if (seq !== studentRecords.seq || work.cls !== cls) return;
+    if (seq !== studentRecords.seq || ($('records-class')?.value || work.cls) !== cls) return;
     if (data?.schema !== 'hub-student-archive/v1' || data.class_key !== cls || !Array.isArray(data.students))
       throw new Error('Student records could not be confirmed for this class. Reload to try again.');
     renderStudentRecords(data);
     studentRecords.data = data; studentRecords.readAt = Date.now();
   } catch (error) {
-    if (seq === studentRecords.seq && work.cls === cls) $('student-records-body').replaceChildren(note(
+    if (seq === studentRecords.seq && ($('records-class')?.value || work.cls) === cls) $('student-records-body').replaceChildren(note(
       /^Please sign in/.test(error.message) ? error.message : 'Student records could not be loaded for this class. Reload to try again.', 'info'));
   }
 }
@@ -3306,20 +3404,6 @@ async function loadSystemNotes(force = false) {
   state.loading = false; renderSystemNotes();
 }
 
-// ---------- Routine: the morning score handoff ----------
-function renderRoutine() {
-  $('routine-body').replaceChildren(el('details', {class: 'routine routine-morning'},
-    el('summary', {}, el('h2', {text: 'Morning score check'})),
-    el('ol', {},
-      el('li', {}, el('strong', {text: 'Before 6:30.'}), ' Leave the home Mac awake. Keep the school Chrome profile signed in with one Teaching Hub tab and one Infinite Campus tab.'),
-      el('li', {}, el('strong', {text: 'At 6:30.'}), ' The scheduled roster check runs first, including Study Hall. Verified submitted work is filed as dated copies in private folders by class, section and student. Original files and Form upload folders are preserved; submission tidy finishes before score entry.'),
-      el('li', {}, el('strong', {text: 'At or after 7:00.'}), ' With weekday entry enabled, the Chrome helper processes mapped assignments across classes, fills blanks and raises lower scores only, then saves, reloads and verifies. Review the gradebook afterward; adjust any score that needs correction.'),
-      el('li', {}, el('strong', {text: 'At 7:30.'}), ' Student feedback goes in those same student folders. Teacher summaries, growth reports and notes go in separate private teacher report folders for each class.'),
-    ),
-    el('p', {class: 'muted', text: 'An enabled schedule, ready helper or attempted run is not proof of saved grades. Confirm the helper receipt and IC readback. If a save or readback is uncertain, stop further writes and inspect the named assignment in IC before clearing the recovery block.'}),
-    helperLine()));
-}
-
 // ---------- Link check ----------
 // Problems first, one line each; Forms shared by weeks and decks the Hub
 // can't open are summed up underneath, since they're usually fine.
@@ -3386,29 +3470,29 @@ async function runLinkCheck() {
   button.disabled = false;
 }
 
-// The former System page now lives in Today → Hub tools; its Notes live in Lessons.
+// Data keeps the existing helper receipts and operational notes.
 function loadRoutine() {
-  renderRoutine();
   loadMorningSummary();
   window.postMessage({channel: HELPER.send, version: 1, request_id: crypto.randomUUID(), type: 'status'}, location.origin);
 }
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  // An old #routine bookmark opens Today, where the Hub tools now are.
-  const current = ['today', 'plans', 'work'].includes(tab) ? tab : 'today';
-  for (const name of ['today', 'plans', 'work']) $('page-' + name).hidden = name !== current;
+  const current = tab === 'routine' || tab === 'system' ? 'data' : ['today', 'plans', 'work', 'data'].includes(tab) ? tab : 'today';
+  for (const name of ['today', 'plans', 'work', 'data']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
-  if (current === 'today') { loadToday(); loadRoutine(); }
-  else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
+  if (current === 'today') loadToday();
+  else if (current === 'work') { openWork(rest.map(part => decodeURIComponent(part))); loadGrowthLink(); }
+  else if (current === 'data') { loadToday(); loadRoutine(); loadSystemNotes(); loadStudentRecords(); }
   else {
-    loadSystemNotes();
+    loadLessonAccess();
     refreshVisiblePlans();
   }
 }
 
 fillSelect($('work-class'), CLASSES, work.cls);
+fillSelect($('records-class'), CLASSES, work.cls);
 $('prev-week').addEventListener('click', () => loadPlans(addDays(plans.date, -7)));
 $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7)));
 $('today').addEventListener('click', () => loadPlans(todayISO()));
@@ -3418,8 +3502,11 @@ $('work-class').addEventListener('change', e => { work.cls = e.target.value; sto
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
 $('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
 $('student-records').addEventListener('toggle', () => { if ($('student-records').open) loadStudentRecords(true); });
+$('records-class').addEventListener('change', () => loadStudentRecords(true));
+$('saved-feedback').addEventListener('toggle', () => loadFeedbackArchive());
+$('all-student-folders').addEventListener('toggle', () => loadFeedbackArchive());
 $('reload-today').addEventListener('click', () => loadToday(true));
-$('reload-routine').addEventListener('click', loadRoutine);
+$('reload-data').addEventListener('click', () => { loadToday(true); loadRoutine(); loadSystemNotes(true); loadStudentRecords(true); });
 $('run-link-check').addEventListener('click', runLinkCheck);
 $('reload-work').addEventListener('click', async () => {
   try { work.weeksFor = null; await loadWeeks(true); await loadWork(); await loadStudentRecords(true); } catch (error) { setStatus('work-status', error.message, true); }

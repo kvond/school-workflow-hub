@@ -735,18 +735,11 @@ test('a pending or failed calendar read cannot show the previous date’s lesson
   assert.equal(document.getElementById('cards').textContent, '');
 });
 
-test('Routine explains dated student filing and separate teacher reports without adding controls', () => {
-  const {context, document} = boot([]);
-  const routine = source.slice(source.indexOf('function renderRoutine()'), source.indexOf('// ---------- Link check ----------'));
-  vm.runInContext('function helperLine() { return el("p", {text: "Existing helper controls"}); }\n' + routine + '\nrenderRoutine();', context);
-  const panel = document.getElementById('routine-body');
-  assert.match(panel.textContent, /At 6:30\..*dated copies in private folders by class, section and student/);
-  assert.match(panel.textContent, /Original files and Form upload folders are preserved/);
-  assert.match(panel.textContent, /At 7:30\..*Student feedback goes in those same student folders/);
-  assert.match(panel.textContent, /Teacher summaries, growth reports and notes go in separate private teacher report folders for each class/);
-  assert.match(panel.textContent, /fills blanks and raises lower scores only.*saves, reloads and verifies/);
-  assert.equal(allNodes(panel).filter(node => ['button', 'input', 'select'].includes(node.tagName)).length, 0);
-  assert.match(panel.textContent, /Existing helper controls/);
+test('removed morning score presentation leaves helper receipt loading intact', () => {
+  assert.doesNotMatch(source, /function renderRoutine\(|Morning score check|routine-body/);
+  const routine = source.slice(source.indexOf('function loadRoutine()'), source.indexOf('function showTab()'));
+  assert.match(routine, /loadMorningSummary\(\)/);
+  assert.match(routine, /type: 'status'/);
 });
 
 test('legacy receipt flags remain unavailable detail and cannot become teacher tasks', async () => {

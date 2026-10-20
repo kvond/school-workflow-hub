@@ -20,7 +20,7 @@ function boot(reader = async () => ({topic: 'Updated lesson'})) {
   const context = vm.createContext({plans, document, location,
     window: {addEventListener: (name, handler) => { handlers[name] = handler; }},
     $: id => { if (!pages.has(id)) pages.set(id, {}); return pages.get(id); },
-    loadLessonReadiness() {}, loadToday() {}, openWork() {}, loadRoutine() {}, loadSystemNotes() {},
+    loadLessonReadiness() {}, loadToday() {}, openWork() {}, loadRoutine() {}, loadSystemNotes() {}, loadLessonAccess() {},
     loadPlans: async (date, fresh) => { requests.push({date, fresh}); plans.data = await reader(); }});
   vm.runInContext(refresh + navigation + listeners + '\nglobalThis.ui = {refreshVisiblePlans, showTab};', context);
   return {plans, document, location, requests, handlers, ui: context.ui};

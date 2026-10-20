@@ -13,7 +13,7 @@ class Element {
 }
 const source = readFileSync(new URL('../src/hub_v2/static/app.js', import.meta.url), 'utf8');
 const declarations = source.slice(0, source.indexOf('// ---------- Hub v3')) + source.slice(
-  source.indexOf('// ---------- Shared System notes'), source.indexOf('// ---------- Routine:'));
+  source.indexOf('// ---------- Shared System notes'), source.indexOf('// ---------- Link check ----------'));
 const walk = n => [n, ...n.children.filter(c => c instanceof Element).flatMap(walk)];
 function boot(failNotes = false) {
   const box = new Element('div'), calls = [];
