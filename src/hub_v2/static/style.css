@@ -149,6 +149,20 @@ button[disabled] { opacity: 0.6; cursor: default; }
 .lesson-edit .note q { font-style: italic; }
 .routine { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 0 0 16px; }
 .routine h2 { margin: 0 0 8px; font-size: 17px; }
+.routine > summary { cursor: pointer; }
+.routine > summary h2 { display: inline; margin: 0; }
+.routine[open] > summary { margin-bottom: 10px; }
+.lesson-access { margin-bottom: 24px; }
+.lesson-access .routine { padding: 10px 14px; margin-bottom: 8px; }
+.lesson-access .cockpit-panel { margin-bottom: 8px; }
+.feedback-key { font-size: 13px; color: var(--muted); }
+.feedback-date { margin: 10px 0; }
+.feedback-date > summary { cursor: pointer; font-weight: 600; }
+.feedback-date li, .feedback-folder-table li { margin: 5px 0; }
+.feedback-folder-table ul { margin: 0; padding-left: 18px; }
+.feedback-folder-table small { display: block; margin-top: 4px; }
+.feedback-file-name { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.student-growth { margin-top: 20px; border-top: 1px solid var(--line); }
 .routine-scheduled > summary { cursor: pointer; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .routine-scheduled > summary h2 { display: inline; margin: 0; }
 .routine-scheduled[open] > summary { margin-bottom: 8px; }

@@ -806,7 +806,8 @@ class AppTests(unittest.TestCase):
     def test_every_page_script_is_served_as_javascript(self):
         _, _, page = call("/v2/")
         scripts = re.findall(rb'<script[^>]+src="([^"]+)"', page)
-        self.assertIn(b"provider-status.js", scripts)
+        self.assertNotIn(b"provider-status.js", scripts)
+        self.assertIn(b"app.js", scripts)
         for script in scripts:
             with self.subTest(script=script):
                 status, headers, body = call("/v2/" + script.decode())

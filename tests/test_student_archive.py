@@ -138,6 +138,36 @@ def name_roster(*extra):
 
 
 class StudentArchiveTests(unittest.TestCase):
+    def test_listing_feedback_dates_and_types_use_saved_artifact_metadata_only(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        self.assertEqual(archive.file_feedback("read", "write", self.config, saved(), b"%PDF saved report")["status"], "verified")
+        listing = archive.archive_listing("read", self.config, "biology")
+        records = listing["students"][0]["records"]
+        report = next(item for item in records if item["kind"] == "feedback")
+        self.assertEqual((report["report_type"], report["feedback_date"], report["feedback_date_basis"]),
+                         ("critical_aspects", "2026-10-07", "saved_at"))
+        self.assertNotIn("feedback_date", next(item for item in records if item["kind"] == "work"))
+
+    def test_listing_report_dates_never_substitute_submission_or_legacy_file_dates(self):
+        base = {"kind": "feedback", "name": "Science writing contract", "date": "1999-01-01",
+                "created_at": "2000-01-01T12:00:00Z", "source_modified_at": "2001-01-01T12:00:00Z",
+                "saved_at": "2026-10-09T01:00:00Z"}
+        for report_type, origin in (("science_writing", "teacher_science_writing"),
+                                    ("missing_work_contract", "current_source_work_check")):
+            result = archive._listing_feedback({**base, "report_type": report_type, "feedback_origin": origin})
+            self.assertEqual((result["report_type"], result["feedback_date"], result["feedback_date_basis"]),
+                             (report_type, "2026-10-08", "saved_at"))
+        published = archive._listing_feedback({**base, "report_type": "science_writing", "feedback_origin": "teacher_science_writing",
+            "publication_day_basis": "native-writing-first-drive-created-at/v1"})
+        self.assertEqual((published["feedback_date"], published["feedback_date_basis"]),
+                         ("2000-01-01", "native-writing-first-drive-created-at/v1"))
+        for metadata in ({**base, "feedback_origin": "legacy_packet"},
+                         {**base, "saved_at": None}, {**base, "saved_at": "unavailable"}):
+            result = archive._listing_feedback(metadata)
+            self.assertIsNone(result["report_type"])
+            self.assertIsNone(result["feedback_date"])
+            self.assertEqual(result["feedback_date_basis"], "unverified")
+
     def setUp(self):
         self.drive, self.port, self.config = FakeDrive(), MemoryCAS(), config()
         self.patches = [patch.object(student_feedback_checklist, "refresh_run", return_value={"status": "verified"}),
@@ -918,7 +948,20 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(proof["current_report_id"], replacement["id"])
         self.assertEqual(len(archive.list_feedback("read", self.config)), 1)
         self.assertEqual(len(archive.work_index_rows("read", self.config)["rows"]), 2)
+        before = deepcopy(self.port.rows)
+        listing = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(self.port.rows, before)
+        reports = [record for record in listing["students"][0]["records"] if record["kind"] == "feedback"]
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(listing["counts"]["feedback"], 2)
+        previous = next(record for record in reports if record["historical"])
+        self.assertEqual((previous["feedback_id"], previous["report_type"], previous["feedback_date"]),
+                         (original["id"], "science_writing", "2026-10-09"))
+        self.assertEqual(previous["url"], archive._url(first["drive_file_id"]))
         self.drive.items[history["drive_file_id"]]["properties"][archive.TAG] = "WrongFolder"
+        held_listing = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(held_listing["status"], "held")
+        self.assertEqual(held_listing["students"], [])
         self.assertEqual(archive.verify_feedback_successor("read", self.config, "biology", original["id"])["status"], "held")
         self.drive.items[history["drive_file_id"]]["properties"][archive.TAG] = history["record_key"]
         successor_key = archive.key("archivefeedback", [ROOT, replacement["id"]])

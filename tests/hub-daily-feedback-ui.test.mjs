@@ -291,7 +291,8 @@ test('a late catalog and learning refresh cannot replace a newer Today saved doc
   assert.match(rendered.textContent, /2026-10-08 \(9 pages\)/);
   assert.doesNotMatch(rendered.textContent, /2026-10-07|1999-01-01|Saved feedback/);
   assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === newer.pdf_url));
-  assert.ok(walk(document.getElementById('today-feedback')).some(node => node.tagName === 'a' && node.href === 'https://example.test/current-growth'));
+  assert.ok(walk(document.getElementById('student-growth')).some(node => node.tagName === 'a' && node.href === 'https://example.test/current-growth'));
+  assert.doesNotMatch(document.getElementById('today-feedback').textContent, /growth|DTGSS/);
 });
 
 test('an earlier saved-packet response cannot overwrite a newer Today or start its stale catalog', async () => {

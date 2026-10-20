@@ -69,7 +69,7 @@ test('daily feedback has exactly one list link and update status, never delivery
   const ui = boot(), data = {requested_date: DAY, date: DAY, current_sources_verified: true, files: [{id: 'report1'}],
     delivery: {printed_file_ids: ['report1'], handed_file_ids: ['report1']}, email_delivery: {status: 'sent'}};
   const before = JSON.stringify(data), rendered = ui.renderTodayFeedback(data);
-  assert.match(rendered.textContent, /Updated · 2032-01-05.*Feedback list/);
+  assert.match(rendered.textContent, /Updated · 2032-01-05.*Feedback checklist/);
   assert.equal(walk(rendered).filter(n => n.tagName === 'a').length, 1);
   assert.equal(walk(rendered).filter(n => n.tagName === 'button').length, 0);
   assert.doesNotMatch(rendered.textContent, /Print|Handed|email|pending report/);
