@@ -221,6 +221,8 @@ def validate_release(
     all_text = "\n\n".join(slides)
     issues = []
     warnings = []
+    if not str(revision or "").strip():
+        issues.append("deck_revision_unavailable")
 
     contract = derive_teacher_contract(slides)
     aspects = list(contract.get("critical_aspects") or [])
@@ -234,6 +236,8 @@ def validate_release(
     inventory_cycle, tail = _inventory_payload(all_text)
     if not inventory_cycle:
         issues.append("marker_inventory_missing_or_duplicated")
+    elif not _INVENTORY.search(slides[0]):
+        issues.append("marker_inventory_not_on_first_slide")
 
     markers = [
         {"category": m.group(1), "cycle": m.group(2), "id": m.group(3).strip()}
@@ -270,11 +274,10 @@ def validate_release(
         ("OPTIONAL_IDS", "OPTIONAL"), ("BANK_IDS", "BANK"),
     ):
         declared = ids.get(field) or []
-        if declared:
-            actual = [m["id"] for m in markers if m["category"] == category]
-            if Counter(declared) != Counter(actual):
-                issues.append("marker_inventory_id_mismatch")
-                break
+        actual = [m["id"] for m in markers if m["category"] == category]
+        if Counter(declared) != Counter(actual):
+            issues.append("marker_inventory_id_mismatch")
+            break
 
     notes = {m["id"] for m in markers if m["category"] == "NOTES"}
     drafts = {m["id"] for m in markers if m["category"] == "DRAFT"}
