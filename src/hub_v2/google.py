@@ -36,10 +36,13 @@ FOLDER = "application/vnd.google-apps.folder"
 class GoogleError(Exception):
     """A problem worth showing the teacher, with the HTTP status if there was one."""
 
-    def __init__(self, message, status=None, reason=None):
+    def __init__(self, message, status=None, reason=None, retry_after=None):
         super().__init__(message)
         self.status = status
         self.reason = reason
+        # Keep the provider's retry guidance as data. Only explicitly scoped
+        # read callers may use it; this exception never repeats a write.
+        self.retry_after = retry_after
 
 
 def read_timed_out(error):
@@ -179,7 +182,8 @@ def _response_error(response):
         message = 'Google rejected the request (403); its access or request limit needs review.'
     else:
         message = _status_message(response.status_code)
-    return GoogleError(message, response.status_code, reason)
+    retry_after = getattr(response, 'headers', {}).get('Retry-After')
+    return GoogleError(message, response.status_code, reason, retry_after)
 
 
 def _status_message(status):
