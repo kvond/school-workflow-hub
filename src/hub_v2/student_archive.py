@@ -13,7 +13,7 @@ import re
 import uuid
 from copy import deepcopy
 from io import BytesIO
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from zipfile import ZipFile, BadZipFile
 import xml.etree.ElementTree as ET
 from PIL import Image, ImageOps
@@ -46,6 +46,22 @@ SOURCE_FIELDS = ",".join(f for f in FIELDS.split(",") if f not in {"permissions"
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
 LEASE_HEARTBEAT_SECONDS = 40
+
+
+def _registered_navigation_parent(run, class_key, old):
+    """A central original-work link saved before its copy retired navigation.
+
+    Such a record already names the class's verified "Original work links"
+    folder as its parent but has no retired_navigation flag. It stays central;
+    create() still reads back its source target, MIME, tag and private parent,
+    and retirement still requires the verified copy. No flag is set here.
+    """
+    if not old or old.value.get("retired_navigation") or old.value.get("mime") != SHORTCUT:
+        return False
+    folder = _read(run.port, key("archivesourcelinks", [run.root, class_key]))
+    return bool(folder and folder.value.get("status") == "verified" and folder.value.get("mime") == google.FOLDER
+                and folder.value.get("parent") == run.course["id"] and folder.value.get("drive_file_id")
+                and old.value.get("parent") == folder.value["drive_file_id"])
 
 
 def _source_revision(meta):
@@ -106,13 +122,41 @@ def _native_parts_proof(raw, prefix):
         raise Held("This native submission did not export as a complete readable document.") from None
 
 
-def _native_image_proof(url):
+NATIVE_IMAGE_DOCS_HOST = "docs.google.com"
+REDIRECTS = (301, 302, 303, 307, 308)
+
+
+def _plain_https(location):
+    return (location.scheme == "https" and bool(location.hostname) and not location.username
+            and not location.password and location.port in (None, 443))
+
+
+def _content_host(location):
+    return _plain_https(location) and location.hostname.endswith(".googleusercontent.com")
+
+
+def _native_image_proof(url, token=None):
+    """Prove one Slides API image location without trusting any other host.
+
+    Direct googleusercontent locations are fetched without credentials. The
+    Slides API can also return an exact docs.google.com location; only that
+    exact host receives the read token, and it may redirect once to a plain
+    googleusercontent location that is fetched without the token.
+    """
     location = urlsplit(url)
-    if (location.scheme != "https" or not location.hostname or not location.hostname.endswith(".googleusercontent.com")
-            or location.username or location.password or location.port not in (None, 443)):
+    docs = bool(token) and _plain_https(location) and location.hostname == NATIVE_IMAGE_DOCS_HOST
+    if not docs and not _content_host(location):
         raise Held("The native presentation supplied an unverified image location; its copy remains held.")
     try:
-        response = google._session().get(url, timeout=(5, 30), stream=True, allow_redirects=False)
+        session = google._session()
+        headers = {"Authorization": "Bearer " + token} if docs else {}
+        response = session.get(url, timeout=(5, 30), stream=True, allow_redirects=False, headers=headers)
+        if docs and response.status_code in REDIRECTS:
+            target = urljoin(url, response.headers.get("Location", ""))
+            response.close()
+            if not _content_host(urlsplit(target)):
+                raise Held("A native presentation image redirected to an unverified location; its copy remains held.")
+            response = session.get(target, timeout=(5, 30), stream=True, allow_redirects=False, headers={})
         with response:
             if response.status_code != 200:
                 raise Held("One native presentation image could not be verified.")
@@ -179,7 +223,7 @@ def _native_presentation_proof(token, ident, heartbeat=None):
     ordered = sorted(urls)
     with ThreadPoolExecutor(max_workers=4) as pool:
         images = {}
-        for url, proof in zip(ordered, pool.map(_native_image_proof, ordered)):
+        for url, proof in zip(ordered, pool.map(lambda location: _native_image_proof(location, token), ordered)):
             if heartbeat:
                 heartbeat()
             images[url] = proof
@@ -1623,7 +1667,8 @@ def archive_work(token, write_token, config, class_key, found):
                         label = date + " — " + student["name"] + " — " + _clean(title) + " — Work" + (
                             " (" + "; ".join(markers) + ")" if markers else "")
                         central_navigation = ((bool(config.get(RECORDS_CONFIG)) and not old)
-                                              or bool(old and old.value.get("retired_navigation")))
+                                              or bool(old and old.value.get("retired_navigation"))
+                                              or _registered_navigation_parent(run, class_key, old))
                         navigation_parent = run.navigation_folder()["drive_file_id"] if central_navigation else student["drive_file_id"]
                         artifact = run.create(artifact_key, label,
                             navigation_parent, SHORTCUT, target=file["id"], attributes={
