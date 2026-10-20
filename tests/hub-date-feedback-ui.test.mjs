@@ -154,3 +154,48 @@ test('a fresh archive read replaces a pending snapshot and ignores its eventual 
   assert.match(h.folders.textContent, /Fresh/);
   assert.doesNotMatch(h.folders.textContent, /Earlier/);
 });
+
+test('Reload while both lists are collapsed invalidates their cache without scanning until reopening', async () => {
+  let generation = 'Earlier';
+  const h = boot(cls => index(cls, cls === 'biology' ? [student(generation)] : []));
+  h.document.getElementById('saved-feedback').open = true;
+  await h.ui.loadFeedbackArchive();
+  assert.match(h.folders.textContent, /Earlier/);
+  h.document.getElementById('saved-feedback').open = false;
+  generation = 'Fresh';
+  await h.ui.loadFeedbackArchive(true);
+  assert.equal(h.requests.length, 3);
+  assert.equal(h.ui.feedbackArchive.readAt, 0);
+  assert.doesNotMatch(h.folders.textContent, /Earlier/);
+  h.document.getElementById('all-student-folders').open = true;
+  await h.ui.loadFeedbackArchive();
+  assert.equal(h.requests.length, 6);
+  assert.match(h.folders.textContent, /Fresh/);
+  assert.doesNotMatch(h.folders.textContent, /Earlier/);
+});
+
+test('a collapsed Reload invalidates pending replies and permits a fresh read on expansion', async () => {
+  let generation = 'Earlier', release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  const h = boot(async cls => {
+    const name = generation;
+    if (name === 'Earlier') await delayed;
+    return index(cls, cls === 'biology' ? [student(name)] : []);
+  });
+  h.document.getElementById('all-student-folders').open = true;
+  const earlier = h.ui.loadFeedbackArchive();
+  await new Promise(resolve => setImmediate(resolve));
+  h.document.getElementById('all-student-folders').open = false;
+  await h.ui.loadFeedbackArchive(true);
+  assert.equal(h.requests.length, 3);
+  assert.equal(h.ui.feedbackArchive.loading, false);
+  release(); await earlier;
+  assert.equal(h.ui.feedbackArchive.readAt, 0);
+  assert.doesNotMatch(h.folders.textContent, /Earlier/);
+  generation = 'Fresh';
+  h.document.getElementById('saved-feedback').open = true;
+  await h.ui.loadFeedbackArchive();
+  assert.equal(h.requests.length, 6);
+  assert.match(h.folders.textContent, /Fresh/);
+  assert.doesNotMatch(h.folders.textContent, /Earlier/);
+});
