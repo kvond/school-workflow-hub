@@ -1157,6 +1157,12 @@ function renderFeedbackArchive() {
   if (state.readAt && !state.loading && !students.length) folders.append(el('p', {class: 'muted', text: 'No student folders could be confirmed in the available indexes. Unread sources remain unverified.'}));
 }
 async function loadFeedbackArchive(fresh = false) {
+  if (fresh) {
+    feedbackArchive.seq++;
+    feedbackArchive.loading = false; feedbackArchive.readAt = 0;
+    feedbackArchive.courses = {}; feedbackArchive.failures = [];
+    renderFeedbackArchive();
+  }
   if (!$('saved-feedback')?.open && !$('all-student-folders')?.open) return;
   if (feedbackArchive.loading && !fresh) return;
   if (!fresh && feedbackArchive.readAt && Date.now() - feedbackArchive.readAt < 60_000) { renderFeedbackArchive(); return; }
