@@ -36,8 +36,17 @@ def first_names(first):
     return {n for n in names if n}
 
 
+SUFFIX = re.compile(r"\s+(?:jr|sr|ii|iii|iv|v)$")
+
+
+def last_names(last):
+    """'Harrigan Jr.' -> {'harrigan jr', 'harrigan'}: students often omit a suffix."""
+    full = plain(last)
+    return {n for n in (full, SUFFIX.sub("", full)) if n}
+
+
 def aliases(student):
-    return {compact(f + " " + student["last"]) for f in first_names(student["first"])}
+    return {compact(f + " " + l) for f in first_names(student["first"]) for l in last_names(student["last"])}
 
 
 LAYOUTS = {"first_last_columns": "first_last", "last_first_columns": "last_first"}
