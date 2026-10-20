@@ -1,5 +1,17 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Teacher test reruns after a no-write stop (0.5.34)
+
+**Run all mapped assignments now** is available again, any time and as often
+as needed, after a delivered pass that never reached an IC write. That means
+`execution_started` stayed false, every item has zero filled and raised
+counts, and every report and item code is a known pre-write stop or a
+read-only result. This lets the teacher test a change without waiting for 7 a.m.
+Each rerun repeats every Hub source, mapping, roster and destination check, and
+fills blanks or raises lower scores only. A pass that started any write keeps
+the existing once-per-day recheck and recovery limits. Automatic alarms still
+make one weekday attempt between 7 a.m. and noon, and they never start a rerun.
+
 ## School morning tabs (0.5.33)
 
 The extension's `morning-setup.html` page opens only missing Hub and Infinite

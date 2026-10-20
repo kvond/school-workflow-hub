@@ -81,7 +81,7 @@ test('popup exposes distinct checked-readback scope and only trusted checked cli
  ui.show(await h.invoke(ack));assert.match(ui.element('morning-status').textContent,/remains incomplete after a saved-result mismatch/);assert.equal(ui.element('morning-run-now').hidden,false);
 });
 test('manifest advances033 only; original origins and permissions remain bound with the postblur wait',()=>{
- const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../manifest.json'),'utf8'));assert.equal(manifest.version,'0.5.33');
- const {execFileSync}=require('node:child_process');const root=path.join(__dirname,'../..');const old=JSON.parse(execFileSync('git',['show','HEAD:browser-extension/manifest.json'],{cwd:root,encoding:'utf8'}));old.version='0.5.33';assert.deepEqual(manifest,old);
+ const manifest=JSON.parse(fs.readFileSync(path.join(__dirname,'../manifest.json'),'utf8'));assert.equal(manifest.version,'0.5.34');
+ const {execFileSync}=require('node:child_process');const root=path.join(__dirname,'../..');const old=JSON.parse(execFileSync('git',['show','HEAD:browser-extension/manifest.json'],{cwd:root,encoding:'utf8'}));old.version='0.5.34';assert.deepEqual(manifest,old);
  assert.match(fs.readFileSync(path.join(__dirname,'../ic-entry.js'),'utf8'),/edited_score_validation_pending/);
 });

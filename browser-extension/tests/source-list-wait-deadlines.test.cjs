@@ -35,5 +35,6 @@ test('finite source-list bridge210-second timeout retains incomplete state and n
  await h.alarm();await clock.advance(210001);await settle();assert.equal(h.state.morning_state.report.code,'hub_unavailable');
  const prior=structuredClone(h.state.morning_state);await clock.advance(50000);await h.alarm();
  assert.deepEqual(h.state.morning_state,prior);assert.equal(h.calls.filter(c=>c==='list').length,1);assert.ok(!h.calls.includes('execute'));
- assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+ // Nothing reached IC, so only an explicit teacher rerun is available.
+ assert.equal(h.state.morning_state.execution_started,false);assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
 });
