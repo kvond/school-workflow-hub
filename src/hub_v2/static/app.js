@@ -1158,7 +1158,7 @@ function renderFeedbackArchive() {
 }
 async function loadFeedbackArchive(fresh = false) {
   if (!$('saved-feedback')?.open && !$('all-student-folders')?.open) return;
-  if (feedbackArchive.loading) return;
+  if (feedbackArchive.loading && !fresh) return;
   if (!fresh && feedbackArchive.readAt && Date.now() - feedbackArchive.readAt < 60_000) { renderFeedbackArchive(); return; }
   const seq = ++feedbackArchive.seq;
   feedbackArchive.loading = true; feedbackArchive.courses = {}; feedbackArchive.failures = []; renderFeedbackArchive();
@@ -1174,14 +1174,14 @@ async function loadFeedbackArchive(fresh = false) {
   });
   feedbackArchive.loading = false; feedbackArchive.readAt = Date.now(); renderFeedbackArchive();
 }
-function loadLessonAccess() {
+function loadLessonAccess(fresh = false) {
   const seq = ++cockpit.seq;
   loadTodayFeedback(seq);
   getJSON('api/teacher-links').catch(() => ({})).then(data => {
     if (seq !== cockpit.seq) return;
     cockpit.teacherLinks = data; renderTodayFeedbackArea(seq);
   });
-  loadFeedbackArchive();
+  loadFeedbackArchive(fresh);
 }
 async function loadGrowthLink() {
   const data = await getJSON('api/learning-report').catch(() => ({configured: false}));
@@ -3496,7 +3496,7 @@ fillSelect($('records-class'), CLASSES, work.cls);
 $('prev-week').addEventListener('click', () => loadPlans(addDays(plans.date, -7)));
 $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7)));
 $('today').addEventListener('click', () => loadPlans(todayISO()));
-$('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
+$('reload-plans').addEventListener('click', () => { loadPlans(plans.date, true); loadLessonAccess(true); });
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
 $('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
 $('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
