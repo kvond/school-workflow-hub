@@ -596,6 +596,26 @@ test('safe full recheck is allowed after verified panels and a later zero-count 
  assert.equal(h.calls.filter(c=>c==='execute').length,2);
  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
 });
+test('same-day preflight rerun is allowed after a zero-count source-readiness skip',async()=>{
+ const run_id=uuid(),day='2026-10-01',stored={morning_enabled:true,morning_state:{day,manual_run_day:day,execution_started:false,
+  blocked:false,inflight:false,report_pending:false,report:{day,run_id,code:'panel_unusable',items:[
+   {assignment:'Ecosystems',code:'coverage_incomplete',filled:0,raised:0,kept:0,left:0},
+   {assignment:'Energy Flow',code:'panel_unusable',filled:0,raised:0,kept:0,left:0}]}}};
+ const h=background({stored});h.advance('2026-10-01T16:00:00Z');await settle();
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
+ await h.invoke({type:'morning_run_now'});await settle();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);
+ assert.equal(h.state.morning_state.manual_run_retry_day,day);
+});
+test('source-readiness skip with counts does not allow a same-day preflight rerun',async()=>{
+ const run_id=uuid(),day='2026-10-01',stored={morning_enabled:true,morning_state:{day,manual_run_day:day,execution_started:true,
+  blocked:false,inflight:false,report_pending:false,report:{day,run_id,code:'panel_unusable',items:[
+   {assignment:'Ecosystems',code:'coverage_incomplete',filled:1,raised:0,kept:0,left:0},
+   {assignment:'Energy Flow',code:'panel_unusable',filled:0,raised:0,kept:0,left:0}]}}};
+ const h=background({stored});h.advance('2026-10-01T16:00:00Z');await settle();
+ assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
+ await h.invoke({type:'morning_run_now'});await settle();assert.ok(!h.calls.includes('execute'));
+});
 test('missed-noon run-now remains unavailable if any write may have started',async()=>{
  const report={day:'2026-10-01',run_id:uuid(),code:'missed_noon',roster:'unavailable',items:[]};
  for(const changes of [{execution_started:true},{blocked:true},{report_pending:true},{outbox:[report]}]){
