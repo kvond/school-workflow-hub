@@ -21,6 +21,7 @@ ROOT = "FictionalArchiveRoot00001"
 COURSES = {"biology": "FictionalBiologyFolder001", "forensics": "FictionalForensicsFolder01",
            "anatomy": "FictionalAnatomyFolder001"}
 SOURCE = "FictionalStudentSource001"
+DOCS_IMAGE = "https://docs.google.com/slides-images-rt/Fictional-Opaque_Image0001=s1600?key=fictional"
 EARLIER = "FictionalStudentEarlier01"
 PERMISSIONS = [{"type": "user", "role": "owner", "emailAddress": "reader@fictional.example"},
                {"type": "user", "role": "writer", "emailAddress": "teacher@school.example"}]
@@ -338,6 +339,37 @@ class StudentArchiveTests(unittest.TestCase):
         copied = self.port.rows[navigation["work_copy_record_key"]].value
         self.assertEqual(self.drive.contents[copied["drive_file_id"]], self.drive.contents[SOURCE])
         self.assertEqual(archive.archive_listing("read", self.config, "biology")["counts"]["work"], 1)
+
+    def central_link_without_retired_flag(self):
+        self.records_layout()
+        self.assertEqual(self.archive()["status"], "verified")
+        doc = next(d for d in self.port.rows.values() if d.value.get("mime") == archive.SHORTCUT)
+        self.assertTrue(doc.value["retired_navigation"])
+        doc.value.pop("retired_navigation")
+        return doc.value
+
+    def test_central_original_link_without_retired_flag_reconciles_with_its_registered_parent(self):
+        link = self.central_link_without_retired_flag()
+        created, copied, moved = len(self.drive.created), list(self.drive.copied), list(self.drive.moved)
+        self.assertEqual(self.archive()["status"], "verified")
+        current = self.port.rows[link["record_key"]].value
+        self.assertEqual((current["parent"], current["drive_file_id"]), (link["parent"], link["drive_file_id"]))
+        self.assertTrue(current["retired_navigation"])
+        self.assertEqual(self.drive.items[link["drive_file_id"]]["parents"], [link["parent"]])
+        self.assertEqual((len(self.drive.created), self.drive.copied, self.drive.moved), (created, copied, moved))
+        student = self.port.rows[link["student_key"]].value
+        self.assertNotIn(link["record_key"], student["items"])
+
+    def test_unregistered_or_changed_parent_still_holds_the_original_link(self):
+        link = self.central_link_without_retired_flag()
+        link["parent"] = "FictionalOtherFolder00001"
+        result = self.archive()
+        self.assertEqual(result["status"], "held")
+        self.assertIn("different source or student", json.dumps(result))
+        link["parent"] = self.port.rows[archive.key("archivesourcelinks", [ROOT, "biology"])].value["drive_file_id"]
+        self.drive.items[link["drive_file_id"]]["parents"] = ["FictionalOtherFolder00001"]
+        self.assertEqual(self.archive()["status"], "held")
+        self.assertEqual(self.drive.items[link["drive_file_id"]]["parents"], ["FictionalOtherFolder00001"])
 
     def test_mismatched_real_copy_cannot_retire_or_detach_original_link(self):
         self.assertEqual(self.archive()["status"], "verified")
@@ -703,6 +735,105 @@ class StudentArchiveTests(unittest.TestCase):
             self.assertNotEqual(original["sha256"], archive._presentation_content_proof(changed, proofs)["sha256"])
         with self.assertRaises(archive.Held):
             archive._native_image_proof("https://untrusted.example/student-data")
+
+    def image_session(self, *responses):
+        session, calls = Mock(), []
+        queue = list(responses)
+        def get(url, **kwargs):
+            calls.append((url, dict(kwargs.get("headers") or {}), kwargs.get("allow_redirects")))
+            status, body, location = queue.pop(0)
+            response = Mock(status_code=status, headers={"Location": location} if location else {})
+            response.__enter__ = Mock(return_value=response); response.__exit__ = Mock(return_value=False)
+            response.iter_content = Mock(return_value=[body])
+            return response
+        session.get = Mock(side_effect=get)
+        return session, calls
+
+    def png(self):
+        raw = BytesIO(); Image.new("RGB", (2, 2), (10, 20, 30)).save(raw, "PNG"); return raw.getvalue()
+
+    def test_docs_image_location_uses_token_only_on_exact_docs_host(self):
+        url = DOCS_IMAGE
+        session, calls = self.image_session((200, self.png(), None))
+        with patch.object(google, "_session", return_value=session):
+            proof = archive._native_image_proof(url, "fictional-token")
+        self.assertEqual(proof["basis"], "image_pixels")
+        self.assertEqual(calls, [(url, {"Authorization": "Bearer fictional-token"}, False)])
+        for bad in ("https://docs.google.com.fictional.example/image", "https://fictional.docs.google.com/image",
+                    "http://docs.google.com/image", "https://docs.google.com:8443/image",
+                    "https://user@docs.google.com/image", "https://fictional.example/image"):
+            session, calls = self.image_session((200, self.png(), None))
+            with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+                archive._native_image_proof(bad, "fictional-token")
+            self.assertEqual(calls, [])
+        session, calls = self.image_session((200, self.png(), None))
+        with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+            archive._native_image_proof(url)
+        self.assertEqual(calls, [])
+
+    def test_docs_image_path_outside_slides_images_route_is_held_before_any_request(self):
+        for bad in ("https://docs.google.com/fictional-presentation-image",
+                    "https://docs.google.com/slides-images-rt/",
+                    "https://docs.google.com/slides-images-rt",
+                    "https://docs.google.com/slides-images-rtx/FictionalOpaque",
+                    "https://docs.google.com/other/slides-images-rt/FictionalOpaque",
+                    "https://docs.google.com/slides-images-rt/FictionalOpaque/extra",
+                    "https://docs.google.com/slides-images-rt/FictionalOpaque/",
+                    "https://docs.google.com/slides-images-rt/../spreadsheets/d/Fictional",
+                    "https://docs.google.com/slides-images-rt/..",
+                    "https://docs.google.com/slides-images-rt/.",
+                    "https://docs.google.com/slides-images-rt/%2e%2e",
+                    "https://docs.google.com/slides-images-rt/Fictional%2Fextra",
+                    "https://docs.google.com/slides-images-rt/Fictional\\extra",
+                    "https://docs.google.com//slides-images-rt/FictionalOpaque",
+                    "https://docs.google.com/slides-images-rt/FictionalOpaque#fragment"):
+            session, calls = self.image_session((200, self.png(), None))
+            with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+                archive._native_image_proof(bad, "fictional-token")
+            self.assertEqual(calls, [], bad)
+
+    def test_docs_image_follows_one_tokenless_redirect_to_content_host_only(self):
+        url = DOCS_IMAGE
+        target = "https://lh7.googleusercontent.com/fictional-image"
+        session, calls = self.image_session((302, b"", target), (200, self.png(), None))
+        with patch.object(google, "_session", return_value=session):
+            self.assertEqual(archive._native_image_proof(url, "fictional-token")["basis"], "image_pixels")
+        self.assertEqual(calls[1], (target, {}, False))
+        self.assertNotIn("fictional-token", json.dumps(calls[1:]))
+        for location in ("https://fictional.example/image", "http://lh7.googleusercontent.com/image",
+                         "https://lh7.googleusercontent.com:8443/image", "https://docs.google.com/again"):
+            session, calls = self.image_session((302, b"", location), (200, self.png(), None))
+            with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+                archive._native_image_proof(url, "fictional-token")
+            self.assertEqual(len(calls), 1)
+        session, calls = self.image_session((302, b"", target), (302, b"", "https://lh8.googleusercontent.com/x"))
+        with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+            archive._native_image_proof(url, "fictional-token")
+        self.assertEqual(len(calls), 2)
+        session, calls = self.image_session((200, b"x" * 15_000_001, None))
+        with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+            archive._native_image_proof(url, "fictional-token")
+
+    def test_direct_content_image_never_receives_the_token(self):
+        url = "https://lh7.googleusercontent.com/fictional-image"
+        session, calls = self.image_session((200, self.png(), None))
+        with patch.object(google, "_session", return_value=session):
+            archive._native_image_proof(url, "fictional-token")
+        self.assertEqual(calls, [(url, {}, False)])
+        session, calls = self.image_session((302, b"", "https://lh8.googleusercontent.com/x"))
+        with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+            archive._native_image_proof(url, "fictional-token")
+        self.assertEqual(len(calls), 1)
+
+    def test_native_presentation_proof_passes_its_read_token_to_each_image(self):
+        url = DOCS_IMAGE
+        native = {"slides": [{"objectId": "SlideA", "pageElements": [{"image": {"contentUrl": url}}]}]}
+        seen = []
+        def proof(location, token=None):
+            seen.append((location, token)); return {"sha256": "a" * 64}
+        with patch.object(google, "get_json", return_value=native), patch.object(archive, "_native_image_proof", side_effect=proof):
+            self.assertEqual(archive._native_presentation_proof("fictional-token", "FictionalDeck0001")["image_instances"], 1)
+        self.assertEqual(seen, [(url, "fictional-token")])
 
     def test_index_pairs_exact_source_and_form_but_keeps_unmatched_historical_feedback(self):
         self.assertEqual(self.archive()["status"], "verified")
