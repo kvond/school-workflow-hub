@@ -96,7 +96,8 @@
   return s.manual_run_day===t.day&&s.manual_run_retry_day!==t.day&&s.report?.day===t.day
    &&preflightCodes.has(s.report?.code)&&Array.isArray(items)
    &&(items.length===0?s.execution_started===false:items.some(i=>i.code===s.report.code&&zeroCounts(i))
-    &&items.every(i=>completedCodes.has(i.code)||(i.code===s.report.code&&zeroCounts(i))));
+    // A Hub-side source-readiness skip never reaches IC, so it does not block the rerun.
+    &&items.every(i=>completedCodes.has(i.code)||((i.code===s.report.code||i.code==='coverage_incomplete')&&zeroCounts(i))));
  }
  const validDay=day=>typeof day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day)
   &&Number.isFinite(Date.parse(day+'T12:00:00Z'))&&new Date(day+'T12:00:00Z').toISOString().slice(0,10)===day;
