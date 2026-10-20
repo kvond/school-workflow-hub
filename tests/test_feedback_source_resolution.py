@@ -5,12 +5,13 @@ only output shapes.
 """
 from collections import Counter
 from copy import deepcopy
+from email.utils import formatdate
 import hashlib
 import threading
 import unittest
 from unittest.mock import patch
 
-from hub_v2 import app, combined_assessment as combined, completion, google
+from hub_v2 import app, combined_assessment as combined, completion, feedback_source_resolution as retry, google
 from test_combined_assessment import captures, declaration, event, form, T1, T2, S1
 
 TOKEN = 'fictional-token'
@@ -245,6 +246,155 @@ class RetainedSourcesTests(unittest.TestCase):
             self.assertIs(combined._retained_store.get(), first)
         self.assertIsNone(combined._retained_store.get())
         self.assertIsInstance(first, combined.RetainedSources)
+
+    def test_feedback_source_export_retries_429_then_checks_source_bookend(self):
+        fid = self.students[0]
+        raw, calls = self.raw.side_effect, []
+        budget = retry.ReadBudget(clock=self.clock, sleep=calls.append)
+
+        def limited_once(*args):
+            if not calls:
+                raise google.GoogleError('Limited', 429, retry_after='1')
+            return raw(*args)
+
+        self.raw.side_effect = limited_once
+        with patch.object(retry, 'ReadBudget', return_value=budget):
+            self.read(fid)
+        self.assertEqual(calls, [1.0])
+        self.assertEqual(self.raw.call_count, 2)
+        self.assertEqual(self.metadata_calls[fid], 2)
+        self.assertEqual(self.exports[fid], 1)
+
+    def test_revision_change_during_export_retry_still_holds_and_is_not_retained(self):
+        fid = self.students[0]
+
+        def change(_delay):
+            self.values[fid]['metadata']['version'] = '99'
+
+        budget = retry.ReadBudget(clock=self.clock, sleep=change)
+        raw, count = self.raw.side_effect, [0]
+
+        def limited_once(*args):
+            count[0] += 1
+            if count[0] == 1:
+                raise google.GoogleError('Limited', 429)
+            return raw(*args)
+
+        self.raw.side_effect = limited_once
+        with patch.object(retry, 'ReadBudget', return_value=budget):
+            with self.assertRaisesRegex(combined.Held, 'changed'):
+                self.read(fid)
+        self.assertEqual(self.store.values, {})
+
+    def test_non_feedback_sources_do_not_retry(self):
+        self.raw.side_effect = google.GoogleError('Limited', 429)
+        with self.assertRaises(google.GoogleError):
+            combined.read_source(TOKEN, self.students[0])
+        self.assertEqual(self.raw.call_count, 1)
+
+
+class SourceReadRetryTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.delays = []
+        self.budget = retry.ReadBudget(clock=self.clock, wall_clock=lambda: 1_000_000, sleep=self.delays.append)
+
+    def operation(self, errors):
+        from unittest.mock import Mock
+        return Mock(side_effect=errors)
+
+    def test_retry_after_seconds_and_http_date_are_honored(self):
+        for header in ('1', formatdate(1_000_001, usegmt=True)):
+            self.setUp()
+            operation = self.operation([google.GoogleError('Limited', 429, retry_after=header), 'read'])
+            with retry.source_reads(self.budget):
+                self.assertEqual(retry.read(operation), 'read')
+            self.assertEqual(self.delays, [1.0])
+            self.assertEqual(operation.call_count, 2)
+
+    def test_missing_retry_after_uses_two_bounded_delays_and_precise_hold(self):
+        operation = self.operation([google.GoogleError('Limited', 429)] * 3)
+        with retry.source_reads(self.budget), self.assertRaisesRegex(google.GoogleError, 'feedback source reads') as held:
+            retry.read(operation)
+        self.assertEqual(held.exception.status, 429)
+        self.assertEqual(operation.call_count, 3)
+        self.assertEqual(self.delays, [.5, 1.0])
+
+    def test_long_invalid_or_unbounded_guidance_holds_without_early_retry(self):
+        headers = ('3', '99999999999999999999999999999999999999999999', 'not a date',
+                   '', '-1', '0.5', 'Fri, 21 Nov 1997 09:55:06', 1, '1' * 101,
+                   formatdate(1_000_003, usegmt=True))
+        for header in headers:
+            with self.subTest(header=header):
+                operation = self.operation([google.GoogleError('Limited', 429, retry_after=header)])
+                with retry.source_reads(self.budget), self.assertRaises(google.GoogleError):
+                    retry.read(operation)
+                self.assertEqual(operation.call_count, 1)
+        self.assertEqual(self.delays, [])
+
+    def test_other_errors_never_retry_and_scopes_are_reset(self):
+        for status, reason in ((403, 'userRateLimitExceeded'), (500, None), (None, 'read_timeout')):
+            with self.subTest(status=status):
+                operation = self.operation([google.GoogleError('Unavailable', status, reason)])
+                with retry.source_reads(self.budget), self.assertRaises(google.GoogleError):
+                    retry.read(operation)
+                self.assertEqual(operation.call_count, 1)
+        self.assertIsNone(retry._budget.get())
+        operation = self.operation([google.GoogleError('Limited', 429)])
+        with self.assertRaises(google.GoogleError):
+            retry.read(operation)
+        self.assertEqual(operation.call_count, 1)
+
+    def test_nested_scopes_and_concurrent_workers_share_one_total_budget(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextvars import copy_context
+        failures, calls = [], []
+        lock = threading.Lock()
+
+        def operation():
+            with lock:
+                calls.append(True)
+            raise google.GoogleError('Limited', 429)
+
+        with retry.source_reads(self.budget), retry.source_reads():
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                jobs = [pool.submit(copy_context().run, retry.read, operation) for _ in range(6)]
+                for job in jobs:
+                    try:
+                        job.result()
+                    except google.GoogleError as error:
+                        failures.append(error)
+        self.assertTrue(failures)
+        self.assertEqual(len(calls), 8)
+        self.assertEqual(sorted(self.delays), [.5, 1.0])
+
+    def test_expired_request_budget_never_retries(self):
+        self.clock.now += retry.MAX_ELAPSED_SECONDS
+        operation = self.operation([google.GoogleError('Limited', 429)])
+        with retry.source_reads(self.budget), self.assertRaises(google.GoogleError):
+            retry.read(operation)
+        self.assertEqual(operation.call_count, 1)
+        self.assertEqual(self.delays, [])
+
+    def test_oversleep_does_not_start_a_read_after_the_request_deadline(self):
+        self.clock.now += retry.MAX_ELAPSED_SECONDS - .6
+
+        def oversleep(delay):
+            self.clock.now += delay + .2
+
+        self.budget.sleep = oversleep
+        operation = self.operation([google.GoogleError('Limited', 429), 'too late'])
+        with retry.source_reads(self.budget), self.assertRaisesRegex(google.GoogleError, 'feedback source reads'):
+            retry.read(operation)
+        self.assertEqual(operation.call_count, 1)
+
+    def test_provider_error_preserves_only_retry_header_and_typed_reason(self):
+        from types import SimpleNamespace
+        response = SimpleNamespace(status_code=429, headers={'Retry-After': '2'},
+            json=lambda: {'error': {'errors': [{'reason': 'rateLimitExceeded'}]}})
+        error = google._response_error(response)
+        self.assertEqual((error.status, error.reason, error.retry_after), (429, 'rateLimitExceeded', '2'))
+        self.assertNotIn('2', str(error))
 
 
 if __name__ == '__main__':

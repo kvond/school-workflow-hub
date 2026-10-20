@@ -17,7 +17,7 @@ import re
 from threading import Lock
 import time
 
-from . import completion, google, work
+from . import completion, feedback_source_resolution, google, work
 
 CONFIG = 'HUB_COMBINED_ASSESSMENTS'
 FIELDS = {'school_year', 'agenda_id', 'class_key', 'week', 'form_id',
@@ -107,7 +107,8 @@ def retained_sources(store):
     """Let source reads in this scope reuse validated captures from store."""
     context = _retained_store.set(store)
     try:
-        yield
+        with feedback_source_resolution.source_reads():
+            yield
     finally:
         _retained_store.reset(context)
 
@@ -255,7 +256,7 @@ def definition(config, agenda, cls, week, fid):
 
 
 def _source_metadata(token, fid):
-    before = google.drive_file(token, fid, SOURCE_FIELDS)
+    before = feedback_source_resolution.read(google.drive_file, token, fid, SOURCE_FIELDS)
     if (before.get('id') != fid or before.get('trashed') is not False
             or before.get('mimeType') not in (completion.SLIDES, google.PPTX)
             or not before.get('version')):
@@ -264,7 +265,7 @@ def _source_metadata(token, fid):
 
 
 def _capture_source(token, fid, before):
-    raw = google.deck_bytes(token, fid, before['mimeType'])
+    raw = feedback_source_resolution.read(google.deck_bytes, token, fid, before['mimeType'])
     if before['mimeType'] == google.PPTX and before.get('md5Checksum'):
         if hashlib.md5(raw).hexdigest() != before['md5Checksum']:
             raise Held('A combined Office source does not match its current checksum.')
