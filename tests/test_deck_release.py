@@ -89,6 +89,59 @@ class DeckReleaseTests(unittest.TestCase):
         self.assertEqual(result["status"], "NOT_READY")
         self.assertIn("marker_inventory_count_mismatch", result["issues"])
 
+    def test_inventory_on_a_later_slide_cannot_release_the_deck(self):
+        slides = list(good_slides())
+        slides[0], inventory = slides[0].rsplit("\n", 1)
+        slides[-1] += "\n" + inventory
+        result = validate_release(tuple(slides), revision="42", prompt0="p0", prompt2="p2")
+        self.assertEqual(result["status"], "NOT_READY")
+        self.assertIn("marker_inventory_not_on_first_slide", result["issues"])
+
+    def test_counts_cannot_replace_exact_ids_for_a_populated_category(self):
+        import re
+        for field in ("NOTES_IDS", "DRAFT_IDS", "OPTIONAL_IDS", "BANK_IDS"):
+            for replacement in ("", field + "="):
+                with self.subTest(field=field, replacement=replacement):
+                    slides = list(good_slides())
+                    slides[0] = re.sub(r"\b" + field + r"=[^\s]*", replacement, slides[0])
+                    result = validate_release(tuple(slides), revision="42", prompt0="p0", prompt2="p2")
+                    self.assertEqual(result["status"], "NOT_READY")
+                    self.assertIn("marker_inventory_id_mismatch", result["issues"])
+
+    def test_zero_count_categories_do_not_require_invented_ids(self):
+        slides = list(good_slides())
+        slides[0] = slides[0].replace("OPTIONAL=1 BANK_TERMS=1", "OPTIONAL=0 BANK_TERMS=0")
+        slides[0] = slides[0].replace(" OPTIONAL_IDS=OPT-RELATES BANK_IDS=glucose", "")
+        slides = slides[:-1]
+        result = validate_release(tuple(slides), revision="42", prompt0="p0", prompt2="p2")
+        self.assertEqual(result["status"], "READY")
+
+    def test_no_ready_receipt_without_a_final_source_revision(self):
+        for revision in ("", "   ", None):
+            with self.subTest(revision=revision):
+                result = validate_release(good_slides(), revision=revision, prompt0="p0", prompt2="p2")
+                self.assertEqual(result["status"], "NOT_READY")
+                self.assertIn("deck_revision_unavailable", result["issues"])
+
+    def test_four_declared_aspects_with_only_two_present_names_the_missing_pair(self):
+        slides = list(good_slides())
+        slides[0] = slides[0].replace(
+            "1 — Selective permeability: what the membrane lets through",
+            "1 — Selective permeability: what the membrane lets through\n"
+            "2 — Chromosome separation\n3 — Cilia motion\n4 — Tissue structure",
+        ).replace("NOTES=6 DRAFT=1", "NOTES=12 DRAFT=2").replace(
+            " DRAFT_IDS=CA1-MASTERY",
+            ",CA2-QUESTION,CA2-CONTRAST,CA2-RULE,CA2-PATTERNBREAK,CA2-MASTERY,CA2-WHATIF"
+            " DRAFT_IDS=CA1-MASTERY,CA2-MASTERY",
+        )
+        slides.extend(slide.replace("selective permeability", "chromosome separation")
+                      .replace("CA1-", "CA2-").replace(":WHATIF", ":CA2-WHATIF")
+                      for slide in good_slides()[1:-1])
+        result = validate_release(tuple(slides), revision="42", prompt0="p0", prompt2="p2")
+        self.assertEqual(result["status"], "NOT_READY")
+        self.assertEqual(result["issues"], ["critical_aspect_block_missing:cilia motion",
+                                             "critical_aspect_block_missing:tissue structure"])
+
     def test_duplicate_marker_is_not_ready(self):
         slides = list(good_slides())
         slides.append("[[NOTES:C06:CA1-QUESTION]]")
