@@ -54,6 +54,8 @@ read proves today's update; a saved older PDF or Printed/Handed mark cannot.
 The checklist link, collapsed **Saved feedback by date** and **All student
 folders**, and **Check lesson links** start Lessons. The two lists read all three
 connected class archive indexes only on expansion and reuse that read briefly.
+Lessons Reload refreshes the checklist sources and any expanded lists; collapsed
+lists do not trigger an archive scan. A fresh read supersedes pending older data.
 X means saved general/critical-aspect feedback, W science writing and C contracts;
 unknown types remain `?`. Dates come from saved report metadata, including the
 explicit first-publication basis for native writing reports. Original-file,

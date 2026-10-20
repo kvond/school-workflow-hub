@@ -162,6 +162,7 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual((published["feedback_date"], published["feedback_date_basis"]),
                          ("2000-01-01", "native-writing-first-drive-created-at/v1"))
         for metadata in ({**base, "feedback_origin": "legacy_packet"},
+                         {**base, "record_key": "archivelegacyfeedback_" + "e" * 64},
                          {**base, "saved_at": None}, {**base, "saved_at": "unavailable"}):
             result = archive._listing_feedback(metadata)
             self.assertIsNone(result["report_type"])

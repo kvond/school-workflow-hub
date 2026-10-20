@@ -5,13 +5,13 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../src/hub_v2/static/app.js', import.meta.url), 'utf8');
 class Element {
-  constructor(tag) { this.tagName = tag; this.children = []; this._text = ''; this.open = false; }
+  constructor(tag) { this.tagName = tag; this.children = []; this._text = ''; this.open = false; this.listeners = {}; }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map(child => child instanceof Element ? child.textContent : String(child)).join(''); }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this._text = ''; this.children = children; }
   setAttribute(name, value) { this[name] = value; }
-  addEventListener() {}
+  addEventListener(name, listener) { this.listeners[name] = listener; }
 }
 const walk = node => [node, ...node.children.filter(child => child instanceof Element).flatMap(walk)];
 const report = (type, day, suffix) => ({kind: 'feedback', name: 'Same lesson title', date: '1999-01-01',
@@ -22,20 +22,20 @@ const index = (cls, students = [], overrides = {}) => ({schema: 'hub-student-arc
 const student = (name, records = []) => ({name, section: 'Fictional Section', status: 'current', records,
   folder_url: 'https://drive.google.com/drive/folders/FictionalFolder' + name.replaceAll(' ', '')});
 function boot(handler = cls => index(cls)) {
-  const nodes = new Map(), requests = [];
+  const nodes = new Map(), requests = [], dailyReads = [];
   const document = {createElement: tag => new Element(tag), getElementById(id) {
     if (!nodes.has(id)) nodes.set(id, new Element(id.endsWith('-body') ? 'div' : 'details'));
     return nodes.get(id);
   }};
-  const context = vm.createContext({document, Node: Element, URL, fetch: async (url, options) => {
+  const context = vm.createContext({document, Node: Element, URL, loadTodayFeedback: seq => dailyReads.push(seq), renderTodayFeedbackArea() {}, fetch: async (url, options) => {
     requests.push({url, options}); const cls = new URL(url, 'https://example.invalid/').searchParams.get('class');
-    return {ok: true, json: async () => handler(cls)};
+    return {ok: true, json: async () => url === 'api/teacher-links' ? {feedback_list_url: 'https://example.invalid/checklist'} : handler(cls)};
   }});
   const prelude = source.slice(0, source.indexOf('function issueAction('));
   const archive = source.slice(source.indexOf('// Saved artifacts across all connected'), source.indexOf('// ---------- Week ahead:'));
   const helpers = source.slice(source.indexOf('function recordFolderURL('), source.indexOf('async function loadStudentRecords('));
   vm.runInContext(prelude + archive + helpers + '\nglobalThis.ui = {loadFeedbackArchive, renderFeedbackArchive, feedbackArchive, feedbackArtifact};', context);
-  return {ui: context.ui, document, requests, dates: document.getElementById('saved-feedback-body'), folders: document.getElementById('all-student-folders-body')};
+  return {ui: context.ui, context, document, requests, dailyReads, dates: document.getElementById('saved-feedback-body'), folders: document.getElementById('all-student-folders-body')};
 }
 
 test('collapsed lists make no request, share one all-class read, and reuse that read on the second expansion', async () => {
@@ -109,4 +109,48 @@ test('pending reads and a failed refresh discard earlier data instead of present
   release(); await refreshing;
   assert.match(h.dates.textContent, /source unavailable/);
   assert.doesNotMatch(h.folders.textContent, /Ann Avery/);
+});
+
+test('existing Lessons Reload refreshes expanded dates, folders and checklist sources without scanning collapsed lists', async () => {
+  let generation = 'Earlier';
+  const h = boot(cls => index(cls, cls === 'biology' ? [student(generation, [report('critical_aspects', '2032-01-07', generation)])] : []));
+  h.document.getElementById('saved-feedback').open = true;
+  await h.ui.loadFeedbackArchive();
+  generation = 'Fresh';
+  const plans = [];
+  h.context.plans = {date: '2032-01-07'};
+  h.context.loadPlans = (date, fresh) => plans.push({date, fresh});
+  vm.runInContext(source.split('\n').find(line => line.startsWith("$('reload-plans').addEventListener(")), h.context);
+  h.document.getElementById('reload-plans').listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(h.dates.textContent, /Fresh/);
+  assert.doesNotMatch(h.dates.textContent, /Earlier/);
+  assert.match(h.folders.textContent, /Fresh/);
+  assert.equal(h.requests.filter(request => request.url.startsWith('api/student-records')).length, 6);
+  assert.equal(h.requests.filter(request => request.url === 'api/teacher-links').length, 1);
+  assert.equal(h.dailyReads.length, 1);
+  assert.deepEqual(plans, [{date: '2032-01-07', fresh: true}]);
+  h.document.getElementById('saved-feedback').open = false;
+  h.document.getElementById('reload-plans').listeners.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.requests.filter(request => request.url.startsWith('api/student-records')).length, 6);
+  assert.equal(h.dailyReads.length, 2);
+});
+
+test('a fresh archive read replaces a pending snapshot and ignores its eventual stale response', async () => {
+  let generation = 'Earlier', release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  const h = boot(async cls => {
+    const name = generation;
+    if (name === 'Earlier') await delayed;
+    return index(cls, cls === 'biology' ? [student(name)] : []);
+  });
+  h.document.getElementById('all-student-folders').open = true;
+  const older = h.ui.loadFeedbackArchive();
+  await new Promise(resolve => setImmediate(resolve));
+  generation = 'Fresh'; await h.ui.loadFeedbackArchive(true);
+  assert.match(h.folders.textContent, /Fresh/);
+  release(); await older;
+  assert.match(h.folders.textContent, /Fresh/);
+  assert.doesNotMatch(h.folders.textContent, /Earlier/);
 });

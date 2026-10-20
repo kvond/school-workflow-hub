@@ -49,7 +49,7 @@ function boot(overrides = () => undefined) {
     refreshVisiblePlans() { planReads.push('navigation'); },
     loadPlans(date, fresh) { planReads.push({date, fresh}); },
     openWork() {}, loadRoutine() { toolsReads.push('routine'); }, loadSystemNotes() { toolsReads.push('notes'); },
-    loadLessonAccess() { toolsReads.push('feedback'); }, loadGrowthLink() {}, loadStudentRecords() {},
+    loadLessonAccess(fresh = false) { toolsReads.push(fresh ? 'fresh-feedback' : 'feedback'); }, loadGrowthLink() {}, loadStudentRecords() {},
   });
   vm.runInContext(renderers + `
     function renderMorningCockpit() { return el('p', {text: 'Existing morning receipt'}); }
@@ -136,13 +136,13 @@ test('Lessons navigation and Reload read plans without starting a hidden readine
   app.document.getElementById('reload-plans').listeners.click();
   assert.deepEqual(app.planReads, ['navigation', {date: '2032-01-07', fresh: true}]);
   assert.equal(app.requests.length, 0);
-  assert.deepEqual(app.toolsReads, ['feedback']);
+  assert.deepEqual(app.toolsReads, ['feedback', 'fresh-feedback']);
   assert.equal(app.document.getElementById('page-today').hidden, true);
   app.context.location.hash = '#today';
   app.ui.showTab();
   await tick();
   assert.equal(app.document.getElementById('page-today').hidden, false);
-  assert.deepEqual(app.toolsReads, ['feedback']);
+  assert.deepEqual(app.toolsReads, ['feedback', 'fresh-feedback']);
   assert.equal(app.document.getElementById('page-plans').hidden, true);
   assert.match(app.document.getElementById('lesson-readiness-body').textContent, /Biology · Wk 09/);
 });

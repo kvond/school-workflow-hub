@@ -2509,12 +2509,14 @@ def _listing_feedback(artifact):
         return {}
     origin = artifact.get("feedback_origin", "native_saved")
     report_type = artifact.get("report_type")
-    if (not report_type and origin == "native_saved"
-            and re.fullmatch(r"feedbackdraft_[a-f0-9]{64}", str(artifact.get("feedback_id") or ""))):
+    native = origin == "native_saved" and bool(re.fullmatch(
+        r"feedbackdraft_[a-f0-9]{64}", str(artifact.get("feedback_id") or "")))
+    if not report_type and native:
         report_type = "critical_aspects"
     day, basis = None, "unverified"
-    if origin in {"native_saved", "teacher_science_writing", "current_source_work_check"}:
-        publication = artifact.get("publication_day_basis") == "native-writing-first-drive-created-at/v1"
+    if native or origin in {"teacher_science_writing", "current_source_work_check"}:
+        publication = (origin == "teacher_science_writing" and report_type == "science_writing"
+            and artifact.get("publication_day_basis") == "native-writing-first-drive-created-at/v1")
         stamp = artifact.get("created_at") if publication else artifact.get("saved_at")
         try:
             day = _date(stamp)
