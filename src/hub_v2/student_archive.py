@@ -135,16 +135,32 @@ def _content_host(location):
     return _plain_https(location) and location.hostname.endswith(".googleusercontent.com")
 
 
+NATIVE_IMAGE_DOCS_PREFIX = "/slides-images-rt/"
+_OPAQUE_SEGMENT = re.compile(r"[A-Za-z0-9_\-.~=]+")
+
+
+def _docs_image_path(location):
+    """Only /slides-images-rt/ plus exactly one opaque segment is accepted."""
+    path = location.path
+    if not path.startswith(NATIVE_IMAGE_DOCS_PREFIX) or location.fragment:
+        return False
+    segment = path[len(NATIVE_IMAGE_DOCS_PREFIX):]
+    return bool(_OPAQUE_SEGMENT.fullmatch(segment)) and segment not in (".", "..")
+
+
 def _native_image_proof(url, token=None):
     """Prove one Slides API image location without trusting any other host.
 
     Direct googleusercontent locations are fetched without credentials. The
-    Slides API can also return an exact docs.google.com location; only that
-    exact host receives the read token, and it may redirect once to a plain
-    googleusercontent location that is fetched without the token.
+    Slides API can also return a docs.google.com location; only that exact
+    host with the /slides-images-rt/<one opaque segment> path receives the
+    read token, and it may redirect once to a plain googleusercontent
+    location that is fetched without the token. Any other docs.google.com
+    path is held before a request is made.
     """
     location = urlsplit(url)
-    docs = bool(token) and _plain_https(location) and location.hostname == NATIVE_IMAGE_DOCS_HOST
+    docs = (bool(token) and _plain_https(location) and location.hostname == NATIVE_IMAGE_DOCS_HOST
+            and _docs_image_path(location))
     if not docs and not _content_host(location):
         raise Held("The native presentation supplied an unverified image location; its copy remains held.")
     try:

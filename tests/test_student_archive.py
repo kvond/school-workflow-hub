@@ -21,6 +21,7 @@ ROOT = "FictionalArchiveRoot00001"
 COURSES = {"biology": "FictionalBiologyFolder001", "forensics": "FictionalForensicsFolder01",
            "anatomy": "FictionalAnatomyFolder001"}
 SOURCE = "FictionalStudentSource001"
+DOCS_IMAGE = "https://docs.google.com/slides-images-rt/Fictional-Opaque_Image0001=s1600?key=fictional"
 EARLIER = "FictionalStudentEarlier01"
 PERMISSIONS = [{"type": "user", "role": "owner", "emailAddress": "reader@fictional.example"},
                {"type": "user", "role": "writer", "emailAddress": "teacher@school.example"}]
@@ -752,7 +753,7 @@ class StudentArchiveTests(unittest.TestCase):
         raw = BytesIO(); Image.new("RGB", (2, 2), (10, 20, 30)).save(raw, "PNG"); return raw.getvalue()
 
     def test_docs_image_location_uses_token_only_on_exact_docs_host(self):
-        url = "https://docs.google.com/fictional-presentation-image"
+        url = DOCS_IMAGE
         session, calls = self.image_session((200, self.png(), None))
         with patch.object(google, "_session", return_value=session):
             proof = archive._native_image_proof(url, "fictional-token")
@@ -770,8 +771,29 @@ class StudentArchiveTests(unittest.TestCase):
             archive._native_image_proof(url)
         self.assertEqual(calls, [])
 
+    def test_docs_image_path_outside_slides_images_route_is_held_before_any_request(self):
+        for bad in ("https://docs.google.com/fictional-presentation-image",
+                    "https://docs.google.com/slides-images-rt/",
+                    "https://docs.google.com/slides-images-rt",
+                    "https://docs.google.com/slides-images-rtx/FictionalOpaque",
+                    "https://docs.google.com/other/slides-images-rt/FictionalOpaque",
+                    "https://docs.google.com/slides-images-rt/FictionalOpaque/extra",
+                    "https://docs.google.com/slides-images-rt/FictionalOpaque/",
+                    "https://docs.google.com/slides-images-rt/../spreadsheets/d/Fictional",
+                    "https://docs.google.com/slides-images-rt/..",
+                    "https://docs.google.com/slides-images-rt/.",
+                    "https://docs.google.com/slides-images-rt/%2e%2e",
+                    "https://docs.google.com/slides-images-rt/Fictional%2Fextra",
+                    "https://docs.google.com/slides-images-rt/Fictional\\extra",
+                    "https://docs.google.com//slides-images-rt/FictionalOpaque",
+                    "https://docs.google.com/slides-images-rt/FictionalOpaque#fragment"):
+            session, calls = self.image_session((200, self.png(), None))
+            with patch.object(google, "_session", return_value=session), self.assertRaises(archive.Held):
+                archive._native_image_proof(bad, "fictional-token")
+            self.assertEqual(calls, [], bad)
+
     def test_docs_image_follows_one_tokenless_redirect_to_content_host_only(self):
-        url = "https://docs.google.com/fictional-presentation-image"
+        url = DOCS_IMAGE
         target = "https://lh7.googleusercontent.com/fictional-image"
         session, calls = self.image_session((302, b"", target), (200, self.png(), None))
         with patch.object(google, "_session", return_value=session):
@@ -804,7 +826,7 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_native_presentation_proof_passes_its_read_token_to_each_image(self):
-        url = "https://docs.google.com/fictional-presentation-image"
+        url = DOCS_IMAGE
         native = {"slides": [{"objectId": "SlideA", "pageElements": [{"image": {"contentUrl": url}}]}]}
         seen = []
         def proof(location, token=None):
