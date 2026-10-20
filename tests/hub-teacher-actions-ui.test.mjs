@@ -65,23 +65,27 @@ test('freshness uses Eastern dates, rejects malformed or future timestamps, and 
     assert.doesNotMatch(rendered.textContent, /Nothing needs your decision|Your action/);
   }
 });
-test('daily feedback has exactly one list link and update status, never delivery or print controls', () => {
+test('Lessons keeps one navigable checklist link without reporting freshness or delivery', () => {
   const ui = boot(), data = {requested_date: DAY, date: DAY, current_sources_verified: true, files: [{id: 'report1'}],
     delivery: {printed_file_ids: ['report1'], handed_file_ids: ['report1']}, email_delivery: {status: 'sent'}};
-  const before = JSON.stringify(data), rendered = ui.renderTodayFeedback(data);
-  assert.match(rendered.textContent, /Updated · 2032-01-05.*Feedback checklist/);
-  assert.equal(walk(rendered).filter(n => n.tagName === 'a').length, 1);
+  ui.cockpit.feedbackData = data;
+  const before = JSON.stringify(data), rendered = ui.renderTodayFeedback();
+  const links = walk(rendered).filter(n => n.tagName === 'a');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].textContent, 'Feedback checklist');
+  assert.equal(links[0].href, ui.cockpit.teacherLinks.feedback_list_url);
   assert.equal(walk(rendered).filter(n => n.tagName === 'button').length, 0);
-  assert.doesNotMatch(rendered.textContent, /Print|Handed|email|pending report/);
+  assert.doesNotMatch(rendered.textContent, /Daily feedback document|Updated|Not updated|Checking|not verified|Print|Handed|email|pending report/);
   assert.equal(JSON.stringify(data), before);
 });
-test('feedback freshness comes from complete current sources, not saved files or delivery marks', () => {
+test('Lessons retains the existing checklist fallback and marks an unavailable link explicitly', () => {
   const ui = boot();
-  assert.match(ui.renderTodayFeedback({date: '2032-01-04', requested_date: DAY, files: [], current_sources_verified: true}).textContent, /Not updated · 2032-01-05/);
-  for (const data of [{checking: true}, {error: 'timeout'}, {source_problem: 'partial', current_sources_verified: true},
-    {daily_packet: {status: 'ready', date: DAY}}, {current_sources_verified: false}]) {
-    const text = ui.renderTodayFeedback(data).textContent;
-    assert.match(text, /Checking update|Update not verified/);
-    assert.doesNotMatch(text, /Not updated|Updated ·/);
-  }
+  ui.cockpit.teacherLinks = null;
+  ui.cockpit.learningData = {checklist_url: 'https://example.test/existing-checklist'};
+  const rendered = ui.renderTodayFeedback();
+  assert.equal(walk(rendered).find(n => n.tagName === 'a').href, ui.cockpit.learningData.checklist_url);
+  ui.cockpit.learningData = null;
+  const unavailable = ui.renderTodayFeedback();
+  assert.equal(walk(unavailable).filter(n => n.tagName === 'a').length, 0);
+  assert.equal(unavailable.textContent, 'Feedback checklist link unavailable');
 });

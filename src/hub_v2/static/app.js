@@ -945,18 +945,10 @@ function retryFeedbackButton() {
   return el('div', {class: 'action-row'}, button);
 }
 
-function renderTodayFeedback(data) {
-  const panel = cockpitPanel('Daily feedback document');
-  const requested = data.requested_date || todayISO();
-  const unavailable = !!(data.error || data.problem || data.source_problem) || data.source_check?.status === 'timed_out';
-  const known = !unavailable && data.current_sources_verified === true;
-  const updated = known && data.date === requested && (data.files || []).length > 0;
-  const status = unavailable ? 'Update not verified' : data.checking ? 'Checking update…'
-    : !known ? 'Update not verified' : updated ? `Updated · ${data.date}` : `Not updated · ${requested}`;
+function renderTodayFeedback() {
   const url = cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
-  panel.append(el('p', {role: 'status', text: status}), url
+  return el('div', {class: 'action-row'}, url
     ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}));
-  return panel;
 }
 
 function renderFeedbackTools(data) {
@@ -1061,7 +1053,7 @@ function renderLearningReport(data) {
 
 function renderTodayFeedbackArea(seq) {
   if (seq !== cockpit.seq) return;
-  $('today-feedback').replaceChildren(...[cockpit.feedbackData ? renderTodayFeedback(cockpit.feedbackData) : null].filter(Boolean));
+  $('today-feedback').replaceChildren(...[cockpit.feedbackData ? renderTodayFeedback() : null].filter(Boolean));
   $('student-growth')?.replaceChildren(...[renderLearningReport(cockpit.learningData)].filter(Boolean));
   const tools = $('today-feedback-tools');
   if (tools) tools.replaceChildren(...(cockpit.feedbackData ? [renderFeedbackTools(cockpit.feedbackData)] : []));
