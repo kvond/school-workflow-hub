@@ -49,8 +49,10 @@ test('two concurrent trusted requests produce one new pass, fresh source reads a
 test('a new source failure with030 remains incomplete and cannot reuse the upgrade grant',async()=>{
  const h=await ready({hubReply:m=>m.action==='list'?{ok:false,code:'hub_unavailable',cause:'hub_request_timeout'}:null});
  await h.invoke({type:'morning_run_now'});await settle();assert.equal(h.state.morning_state.report.code,'hub_unavailable');assert.equal(h.state.morning_state.run_helper_version,'0.5.30');
- assert.equal(h.state.morning_state.updated_recheck_version,'0.5.30');assert.equal((await status(h)).can_run_now,false);
- const reads=h.calls.length;await h.invoke({type:'morning_run_now'});await h.alarm();assert.equal(h.calls.length,reads);assert.ok(!h.calls.includes('execute'));
+ assert.equal(h.state.morning_state.updated_recheck_version,'0.5.30');assert.equal(h.state.morning_state.execution_started,false);
+ // The upgrade grant is spent; only the explicit no-write rerun remains, never an automatic one.
+ assert.equal((await status(h)).can_run_now,true);
+ const reads=h.calls.length;await h.alarm();assert.equal(h.calls.length,reads);assert.ok(!h.calls.includes('execute'));
 });
 test('unknown, changed, uncertain, partially entered or altered-skip reports cannot borrow030 source-wait grant',async()=>{
  const mutations=[
@@ -59,7 +61,7 @@ test('unknown, changed, uncertain, partially entered or altered-skip reports can
   s=>s.manual_run_day='2026-10-11',s=>delete s.manual_run_day,s=>s.manual_run_retry_day='2026-10-11',s=>delete s.manual_run_retry_day,
   s=>s.blocked=true,s=>delete s.blocked,s=>s.blocked=0,s=>s.inflight=true,s=>delete s.inflight,
   s=>s.report_pending=true,s=>delete s.report_pending,s=>s.outbox=[s.report],s=>delete s.outbox,s=>s.outbox.unrecognized=true,
-  s=>s.execution_started=false,s=>delete s.execution_started,s=>s.report.day='2026-10-11',s=>s.report.run_id='unknown',
+  s=>delete s.execution_started,s=>s.report.day='2026-10-11',s=>s.report.run_id='unknown',
   s=>s.report.code='receipt_unconfirmed',s=>s.report.preflight={stage:'summary_publish',cause:'hub_request_timeout'},s=>s.report.unrecognized=true,
   s=>s.report.items[0].code='read_back',s=>s.report.items[0].raised=1,s=>s.report.items[0].filled=1,s=>s.report.items[0].kept=0,
   s=>s.report.items[0].reasons.flag=1,s=>s.report.items[0].reasons.excused=1,s=>s.report.items[0].reasons.name=1,s=>s.report.items[0].reasons.missing=1,

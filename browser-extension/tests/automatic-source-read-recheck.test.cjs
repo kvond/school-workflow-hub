@@ -47,19 +47,25 @@ test('new explicit pass rereads sources and keeps native scores; old attempt rem
  assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.calls.filter(c=>c==='list').length,2);
  assert.equal(h.calls.filter(c=>c==='record').length,1);assert.ok(!Object.hasOwn(h.state.morning_state,'automatic_source_read_recheck'));
 });
-test('a second source-read failure remains incomplete and cannot obtain another same-day pass',async()=>{
+test('a second source-read failure remains incomplete; only an explicit no-write rerun may follow',async()=>{
  const h=await ready({hubReply:m=>m.action==='list'?{ok:false,code:'hub_unavailable',cause:'hub_network_error'}:null});
  await h.invoke({type:'morning_run_now'});await settle();
  assert.equal(h.state.morning_state.manual_run_retry_day,DAY);assert.equal(h.state.morning_state.manual_run_day,DAY);
- assert.equal(h.state.morning_state.report.code,'hub_unavailable');assert.equal((await status(h)).can_run_now,false);
- const reads=h.calls.filter(c=>c==='list').length;await h.invoke({type:'morning_run_now'});await h.alarm();
+ assert.equal(h.state.morning_state.report.code,'hub_unavailable');assert.equal(h.state.morning_state.execution_started,false);
+ assert.equal((await status(h)).can_run_now,true);
+ const reads=h.calls.filter(c=>c==='list').length;await h.alarm();
  assert.equal(h.calls.filter(c=>c==='list').length,reads);assert.ok(!h.calls.includes('execute'));
+ for(let n=1;n<=3;n++){
+  await h.invoke({type:'morning_run_now'});await settle();
+  assert.equal(h.calls.filter(c=>c==='list').length,reads+n);assert.equal((await status(h)).can_run_now,true);
+ }
+ assert.ok(!h.calls.includes('execute'));
 });
 test('unsafe, ambiguous or unknown automatic stopped reports cannot grant a new pass',async()=>{
  const mutations=[
   s=>s.blocked=true,s=>s.blocked=0,s=>delete s.blocked,s=>s.inflight=true,s=>delete s.inflight,
   s=>s.report_pending=true,s=>delete s.report_pending,s=>s.outbox=[s.report],s=>delete s.outbox,
-  s=>s.execution_started=false,s=>delete s.execution_started,
+  s=>delete s.execution_started,
   s=>s.run_helper_version='0.5.27',s=>s.run_helper_version='0.5.30',s=>delete s.run_helper_version,
   s=>s.manual_run_day='unknown',s=>s.manual_run_day='',s=>s.manual_run_day='2026-10-13',
   s=>s.manual_run_retry_day=DAY,s=>s.manual_run_retry_day='unknown',s=>s.manual_run_retry_day='',
