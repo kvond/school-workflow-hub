@@ -106,6 +106,36 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   Findings stay in repair-worker diagnostics, outside Next from Agenda's teaching
   choices. Neither target is automatically selected or rewritten. This does not
   establish full G2 coverage, G1/G3/G4/G5 parity or retirement acceptance.
+- **Worksheets index integrity (bounded G5).** Only an explicit Week ahead run
+  lazily reads the native Worksheets tab. Ordinary Agenda/day/feedback/roster
+  reads and saved-result GETs do not load it. One dimensions read and one grid
+  read locate the named Course, Wk, Topic, Document, Type, Link and _fileID
+  columns, with exact row/cell addresses. Missing, ambiguous, unreadable or
+  malformed tables stay unverified; a successfully read empty index is distinct.
+  Reads cover at most 1,000 rows and 26 columns, with explicit truncated coverage;
+  at most 80 selected index rows are audited per run, with the rest explicitly
+  deferred. Metadata uses the existing per-run exact-ID cache across selected
+  weeks, at most 40 new reads and the existing time budget.
+  Course aliases are explicit. W08, Wk 08 and Week 08 share a historical index
+  locator; W08b remains distinct. These locators never bind a worksheet to a
+  current lesson. Zero matching index rows does not mean that lesson has no
+  worksheets. Unsupported course/week labels leave scope unverified.
+  Blank or conflicting references, malformed backing IDs, unreadable exact IDs
+  and trashed files produce worker diagnostics. A valid Google Link with a blank
+  _fileID is checked by its visible exact ID and reports only the missing index
+  field, not a missing file. Unsupported public/short addresses remain unverified
+  and are not fetched. Folder references and unresolved shortcuts are unverified
+  worksheet targets; members/targets are not followed. Metadata verifies identity
+  and type/access only, not document content or student access.
+  Repeated exact IDs, or identical explicit Document titles (case/whitespace
+  normalized, within a course) with differing IDs, are nonblocking candidates
+  retaining all checked source rows. No canonical copy is selected or deleted.
+  Findings use source-cell fingerprints and live metadata, and stay as independent
+  week exceptions outside Next from Agenda. `coverage.worksheet_index` records
+  table, row and metadata coverage separately from lesson readiness, so an
+  unavailable index never inherits a lesson's Ready result. The index does not
+  change lesson/Form identity, print selection, packet membership or existing
+  packet readiness gates. G3 timing bindings and full parity remain unfinished.
 - **Print list.** Quantities from current roster counts per section ("1 per
   student", "1 per group" = ceil(n/4), optional "if needed" / support copies),
   matched to folder PDFs and Google Docs by name, with page counts and sides.
@@ -153,7 +183,8 @@ rules version, and saved as each finishes; a run that runs out of time is
 reviews, repair receipts and packet manifests use content-derived keys, so
 reruns write no duplicates.
 
-Rules v5 discard earlier cached checks, including outlines without hyperlink spans. Teacher readiness has a
+Rules v6 discard earlier cached checks and add explicit independent worksheet-index
+coverage. Outlines retain hyperlink spans. Teacher readiness has a
 separate cache identity from ordinary/student-only readiness, even for the same
 file and revision. Before and after a new check, and before reusing cached
 readiness or outlines, fresh Drive metadata must match the complete source snapshot from
