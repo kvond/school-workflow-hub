@@ -48,11 +48,10 @@ waiting intake, link fixes, code repairs and provider failures stay with the
 repair worker and the collapsed diagnostics. A stale/failed check says the
 teacher-action check is pending; it does not claim no issues remain.
 
-**Daily feedback document** shows one configured feedback-list link and Updated,
-Not updated, Checking, or Update not verified. Only a complete current-source
-read proves today's update; a saved older PDF or Printed/Handed mark cannot.
-The checklist link, collapsed **Saved feedback by date** and **All student
-folders**, and **Check lesson links** start Lessons. The two lists read all three
+Lessons starts with a plain **Feedback checklist** link, collapsed **Saved
+feedback by date** and **All student folders**, and **Check lesson links**.
+The compact Daily feedback document card and its update status are removed;
+Today has no feedback card. The two lists read all three
 connected class archive indexes only on expansion and reuse that read briefly.
 Lessons Reload refreshes the checklist sources and any expanded lists; collapsed
 lists do not trigger an archive scan. A fresh read supersedes pending older data.
@@ -96,7 +95,7 @@ Submitted student files and named source-review details remain in Student work,
 using its exact current class/week/Form review route. Today and Data do
 not request or display the student source overview. Today retains lesson-focused
 VT readiness and feedback-code checks, Week ahead and Next from Agenda.
-Lessons holds the compact feedback-list status. Lesson-source readiness does not verify
+Lessons holds the feedback-checklist link. Lesson-source readiness does not verify
 submitted student copies or completed grading.
 
 Current source discovery rereads the roster and Agenda before publishing named
@@ -120,9 +119,9 @@ block assessment as availability failures. No source, roster, grade, sharing or
 delivery record is changed; school proof stays in private runtime state, never Git.
 
 A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
-review discovery or the Today feedback catalog is repeated once, only within the
+review discovery or the shared feedback catalog is repeated once, only within the
 first 20 seconds of the request. A timeout that remains returns `read_failure`
-(review) or `source_check.status == "timed_out"` (feedback): Today shows "Check
+(review) or `source_check.status == "timed_out"` (feedback): Data shows "Check
 timed out — retry" with a teacher-pressed Retry, does not count the scope as
 read, and draws no missing-work, identity, new-feedback or printed conclusion.
 
@@ -302,7 +301,7 @@ or uncertain send remains fenced. Source availability, identity or private
 readback failures stay explicit holds. Multi-chunk Sent confirmation may be
 reconciled against the same exact message without another provider call.
 
-The Daily feedback card shows school-email counts separately from paper states.
+Data's feedback print controls show school-email counts separately from paper states.
 Hub Print/download remains the fallback. Enabled configuration and a schedule
 are not proof of a first unattended send; report actual mail acceptance separately.
 
