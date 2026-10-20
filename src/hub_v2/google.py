@@ -267,6 +267,26 @@ def as_read(item):
     return item
 
 
+METADATA_READ_ATTEMPTS = 3
+METADATA_READ_BACKOFF = (0.5, 1.5)
+
+
+def _metadata_read(url, token, params):
+    """Repeat only a typed read timeout of an idempotent Drive metadata GET.
+
+    One slow files.get or permissions page among hundreds of private archive
+    reads must not abort a whole catalog. Every other error, and a timeout on
+    the final attempt, propagates unchanged; nothing here can repeat a write.
+    """
+    for attempt in range(METADATA_READ_ATTEMPTS):
+        try:
+            return get_json(url, token, params, timeout=10)
+        except GoogleError as error:
+            if not read_timed_out(error) or attempt == METADATA_READ_ATTEMPTS - 1:
+                raise
+            time.sleep(METADATA_READ_BACKOFF[attempt])
+
+
 def _file_permissions(token, file_id):
     """Complete, bounded access evidence when files.get omits Shared Drive ACLs.
 
@@ -280,8 +300,8 @@ def _file_permissions(token, file_id):
                   "pageSize": 100, "supportsAllDrives": "true"}
         if cursor:
             params["pageToken"] = cursor
-        page = get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id, safe="") + "/permissions",
-                        token, params, timeout=10)
+        page = _metadata_read("https://www.googleapis.com/drive/v3/files/" + quote(file_id, safe="") + "/permissions",
+                              token, params)
         values = page.get("permissions") if isinstance(page, dict) else None
         if (not isinstance(values, list) or len(values) > 100
                 or any(not isinstance(value, dict) for value in values)):
@@ -301,8 +321,8 @@ def _file_permissions(token, file_id):
 
 
 def drive_file(token, file_id, fields=FILE_FIELDS):
-    item = get_json("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
-                    {"fields": fields, "supportsAllDrives": "true"}, timeout=10)
+    item = _metadata_read("https://www.googleapis.com/drive/v3/files/" + quote(file_id), token,
+                          {"fields": fields, "supportsAllDrives": "true"})
     requested_permissions = fields.strip() == "*" or re.search(r"(?:^|,)\s*permissions(?:\s*[,(/]|\s*$)", fields)
     if requested_permissions and not isinstance(item, dict):
         raise GoogleError("Google sent incomplete Drive file metadata.")
