@@ -91,13 +91,16 @@
  const completedCodes=new Set(['read_back','nothing_to_enter']);
  const completedRecheckCodes=new Set(['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores']);
  const zeroCounts=i=>['filled','raised','kept','left'].every(k=>i[k]===0);
+ // Stops that happen before any IC write; used for teacher-started test reruns.
+ const noWriteStopCodes=['hub_unavailable','ic_unavailable','panel_unusable','signed_out','unsupported_gradebook','missed_noon'];
+ const noWriteReportCodes=new Set([...noWriteStopCodes,'finished','coverage_incomplete','mapping_required','no_scores']);
+ const noWriteItemCodes=new Set([...noWriteStopCodes,'nothing_to_enter','coverage_incomplete','mapping_required','no_scores','excluded_week']);
  function safePreflightRepeat(s,t){
   const items=s.report?.items;
   return s.manual_run_day===t.day&&s.manual_run_retry_day!==t.day&&s.report?.day===t.day
    &&preflightCodes.has(s.report?.code)&&Array.isArray(items)
    &&(items.length===0?s.execution_started===false:items.some(i=>i.code===s.report.code&&zeroCounts(i))
-    // A Hub-side source-readiness skip never reaches IC, so it does not block the rerun.
-    &&items.every(i=>completedCodes.has(i.code)||((i.code===s.report.code||i.code==='coverage_incomplete')&&zeroCounts(i))));
+    &&items.every(i=>completedCodes.has(i.code)||(i.code===s.report.code&&zeroCounts(i))));
  }
  const validDay=day=>typeof day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day)
   &&Number.isFinite(Date.parse(day+'T12:00:00Z'))&&new Date(day+'T12:00:00Z').toISOString().slice(0,10)===day;
@@ -436,7 +439,13 @@
    &&s.updated_recheck_version!==chrome.runtime.getManifest().version;
   const repeat=safePreflightRepeat(s,t)||automaticSourceReadRepeat(s,t)||sourceWaitFixRepeat(s,t);
   const firstRun=s.manual_run_day!==t.day&&(cleanMissedRun||verifiedRecovery);
-  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t)||currentReadbackMismatchRecoveryGrant(s,t)||currentTypingStoppedRecoveryGrant(s,t));
+  // execution_started turns true (with blocked) just before the first IC write.
+  // A delivered run that never reached it left IC untouched, so the teacher may
+  // start another full pass at any time to test a change.
+  const noWriteRun=s.execution_started===false&&validRun(s.report?.run_id)&&noWriteReportCodes.has(s.report.code)
+   &&Array.isArray(s.report.items)&&s.report.items.every(i=>i&&noWriteItemCodes.has(i.code)
+    &&Number.isInteger(i.filled)&&Number.isInteger(i.raised)&&i.filled===0&&i.raised===0);
+  const sameDay=s.day===t.day&&s.report?.day===t.day&&(firstRun||noWriteRun||completedRun||updatedCodeRun||repeat||currentReceiptRecoveryGrant(s,t)||currentSourceChangedRecoveryGrant(s,t)||currentReadbackMismatchRecoveryGrant(s,t)||currentTypingStoppedRecoveryGrant(s,t));
   return s.enabled&&(sameDay||freshManualDay(s,t))
    &&!s.blocked&&!s.inflight&&!s.report_pending&&!(s.outbox?.length)&&!pending.size;
  }

@@ -596,7 +596,7 @@ test('safe full recheck is allowed after verified panels and a later zero-count 
  assert.equal(h.calls.filter(c=>c==='execute').length,2);
  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,false);
 });
-test('same-day preflight rerun is allowed after a zero-count source-readiness skip',async()=>{
+test('no-write rerun is allowed repeatedly after a zero-count source-readiness skip',async()=>{
  const run_id=uuid(),day='2026-10-01',stored={morning_enabled:true,morning_state:{day,manual_run_day:day,execution_started:false,
   blocked:false,inflight:false,report_pending:false,report:{day,run_id,code:'panel_unusable',items:[
    {assignment:'Ecosystems',code:'coverage_incomplete',filled:0,raised:0,kept:0,left:0},
@@ -605,7 +605,6 @@ test('same-day preflight rerun is allowed after a zero-count source-readiness sk
  assert.equal((await h.invoke({type:'morning_status'})).can_run_now,true);
  await h.invoke({type:'morning_run_now'});await settle();
  assert.equal(h.calls.filter(c=>c==='execute').length,1);
- assert.equal(h.state.morning_state.manual_run_retry_day,day);
 });
 test('source-readiness skip with counts does not allow a same-day preflight rerun',async()=>{
  const run_id=uuid(),day='2026-10-01',stored={morning_enabled:true,morning_state:{day,manual_run_day:day,execution_started:true,
@@ -1237,7 +1236,7 @@ test('source-change popup explains the source stop and sends its own flag only f
  assert.match(nodes.get('morning-status').textContent,/stopped at a source change and incomplete/);assert.doesNotMatch(nodes.get('morning-status').textContent,/unconfirmed/);
 });
 test('source-change helper package has the next version without broad automatic retry expansion',()=>{
- assert.equal(JSON.parse(source('manifest.json')).version,'0.5.33');
+ assert.equal(JSON.parse(source('manifest.json')).version,'0.5.34');
  assert.match(source('morning-background.js'),/const completedRecheckCodes=new Set\(\['read_back','nothing_to_enter','mapping_required','coverage_incomplete','no_scores'\]\)/);
 });
 
