@@ -2785,6 +2785,58 @@ def _writing_index_work(works, source_record):
     return next((a for a in candidates if a.get("mime") != SHORTCUT), next(iter(candidates), None))
 
 
+def _writing_index_status(report, source, student, cls, linked):
+    """Describe a saved source slot using its canonical assessment receipt.
+
+    A chart sample, archived work link or older PDF is not assessment proof.
+    Missing proof keeps coverage unknown; only a valid report receipt can
+    identify a listed source without a complete assessment as a historical reference.
+    """
+    unknown = "Science writing historical reference; assessment coverage not verified"
+    status = unknown
+    proof = report.get("assessed_sources")
+    digest = lambda value: bool(re.fullmatch(r"[a-f0-9]{64}", str(value or "")))
+    def identity(record):
+        # These are the exact fields emitted by _science_assessed_sources.
+        return {"source_file_id": record.get("source_file_id"),
+            "source_version": str(record.get("source_version") or ""),
+            "source_modified_at": record.get("source_modified_at"), "date": record.get("date"),
+            "date_basis": record.get("date_basis"), "submitted_at": record.get("submitted_at"),
+            "source_form_id": record.get("form_id"), "assignment_form_id": record.get("assignment_form_id"),
+            "source_response_id": (record.get("source_context") or {}).get("source_response_id")}
+    def matches(slot, expected):
+        return (isinstance(slot, dict) and digest(slot.get("observations_sha256"))
+                and all(name in slot and slot[name] == value for name, value in expected.items()))
+    if (isinstance(proof, dict) and proof.get("schema") == "science-writing-assessed-sources/v1"
+            and report.get("student_key") == student["student_key"] and report.get("class_key") == cls
+            and digest(proof.get("payload_sha256")) and digest(proof.get("observations_sha256"))
+            and proof["payload_sha256"] == report.get("report_source_sha256")
+            and isinstance(proof.get("sources"), list)):
+        expected = identity(source)
+        declared = {}
+        for record in report["source_records"]:
+            declared.setdefault(record.get("source_file_id"), []).append(identity(record))
+        # A stale/foreign/duplicated assessment slot makes its receipt uncertain;
+        # it cannot certify another slot's assessed or historical-only status.
+        valid = (all(isinstance(slot, dict) and isinstance(slot.get("source_file_id"), str)
+                     and len(declared.get(slot["source_file_id"], [])) == 1
+                     and matches(slot, declared[slot["source_file_id"]][0])
+                     for slot in proof["sources"])
+                 and len({slot.get("source_file_id") for slot in proof["sources"] if isinstance(slot, dict)})
+                     == len(proof["sources"]))
+        slots = [slot for slot in proof["sources"] if isinstance(slot, dict)
+                 and slot.get("source_file_id") == expected["source_file_id"]]
+        if (expected["source_file_id"] and expected["source_version"]
+                and valid):
+            if not slots:
+                status = "Science writing historical reference; no complete assessment recorded"
+            elif len(slots) == 1 and matches(slots[0], expected):
+                status = "Science writing assessment covered this submission"
+    if not linked:
+        status += "; filed work not located"
+    return status
+
+
 def work_index_rows(token, config):
     """All verified histories; pair by source/student/assignment IDs only."""
     rows, summary, holds, imported_anchor_feedback = [], {}, [], {}
@@ -2830,7 +2882,7 @@ def work_index_rows(token, config):
                             linked = _writing_index_work(works, source_record)
                             if linked:
                                 used.add(linked["record_key"])
-                            status = "Science writing feedback covers this submission" if linked else "Science writing feedback; work not located"
+                            status = _writing_index_status(report, source_record, student, cls, linked)
                             if report.get("supersession_verified"):
                                 status = "Superseded feedback; previous version retained. " + status
                             # Only the established independent report owns the

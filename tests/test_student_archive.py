@@ -585,7 +585,7 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(filed["status"], "verified")
         self.assertEqual(filed["source_records"][0]["date"], "2026-10-07")
         rows = archive.work_index_rows("read", self.config)["rows"]
-        linked = [r for r in rows if "Science writing feedback covers" in r[11]]
+        linked = [r for r in rows if "Science writing historical reference; assessment coverage not verified" in r[11]]
         self.assertEqual(len(linked), 1)
         self.assertEqual(len([r for r in rows if "Filing held:" in r[11]]), 1)
 
@@ -759,7 +759,7 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(first["drive_file_id"], second["drive_file_id"])
         rows = archive.work_index_rows("read", self.config)["rows"]
         self.assertEqual(len(rows), 1)
-        self.assertIn("Science writing feedback covers", rows[0][11])
+        self.assertIn("Science writing historical reference; assessment coverage not verified", rows[0][11])
         self.assertIn(SOURCE, rows[0][8])
         self.drive.items[SOURCE]["version"] = "2"
         held = archive.file_science_writing("read", "write", self.config, report, raw)
@@ -1984,7 +1984,7 @@ class OverlappingWritingIndexTests(unittest.TestCase):
             self.assertEqual(current["imported_anchor_feedback"][anchor], archive._link(report["url"], "Open feedback"))
             extra = archive.key("workindexrow", [self.student["student_key"], self.later["record_key"], original["drive_file_id"]])
             self.assertEqual(new_by_key[extra][9], archive._link(self.later["url"], "Open feedback"))
-            self.assertEqual(new_by_key[extra][11], "Science writing feedback covers this submission")
+            self.assertEqual(new_by_key[extra][11], "Science writing historical reference; assessment coverage not verified")
         cells = [{"values": [archive._index_cell(v) for v in archive.INDEX_HEADERS]}]
         for row in prior["rows"]:
             cells.append({"values": [archive._index_cell(v, link=c in {7, 8, 9, 10} and bool(v))
@@ -2022,7 +2022,7 @@ class OverlappingWritingIndexTests(unittest.TestCase):
         current = self.project(self.prior + [foreign])
         row = next(r for r in current["rows"] if r[13] == archive.key("workindexrow", [
             self.student["student_key"], foreign["record_key"], self.works[0]["drive_file_id"]]))
-        self.assertEqual(row[11], "Science writing feedback; work not located")
+        self.assertEqual(row[11], "Science writing historical reference; assessment coverage not verified; filed work not located")
         self.assertEqual(row[7:9], ["", ""])
 
     def test_whole_class_read_failure_is_distinct_from_recorded_source_holds(self):
