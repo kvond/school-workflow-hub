@@ -2,6 +2,7 @@
 from copy import deepcopy
 from itertools import permutations
 from collections import Counter
+from concurrent.futures import Future
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -1640,6 +1641,63 @@ class StudentArchiveTests(unittest.TestCase):
         held = archive.archive_listing("read", self.config, "biology")
         self.assertEqual((held["status"], held["students"]), ("held", []))
         self.assertTrue(held["problems"])
+
+    def test_metadata_read_failure_cancels_queued_gets_and_preserves_the_original_error(self):
+        self.assertEqual(self.archive()["status"], "verified")
+
+        class QueuedExecutor:
+            """Finish one read first; shutdown deterministically drains queued work."""
+            def __init__(self, max_workers):
+                self.max_workers, self.jobs, self.started = max_workers, [], []
+                self.shutdown_args = []
+                executors.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.shutdown(wait=True)
+
+            def submit(self, fn, *args):
+                future = Future()
+                self.jobs.append((future, fn, args))
+                if len(self.jobs) == 1:
+                    future.set_exception(error)
+                return future
+
+            def map(self, fn, ids):
+                futures = [self.submit(fn, ident) for ident in ids]
+                return (future.result() for future in futures)
+
+            def shutdown(self, wait=True, *, cancel_futures=False):
+                self.shutdown_args.append((wait, cancel_futures))
+                for future, fn, args in self.jobs:
+                    if future.done():
+                        continue
+                    if cancel_futures:
+                        future.cancel()
+                    else:
+                        self.started.append(args)
+                        future.set_result(fn(*args))
+
+        for error in (google.GoogleError("Google didn't answer in time. Try again.", reason="read_timeout"),
+                      google.GoogleError("Unavailable", 429, retry_after="7"),
+                      google.GoogleError("Not found", 404)):
+            with self.subTest(reason=error.reason, status=error.status):
+                executors = []
+                with patch.object(archive, "ThreadPoolExecutor", QueuedExecutor):
+                    with self.assertRaises(google.GoogleError) as result:
+                        archive._indexed("read", self.config, "biology")
+                    self.assertIs(result.exception, error)
+                    held = archive.archive_listing("read", self.config, "biology")
+                self.assertEqual((held["status"], held["students"], held["counts"]["held"]), ("held", [], 1))
+                self.assertEqual(held["problems"], [str(error)])
+                for executor in executors:
+                    self.assertEqual(executor.max_workers, 4)
+                    self.assertGreater(len(executor.jobs), 1)
+                    self.assertEqual(executor.started, [])
+                    self.assertTrue(all(future.cancelled() for future, _, _ in executor.jobs[1:]))
+                    self.assertEqual(executor.shutdown_args, [(True, True)])
 
     def test_google_pdf_quota_failure_has_precise_redacted_explanation(self):
         response = Mock(status_code=403)

@@ -17,7 +17,7 @@ from urllib.parse import quote, urlsplit
 from zipfile import ZipFile, BadZipFile
 import xml.etree.ElementTree as ET
 from PIL import Image, ImageOps
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from time import monotonic
 
@@ -2417,8 +2417,15 @@ def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
     fetch_ids = sorted(metadata_ids)
     # These are independent GETs only. Google's sessions are thread-local;
     # no index writes or checks run in workers and errors propagate unchanged.
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        metadata = dict(zip(fetch_ids, pool.map(lambda ident: google.drive_file(token, ident, FIELDS), fetch_ids)))
+    pool = ThreadPoolExecutor(max_workers=4)
+    try:
+        pending = {pool.submit(google.drive_file, token, ident, FIELDS): ident for ident in fetch_ids}
+        metadata = {pending[future]: future.result() for future in as_completed(pending)}
+    finally:
+        # A failed read already prevents a verified listing. Cancel work that
+        # has not started instead of draining every queued Google GET; wait for
+        # the at-most-four running reads before returning the original error.
+        pool.shutdown(wait=True, cancel_futures=True)
     output = []
     for student, student_items in checked:
         _private(metadata[student["parent"]], parent=course["id"], folder=True)
