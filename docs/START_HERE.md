@@ -14,7 +14,7 @@ checklist refresh, packet generation or email delivery.
   links and guarded editor. Teacher notes keep their current storage and save
   rules. Checklist, folder, packet and diagnostic work belongs outside this view.
 - **Student work** shows original work links and saved completion results with
-  their actual computation time. A changed or unverified source cannot inherit
+  their verified saved time. A changed or unverified source cannot inherit
   a saved score, and a new file modification is not a new grading event. Missing
   saved results remain unavailable rather than being replaced by zeros. The
   explicit Helper handoff still prepares its current list through the existing
@@ -92,8 +92,9 @@ extension storage. Keep morning receipts counts-only and the IC list contract
 unchanged. Exempt flags and zero-denominator N/A components do not create a
 teacher review. Not-yet-submitted work is waiting for submissions.
 
-Submitted student files and named source-review details remain in Student work,
-using its exact current class/week/Form review route. Today and Records do
+Student work links original submitted files and saved results. Named source-review
+details remain available to independent authorized review workers through the
+exact current class/week/Form review route. Today and Records do
 not request or display the student source overview or run readiness checks.
 The existing feedback checklist is linked from Records. Lesson-source readiness
 does not verify submitted student copies or completed grading.
@@ -427,14 +428,12 @@ a change to an already-correct grade manufactured for acceptance.
 
 ## Operation 2: student feedback, automatic intake or ZIP
 
-**Teacher-facing contract:** use the same Class/section and Lesson title;
-choose the revised work; **Generate feedback -> review/save -> Print or download
-feedback**. When automatic intake is unavailable, **Upload ZIP** is an explicit
-accepted fallback in this same dashboard. The teacher selects the class and
-lesson, uploads one archive of the actual student files, and uses the SAME
-assessment/save/print path. Do not require a local AI-to-Drive connector or a
-separate AI conversation. Do not postpone usable ZIP intake until every folder
-or router in Drive has been repaired.
+**Independent work-service contract:** feedback uses the exact class/section,
+lesson, selected work and current policy through the existing assessment, review,
+save and print workflow. This operation is separate from the dashboard's saved
+results view. Earlier requests for a Generate feedback or Upload ZIP dashboard
+control are not controls in the simplified Hub. Keep any future ZIP intake in
+its own work bucket, preserving the same assessment/save/print contracts.
 
 ZIP intake is a requested implementation, not verified existing functionality.
 Authenticate it, limit archive/file/expanded size, reject path traversal,
@@ -554,19 +553,19 @@ under their existing contracts.
 
 ## Screen scope and acceptance
 
-Page 02 contains the three selectors, one Student work table, and the actions
-above. Directly below that table, **Download IC Grade Sheet** writes the selected
-class/section and lesson to an .xlsx for entering grades in Infinite Campus by
-hand: last and first name, both scores, both statuses and the recorded IC posting
-status, one row per student, sorted by surname. It reads the records already
-loaded — it never assesses, calls an API or rescans work — and an unscored, held
-or unreadable checkpoint stays an empty cell, never a zero.
-Hide raw scans, changes-since-scan logs, IDs, prompts and developer
-controls under Details. Show only concise coverage and actionable student holds.
-Do not add more competing panels. Lesson title, not navigation date, selects
-an assignment. The confirmed third-meeting final deadline still applies:
-actual start is meeting 1; unfinished teaching does not extend it; use the
-verified section calendar and America/New_York; keep the 14-day window separate.
+The simplified Student work page selects class, week and section and displays
+original submitted files and verified saved completion grades. Its newly graded
+filter uses the saved-result time, not the source modification time. Explicit
+Helper preparation uses the current canonical list and leaves entry/readback to
+the unchanged companion. The dashboard does not generate a grade sheet or run
+grading as part of opening this view.
+
+Keep raw scans, IDs, prompts and developer controls out of the normal view.
+Lesson and exact Form identity, not navigation date or title similarity, select
+an assignment. The confirmed third-meeting final deadline still applies to the
+independent grading operation: actual start is meeting 1; unfinished teaching
+does not extend it. Use the verified section calendar and America/New_York and
+keep the 14-day window separate.
 
 First recover the endangered submissions. Then prove one real class/lesson can
 produce saved completion scores and printable feedback using automatic intake
