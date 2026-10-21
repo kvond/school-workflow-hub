@@ -763,6 +763,101 @@ class DeckTextTests(unittest.TestCase):
         self.assertEqual(summary['teacher_only_slides'], [4])
 
 
+class NumberedSlideLinkTests(Base):
+    def native(self, runs, ids=('origin', 'destination', 'third')):
+        return {'slides': [{'objectId': ident, 'pageElements': ([
+            {'elementGroup': {'children': [{'table': {'tableRows': [{'tableCells': [
+                {'text': {'textElements': runs}}]}]}}]}}] if i == 0 else [])}
+            for i, ident in enumerate(ids)]}
+
+    def run_text(self, value, target=None):
+        return {'textRun': {'content': value, 'style': {'link': target} if target else {}}}
+
+    def check(self, runs, ids=('origin', 'destination', 'third')):
+        return wp.deck_summary(wp.outline_native(self.native(runs, ids)))['slide_reference_check']
+
+    def test_exact_native_page_target_and_zero_based_index(self):
+        for target in ({'pageObjectId': 'destination'}, {'slideIndex': 1}):
+            with self.subTest(target=target):
+                result = self.check([self.run_text('Slide 3', target)])
+                self.assertEqual(result['checked'], 1)
+                self.assertEqual(result['findings'][0], {'slide': 1, 'label': 'Slide 3',
+                    'displayed_slide': 3, 'target_slide': 2, 'target': target, 'problem': 'number_mismatch'})
+                self.assertEqual(self.check([self.run_text('Slide 2', target)])['findings'], [])
+        result = self.check([self.run_text('Go to slide 2.', {'slideIndex': 0})])
+        self.assertEqual(result['findings'][0]['target_slide'], 1)
+
+    def test_adjacent_style_runs_join_only_for_the_same_target(self):
+        target = {'pageObjectId': 'destination'}
+        runs = [self.run_text('See '), self.run_text('Sli', target), self.run_text('de 3', target)]
+        self.assertEqual(len(self.check(runs)['findings']), 1)
+        runs[2]['textRun']['style']['link'] = {'pageObjectId': 'third'}
+        self.assertEqual(self.check(runs)['findings'], [])
+        runs[2] = self.run_text('de 3')
+        self.assertEqual(self.check(runs)['findings'], [])
+
+    def test_partial_or_ambiguous_labels_never_borrow_a_target(self):
+        target = {'pageObjectId': 'destination'}
+        for runs in (
+            [self.run_text('Slide 3', target), self.run_text('0')],
+            [self.run_text('Slide 3', target), self.run_text('–4')],
+            [self.run_text('Slide 3', target), self.run_text(' and 4')],
+            [self.run_text('Slide 3', target), self.run_text(', slide 4')],
+            [self.run_text('Slide 3', target), self.run_text(' to 4')],
+            [self.run_text('Slide 3', target), self.run_text(' through 4')],
+            [self.run_text('Slide 3', target), self.run_text(' & 4')],
+            [self.run_text('Slide 3', target), self.run_text(' or 4')],
+            [self.run_text('Slide 3', target), self.run_text(' and slides 4–5')],
+            [self.run_text('Slide 3–4', target)], [self.run_text('Slides 3 and 4', target)],
+            [self.run_text('Explain slide 3 in your own words', target)],
+            [self.run_text('Slide 3', {'url': 'https://docs.google.com/presentation/d/FICTIONALOTHERDECK00001/edit'})],
+            [self.run_text('Slide 3', {'relativeLink': 'NEXT_SLIDE'})],
+            [self.run_text('Slide 3', {'slideIndex': True})],
+            [self.run_text('Slide 3', {'slideIndex': -1})],
+            [self.run_text('Slide 3', {'slideIndex': 1, 'pageObjectId': 'destination'})],
+        ):
+            with self.subTest(runs=runs):
+                self.assertEqual(self.check(runs)['findings'], [])
+
+    def test_missing_target_is_separate_and_no_replacement_is_invented(self):
+        for target in ({'pageObjectId': 'deleted'}, {'slideIndex': 12}):
+            result = self.check([self.run_text('Slide 2', target)])
+            self.assertEqual(result['findings'][0]['problem'], 'missing_target')
+            self.assertIsNone(result['findings'][0]['target_slide'])
+
+    def test_missing_duplicate_page_ids_and_non_native_coverage(self):
+        for ids in (('origin', '', 'third'), ('origin', 'origin', 'third')):
+            result = self.check([self.run_text('Slide 3', {'slideIndex': 1})], ids)
+            self.assertEqual(result['status'], 'unverified')
+            self.assertEqual(result['findings'], [])
+        self.assertEqual(wp.deck_summary([outline_slide(1, 'Slide 3')])['slide_reference_check']['status'],
+                         'not_supported')
+
+    def test_saved_diagnostic_has_exact_lesson_revision_and_source_slide(self):
+        def read(token, ident):
+            pres = self.src.native_presentation(token, ident)
+            if ident == FOR_DECK:
+                target = pres['slides'][1]['objectId']
+                pres['slides'][0]['pageElements'].append({'shape': {'text': {'textElements': [
+                    self.run_text('Slide 1', {'pageObjectId': target})]}}})
+            return pres
+        with patch.object(google, 'native_presentation', side_effect=read):
+            result = self.run_check()
+            found = [e for e in self.exceptions(result, 'forensics') if e['kind'] == 'deck_slide_reference_mismatch']
+            self.assertEqual(len(found), 1)
+            self.assertEqual((found[0]['row'], found[0]['slides'], found[0]['evidence']['target_slide']), (5, [1], 2))
+            self.assertEqual(found[0]['source_url'], deck_url(FOR_DECK) + '#slide=id.' + FOR_DECK[-4:] + '_p1')
+            self.assertNotIn(found[0]['fingerprint'], self.lesson(result, 'forensics', 6)['exceptions'])
+            count = self.src.calls['native:' + FOR_DECK]
+            same = [e for e in self.run_check()['exceptions'] if e['kind'] == 'deck_slide_reference_mismatch']
+            self.assertEqual(same[0]['fingerprint'], found[0]['fingerprint'])
+            self.assertEqual(self.src.calls['native:' + FOR_DECK], count)
+            self.src.bump(FOR_DECK)
+            changed = [e for e in self.run_check()['exceptions'] if e['kind'] == 'deck_slide_reference_mismatch']
+            self.assertNotEqual(changed[0]['fingerprint'], found[0]['fingerprint'])
+        self.assertEqual((result['external_writes'], result['model_calls'], len(self.writes)), (0, 0, 0))
+
+
 class DeckLinkTargetTests(Base):
     shown_url = 'https://docs.google.com/document/d/FICTIONALDISPLAYEDFILE0001/edit'
     actual_url = 'https://drive.google.com/file/d/FICTIONALOTHERFILE00000001/view'

@@ -106,6 +106,20 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   Findings stay in repair-worker diagnostics, outside Next from Agenda's teaching
   choices. Neither target is automatically selected or rewritten. This does not
   establish full G2 coverage, G1/G3/G4/G5 parity or retirement acceptance.
+- **Numbered native slide links (bounded G4).** A whole linked label such as
+  `Slide 12` is compared with the current position of its explicit internal
+  page ID or zero-based slide index. Split style runs join only for the same
+  target; partial labels, ranges, ordinary prose, external URLs and relative
+  navigation links do not establish a numbered reference. A changed number or
+  missing internal target produces a repair-worker diagnostic with the exact
+  originating slide, displayed number, observed target, lesson and source
+  revision. Neither the label nor its target is assumed correct or rewritten.
+  Missing/duplicate native page identities leave the check unverified. PPTX
+  internal links are not covered. No extra provider read or model call is added.
+  These findings stay outside Next from Agenda's teaching choices. Unlinked
+  indexes, semantic revision-step references, G1/G3 and full G4/retirement
+  acceptance remain unfinished; a clean numbered-link sample proves only this
+  bounded check.
 - **Worksheets index integrity (bounded G5).** Only an explicit Week ahead run
   lazily reads the native Worksheets tab. Ordinary Agenda/day/feedback/roster
   reads and saved-result GETs do not load it. One dimensions read and one grid
