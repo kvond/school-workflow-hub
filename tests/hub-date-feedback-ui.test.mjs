@@ -111,30 +111,14 @@ test('pending reads and a failed refresh discard earlier data instead of present
   assert.doesNotMatch(h.folders.textContent, /Ann Avery/);
 });
 
-test('existing Lessons Reload refreshes expanded dates, folders and checklist sources without scanning collapsed lists', async () => {
-  let generation = 'Earlier';
-  const h = boot(cls => index(cls, cls === 'biology' ? [student(generation, [report('critical_aspects', '2032-01-07', generation)])] : []));
-  h.document.getElementById('saved-feedback').open = true;
-  await h.ui.loadFeedbackArchive();
-  generation = 'Fresh';
-  const plans = [];
+test('Lessons Reload reads the Agenda without refreshing retired archives or checklist sources', async () => {
+  const h = boot(); const plans = [];
   h.context.plans = {date: '2032-01-07'};
   h.context.loadPlans = (date, fresh) => plans.push({date, fresh});
   vm.runInContext(source.split('\n').find(line => line.startsWith("$('reload-plans').addEventListener(")), h.context);
   h.document.getElementById('reload-plans').listeners.click();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.match(h.dates.textContent, /Fresh/);
-  assert.doesNotMatch(h.dates.textContent, /Earlier/);
-  assert.match(h.folders.textContent, /Fresh/);
-  assert.equal(h.requests.filter(request => request.url.startsWith('api/student-records')).length, 6);
-  assert.equal(h.requests.filter(request => request.url === 'api/teacher-links').length, 1);
-  assert.equal(h.dailyReads.length, 1);
   assert.deepEqual(plans, [{date: '2032-01-07', fresh: true}]);
-  h.document.getElementById('saved-feedback').open = false;
-  h.document.getElementById('reload-plans').listeners.click();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.requests.filter(request => request.url.startsWith('api/student-records')).length, 6);
-  assert.equal(h.dailyReads.length, 2);
+  assert.deepEqual(h.requests, []); assert.deepEqual(h.dailyReads, []);
 });
 
 test('a fresh archive read replaces a pending snapshot and ignores its eventual stale response', async () => {

@@ -228,18 +228,32 @@ def form_info(token, form_id):
 
 
 def form_responses(token, form_id):
-    responses, cursor = [], None
+    """Read a complete, bounded Form response list or fail without partial data."""
+    responses, cursor, seen = [], None, set()
     for _ in range(20):
         params = {"pageSize": 5000}
         if cursor:
             params["pageToken"] = cursor
         page = get_json("https://forms.googleapis.com/v1/forms/%s/responses" % quote(form_id),
                         token, params)
-        responses.extend(page.get("responses", []) or [])
+        values = page.get("responses", []) if isinstance(page, dict) else None
+        if (not isinstance(values, list) or len(values) > 5000
+                or any(not isinstance(value, dict) for value in values)):
+            raise GoogleError("This Form's responses could not be fully verified.",
+                              reason="incomplete_response_listing")
         cursor = page.get("nextPageToken")
+        if cursor is not None and not isinstance(cursor, str):
+            raise GoogleError("This Form's responses could not be fully verified.",
+                              reason="incomplete_response_listing")
+        responses.extend(values)
         if not cursor:
             return responses
-    return responses
+        if cursor in seen:
+            raise GoogleError("This Form's response listing repeated a page; its coverage is incomplete.",
+                              reason="incomplete_response_listing")
+        seen.add(cursor)
+    raise GoogleError("This Form's response list exceeded the verification limit; its coverage is incomplete.",
+                      reason="incomplete_response_listing")
 
 
 def _prefix_tag(prefix):

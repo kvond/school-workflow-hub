@@ -181,26 +181,11 @@ test('a still-running feedback check is shown as checking, never as nothing new'
   assert.doesNotMatch(saved.textContent, /No new feedback/);
 });
 
-test('a gateway timeout on the feedback read becomes a retry that rereads only the feedback sources', async () => {
-  let reads = 0;
-  const {today, document, requests} = bootToday(url => {
-    if (url === 'api/feedback/daily') return Promise.resolve(json(packet));
-    if (url === 'api/feedback/today') return Promise.resolve(reads++ === 0
-      ? {ok: false, status: 504, json: async () => ({error: 'Fictional gateway timeout.'})}
-      : json({configured: true, date: DAY, requested_date: '2026-10-14', current_sources_verified: true, files: [], daily_packet: packet}));
-    return null;
-  });
-  today.loadToday(); await tick(); await tick();
-  const card = document.getElementById('today-feedback-tools');
-  assert.match(card.textContent, /Feedback source check timed out — retry\. This saved dated document remains available: Fictional gateway timeout\./);
-  assert.match(card.textContent, /New feedback for \d{4}-\d{2}-\d{2} was not checked because the source check timed out/);
-  const retry = buttons(card).find(button => button.textContent === 'Retry feedback check');
-  const before = requests.length;
-  retry.onclick(); await tick(); await tick();
-  assert.equal(retry.disabled, true);
-  assert.deepEqual(requests.slice(before), ['api/feedback/daily', 'api/feedback/today']);
-  assert.match(card.textContent, /No new feedback for 2026-10-14/);
-  assert.doesNotMatch(card.textContent, /timed out/);
+test('Today no longer starts a feedback source check or retries it on navigation', async () => {
+  const {today, requests} = bootToday(url => url === 'api/dashboard/records'
+    ? Promise.resolve(json({schema_version: 'hub-dashboard-records/v1', runs: {status: 'unavailable', items: []}})) : undefined);
+  await today.loadToday();
+  assert.deepEqual(requests, ['api/dashboard/records']);
 });
 
 test('Student work describes exact verified teacher examples without an email exemption or resubmission request', () => {

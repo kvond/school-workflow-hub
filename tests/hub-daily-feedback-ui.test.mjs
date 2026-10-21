@@ -232,81 +232,35 @@ function bootToday(handler) {
   return {ui: context.ui, document, requests};
 }
 
-test('saved daily controls render while Agenda, audits and source catalog are still unresolved', async () => {
-  const catalog = deferred();
-  const {ui, document, requests} = bootToday(url => {
-    if (url === 'api/feedback/daily') return response(packet);
-    if (url === 'api/feedback/today') return catalog.promise;
-  });
-  let finished = false;
-  ui.loadToday().then(() => { finished = true; });
-  await tick();
-  const rendered = document.getElementById('today-feedback-tools');
-  assert.equal(finished, false);
-  assert.match(document.getElementById('today-status').textContent, /Reading today’s Agenda/);
-  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
-  assert.ok(walk(rendered).some(node => node.tagName === 'button' && /Reprint saved feedback — 2026-10-07/.test(node.textContent)));
-  assert.match(rendered.textContent, /7 pages/);
-  assert.doesNotMatch(rendered.textContent, /Printed =|Handed =|printed successfully/);
-  assert.ok(requests.some(request => request.url.startsWith('api/audit?')));
-  assert.ok(requests.findIndex(request => request.url === 'api/feedback/daily') < requests.findIndex(request => request.url === 'api/feedback/today'));
-  assert.ok(requests.every(request => !request.options.method || request.options.method === 'GET'));
+test('Today waits for recorded results without starting feedback or packet reads', async () => {
+  const saved = deferred(); const h = bootToday(url => url === 'api/dashboard/records' ? saved.promise : undefined);
+  const pending = h.ui.loadToday(); await tick();
+  assert.match(h.document.getElementById('today-status').textContent, /Reading saved run results/);
+  assert.deepEqual(h.requests.map(request => request.url), ['api/dashboard/records']);
+  saved.resolve(response({schema_version: 'hub-dashboard-records/v1', runs: {status: 'available', items: []}}));
+  await pending;
+  assert.match(h.document.getElementById('today-body').textContent, /No verified run record/);
 });
 
-test('a current-catalog failure retains the verified saved PDF without becoming a main run result', async () => {
-  const catalog = deferred();
-  const {ui, document} = bootToday(url => {
-    if (url === 'api/feedback/daily') return response(packet);
-    if (url === 'api/feedback/today') return catalog.promise;
-  });
-  ui.loadToday();
-  await tick();
-  catalog.reject(new Error('Fictional source access unavailable'));
-  await tick();
-  const rendered = document.getElementById('today-feedback-tools');
-  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === packet.pdf_url));
-  assert.match(rendered.textContent, /saved dated document remains available.*Fictional source access unavailable/);
-  assert.match(document.getElementById('today-status').textContent, /Reading today’s Agenda/);
-  assert.equal(document.getElementById('today-body').children.length, 0);
+test('an unavailable saved run read does not fall back to feedback generation', async () => {
+  const h = bootToday(url => url === 'api/dashboard/records' ? Promise.reject(new Error('Fictional unavailable')) : undefined);
+  await h.ui.loadToday();
+  assert.match(h.document.getElementById('today-body').textContent, /No completed run is confirmed/);
+  assert.deepEqual(h.requests.map(request => request.url), ['api/dashboard/records']);
 });
 
-test('a late catalog and learning refresh cannot replace a newer Today saved document', async () => {
-  const catalogs = [deferred(), deferred()], learning = [deferred(), deferred()];
-  const newer = {...packet, date: '2026-10-08', pages: 9, pdf_url: '/v2/api/feedback/daily/pdf?id=dailyfeedbackpacket_' + 'b'.repeat(64)};
-  let reads = 0, catalogsRead = 0, learningRead = 0;
-  const {ui, document} = bootToday(url => {
-    if (url === 'api/feedback/daily') return response(reads++ ? newer : packet);
-    if (url === 'api/feedback/today') return catalogs[catalogsRead++].promise;
-    if (url === 'api/learning-report') return learning[learningRead++].promise;
-  });
-  ui.loadToday(); await tick();
-  ui.loadToday(true); await tick();
-  assert.match(document.getElementById('today-feedback-tools').textContent, /Open saved daily feedback — 2026-10-08 \(9 pages\)/);
-  learning[1].resolve(response({configured: true, as_of: '2026-10-08', url: 'https://example.test/current-growth', teaching_url: 'https://example.test/current-teaching'}));
-  await tick();
-  catalogs[0].resolve(response({date: DAY, files, daily_packet: packet}));
-  learning[0].resolve(response({configured: true, as_of: '1999-01-01', url: 'https://example.test/old-growth', teaching_url: 'https://example.test/old-teaching'}));
-  await tick();
-  const rendered = document.getElementById('today-feedback-tools');
-  assert.match(rendered.textContent, /2026-10-08 \(9 pages\)/);
-  assert.doesNotMatch(rendered.textContent, /2026-10-07|1999-01-01|Saved feedback/);
-  assert.ok(walk(rendered).some(node => node.tagName === 'a' && node.href === newer.pdf_url));
-  assert.ok(walk(document.getElementById('student-growth')).some(node => node.tagName === 'a' && node.href === 'https://example.test/current-growth'));
-  assert.doesNotMatch(document.getElementById('today-feedback').textContent, /growth|DTGSS/);
+test('the refreshed run record supersedes a delayed earlier result', async () => {
+  const old = deferred(); let reads = 0;
+  const result = name => ({schema_version: 'hub-dashboard-records/v1', runs: {status: 'available', items: [{id: name, work: name, status: 'Completed', summary: name}]}});
+  const h = bootToday(url => url === 'api/dashboard/records' ? reads++ ? response(result('New saved run')) : old.promise : undefined);
+  const pending = h.ui.loadToday(); await tick(); await h.ui.loadToday(); old.resolve(response(result('Old saved run'))); await pending;
+  assert.match(h.document.getElementById('today-body').textContent, /New saved run/);
+  assert.doesNotMatch(h.document.getElementById('today-body').textContent, /Old saved run/);
 });
 
-test('an earlier saved-packet response cannot overwrite a newer Today or start its stale catalog', async () => {
-  const older = deferred();
-  const newer = {...packet, date: '2026-10-08', pages: 9};
-  let reads = 0, catalogs = 0;
-  const {ui, document} = bootToday(url => {
-    if (url === 'api/feedback/daily') return reads++ ? response(newer) : older.promise;
-    if (url === 'api/feedback/today') { catalogs++; return new Promise(() => {}); }
-  });
-  ui.loadToday();
-  ui.loadToday(true); await tick();
-  older.resolve(response(packet)); await tick();
-  assert.match(document.getElementById('today-feedback-tools').textContent, /2026-10-08 \(9 pages\)/);
-  assert.doesNotMatch(document.getElementById('today-feedback-tools').textContent, /2026-10-07/);
-  assert.equal(catalogs, 1);
+test('a malformed records projection remains unavailable without creating any output', async () => {
+  const h = bootToday(url => url === 'api/dashboard/records' ? response({runs: {status: 'available', items: []}}) : undefined);
+  await h.ui.loadToday();
+  assert.match(h.document.getElementById('today-body').textContent, /unavailable/);
+  assert.ok(h.requests.every(request => !request.options.method));
 });

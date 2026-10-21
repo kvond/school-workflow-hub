@@ -267,3 +267,13 @@ button[disabled] { opacity: 0.6; cursor: default; }
 #week-packet .week-packet { margin: 4px 0 10px; }
 #week-packet .week-packet h2 { font-size: 15px; margin: 0 0 2px; }
 #week-packet .week-packet p { margin: 2px 0; }
+
+/* Saved run results and direct links stay compact on the dashboard. */
+.dashboard-runs { display: grid; gap: 12px; }
+.dashboard-runs > h2 { margin: 0; }
+.run-record { padding: 14px 18px; border: 1px solid var(--line, #d8e0e7); border-radius: 10px; background: #fff; }
+.run-record h3 { margin: 0 0 6px; }
+.run-record p { margin: 5px 0; overflow-wrap: anywhere; }
+.record-links { display: grid; gap: 14px; padding: 0; list-style: none; }
+.record-links li { padding: 12px 16px; border: 1px solid var(--line, #d8e0e7); border-radius: 8px; overflow-wrap: anywhere; }
+.saved-grades td { vertical-align: top; }

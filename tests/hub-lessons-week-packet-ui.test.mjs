@@ -39,9 +39,11 @@ function boot(reply) {
   return {calls, box, ui: context.ui};
 }
 
-test('Lessons has a Week packet slot above the notes', () => {
-  assert.ok(html.indexOf('id="week-packet"') > html.indexOf('id="page-plans"'));
-  assert.ok(html.indexOf('id="week-packet"') < html.indexOf('id="system-notes"'));
+test('Lessons removes packet orchestration and navigation does not call its reader', () => {
+  assert.doesNotMatch(html, /id="week-packet"/);
+  const plans = source.slice(source.indexOf('async function loadPlans('), source.indexOf('function renderNextWeekNotes('));
+  assert.doesNotMatch(plans, /loadLessonPacket\(/);
+  assert.match(plans, /api\/day/);
 });
 
 test('The saved packet for the shown week links straight to its PDF with one read-only GET', async () => {
