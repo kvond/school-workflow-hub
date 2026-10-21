@@ -1,8 +1,7 @@
 // Teaching Hub v2: lesson plans from the Agenda, and student work found from
-// each lesson's Form responses and turn-in folder, with completion scores
-// counted from each deck's coded boxes. The opted-in Chrome helper writes and
-// verifies eligible morning scores; this page reads receipts and offers
-// optional manual tools.
+// each lesson's Form responses and turn-in folder, with saved completion grades.
+// Pages read existing results. The opted-in Chrome helper keeps its existing
+// source checks, exact destinations, higher-only entry and readback.
 const $ = id => document.getElementById(id);
 const CLASSES = [['biology', 'Biology'], ['forensics', 'Forensics'], ['anatomy', 'A&P']];
 const SCAN_CLASSES = ['biology', 'anatomy'];  // with an "Answers by question" view
@@ -65,6 +64,7 @@ function showAgendaLink(agenda) {
 
 // ---------- Hub v3 teacher cockpit ----------
 const cockpit = {seq: 0, audits: null, auditsAt: 0, feedbackData: null, learningData: null, teacherLinks: null};
+const dashboard = {todaySeq: 0, recordsSeq: 0};
 
 function cockpitPanel(title, ...children) {
   return el('details', {class: 'cockpit-panel cockpit-details', open: true},
@@ -1423,57 +1423,118 @@ async function weekAheadRepair(item, preview) {
   state.busy = false; renderWeekAhead();
 }
 
-async function loadToday(force = false) {
-  const seq = ++cockpit.seq;
-  setStatus('today-status', 'Reading today’s Agenda, morning receipts and deck readiness…');
-  setStatus('data-status', 'Reading operational sources…');
-  $('today-next-agenda').replaceChildren();
-  $('lesson-readiness-body').replaceChildren(el('p', {class: 'muted', text: 'Checking embedded codes in current and upcoming lessons…'}));
-  if (cockpit.feedbackData?.daily_packet?.status === 'ready') {
-    const packet = cockpit.feedbackData.daily_packet;
-    cockpit.feedbackData = {date: packet.date, files: [], daily_packet: packet, checking: true};
-    renderTodayFeedbackArea(seq);
+function recordURL(value) {
+  try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password ? url.href : null; }
+  catch { return null; }
+}
+function runTime(item) { return Date.parse(item.finished_at || item.started_at || item.recorded_at || '') || 0; }
+function renderDashboardRuns(runs) {
+  const box = el('section', {class: 'dashboard-runs'}, el('h2', {text: 'What ran'}));
+  if (!runs || !['available', 'unavailable', 'not_configured'].includes(runs.status) || !Array.isArray(runs.items)) {
+    box.append(note('Run history is unavailable. No completed run is confirmed.', 'info')); return box;
   }
-  loadTodayFeedback(seq);
-  loadPrintableFeedbackLink(seq);
-  loadWeekAhead();
-  getJSON('api/teacher-links').catch(() => ({})).then(data => {
-    if (seq !== cockpit.seq) return;
-    cockpit.teacherLinks = data; renderTodayFeedbackArea(seq);
-  });
-  getJSON('api/learning-report').catch(() => ({configured: false})).then(data => {
-    if (seq !== cockpit.seq) return;
-    cockpit.learningData = data;
-    renderTodayFeedbackArea(seq);
-  });
+  if (runs.status !== 'available') box.append(note(runs.status === 'not_configured'
+    ? 'Run history is not connected. An active schedule does not confirm that work ran.'
+    : 'Some run history could not be read. The results below are only the records available.', 'info'));
+  const items = [...runs.items].sort((a, b) => runTime(b) - runTime(a));
+  if (!items.length) {
+    box.append(el('p', {class: 'muted', text: 'No verified run record is available. No completion is inferred.'})); return box;
+  }
+  const statuses = new Set(['Running', 'Completed', 'Partial', 'Blocked', 'Failed', 'Uncertain', 'Cancelled']);
+  for (const item of items) {
+    const raw = String(item.status || '');
+    const normalized = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+    const status = statuses.has(normalized) ? normalized : 'Unverified';
+    const card = el('article', {class: 'run-record'},
+      el('h3', {text: item.work || 'Recorded run'}),
+      el('p', {}, el('strong', {text: status}),
+        item.finished_at || item.started_at ? ' · ' + when(item.finished_at || item.started_at) + ' ET'
+          : item.recorded_at ? ' · recorded ' + when(item.recorded_at) + ' ET' : ' · time unverified'),
+      el('p', {text: item.summary || 'No result summary was recorded.'}));
+    if (Number.isInteger(item.completed) && item.completed >= 0) card.append(el('p', {text: 'Completed: ' + item.completed}));
+    if (Number.isInteger(item.remaining) && item.remaining >= 0) card.append(el('p', {text: 'Unfinished: ' + item.remaining}));
+    if (item.unfinished) card.append(el('p', {text: 'Unfinished: ' + item.unfinished}));
+    if (item.next_action) card.append(el('p', {text: 'Next: ' + item.next_action + (item.owner ? ' · ' + item.owner : '')}));
+    else if (item.owner) card.append(el('p', {text: 'Owner: ' + item.owner}));
+    const links = (Array.isArray(item.links) ? item.links : []).filter(entry => recordURL(entry.url));
+    if (links.length) card.append(el('div', {class: 'links'}, links.map(entry => link(entry.label || 'Result', recordURL(entry.url), 'chip'))));
+    box.append(card);
+  }
+  return box;
+}
+async function loadToday() {
+  const seq = ++dashboard.todaySeq;
+  setStatus('today-status', 'Reading saved run results…');
+  $('today-body').replaceChildren();
   try {
-    if (force) { cockpit.audits = null; cockpit.auditsAt = 0; }
-    const [day, reportsData, routineData, audits] = await Promise.all([
-      getJSON(`api/day?date=${encodeURIComponent(todayISO())}${force ? '&fresh=1' : ''}`),
-      getJSON('api/morning/reports'),
-      getJSON('api/routine'),
-      loadAudits(force),
-    ]);
-    if (seq !== cockpit.seq) return;
-    showAgendaLink(day.agenda);
-    renderLessonReadiness(audits);
-    $('agenda-diagnostics').replaceChildren(renderAgendaDiagnostics(audits));
-    const report = (reportsData.reports || []).find(item => item.day === todayISO()) || null;
-    const nextAgenda = renderNextLessons(audits, null, undefined, day.week?.label);
-    $('today-body').replaceChildren(
-      el('div', {class: 'cockpit-grid'},
-        renderMorningCockpit(report, routineData),
-        renderNeedsYou(report)));
-    $('today-next-agenda').replaceChildren(nextAgenda);
-    setStatus('today-status', `Updated ${when(new Date().toISOString())}.`);
-    setStatus('data-status', `Updated ${when(new Date().toISOString())}.`);
+    const data = await getJSON('api/dashboard/records');
+    if (seq !== dashboard.todaySeq) return;
+    if (data?.schema_version !== 'hub-dashboard-records/v1') throw new Error('The saved run history could not be verified.');
+    $('today-body').replaceChildren(renderDashboardRuns(data.runs));
+    setStatus('today-status', 'Saved run records · ' + when(new Date().toISOString()) + ' ET');
   } catch (error) {
-    if (seq !== cockpit.seq) return;
+    if (seq !== dashboard.todaySeq) return;
+    $('today-body').replaceChildren(note('Run history is unavailable. No completed run is confirmed.', 'info'));
     setStatus('today-status', error.message, true);
-    setStatus('data-status', 'Operational source read unavailable: ' + error.message, true);
-    $('today-body').replaceChildren();
-    $('lesson-readiness-body').replaceChildren(note('Deck readiness could not be checked: ' + error.message));
   }
+}
+function renderRecordsPrintableFeedback(packet) {
+  const box = el('section', {class: 'record-feedback'}, el('h2', {text: 'Saved feedback PDF'}));
+  if (packet?.status === 'unpublished') {
+    box.append(el('p', {class: 'muted', text: 'No feedback PDF has been published. This does not establish intake coverage.'}));
+    return box;
+  }
+  const ready = packet?.status === 'ready'
+    && /^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]{10,200}\/view$/.test(packet.url || '')
+    && /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[A-Za-z0-9_-]{10,200}\/edit$/.test(packet.spreadsheet_url || '')
+    && /^\d{4}-\d{2}-\d{2}$/.test(packet.date || '')
+    && ['pages', 'reports', 'students'].every(key => Number.isInteger(packet[key]) && packet[key] > 0)
+    && ['partial_verified_reports', 'complete_verified_reports'].includes(packet.coverage);
+  if (!ready) {
+    box.append(note(packet?.status === 'held' && typeof packet.problem === 'string' ? packet.problem
+      : 'The saved feedback PDF link could not be verified. Reload Records to retry.', 'info'));
+    return box;
+  }
+  box.append(el('div', {class: 'links'},
+    link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url, 'chip'),
+    link('Feedback spreadsheet', packet.spreadsheet_url, 'chip')));
+  if (packet.coverage === 'partial_verified_reports') box.append(el('p', {class: 'muted',
+    text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}));
+  return box;
+}
+async function loadRecordsPrintableFeedback(seq, box) {
+  box.replaceChildren(el('p', {class: 'muted', text: 'Reading the saved feedback PDF link…'}));
+  let packet;
+  try { packet = await getJSON('api/spreadsheet-feedback/print-link'); }
+  catch { packet = {status: 'held', problem: 'The saved feedback PDF link could not be verified. Reload Records to retry.'}; }
+  if (seq !== dashboard.recordsSeq) return;
+  box.replaceChildren(renderRecordsPrintableFeedback(packet));
+}
+async function loadRecords() {
+  const seq = ++dashboard.recordsSeq;
+  setStatus('records-status', 'Reading configured record links…');
+  const directory = el('div'), printable = el('div');
+  $('records-body').replaceChildren(directory, printable);
+  // Independent saved records: an unavailable PDF never hides the directory,
+  // and neither read starts a catalog scan, packet build or delivery operation.
+  const printRead = loadRecordsPrintableFeedback(seq, printable);
+  try {
+    const data = await getJSON('api/dashboard/records');
+    if (seq !== dashboard.recordsSeq) return;
+    if (data?.schema_version !== 'hub-dashboard-records/v1' || !Array.isArray(data.records)) throw new Error('The configured record links could not be verified.');
+    const allowed = ['operations', 'model_trials', 'model_trials_folder', 'agenda', 'work_index', 'feedback_checklist', 'growth_report', 'biology_analysis', 'system_notes'];
+    const items = allowed.map(key => data.records.find(item => item?.key === key)).filter(Boolean);
+    directory.replaceChildren(el('ul', {class: 'record-links'}, items.map(item => {
+      const url = item.configured === true && recordURL(item.url);
+      return el('li', {}, url ? link(item.label || item.key, url) : el('span', {text: (item.label || item.key) + ' — link not configured'}));
+    })), ...(!items.length ? [note('Record links are not configured.', 'info')] : []));
+    setStatus('records-status', 'Existing private records; opening this page does not run a workflow.');
+  } catch (error) {
+    if (seq !== dashboard.recordsSeq) return;
+    directory.replaceChildren(note('Record links are unavailable. Existing records have not changed.', 'info'));
+    setStatus('records-status', error.message, true);
+  }
+  await printRead;
 }
 
 function renderLessonReadiness(audits) {
@@ -1536,8 +1597,7 @@ async function loadPlans(date, fresh = false) {
   $('cards').replaceChildren();
   $('next-week-notes').replaceChildren();
   // Lessons → Week packet is declared later; guard so a partial load stays safe.
-  const packetReady = typeof loadLessonPacket === 'function';
-  if (packetReady && $('week-packet')) { lessonPacket.seq++; $('week-packet').replaceChildren(); }
+  // Lesson navigation reads the Agenda only; packet preparation belongs to its workflow.
   setStatus('plans-status', 'Reading the Agenda…');
   try {
     const data = await getJSON(`api/day?date=${encodeURIComponent(date)}${fresh ? '&fresh=1' : ''}`);
@@ -1545,13 +1605,11 @@ async function loadPlans(date, fresh = false) {
     showAgendaLink(data.agenda);
     renderPlans(data);
     renderNextWeekNotes(data);
-    if (packetReady) loadLessonPacket(data.week?.monday || mondayOf(date));
     setStatus('plans-status', '');
   } catch (error) {
     if (seq !== plans.seq) return;
     setStatus('plans-status', error.message, true);
     $('cards').replaceChildren();
-    if (packetReady) loadLessonPacket(mondayOf(date));
   }
 }
 
@@ -1811,7 +1869,7 @@ function renderPlans(data) {
 }
 
 // ---------- Student work ----------
-const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}, reviewContexts: new Map()};
+const work = {cls: store.get('class') || 'forensics', week: null, section: store.get('section') || 'all', display: 'all', weeksFor: null, data: null, seq: 0, scores: {}, ui: {}, marks: {}, reviewContexts: new Map()};
 const sourceMatchesHeld = () => !!work.data?.other_files?.length;
 // Display availability only: an incomplete discovery result cannot establish
 // absence. Keep received rows and the existing assessment/IC rules unchanged.
@@ -1954,8 +2012,11 @@ function fillSelect(select, options, value) {
 }
 
 async function loadWeeks(fresh = false) {
+  const selected = work.cls, seq = work.seq;
   setStatus('work-status', 'Reading the Agenda…');
-  const data = await getJSON(`api/weeks?class=${work.cls}&today=${todayISO()}${fresh ? '&fresh=1' : ''}`);
+  const data = await getJSON(`api/weeks?class=${selected}&today=${todayISO()}${fresh ? '&fresh=1' : ''}`);
+  if (seq !== work.seq || selected !== work.cls) return false;
+  if (data?.class_key !== selected) throw new Error('The selected class’s weeks could not be verified.');
   showAgendaLink(data.agenda);
   work.weeksFor = data.class_key;
   const weeks = data.weeks;
@@ -1963,23 +2024,27 @@ async function loadWeeks(fresh = false) {
   fillSelect($('work-week'), weeks.map(w => [w.label, `${w.label} · ${w.topic || 'no topic'}${w.forms ? '' : ' (no Form)'}`]), work.week);
   if (!data.sections.includes(work.section)) work.section = 'all';
   fillSelect($('work-section'), [['all', 'All sections'], ...data.sections.map(s => [s, s])], work.section);
+  return true;
 }
 
 async function openWork([cls, week] = []) {
-  closeSheets();
+  const seq = ++work.seq;
+  // A new scope must never display the preceding class's students or handoff
+  // controls while its weeks are still being read.
+  work.data = null; work.scores = {}; work.ui = {}; work.marks = {}; work.reviewContexts = new Map();
+  $('work-body').replaceChildren();
   if (CLASSES.some(([key]) => key === cls)) work.cls = cls;
   if (week) work.week = week;
   $('work-class').value = work.cls;
-  loadStudentRecords(true);
   try {
-    if (work.weeksFor !== work.cls) await loadWeeks();
+    if (work.weeksFor !== work.cls) { if (await loadWeeks() === false) return; }
     else $('work-week').value = work.week;
+    if (seq !== work.seq) return;
     await loadWork();
-  } catch (error) { setStatus('work-status', error.message, true); }
+  } catch (error) { if (seq === work.seq) setStatus('work-status', error.message, true); }
 }
 
 async function loadWork(fresh = false) {
-  closeSheets();
   if (!work.week) { setStatus('work-status', 'No weeks were found for this class in the Agenda.', true); return; }
   history.replaceState(null, '', `#work/${work.cls}/${encodeURIComponent(work.week)}`);
   const seq = ++work.seq;
@@ -2003,10 +2068,10 @@ async function loadWork(fresh = false) {
     await loadMarks(data.lessons.flatMap(l => l.forms).filter(f => f.form_id), seq);
     if (seq !== work.seq) return;
     setStatus('work-status', `Read ${when(new Date().toISOString())}.`);
-    // Score every assignment right away; results are kept on the server, so this is quick after the first time.
+    // Read saved grades only; opening or refreshing this page never scores work.
     for (const form of data.lessons.flatMap(l => l.forms)) {
       if (seq !== work.seq) return;
-      if (form.form_id && assessmentRows(form).some(row => row.files.length)) await scoreForm(form);
+      if (form.form_id) await loadSavedScores(form, seq);
     }
   } catch (error) {
     if (seq === work.seq) setStatus('work-status', error.message, true);
@@ -2499,6 +2564,7 @@ function formName(form, lesson) {
 }
 
 const HELPER_ERRORS = {invalid_list: 'The helper couldn’t read this list. Reload the page and send it again.',
+  source_changed: 'The selected class or week changed while the current list was being prepared. Prepare the list again for the assignment now on screen.',
   receipt_unconfirmed: 'This assignment’s entry history could not be verified. Reload Student work before preparing an IC list.',
   coverage_incomplete: SOURCE_MATCH_HOLD,
   deck_not_ready: 'Needs embedded codes. Embed or repair the required codes in this lesson and the affected student copies, recheck, then rerun grading. No missing-work zero was sent.',
@@ -2508,27 +2574,25 @@ const helperError = code => HELPER_ERRORS[code]
   || 'The Chrome helper didn’t answer. Check that it’s turned on at chrome://extensions, then reload this page.';
 
 async function sendToHelper(form, lesson) {
-  const ui = work.ui[form.form_id] = {...work.ui[form.form_id], error: null, helper: null};
-  const code = await sendList(form, lesson);
-  if (code === 'list_ready') {
-    ui.helper = `Sent to the Chrome helper at ${when(helper.sent[form.form_id].sent_at)}. In Infinite Campus, open this assignment’s score panel for each section, (F) for Notes and (S) for Revision, and click “Hub helper” at the bottom right.`;
-  } else ui.error = helperError(code);
+  const ui = work.ui[form.form_id] = {...work.ui[form.form_id], error: null, helper: null, preparing: true};
   renderWork();
+  try {
+    const code = await sendList(form, lesson);
+    if (code === 'list_ready') ui.helper = `Sent the freshly checked list to the Helper at ${when(helper.sent[form.form_id].sent_at)}. Open this assignment’s IC score panel and use Hub helper. Preparing a list does not enter grades.`;
+    else ui.error = helperError(code);
+  } catch (error) { ui.error = error.message; }
+  finally { ui.preparing = false; renderWork(); }
 }
 
 // Hand one assignment's list to the helper; returns the helper's code.
 async function sendList(form, lesson) {
-  if (weekAssessmentHold()) return 'assessment_scope_held';
-  if (sourceMatchesHeld()) return 'coverage_incomplete';
-  if (gradeReadinessHold(form)) return 'deck_not_ready';
-  if (entryHistoryHold(form)) return 'receipt_unconfirmed';
-  if (recheckSelectionHold(form)) return 'coverage_incomplete';
-  const rows = helperRows(form);
-  const list = {schema: 'hub-ic-list/v1', list_id: crypto.randomUUID(), class_key: work.cls,
-    class_name: CLASSES.find(([key]) => key === work.cls)[1], week: oneLine(work.week), form_id: form.form_id,
-    assignment: formName(form, lesson), form_label: oneLine(form.label),
-    status: !startedFor(form) ? 'before' : closedFor(form) ? 'closed' : 'open',
-    status_text: oneLine(icStatus(form)?.text, 400), sent_at: new Date().toISOString(), rows};
+  // Only this explicit action prepares the current canonical list. Page reads
+  // never invoke it, and saved-view rows never manufacture missing-work zeros.
+  const selected = {class: work.cls, week: work.week, form: form.form_id}, seq = work.seq;
+  const prepared = await getJSON('api/morning/list?' + new URLSearchParams(selected));
+  if (seq !== work.seq || selected.class !== work.cls || selected.week !== work.week) return 'source_changed';
+  if (prepared?.code !== 'ready' || !prepared.list) return prepared?.code || 'coverage_incomplete';
+  const list = prepared.list;
   const request_id = crypto.randomUUID();
   const code = await new Promise(resolve => {
     helper.waiting.set(request_id, resolve);
@@ -2536,7 +2600,8 @@ async function sendList(form, lesson) {
     window.postMessage({channel: HELPER.send, version: 1, request_id, type: 'send', list}, location.origin);
   });
   if (code === 'list_ready') {
-    helper.sent[form.form_id] = {class_key: work.cls, week: work.week, label: form.label, need: helperNeed(rows), sent_at: list.sent_at};
+    helper.sent[form.form_id] = {class_key: selected.class, week: selected.week, label: form.label,
+      need: helperNeed(list.rows), sent_at: list.sent_at};
     saveSent();
   }
   return code;
@@ -2950,47 +3015,100 @@ function renderTurnInSources(data, section = 'all') {
     waiting ? el('p', {class: 'note info', text: `${waiting} current submission${waiting === 1 ? ' is' : 's are'} in the turn-in folders without a confirmed lesson match (listed below under “Confirm these submission matches”).`}) : null);
 }
 
+function savedGradeRows(form) {
+  const candidates = [...(form.students || []), ...(form.late || []), ...(form.scoring_students || []),
+    ...(work.data?.entry_rechecks?.[form.form_id]?.rows || [])];
+  const seen = new Set();
+  return candidates.filter(row => {
+    if (!Array.isArray(row.files) || !row.files.length) return false;
+    const key = JSON.stringify([row.section, row.last, row.first, scoreFile(row)?.id]);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  });
+}
+function verifiedSavedGrade(value) {
+  return value?.status === 'saved' && typeof value.saved_at === 'string' && Number.isFinite(Date.parse(value.saved_at))
+    && ['notes_score', 'revision_score'].every(key => value[key] === null || (typeof value[key] === 'number'
+      && Number.isFinite(value[key]) && value[key] >= 0 && value[key] <= 10));
+}
+function newlyGraded(value) {
+  return verifiedSavedGrade(value) && new Intl.DateTimeFormat('en-CA', {timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit'})
+    .format(new Date(value.saved_at)) === todayISO();
+}
+async function loadSavedScores(form, seq = work.seq) {
+  const files = [...new Set(savedGradeRows(form).map(row => scoreFile(row)?.id).filter(Boolean))];
+  const scores = work.scores[form.form_id] = {};
+  if (!files.length) return;
+  const selected = {class: work.cls, week: work.week, form: form.form_id};
+  let batch;
+  try {
+    batch = await getJSON('api/scores/saved?' + new URLSearchParams(selected));
+    if (batch?.schema_version !== 'hub-saved-completion-list/v1' || batch.status !== 'available'
+        || !batch.results || typeof batch.results !== 'object' || Array.isArray(batch.results)
+        || typeof batch.checked_at !== 'string' || !Number.isFinite(Date.parse(batch.checked_at))) throw new Error('unavailable');
+  } catch { batch = null; }
+  if (seq !== work.seq || selected.class !== work.cls || selected.week !== work.week) return;
+  for (const file of files) {
+    const value = batch?.results[file];
+    scores[file] = value && ['saved', 'stale', 'unavailable', 'not_graded'].includes(value.status)
+      && (!value.file_id || value.file_id === file) && (value.status !== 'saved' || verifiedSavedGrade(value))
+      ? value : {status: 'unavailable', problem: 'Saved grades could not be verified. No new assessment was run.'};
+  }
+  renderWork();
+}
+function renderSavedForm(form, lesson) {
+  const box = el('section', {class: 'form-work saved-grades'},
+    el('h3', {text: form.label || lesson.topic || 'Assignment'}));
+  const scores = work.scores[form.form_id] || {};
+  const rows = savedGradeRows(form).filter(row => (work.section === 'all' || row.section === work.section)
+    && (work.display !== 'new' || newlyGraded(scores[scoreFile(row)?.id])));
+  const ui = work.ui[form.form_id] || {};
+  if (form.problem) box.append(note(form.problem, 'info'));
+  const mark = work.marks[form.form_id];
+  box.append(el('p', {class: 'muted', text: 'Saved Hub completion grades are separate from verified IC entry.'}));
+  const enteredAt = entryTime(mark?.entered_at?.at);
+  const entryRecorded = mark?.configured === true && !mark.problem && !mark.pending
+    && Number.isFinite(enteredAt) && enteredAt <= Date.now();
+  box.append(entryRecorded ? el('p', {class: 'marks', text: 'IC entry receipt recorded ' + markDate(mark.entered_at) + '. This is the recorded entry time, not a new IC read.'})
+    : el('p', {class: 'muted', text: mark?.problem || mark?.pending ? 'IC entry history is unavailable; entry is not confirmed.' : 'No verified IC entry receipt is recorded.'}));
+  if (rows.length) box.append(el('div', {class: 'table-wrap'}, el('table', {},
+    el('thead', {}, el('tr', {}, ['Student', 'Section', 'Submitted work', 'Notes /10', 'Revision /10', 'Saved in Hub'].map(text => el('th', {text})))),
+    el('tbody', {}, rows.map(row => {
+      const score = scores[scoreFile(row)?.id], saved = row.matched === true && verifiedSavedGrade(score);
+      const state = !row.matched ? 'Student identity is not verified; no grade displayed.'
+        : !score ? 'Reading saved grade…' : score.status === 'stale' ? 'Saved grade is stale for this source revision; no current grade displayed.'
+        : score.status === 'not_graded' ? 'No saved grade for this source revision.'
+        : score.problem || 'Saved grade unavailable.';
+      return el('tr', {}, el('td', {text: row.matched ? `${row.last}, ${row.first}` : row.roster_note || 'Identity unverified'}),
+        el('td', {text: row.section || '—'}), el('td', {}, fileList(row.files)),
+        saved ? el('td', {text: score.notes_score === null ? 'N/A' : String(score.notes_score)}) : el('td', {colspan: 2, class: 'muted', text: state}),
+        saved ? el('td', {text: score.revision_score === null ? 'N/A' : String(score.revision_score)}) : null,
+        el('td', {text: score?.saved_at ? when(score.saved_at) + ' ET' : 'Not verified'}));
+    })))));
+  else box.append(el('p', {class: 'muted', text: work.display === 'new'
+    ? 'No verified grades saved today are available for this assignment.' : 'No submitted work with a saved grade is available in this view.'}));
+  if (ui.error) box.append(note(ui.error));
+  if (ui.helper) box.append(note(ui.helper, 'info'));
+  if (ui.saved) box.append(note(ui.saved, 'info'));
+  if (form.form_id) box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', disabled: ui.preparing,
+    onclick: () => sendToHelper(form, lesson)}, ui.preparing ? 'Preparing current list…' : 'Prepare current list for Helper'),
+    el('small', {class: 'muted', text: 'Explicitly rechecks current sources and prepares the existing Helper list. The Helper controls IC entry.'})));
+  const progress = helperProgress(form);
+  if (progress) box.append(progress);
+  return box;
+}
+
 function renderWork() {
   const data = work.data;
   if (!data) return;
-  const coverageIncomplete = studentWorkCoverageIncomplete();
-  const parts = data.problems.map(p => note(p));
-  if (weekAssessmentHold(data)) parts.push(note(weekAssessmentHold(data), 'info'));
-  if (!data.roster_size && !coverageIncomplete) parts.push(note('No roster students were found for this class, so nobody can be listed as missing.'));
-  if (data.folders?.length) {
-    parts.push(el('p', {class: 'muted'}, coverageIncomplete ? 'Source folders for this check: ' : `Read the Form uploads and ${data.folder_files} file(s) in `,
-      data.folders.flatMap((f, i) => [i ? ', ' : '', link(f.name + ' ↗', f.url)]), '.'));
+  const parts = [el('p', {class: 'muted', text: 'Existing saved completion grades. Opening this page does not grade work. Newly graded today uses the saved grade time in Eastern time.'})];
+  for (const problem of data.problems || []) parts.push(note(problem, 'info'));
+  if (studentWorkCoverageIncomplete()) parts.push(note('Source coverage is incomplete. No missing-work zero or completed assessment is inferred.', 'info'));
+  for (const lesson of data.lessons || []) {
+    parts.push(el('h2', {text: lesson.topic || data.week || 'Lesson'}));
+    for (const form of lesson.forms || []) parts.push(renderSavedForm(form, lesson));
   }
-  if (data.folder_note) parts.push(note(data.folder_note, 'info'));
-  // Counts from a partial read would understate a source, so only show them when every source was read.
-  const sources = coverageIncomplete ? null : renderTurnInSources(data, work.section);
-  if (sources) parts.push(sources);
-  if (data.roster_check) parts.push(renderRosterCheck(data.roster_check, coverageIncomplete));
-  if (data.folder_reviews?.length) {
-    parts.push(el('section', {class: 'folder-review'},
-      el('h3', {text: 'Check this shared lesson folder'}),
-      el('details', {open: true}, el('summary', {text: `Folder checks (${data.folder_reviews.length})`}),
-        ...data.folder_reviews.map(review => el('p', {class: 'note info'},
-          review.message, ' ', link(review.folder_name + ' ↗', review.folder_url))))));
-  }
-  for (const lesson of data.lessons) {
-    parts.push(el('div', {class: 'lesson-head'}, el('h2', {text: lesson.topic || data.week})));
-    if (lesson.problem && !omittedFormProblem(lesson, data)) parts.push(note(lesson.problem));
-    lesson.forms.forEach(form => parts.push(renderForm(form, lesson)));
-  }
-  const other = (data.other_files || []).filter(r => !r.matched || work.section === 'all' || r.section === work.section);
-  if (other.length) {
-    parts.push(el('section', {class: 'form-work'},
-      el('div', {class: 'form-head'}, el('h3', {text: 'Confirm these submission matches'})),
-      note(`These ${other.length === 1 ? 'file is' : 'files are'} already in the ${data.week} turn-in folders. The Hub couldn’t safely match ${other.length === 1 ? 'it' : 'them'} to one assignment, so scoring is held until the match is clear. Open the linked work and confirm the assignment; nothing was moved.`, 'info'),
-      el('details', {open: true}, el('summary', {text: `Submission matches to check (${other.length})`}),
-        el('div', {class: 'table-wrap'}, el('table', {},
-          el('thead', {}, el('tr', {}, ['Student', 'Section', 'Turned in', 'Work'].map(h => el('th', {text: h})))),
-          el('tbody', {}, other.map(r => studentRow(r))))))));
-  }
-  if (data.teacher_uploads?.length) parts.push(el('section', {class: 'form-work'}, teacherMaterialList(data.teacher_uploads)));
-  const entry = coverageIncomplete ? null : weekEntryBox();
-  if (entry) parts.push(entry);
+  if (!(data.lessons || []).length) parts.push(note('No saved grade records are available for this lesson view.', 'info'));
   $('work-body').replaceChildren(...parts);
 }
 
@@ -3326,13 +3444,7 @@ function renderLessonNotes(state) {
   };
   const cov = state.saved.coverage;
   body.replaceChildren(...[
-    el('p', {class: 'muted', text: 'Summarize this lesson makes one AI call with the school provider, only when you click. '
-      + 'It reads the teacher notes from this lesson’s saved, reviewed student feedback, with student names removed, '
-      + 'and saves a private summary here that you can edit. Clicking again for an unchanged lesson reuses the saved summary '
-      + 'and is not billed again. When the notes have changed, a new summary replaces the summary text (earlier versions '
-      + 'are kept in the Hub’s history); your own notes are kept.'}),
-    el('div', {class: 'action-row'}, el('button', {type: 'button', class: 'primary', disabled: busy,
-      onclick: () => summarizeLesson(state)}, state.busy === 'summarize' ? 'Summarizing…' : 'Summarize this lesson')),
+    el('p', {class: 'muted', text: 'Your saved lesson summary and notes. Saving edits does not generate a new summary.'}),
     state.error ? note(state.error) : null,
     state.info ? note(state.info, 'info') : null,
     cov ? el('p', {class: 'muted', text: `From ${cov.teacher_notes} teacher note${cov.teacher_notes === 1 ? '' : 's'} in `
@@ -3490,42 +3602,39 @@ function loadRoutine() {
 }
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
-  const current = tab === 'routine' || tab === 'system' ? 'data' : ['today', 'plans', 'work', 'data'].includes(tab) ? tab : 'today';
-  for (const name of ['today', 'plans', 'work', 'data']) $('page-' + name).hidden = name !== current;
+  const current = ['data', 'routine', 'system'].includes(tab) ? 'records'
+    : ['today', 'plans', 'work', 'records'].includes(tab) ? tab : 'today';
+  for (const name of ['today', 'plans', 'work', 'records']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
+  // Invalidate pending work discovery as soon as navigation leaves this page.
+  if (current !== 'work') work.seq += 1;
   if (current === 'today') loadToday();
-  else if (current === 'work') { openWork(rest.map(part => decodeURIComponent(part))); loadGrowthLink(); }
-  else if (current === 'data') { loadToday(); loadRoutine(); loadSystemNotes(); loadStudentRecords(); }
-  else {
-    loadLessonAccess();
-    refreshVisiblePlans();
-  }
+  else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
+  else if (current === 'records') loadRecords();
+  else refreshVisiblePlans();
 }
 
 fillSelect($('work-class'), CLASSES, work.cls);
-fillSelect($('records-class'), CLASSES, work.cls);
 $('prev-week').addEventListener('click', () => loadPlans(addDays(plans.date, -7)));
 $('next-week').addEventListener('click', () => loadPlans(addDays(plans.date, 7)));
 $('today').addEventListener('click', () => loadPlans(todayISO()));
-$('reload-plans').addEventListener('click', () => { loadPlans(plans.date, true); loadLessonAccess(true); });
+$('reload-plans').addEventListener('click', () => loadPlans(plans.date, true));
 $('date').addEventListener('change', e => { if (/^\d{4}-\d{2}-\d{2}$/.test(e.target.value)) loadPlans(e.target.value); });
-$('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; $('tidy-box').replaceChildren(); openWork(); });
-$('work-week').addEventListener('change', e => { work.week = e.target.value; $('tidy-box').replaceChildren(); loadWork(); });
-$('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); closeSheets(); renderWork(); });
-$('student-records').addEventListener('toggle', () => { if ($('student-records').open) loadStudentRecords(true); });
-$('records-class').addEventListener('change', () => loadStudentRecords(true));
-$('saved-feedback').addEventListener('toggle', () => loadFeedbackArchive());
-$('all-student-folders').addEventListener('toggle', () => loadFeedbackArchive());
-$('reload-today').addEventListener('click', () => loadToday(true));
-$('reload-data').addEventListener('click', () => { loadToday(true); loadRoutine(); loadSystemNotes(true); loadStudentRecords(true); });
-$('run-link-check').addEventListener('click', runLinkCheck);
+$('work-class').addEventListener('change', e => { work.cls = e.target.value; store.set('class', work.cls); work.weeksFor = null; openWork(); });
+$('work-week').addEventListener('change', e => { work.week = e.target.value; loadWork(); });
+$('work-section').addEventListener('change', e => { work.section = e.target.value; store.set('section', work.section); renderWork(); });
+$('work-display').addEventListener('change', e => { work.display = e.target.value === 'new' ? 'new' : 'all'; renderWork(); });
+$('reload-today').addEventListener('click', () => loadToday());
+$('reload-records').addEventListener('click', () => loadRecords());
 $('reload-work').addEventListener('click', async () => {
-  try { work.weeksFor = null; await loadWeeks(true); await loadWork(); await loadStudentRecords(true); } catch (error) { setStatus('work-status', error.message, true); }
+  const seq = ++work.seq;
+  work.data = null; work.scores = {}; work.ui = {}; work.marks = {};
+  $('work-body').replaceChildren();
+  try { work.weeksFor = null; if (await loadWeeks(true) === false || seq !== work.seq) return; await loadWork(true); }
+  catch (error) { if (seq === work.seq) setStatus('work-status', error.message, true); }
 });
-$('tidy-work').addEventListener('click', () => { if (work.week) previewTidy(); });
-$('missing-sheets').addEventListener('click', missingWorkSheets);
 window.addEventListener('hashchange', showTab);
 window.addEventListener('focus', refreshVisiblePlans);
 document.addEventListener('visibilitychange', refreshVisiblePlans);
@@ -3589,4 +3698,3 @@ async function loadMorningSummary() {
     });
   } catch { if (seq === morningSummarySeq) box.replaceChildren(el('summary', {}, el('h2', {text: 'Morning helper review · unavailable'})), note('The morning summary could not be read. No successful IC save is confirmed.')); }
 }
-loadMorningSummary();

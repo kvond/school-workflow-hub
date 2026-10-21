@@ -7,43 +7,30 @@ const source = readFileSync(new URL('../src/hub_v2/static/app.js', import.meta.u
 const html = readFileSync(new URL('../src/hub_v2/static/index.html', import.meta.url), 'utf8');
 const page = name => html.split(`<section id="page-${name}"`)[1]?.split('<section id="page-')[0];
 
-test('teaching pages keep checks at the top, growth at the bottom and records in Data', () => {
-  assert.match(html, /href="#data" data-tab="data">Data/);
-  assert.doesNotMatch(page('today'), /growth|DTGSS|runtime|Hub tools|Morning score check|today-feedback|today-body/);
-  assert.doesNotMatch(html, /provider-status|ai-runtime|routine-body|hub-tools/);
-  assert.ok(page('plans').indexOf('id="today-feedback"') < page('plans').indexOf('id="week-label"'));
-  assert.ok(page('plans').indexOf('id="link-check"') < page('plans').indexOf('id="week-label"'));
-  assert.match(page('plans'), /<details class="routine" id="saved-feedback">/);
-  assert.match(page('plans'), /<details class="routine" id="all-student-folders">/);
-  assert.match(page('plans'), /id="week-packet"/);
-  assert.ok(page('work').indexOf('id="student-growth"') > page('work').indexOf('id="work-body"'));
-  for (const id of ['student-records', 'system-notes', 'morning-summary', 'agenda-diagnostics', 'today-feedback-tools', 'today-body']) {
-    assert.match(page('data'), new RegExp(`id="${id}"`));
-    assert.doesNotMatch(page('today'), new RegExp(`id="${id}"`));
-    assert.doesNotMatch(page('work'), new RegExp(`id="${id}"`));
-  }
+test('the four pages expose saved results, lessons, grades and record links', () => {
+  for (const [tab, label] of [['today', 'Today'], ['plans', 'Lessons'], ['work', 'Student work'], ['records', 'Records']])
+    assert.ok(html.includes(`href="#${tab}" data-tab="${tab}">${label}`));
+  assert.match(page('today'), /id="today-body"/);
+  assert.match(page('records'), /id="records-body"/);
+  assert.match(page('work'), /id="work-display"/);
+  assert.match(page('plans'), /id="next-week-notes"/);
+  for (const id of ['lesson-readiness', 'today-week-ahead', 'today-next-agenda', 'today-feedback', 'week-packet', 'student-records', 'system-notes', 'tidy-work'])
+    assert.ok(!html.includes(`id="${id}"`), id);
 });
 
-test('navigation selects Data for old operational bookmarks and starts only the intended readers', () => {
-  const nodes = new Map(), calls = [], tabs = ['today', 'plans', 'work', 'data'].map(tab => ({dataset: {tab},
+test('old operational bookmarks route to Records and each page calls only its own loader', () => {
+  const nodes = new Map(), calls = [], tabs = ['today', 'plans', 'work', 'records'].map(tab => ({dataset: {tab},
     setAttribute(key, value) { this[key] = value; }, removeAttribute(key) { delete this[key]; }}));
   const document = {getElementById(id) { if (!nodes.has(id)) nodes.set(id, {}); return nodes.get(id); }, querySelectorAll() { return tabs; }};
-  const context = vm.createContext({document, location: {hash: '#today'},
-    loadToday: () => calls.push('today'), loadRoutine: () => calls.push('receipts'), loadSystemNotes: () => calls.push('notes'),
-    loadStudentRecords: () => calls.push('records'), loadLessonAccess: () => calls.push('feedback'), refreshVisiblePlans: () => calls.push('plans'),
-    openWork: parts => calls.push(['work', ...parts]), loadGrowthLink: () => calls.push('growth')});
+  const context = vm.createContext({document, work: {seq: 0}, location: {hash: '#today'}, loadToday: () => calls.push('today'),
+    loadRecords: () => calls.push('records'), refreshVisiblePlans: () => calls.push('plans'), openWork: parts => calls.push(['work', ...parts])});
   vm.runInContext('const $ = id => document.getElementById(id);\n' + source.slice(source.indexOf('function showTab()'), source.indexOf('\nfillSelect(')), context);
-  for (const hash of ['#data', '#routine', '#system']) {
+  for (const hash of ['#records', '#data', '#routine', '#system']) {
     calls.length = 0; context.location.hash = hash; context.showTab();
-    assert.deepEqual(calls, ['today', 'receipts', 'notes', 'records']);
-    assert.equal(nodes.get('page-data').hidden, false);
-    assert.equal(nodes.get('page-today').hidden, true);
-    assert.equal(tabs.find(tab => tab.dataset.tab === 'data')['aria-current'], 'page');
+    assert.deepEqual(calls, ['records']); assert.equal(nodes.get('page-records').hidden, false);
   }
-  calls.length = 0; context.location.hash = '#plans'; context.showTab();
-  assert.deepEqual(calls, ['feedback', 'plans']);
+  calls.length = 0; context.location.hash = '#plans'; context.showTab(); assert.deepEqual(calls, ['plans']);
   calls.length = 0; context.location.hash = '#work/biology/Wk%2003'; context.showTab();
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['work', 'biology', 'Wk 03'], 'growth']);
-  calls.length = 0; context.location.hash = '#today'; context.showTab();
-  assert.deepEqual(calls, ['today']);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['work', 'biology', 'Wk 03']]);
+  calls.length = 0; context.location.hash = '#today'; context.showTab(); assert.deepEqual(calls, ['today']);
 });

@@ -42,54 +42,41 @@ function boot(post = () => ({...SAVED, summary: 'What students conflated or misu
 
 async function open(panel) { panel.open = true; panel.fire('toggle'); await tick(); await tick(); }
 
-test('Notes stay closed and unread until opened; opening only reads the private saved notes', async () => {
-  const {calls, panel} = boot();
-  assert.equal(calls.length, 0);
-  assert.match(panel.textContent, /Notes · Fictional carbon lesson/);
+test('Notes stay unread until opened and expose saved editing without model generation', async () => {
+  const {calls, panel} = boot(); assert.equal(calls.length, 0);
   await open(panel);
-  assert.deepEqual(calls.map(c => [c.url, c.options.method || 'GET']),
-    [[`api/lessons/summary?class=biology&form=${FORM}`, 'GET']]);
-  assert.ok(find(panel, 'button', 'Summarize this lesson'));
+  assert.deepEqual(calls.map(c => [c.url, c.options.method || 'GET']), [[`api/lessons/summary?class=biology&form=${FORM}`, 'GET']]);
+  assert.equal(find(panel, 'button', 'Summarize this lesson'), undefined);
   assert.equal(walk(panel).filter(n => n.tagName === 'textarea').length, 2);
-  assert.equal(find(panel, 'textarea').value, '');
-  assert.match(panel.textContent, /only when you click/);
-  assert.match(panel.textContent, /not billed again/);
+  assert.match(panel.textContent, /Saving edits does not generate a new summary/);
 });
 
-test('Summarize this lesson sends one exact request and shows the saved, editable summary', async () => {
-  const {calls, panel} = boot();
+test('editing a saved summary writes only the guarded note revision', async () => {
+  const {calls, panel} = boot((url, body) => ({...SAVED, ...body, revision: 'b'.repeat(64)}));
   await open(panel);
-  find(panel, 'button', 'Summarize this lesson').fire('click'); await tick(); await tick();
-  const posts = calls.filter(c => c.options.method === 'POST');
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, 'api/lessons/summary');
-  assert.deepEqual(posts[0].body, {class: 'biology', week: 'Wk 04', form: FORM});
   const [summary, own] = walk(panel).filter(n => n.tagName === 'textarea');
-  assert.match(summary.value, /conflated or misunderstood/);
-  assert.equal(own.value, 'Earlier reminder');
-  assert.match(panel.textContent, /Summary saved privately/);
-  assert.match(panel.textContent, /From 2 teacher notes in 2 reviewed feedback drafts \(5 matched students/);
+  summary.value = 'Teacher-edited summary'; summary.fire('input');
+  own.value = 'My reminder'; own.fire('input');
+  find(panel, 'button', 'Save notes').fire('click'); await tick(); await tick();
+  const posts = calls.filter(c => c.options.method === 'POST'); assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, 'api/lessons/summary/save');
+  assert.deepEqual(posts[0].body, {class: 'biology', form: FORM, summary: 'Teacher-edited summary', notes: 'My reminder', revision: 'a'.repeat(64)});
+  assert.equal(calls.filter(c => c.url === 'api/lessons/summary' && c.options.method === 'POST').length, 0);
 });
 
-test('an unchanged lesson says no new AI call was made', async () => {
-  const {panel} = boot(() => ({...SAVED, summary: 'Kept summary', cached: true}));
-  await open(panel);
-  find(panel, 'button', 'Summarize this lesson').fire('click'); await tick(); await tick();
-  assert.match(panel.textContent, /No new AI call was made/);
+test('reopening Notes reuses its saved text and does not call a model', async () => {
+  const {calls, panel} = boot(); await open(panel); await open(panel);
+  assert.equal(calls.length, 1); assert.equal(calls[0].options.method, undefined);
+  assert.equal(walk(panel).filter(n => n.tagName === 'button' && /Summariz/.test(n.textContent)).length, 0);
 });
 
-test('unsaved edits block a new summary and pause page refresh; Save sends the revision', async () => {
+test('unsaved notes retain their draft and pause page refresh until the revision is saved', async () => {
   const {calls, panel, ui} = boot((url, body) => ({...SAVED, ...body, revision: 'c'.repeat(64)}));
   await open(panel);
   const own = walk(panel).filter(n => n.tagName === 'textarea')[1];
-  own.value = 'New reminder'; own.fire('input');
-  assert.equal(ui.lessonNotesUnsaved(), true);
-  find(panel, 'button', 'Summarize this lesson').fire('click'); await tick();
+  own.value = 'New reminder'; own.fire('input'); assert.equal(ui.lessonNotesUnsaved(), true);
   assert.equal(calls.filter(c => c.options.method === 'POST').length, 0);
-  assert.match(panel.textContent, /Save your edits first/);
   find(panel, 'button', 'Save notes').fire('click'); await tick(); await tick();
-  const save = calls.find(c => c.options.method === 'POST');
-  assert.equal(save.url, 'api/lessons/summary/save');
-  assert.deepEqual(save.body, {class: 'biology', form: FORM, summary: '', notes: 'New reminder', revision: 'a'.repeat(64)});
+  assert.equal(calls.find(c => c.options.method === 'POST').body.revision, 'a'.repeat(64));
   assert.equal(ui.lessonNotesUnsaved(), false);
 });

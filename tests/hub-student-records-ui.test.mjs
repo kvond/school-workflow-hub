@@ -37,20 +37,14 @@ function boot(fetchData = async () => response()) {
   return {ui: context.ui, context, document, panel, body, requests};
 }
 
-test('the single records section starts collapsed and makes no filing or loading request until opened', async () => {
+test('Records is a link-only page and no longer mounts archive controls', () => {
   const html = readFileSync(new URL('../src/hub_v2/static/index.html', import.meta.url), 'utf8');
-  assert.equal((html.match(/id="student-records"/g) || []).length, 1);
-  assert.match(html, /<details id="student-records" class="student-records">/);
-  const h = boot();
-  await h.ui.loadStudentRecords();
-  assert.equal(h.requests.length, 0);
-  assert.equal(h.document.getElementById('student-records-summary').textContent, 'Student records · Biology');
-  h.panel.open = true;
-  await h.ui.loadStudentRecords();
-  assert.equal(h.requests.length, 1);
-  assert.equal(h.requests[0].url, 'api/student-records?class=biology');
-  assert.equal(h.requests[0].options.credentials, 'same-origin');
-  assert.equal(h.requests[0].options.method, undefined);
+  assert.equal((html.match(/id="page-records"/g) || []).length, 1);
+  assert.match(html, /id="records-body"/);
+  assert.doesNotMatch(html, /id="student-records"|id="records-class"/);
+  const records = source.slice(source.indexOf('async function loadRecords('), source.indexOf('function renderLessonReadiness('));
+  assert.match(records, /api\/dashboard\/records/);
+  assert.doesNotMatch(records, /api\/student-records|archive|postJSON/);
 });
 
 test('selected class records show current and retained students, dates, and separate teacher reports', async () => {

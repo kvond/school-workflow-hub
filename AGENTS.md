@@ -38,6 +38,19 @@
   September 14 checkpoint. The
   existing fixture-only workflows must not accept real input by relabeling it.
 
+## Run reporting for Codex and Claude
+
+For each requested School Hub run, or a run under an already-authorized
+schedule, follow [the shared run-history format](docs/RUN_HISTORY.md).
+Katherine authorizes the compact operational summary in the relevant existing
+`#teaching-hub` thread. Also record the attempt in the existing private operations
+spreadsheet when available, and link its row from the summary. Keep longer
+evidence in its linked private record and safe discussion in replies.
+If Slack is unavailable, return the same summary
+in chat marked **not posted to Slack**; never claim it was delivered.
+This reporting preference does not change execution scope or schedules.
+Engineering coordination still follows `docs/PARALLEL_AGENTS.md`.
+
 ## Runtime identity and supervised school browser
 
 Cloud workflows use the existing approved service identity. An assistant account

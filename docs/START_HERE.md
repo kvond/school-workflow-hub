@@ -1,88 +1,91 @@
 # School Workflow Hub — start here
 
-## System notes and compact pages
+## Dashboard architecture: views, work services and records
 
-Agenda week dates come from the explicit Weeks Monday and takeover cells.
+The Hub has four pages: **Today**, **Lessons**, **Student work** and **Records**.
+The dashboard reads existing results and links to their canonical records.
+Opening a page does not start grading, lesson readiness checks, model authoring,
+checklist refresh, packet generation or email delivery.
+
+- **Today** shows recorded attempts, actual outcomes, output links and unfinished
+  scope. Missing, failed or unconfigured reads stay explicit; configuration and
+  a page refresh do not establish that a run completed.
+- **Lessons** keeps the existing date/week navigation, Agenda plans, material
+  links and guarded editor. Teacher notes keep their current storage and save
+  rules. Checklist, folder, packet and diagnostic work belongs outside this view.
+- **Student work** shows original work links and saved completion results with
+  their verified saved time. A changed or unverified source cannot inherit
+  a saved score, and a new file modification is not a new grading event. Missing
+  saved results remain unavailable rather than being replaced by zeros. The
+  explicit Helper handoff still prepares its current list through the existing
+  guarded path; simply viewing the page does not prepare or enter grades.
+- **Records** is a directory of the existing Agenda, WorkIndex, feedback checklist,
+  teacher reports and operational Slack, plus the operations and model-trial
+  spreadsheets. Old `#data`, `#routine` and `#system` bookmarks open Records.
+
+Keep three architectural boundaries clear:
+
+1. Each page has its own narrow reader and initialization. Removing a panel also
+   removes its automatic fetch and event binding; hidden controls are not an
+   independent service.
+2. Existing work services handle source collection, deterministic completion,
+   filing, feedback, reports and optional delivery under their own authorization.
+   They write inspectable results and receipts. Preserve their guarded entry
+   points while callers are migrated; retiring UI is not permission to delete
+   source history, private records or live job dependencies.
+3. The Hub Helper keeps the existing origin, app-shell paths, exact list and
+   acknowledgement schemas, source/destination checks, higher-only entry and
+   Save/reload/readback/uncertainty recovery. Dashboard simplification must not
+   alter its execution or clear recovery state. The preserved bridge may record
+   an already verified Helper readback receipt when the app shell opens; that
+   receipt is separate from preparing a list, assessing work or entering IC.
+
+`GET /v2/api/dashboard/records` is the authenticated read-only record directory
+and run-summary projection. Existing private settings supply the first three
+records. The optional `HUB_OPERATIONS_URL`, `HUB_MODEL_TRIALS_URL` and
+`HUB_MODEL_TRIALS_FOLDER_URL` link the new private registers and trial folder.
+The operations spreadsheet belongs in the existing Hub Drive folder. A local
+XLSX or a configured URL is not proof of Drive placement or a successful read.
+Use [the shared run-history format](RUN_HISTORY.md) for Codex and Claude; the
+spreadsheet holds the wide-screen view and Slack holds the compact summary.
+
+Saved completion reads use the existing private CAS store and current exact
+source/context evidence. The dashboard requests one bounded saved-results list
+per Form, sharing discovery and metadata verification across its files. Ordinary authorized scoring can add a saved display
+snapshot; failure to retain that optional display snapshot must not change the
+Helper's result or grade arithmetic. Display retention is bounded and best effort on a daemon worker; container
+shutdown or a storage failure can leave a result unrecorded. The dashboard then
+reports no saved result. Reads do not score or export decks. Existing
+results without adequate provenance, including unsupported historical cases,
+remain explicitly unverified until a normal authorized grading operation records
+new evidence. Never backfill a grade by relabeling an old cache entry.
+
+Agenda week dates still come from the explicit Weeks Monday and takeover cells.
 Descriptive suffixes do not change week identity; break handoffs are not teaching
-weeks, and Wk16b stays distinct. Same-week lesson rows and Forms are preserved.
-Source checks use the current Eastern date. The dated plan and Agenda topic are
-shown separately so a changed daily plan does not imply that its topic was edited.
-Returning to Lessons or bringing its browser tab back into view rereads the
-selected date from the Agenda. An active lesson editor keeps its original save
-basis and unsaved draft. Explicit readiness refresh also bypasses the server's
-Agenda cache; it cannot reuse the older lesson behind a newly refreshed plan.
-An explicit visible material URL or linked label takes precedence over its old
-hidden URL slot. Formula-derived controls continue to use their backing cells;
-literal HYPERLINK edits remain explicit choices. Hub saves update corresponding
-manual visible links too, and refuse ambiguous multi-link or literal-formula
-replacement. This leaves separate Forms, dates, plans and explicit teacher-source
-registrations intact; it does not merge assignments or rewrite Agenda content.
+weeks, and Wk16b stays distinct. Preserve separate same-week lessons and Forms.
+The dated plan and Agenda topic are separate teacher-controlled fields. Returning
+to Lessons rereads the selected date while preserving any active editor's basis
+and unsaved draft. Explicit material links retain precedence over old hidden
+slots; formula cells remain protected by the existing save contract.
 
-Long Today panels, class/lesson plans, assignment work tables and Data reports
-have keyboard-accessible collapsible headings. Lesson planning Notes keeps its
-existing class/next-week browser storage and now offers a full-width, resizable
-editor. Those notes remain local to that browser; they are not silently moved or
-merged into another store.
-
-Operational **System notes** belong in the configured Slack channel, linked
-from Data through authenticated `GET /v2/api/teacher-links` and private
-`HUB_SYSTEM_NOTES_SLACK_URL` (an exact Slack workspace/channel URL). Existing
-private Hub notes stay available under the collapsed Earlier private Hub notes;
-opening the page never copies their contents into Slack or modifies them.
-The private GET/POST `/v2/api/system/notes` contract, revisions and immutable
-history remain intact for existing authorized maintenance callers. Do not send
-student names, grades, report contents or private records to a public channel.
-
-Repair workers read the relevant Slack thread and the current/next Agenda week,
-including **Week ahead**. Investigate exact existing sources, use a focused web
-search for missing public lesson resources, open the authoritative result, and
-repair proven links through the existing preview/apply/readback contracts. Web
-search cannot prove a private deck identity. Preserve source-change cutoffs,
-originals, teaching content, privacy and separate grade/feedback ownership.
-Record verified results in the same operational thread; no duplicate logs.
-
-**Next from Agenda** contains only concrete unresolved lesson-plan, calendar or
-print-content choices from a fresh complete Week ahead result, with class,
-section, lesson/date, cause, action and the exact source link. Ready lessons,
-waiting intake, link fixes, code repairs and provider failures stay with the
-repair worker and the collapsed diagnostics. A stale/failed check says the
-teacher-action check is pending; it does not claim no issues remain.
-
-Lessons starts with a plain **Feedback checklist** link, collapsed **Saved
-feedback by date** and **All student folders**, and **Check lesson links**.
-The compact Daily feedback document card and its update status are removed;
-Today has no feedback card. The two lists read all three
-connected class archive indexes only on expansion and reuse that read briefly.
-Lessons Reload refreshes the checklist sources and any expanded lists; collapsed
-lists do not trigger an archive scan. A fresh read supersedes pending older data.
-X means saved general/critical-aspect feedback, W science writing and C contracts;
-unknown types remain `?`. Dates come from saved report metadata, including the
-explicit first-publication basis for native writing reports. Original-file,
-submission and lesson-name dates never become feedback dates. Earlier report
-versions remain linked after the existing successor and private-history-folder
-checks; the archive listing's feedback count includes those saved versions.
-Known dates sort newest first, with undated reports last. Indexed folders do not prove complete folder/submission
-coverage, current-roster completeness or that the newest submission is covered;
-partial and unread classes remain unverified.
-
-Full report history, delivery evidence, optional print controls, morning helper
-receipts, source diagnostics and private records now live on **Data**. Old
-`#routine` and `#system` bookmarks open Data. Today keeps lesson readiness, Week
-ahead and Next from Agenda. The AI runtime and Morning score check presentations
-and Hub tools wrapper are removed; their backend jobs and receipts are preserved.
-Student work ends with one **Biology growth and DTGSS** link. No delivery marks
-are changed by these views, and the checklist link is independent of the growth
-report configuration.
+Operational source review and repair continue in their separate work bucket.
+Batch technical issues in the operations record and existing Slack thread rather
+than reinstating a Hub readiness dashboard. Preserve exact source evidence,
+originals, teaching content, private records and the before-Helper mutation
+cutoff. Existing backend policies below remain relevant to authorized work;
+they do not require those controls to appear on dashboard pages.
 
 ## Spreadsheet feedback print link
 
 Authenticated GET `/v2/api/spreadsheet-feedback/print-link` reads the last
 trusted publication independently of the retired daily feedback catalog.
-Lessons shows its print link and spreadsheet destination when the
+Records shows its print link and spreadsheet destination when the
 saved PDF still has its verified private location and exact Drive revision.
 Partial snapshots keep their report/student counts and visible gap notice.
 An unavailable, changed, moved, trashed or publicly shared PDF yields a hold
-with no clickable fallback. No record means unpublished, not empty intake.
+with no clickable PDF fallback. Its independent read cannot hide other Records
+links and does not restore feedback-catalog or readiness calls on Today. No
+record means unpublished, not empty intake.
 
 The trusted-host `printable_feedback_link.publish` operation verifies the full
 saved PDF hash, byte count, page count, private archive ancestry and metadata
@@ -109,12 +112,12 @@ extension storage. Keep morning receipts counts-only and the IC list contract
 unchanged. Exempt flags and zero-denominator N/A components do not create a
 teacher review. Not-yet-submitted work is waiting for submissions.
 
-Submitted student files and named source-review details remain in Student work,
-using its exact current class/week/Form review route. Today and Data do
-not request or display the student source overview. Today retains lesson-focused
-VT readiness and feedback-code checks, Week ahead and Next from Agenda.
-Lessons holds the feedback-checklist link. Lesson-source readiness does not verify
-submitted student copies or completed grading.
+Student work links original submitted files and saved results. Named source-review
+details remain available to independent authorized review workers through the
+exact current class/week/Form review route. Today and Records do
+not request or display the student source overview or run readiness checks.
+The existing feedback checklist is linked from Records. Lesson-source readiness
+does not verify submitted student copies or completed grading.
 
 Current source discovery rereads the roster and Agenda before publishing named
 details. A failed read or changed roster/Agenda discards those details; it must
@@ -139,9 +142,9 @@ delivery record is changed; school proof stays in private runtime state, never G
 A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
 review discovery or the shared feedback catalog is repeated once, only within the
 first 20 seconds of the request. A timeout that remains returns `read_failure`
-(review) or `source_check.status == "timed_out"` (feedback): Data shows "Check
-timed out — retry" with a teacher-pressed Retry, does not count the scope as
-read, and draws no missing-work, identity, new-feedback or printed conclusion.
+(review) or `source_check.status == "timed_out"` (feedback). The independent
+operation records that availability limitation; it does not count the scope as
+read or draw missing-work, identity, new-feedback or printed conclusions.
 
 Current/upcoming Agenda readiness checks each registered Turn-in Form against
 its own exact teacher-source collection and current folder metadata. Separate
@@ -167,7 +170,7 @@ or unavailable reads retain ordinary checks; another known folder cannot replace
 an unreadable Agenda pointer.
 
 The axes are independent: `assessment=ungraded` skips only that material's VT
-code inventory; `modality=paper` does not imply ungraded. Today and Week ahead
+code inventory; `modality=paper` does not imply ungraded. Independent readiness results
 show the exact exemption as **VT codes not required**, never as a passed code
 check. Other graded sources in the same row/Form retain their checks. Paper
 materials keep access, links, print, supply and content-readability checks. An
@@ -209,10 +212,11 @@ blanket permission to publish decks.
 
 ## Weekly lesson-readiness preflight
 
-Today's collapsible **Week ahead** section checks 1–4 upcoming weeks against
-the Weeks-tab calendar, the Agenda's link cells, each lesson's sources, deck
-codes, print list and supplies, and builds a private Monday packet. It is
-fixture-tested only; it adds no schedule and never reads submissions. See
+The independent weekly-preflight service can check upcoming weeks against
+the Weeks-tab calendar, Agenda links, lesson sources, deck codes, print lists
+and supplies and build the existing private Monday packet. It no longer belongs
+on Today. Current activation and live acceptance require their own evidence;
+this dashboard change creates no schedule. See
 [Weekly preflight](WEEKLY_PREFLIGHT.md).
 
 ## October 8 student records
@@ -319,7 +323,7 @@ or uncertain send remains fenced. Source availability, identity or private
 readback failures stay explicit holds. Multi-chunk Sent confirmation may be
 reconciled against the same exact message without another provider call.
 
-Data's feedback print controls show school-email counts separately from paper states.
+Independent feedback records keep school-email counts separate from paper states.
 Hub Print/download remains the fallback. Enabled configuration and a schedule
 are not proof of a first unattended send; report actual mail acceptance separately.
 
@@ -397,10 +401,11 @@ file-by-file readback, not proof that recovery has completed.
 
 ## Operation 1: roster and completion grading
 
-**Teacher-facing contract:** choose Class/section, Lesson title, and Notes or
-Drafts; use the existing Student work table; press **Run grading now**. The
-scheduled routine must invoke the same operation with its verified scope, not
-an AI prompt, a second grading implementation, or a button that copies text.
+**Work-service contract:** an independently requested or already-authorized
+scheduled grading operation supplies the verified class/section, lesson and
+component scope. The Student work dashboard reads its saved results; it does
+not start grading on page load. Reuse the existing deterministic operation
+and guarded Helper handoff rather than a second grading implementation.
 
 Retain the requested weekday routine and the fuller Friday roster check for
 all configured sections. Recover the exact existing cadence and timezone from
@@ -443,14 +448,12 @@ a change to an already-correct grade manufactured for acceptance.
 
 ## Operation 2: student feedback, automatic intake or ZIP
 
-**Teacher-facing contract:** use the same Class/section and Lesson title;
-choose the revised work; **Generate feedback -> review/save -> Print or download
-feedback**. When automatic intake is unavailable, **Upload ZIP** is an explicit
-accepted fallback in this same dashboard. The teacher selects the class and
-lesson, uploads one archive of the actual student files, and uses the SAME
-assessment/save/print path. Do not require a local AI-to-Drive connector or a
-separate AI conversation. Do not postpone usable ZIP intake until every folder
-or router in Drive has been repaired.
+**Independent work-service contract:** feedback uses the exact class/section,
+lesson, selected work and current policy through the existing assessment, review,
+save and print workflow. This operation is separate from the dashboard's saved
+results view. Earlier requests for a Generate feedback or Upload ZIP dashboard
+control are not controls in the simplified Hub. Keep any future ZIP intake in
+its own work bucket, preserving the same assessment/save/print contracts.
 
 ZIP intake is a requested implementation, not verified existing functionality.
 Authenticate it, limit archive/file/expanded size, reject path traversal,
@@ -570,19 +573,19 @@ under their existing contracts.
 
 ## Screen scope and acceptance
 
-Page 02 contains the three selectors, one Student work table, and the actions
-above. Directly below that table, **Download IC Grade Sheet** writes the selected
-class/section and lesson to an .xlsx for entering grades in Infinite Campus by
-hand: last and first name, both scores, both statuses and the recorded IC posting
-status, one row per student, sorted by surname. It reads the records already
-loaded — it never assesses, calls an API or rescans work — and an unscored, held
-or unreadable checkpoint stays an empty cell, never a zero.
-Hide raw scans, changes-since-scan logs, IDs, prompts and developer
-controls under Details. Show only concise coverage and actionable student holds.
-Do not add more competing panels. Lesson title, not navigation date, selects
-an assignment. The confirmed third-meeting final deadline still applies:
-actual start is meeting 1; unfinished teaching does not extend it; use the
-verified section calendar and America/New_York; keep the 14-day window separate.
+The simplified Student work page selects class, week and section and displays
+original submitted files and verified saved completion grades. Its newly graded
+filter uses the saved-result time, not the source modification time. Explicit
+Helper preparation uses the current canonical list and leaves entry/readback to
+the unchanged companion. The dashboard does not generate a grade sheet or run
+grading as part of opening this view.
+
+Keep raw scans, IDs, prompts and developer controls out of the normal view.
+Lesson and exact Form identity, not navigation date or title similarity, select
+an assignment. The confirmed third-meeting final deadline still applies to the
+independent grading operation: actual start is meeting 1; unfinished teaching
+does not extend it. Use the verified section calendar and America/New_York and
+keep the 14-day window separate.
 
 First recover the endangered submissions. Then prove one real class/lesson can
 produce saved completion scores and printable feedback using automatic intake

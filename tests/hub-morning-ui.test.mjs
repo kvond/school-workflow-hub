@@ -29,13 +29,24 @@ function boot(items) {
     if (!ids.has(id)) ids.set(id, new Element('div'));
     return ids.get(id);
   }};
-  const context = vm.createContext({document, Node: Element, URL, fetch: async () => ({ok: true, json: async () => ({reports: [report(items)]})})});
+  const context = vm.createContext({document, Node: Element, URL, URLSearchParams,
+    fetch: async () => ({ok: true, json: async () => ({reports: [report(items)]})})});
   vm.runInContext(declarations + '\nlet morningReports = [], morningRecovery = []; function renderMorningAlert() {}\n' + summary +
     '\nglobalThis.ui = {morningRowReview, morningTotals, renderNeedsYou, renderMorningCockpit, loadMorningSummary, reviewSourceURL, renderSourceReviewNotice, renderSourceReviewContext, loadSourceReviewContext, currentSourceReviewPanel, invalidateReviewPanel, studentWorkReviewPanel, scoreReviewNotice};', context);
   return {ui: context.ui, document, context};
 }
 const allNodes = element => [element, ...element.children.filter(child => child instanceof Element).flatMap(allNodes)];
 const attention = element => allNodes(element).filter(node => node.className === 'attention-list');
+const isPreparation = url => url.startsWith('api/morning/list?');
+const preparationReply = (url, code, other = {}) => isPreparation(url) ? {code} : other;
+const savedBatch = (notes, revision) => ({schema_version: 'hub-saved-completion-list/v1',
+  status: 'available', checked_at: '2032-01-20T15:00:00Z', results: Object.fromEntries(
+    ['SAMEFILE123', 'LATEFILE123', 'UNMATCHED123'].map(file => [file, {file_id: file,
+      status: 'saved', saved_at: '2032-01-20T14:00:00Z', notes_score: notes, revision_score: revision}]))});
+function assertPreparationRequests(requests, count) {
+  assert.equal(requests.length, count);
+  assert.ok(requests.every(isPreparation), 'only an explicit canonical preparation request is permitted');
+}
 
 const sourceScope = {class_key: 'forensics', week: 'Wk 03', form_id: 'FICTIONALFORM123'};
 const sourceNotice = overrides => ({affected_scope: 'student', student: {first: 'Ann', last: 'Avery', section: 'A2 Forensic', verified: true},
@@ -69,14 +80,16 @@ test('Today and Hub tools refresh keep receipt counts without fetching or render
   context.fetch = async url => {
     requests.push(url);
     if (url === 'api/review-context') throw new Error('Student overview must stay in Student work');
-    return {ok: true, json: async () => url === 'api/morning/reports' ? {reports: [report([row()])]} : {}};
+    return {ok: true, json: async () => url === 'api/morning/reports' ? {reports: [report([row()])]}
+      : url === 'api/dashboard/records' ? {schema_version: 'hub-dashboard-records/v1', runs: {status: 'available',
+        items: [{work: 'Fictional feedback filing', status: 'Partial', summary: 'One report saved; remaining sources held.'}]}} : {}};
   };
   await ui.loadMorningSummary();
   const morningPanel = document.getElementById('morning-summary');
   const before = morningPanel.textContent;
   assert.match(before, /Morning helper review.*Biology.*unchanged/);
   assert.doesNotMatch(before, /Current source checks|FICTIONAL_SOURCE|Fictional Student/);
-  const today = source.slice(source.indexOf('async function loadToday('), source.indexOf('// ---------- Lesson plans ----------'));
+  const today = source.slice(source.indexOf('function recordURL('), source.indexOf('// ---------- Lesson plans ----------'));
   vm.runInContext(`
     function loadTodayFeedback() {}
     function loadWeekAhead() {}
@@ -91,10 +104,12 @@ test('Today and Hub tools refresh keep receipt counts without fetching or render
   await context.refreshToday(true);
   await tick();
   assert.equal(morningPanel.textContent, before);
-  assert.match(document.getElementById('today-body').textContent, /What ran.*Run status/);
+  assert.match(document.getElementById('today-body').textContent, /What ran.*Fictional feedback filing.*Partial.*One report saved; remaining sources held/);
   assert.doesNotMatch(document.getElementById('today-body').textContent, /Current source checks|Fictional Student/);
   assert.equal(requests.filter(url => url === 'api/review-context').length, 0);
-  assert.match(document.getElementById('lesson-readiness-body').textContent, /No current\/upcoming/);
+  assert.ok(requests.includes('api/dashboard/records'));
+  assert.ok(!requests.some(url => /api\/(?:score|morning\/list|links|weekly-preflight)/.test(url)),
+    'opening Today reads saved history without scoring, preparing Helper lists or checking lessons');
 });
 
 test('source context renders full current identity/reason/action and verified source slides as literal text', () => {
@@ -994,7 +1009,7 @@ test('an old empty receipt admits missing failure context without inventing sign
 
 test('unresolved submission matches prevent score requests and IC handoff of cached scores', async () => {
   const {context} = boot([]), requests = [], messages = [];
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'coverage_incomplete')}; };
   context.window = {postMessage: message => messages.push(message)};
   context.crypto = {randomUUID: () => 'fictional-request'};
   const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
@@ -1016,6 +1031,7 @@ test('unresolved submission matches prevent score requests and IC handoff of cac
   assert.match(status.textContent, /Scoring and IC entry are on hold/);
   assert.match(client.icPanel(form, client.work.scores[form.form_id], {}).textContent, /Scoring and IC entry are on hold/);
   assert.equal(client.icStatus(form).kind, 'held');
+  assertPreparationRequests(requests, 1);
   assert.equal(messages.length, 0);
   client.work.data.other_files = [];
   const resumed = client.helperRows(form);
@@ -1048,7 +1064,7 @@ test('accepted intake is not a source-assignment zero but unresolved evidence st
 
 test('excluded or uncertain assessment scope never scores or sends cached results or missing zeros', async () => {
   const {context} = boot([]), requests = [], messages = [];
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'assessment_scope_held')}; };
   context.window = {postMessage: message => messages.push(message)};
   const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
   vm.runInContext(studentWork + '\nfunction renderWork() {}\nglobalThis.client = {work, scoreForm, helperRows, sendList, weekToEnter, sendWeek, icPanel, icStatus};', context);
@@ -1067,16 +1083,17 @@ test('excluded or uncertain assessment scope never scores or sends cached result
     const status = new Element('span'); await client.sendWeek(status, new Element('details'));
     assert.match(status.textContent, /not assigned|assessment scope/);
   }
-  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+  assertPreparationRequests(requests, 2); assert.equal(messages.length, 0);
   client.work.data = {other_files: [], assessment_problem: 'The configured alternate route is stale.', lessons: [{forms: [form]}]};
   assert.equal(client.helperRows(form).length, 0);
   assert.equal(await client.sendList(form, {}), 'assessment_scope_held');
+  assertPreparationRequests(requests, 3); assert.equal(messages.length, 0);
   assert.match(client.icPanel(form, {}, {}).textContent, /submission route needs confirmation/);
 });
 
 test('unverified assignment codes and one unmarked copy block cached scores and every missing zero', async () => {
   const {context} = boot([]), requests = [], messages = [];
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'deck_not_ready')}; };
   context.window = {postMessage: message => messages.push(message)};
   const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
   vm.runInContext(studentWork + '\nfunction renderWork() {}\nglobalThis.client = {work, scoreForm, helperRows, sendList, sendWeek, weekToEnter, icPanel, icStatus};', context);
@@ -1096,11 +1113,12 @@ test('unverified assignment codes and one unmarked copy block cached scores and 
     const status = new Element('span'); await client.sendWeek(status, new Element('details'));
     assert.match(status.textContent, /codes|readiness/);
   }
-  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+  assertPreparationRequests(requests, 2); assert.equal(messages.length, 0);
   form.grade_readiness = {status: 'READY'};
   client.work.scores[form.form_id].FICTIONALFILE123 = {code: 'deck_not_ready', problem: 'Required markers are missing.'};
   assert.equal(client.helperRows(form).length, 0);
   assert.equal(await client.sendList(form, {}), 'deck_not_ready');
+  assertPreparationRequests(requests, 3);
   assert.equal(client.weekToEnter().ready.length, 0);
   assert.match(client.icPanel(form, {}, {}).textContent, /no missing-work zero/i);
   assert.equal(messages.length, 0);
@@ -1134,7 +1152,8 @@ function recheckClient() {
   context.history = {replaceState() {}};
   context.crypto = {randomUUID: () => 'fictional-request'};
   const studentWork = source.slice(source.indexOf('// ---------- Student work ----------'), source.indexOf('const COLUMN ='));
-  vm.runInContext(studentWork + '\nfunction renderWork() {}\nfunction closeSheets() {}\nfunction helperProgress() { return null; }\n' +
+  const savedReads = source.slice(source.indexOf('function savedGradeRows('), source.indexOf('function renderSavedForm('));
+  vm.runInContext(studentWork + '\n' + savedReads + '\nfunction renderWork() {}\nfunction closeSheets() {}\nfunction helperProgress() { return null; }\n' +
     'globalThis.client = {work, helper, closedRecheck, assessmentRows, scoreForm, helperRows, helperNeed, sendList, weekToEnter, icPanel, icStatus, loadWork};', context);
   const person = (first, last, id, matched = true) => ({first, last, section: 'A4 Biology', matched,
     submitted_at: '2032-01-05T12:00:00Z', late: false, earlier: [], typed: [], files: id ? [{id, name: id, mime: 'application/vnd.google-apps.presentation'}] : []});
@@ -1253,7 +1272,7 @@ test('a validated server view selects a replacement formerly in earlier history 
 
 test('missing or malformed server recheck selection cannot fall back to an older file or create an IC list', async () => {
   const {context, client, form} = recheckClient(), requests = [], messages = [];
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 10, revision_score: 10})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'receipt_unconfirmed', {notes_score: 10, revision_score: 10})}; };
   context.window.postMessage = message => messages.push(message);
   client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 9, revision_score: 10}, LATEFILE123: {notes_score: 9, revision_score: 10}};
   for (const view of [undefined, {}, {rows: {}}, {rows: [{matched: false, files: []}]}, {rows: [{matched: true, files: null}]}]) {
@@ -1264,7 +1283,7 @@ test('missing or malformed server recheck selection cannot fall back to an older
     assert.equal(await client.sendList(form, {}), 'receipt_unconfirmed');
     assert.match(client.icPanel(form, {}, {}).textContent, /Current submitted files.*could not be verified/);
   }
-  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+  assertPreparationRequests(requests, 5); assert.equal(messages.length, 0);
 });
 
 test('one server-held replacement holds every score request and numeric handoff in the assignment', async () => {
@@ -1272,19 +1291,22 @@ test('one server-held replacement holds every score request and numeric handoff 
   const rows = client.work.data.entry_rechecks[form.form_id].rows;
   rows[0].selection_problem = 'Two different submitted files have the same latest Form time; check the source.';
   client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 10, revision_score: 10}};
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'coverage_incomplete', {notes_score: 9, revision_score: 10})}; };
   await client.scoreForm(form);
   assert.equal(requests.length, 0);
   assert.equal(client.helperRows(form).length, 0);
   assert.equal(client.weekToEnter().ready.length, 0);
   assert.equal(await client.sendList(form, {}), 'coverage_incomplete');
+  assertPreparationRequests(requests, 1);
   assert.match(client.icPanel(form, client.work.scores[form.form_id], {}).textContent, /same latest Form time/);
   assert.match(client.icStatus(form).text, /Biology · Wk 03 · Fictional ecosystems/);
   assert.match(client.icStatus(form).text, /Avery, Ann \(A4 Biology\)/);
 });
 
 test('a ready teacher deck cannot label a named held student copy Ready or lend it the teacher action', async () => {
-  const {client, form} = recheckClient();
+  const {context, client, form} = recheckClient(), requests = [], messages = [];
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'deck_not_ready')}; };
+  context.window.postMessage = message => messages.push(message);
   form.grade_readiness = {status: 'READY', label: 'Ready', problem: 'Linked completion codes are ready.', action: 'Teacher source action must not mask a copy hold.'};
   client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 8, revision_score: 10}, LATEFILE123: {code: 'deck_not_ready',
     readiness: {status: 'NOT_READY', label: 'Needs embedded codes', problem: 'BANK lists14terms but this copy carries11markers.'},
@@ -1301,6 +1323,7 @@ test('a ready teacher deck cannot label a named held student copy Ready or lend 
   assert.equal(client.helperRows(form).length, 0);
   assert.equal(client.weekToEnter().ready.length, 0);
   assert.equal(await client.sendList(form, {}), 'deck_not_ready');
+  assertPreparationRequests(requests, 1); assert.equal(messages.length, 0);
 });
 
 test('compact held-copy warnings retain access errors and unresolved teacher-source holds distinctly', () => {
@@ -1318,7 +1341,7 @@ test('compact held-copy warnings retain access errors and unresolved teacher-sou
 test('held code readiness never describes missing submissions as zeros or a prior IC entry as current', async () => {
   for (const closed of [false, true]) for (const hold of ['unknown', 'teacher', 'copy']) {
     const {context, client, form, mark} = recheckClient(), requests = [], messages = [];
-    context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+    context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'deck_not_ready')}; };
     context.window.postMessage = message => messages.push(message);
     const render = source.slice(source.indexOf('function studentRow('), source.indexOf('function renderWork('));
     vm.runInContext(render + '\nglobalThis.renderHeldForTest = renderForm;', context);
@@ -1339,8 +1362,9 @@ test('held code readiness never describes missing submissions as zeros or a prio
     assert.equal(await client.sendList(form, {}), 'deck_not_ready');
     if (hold !== 'copy') await client.scoreForm(form);
     assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
-    assert.equal(requests.length, 1);
+    assert.equal(requests.length, 2);
     assert.match(requests[0], /^api\/review-context\?class=biology&week=Wk%2003&form=FICTIONALFORM123$/);
+    assert.ok(isPreparation(requests[1]));
     assert.equal(messages.length, 0);
     assert.equal(JSON.stringify({form, mark}), before, 'rendering preserves source rows and the original IC entry receipt');
   }
@@ -1387,20 +1411,98 @@ test('a closed recheck prepares actual scores, preserves review and Exempt rows,
 });
 
 test('manual handoff keeps the closed recheck list limited to measured current scores and non-entry rows', async () => {
-  const {context, client, form} = recheckClient(), messages = [];
+  const {context, client, form} = recheckClient(), messages = [], requests = [];
   client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 8, revision_score: 10}, LATEFILE123: {notes_score: 9, revision_score: 7}};
+  const person = (first, last, kind, notes, revision) => ({first, last, section: 'A4 Biology', kind, notes, revision});
+  const canonical = {schema: 'hub-ic-list/v1', list_id: 'server-list-id', class_key: 'biology', class_name: 'Biology',
+    week: 'Wk 03', form_id: form.form_id, assignment: 'Fictional ecosystems', form_label: form.label,
+    status: 'closed', status_text: 'Recheck current submitted files; no new absence zeros.', sent_at: '2032-01-20T15:00:00Z',
+    rows: [person('Ann', 'Avery', 'score', 7, 10), person('Ben', 'Brook', 'score', 9, 7),
+      person('Cara', 'Cedar', 'none', null, null), person('Dan', 'Dale', 'check', null, null),
+      person('Erin', 'Elm', 'check', null, null), person('Finn', 'Fir', 'excused', null, null)]};
+  const before = JSON.stringify({canonical, cached: client.work.scores});
+  context.fetch = async (url, options) => {
+    requests.push({url, options});
+    return {ok: true, json: async () => ({code: 'ready', list: canonical,
+      revision: 'a'.repeat(64), targets: [{section: 'A4 Biology', column: 'notes', assignment: 'exact-assignment'}]})};
+  };
   context.location = {origin: 'https://example.test'};
   context.setTimeout = () => 0;
   context.window.postMessage = message => { messages.push(message); client.helper.waiting.get(message.request_id)('list_ready'); };
   assert.equal(await client.sendList(form, {topic: 'Fictional ecosystems'}), 'list_ready');
   assert.equal(messages.length, 1);
   const list = messages[0].list;
+  assert.deepEqual(list, canonical, 'the manual bridge forwards the server list without rebuilding rows or substituting cached scores');
+  assert.equal(list.schema, 'hub-ic-list/v1');
+  assert.equal(list.rows.find(row => row.first === 'Ann').notes, 7, 'fresh server evidence takes precedence over the cached 8');
   assert.equal(list.status, 'closed');
   assert.match(list.status_text, /Recheck current submitted files/);
   assert.equal(list.rows.filter(row => row.kind === 'score').length, 2);
   assert.ok(!list.rows.some(row => row.kind === 'zero'));
   assert.equal(list.rows.find(row => row.first === 'Cara').notes, null);
   assert.equal(client.helper.sent[form.form_id].need.length, 2);
+  assert.equal(requests.length, 1);
+  const request = new URL(requests[0].url, 'https://example.test/');
+  assert.equal(request.pathname, '/api/morning/list');
+  assert.deepEqual(Object.fromEntries(request.searchParams), {class: 'biology', week: 'Wk 03', form: form.form_id});
+  assert.equal(requests[0].options.method, undefined); assert.equal(requests[0].options.body, undefined);
+  assert.equal(messages[0].channel, 'hub-ic-entry');
+  assert.equal(messages[0].version, 1); assert.equal(messages[0].type, 'send');
+  assert.equal(JSON.stringify({canonical, cached: client.work.scores}), before);
+});
+
+test('explicit preparation preserves canonical mapping, source and receipt refusals without falling back to cached grades', async () => {
+  const {context, client, form} = recheckClient(), requests = [], messages = [];
+  client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 10, revision_score: 10}};
+  const cached = JSON.stringify(client.work.scores);
+  context.window.postMessage = message => messages.push(message);
+  const codes = ['mapping_required', 'coverage_incomplete', 'source_scores_held', 'receipt_unconfirmed',
+    'excluded_week', 'no_scores'];
+  for (const code of codes) {
+    context.fetch = async (url, options) => {
+      requests.push({url, options});
+      // Even an inconsistent reply carrying rows cannot release a refused list.
+      return {ok: true, json: async () => ({code, list: {rows: [{kind: 'score', notes: 10, revision: 10}]}})};
+    };
+    assert.equal(await client.sendList(form, {}), code);
+  }
+  assertPreparationRequests(requests.map(request => request.url), codes.length);
+  for (const request of requests) {
+    assert.equal(request.options.method, undefined); assert.equal(request.options.body, undefined);
+    const params = new URL(request.url, 'https://example.test/').searchParams;
+    assert.equal(params.get('class'), 'biology'); assert.equal(params.get('week'), 'Wk 03');
+    assert.equal(params.get('form'), form.form_id);
+  }
+  assert.equal(messages.length, 0);
+  assert.equal(Object.keys(client.helper.sent).length, 0);
+  assert.equal(JSON.stringify(client.work.scores), cached);
+});
+
+test('navigation during canonical preparation discards the old scope before dispatching or recording a Helper list', async () => {
+  for (const change of ['refresh', 'class', 'week']) {
+    const {context, client, form} = recheckClient(), requests = [], messages = [];
+    let answer;
+    context.fetch = (url, options) => {
+      requests.push({url, options});
+      return new Promise(resolve => { answer = resolve; });
+    };
+    context.window.postMessage = message => messages.push(message);
+    context.setTimeout = () => assert.fail('a stale preparation must not start a Helper wait');
+    const pending = client.sendList(form, {topic: 'Fictional ecosystems'});
+    assert.equal(requests.length, 1);
+    const params = new URL(requests[0].url, 'https://example.test/').searchParams;
+    assert.deepEqual(Object.fromEntries(params), {class: 'biology', week: 'Wk 03', form: form.form_id});
+    if (change === 'refresh') client.work.seq += 1;
+    if (change === 'class') client.work.cls = 'forensics';
+    if (change === 'week') client.work.week = 'Wk 04';
+    answer({ok: true, json: async () => ({code: 'ready', list: {schema: 'hub-ic-list/v1',
+      list_id: 'old-scope-list', class_key: 'biology', week: 'Wk 03', form_id: form.form_id,
+      assignment: 'Fictional ecosystems', sent_at: '2032-01-20T15:00:00Z', rows: []}})});
+    assert.equal(await pending, 'source_changed', change);
+    assert.equal(messages.length, 0, change);
+    assert.equal(client.helper.waiting.size, 0, change);
+    assert.equal(Object.keys(client.helper.sent).length, 0, change);
+  }
 });
 
 test('the late-submission table shows recheck scores and honest holds without changing lateness or inferring missing zeros', () => {
@@ -1445,7 +1547,7 @@ test('missing-work print wording permits later reviewed increases without changi
 
 test('late opt-in requires a configured valid recorded entry after the closed window and not in the future', async () => {
   const {context, client, form, mark, now} = recheckClient(), requests = [];
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'receipt_unconfirmed', {notes_score: 9, revision_score: 10})}; };
   for (const altered of [{configured: false}, {configured: 'true'}, {problem: 'unavailable'},
     {entered_at: {at: 'bad timestamp'}}, {entered_at: {at: 'Jan 12, 2032'}}, {entered_at: {at: '2032-01-12T24:00:00Z'}},
     {entered_at: {at: '2032-01-09T12:00:00Z'}},
@@ -1472,7 +1574,7 @@ test('late opt-in requires a configured valid recorded entry after the closed wi
 
 test('rechecking a closed assignment preserves source, assessment and student-copy readiness holds', async () => {
   const {context, client, form} = recheckClient(), requests = [], messages = [];
-  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => ({})}; };
+  context.fetch = async url => { requests.push(url); return {ok: true, json: async () => preparationReply(url, 'coverage_incomplete')}; };
   context.window.postMessage = message => messages.push(message);
   client.work.scores[form.form_id] = {SAMEFILE123: {notes_score: 9, revision_score: 10}, LATEFILE123: {notes_score: 10, revision_score: 10}};
   for (const hold of ['source', 'assessment', 'teacher', 'copy']) {
@@ -1486,10 +1588,10 @@ test('rechecking a closed assignment preserves source, assessment and student-co
     assert.equal(client.icStatus(form).kind, 'held');
     assert.notEqual(await client.sendList(form, {}), 'list_ready');
   }
-  assert.equal(requests.length, 0); assert.equal(messages.length, 0);
+  assertPreparationRequests(requests, 4); assert.equal(messages.length, 0);
 });
 
-test('loading Student work waits for current entry history before scoring or offering an IC list', async () => {
+test('opening Student work waits for current entry history then reads saved grades without preparing or scoring', async () => {
   const {context, client, form, mark} = recheckClient(), requests = [];
   const currentWorkReply = client.work.data;
   let ledgerAnswer;
@@ -1497,7 +1599,8 @@ test('loading Student work waits for current entry history before scoring or off
     requests.push(url);
     if (url.startsWith('api/work?')) return {ok: true, json: async () => currentWorkReply};
     if (url.startsWith('api/ledger?')) return new Promise(resolve => { ledgerAnswer = resolve; });
-    return {ok: true, json: async () => ({notes_score: 8, revision_score: 9})};
+    if (url.startsWith('api/scores/saved?')) return {ok: true, json: async () => savedBatch(8, 9)};
+    throw new Error('Opening Student work must not prepare a list or compute a score: ' + url);
   };
   const loading = client.loadWork(true);
   while (!ledgerAnswer) await Promise.resolve();
@@ -1506,7 +1609,14 @@ test('loading Student work waits for current entry history before scoring or off
   assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
   ledgerAnswer({ok: true, json: async () => mark});
   await loading;
-  assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 2);
+  assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
+  assert.equal(requests.filter(isPreparation).length, 0);
+  const savedRequests = requests.filter(url => url.startsWith('api/scores/saved?'));
+  assert.equal(savedRequests.length, 1, 'one saved batch per Form avoids a full source scan for every student');
+  assert.deepEqual(Object.fromEntries(new URL(savedRequests[0], 'https://example.test/').searchParams),
+    {class: 'biology', week: 'Wk 03', form: form.form_id});
+  assert.deepEqual(Object.keys(client.work.scores[form.form_id]).sort(), ['LATEFILE123', 'SAMEFILE123', 'UNMATCHED123']);
+  assert.equal(client.work.scores[form.form_id].LATEFILE123.status, 'saved');
   assert.equal(client.helperRows(form).find(row => row.first === 'Ben').kind, 'score');
 });
 
@@ -1519,7 +1629,8 @@ test('a failed or superseded entry-history read cannot opt into late files or se
       requests.push(url);
       if (url.startsWith('api/work?')) return {ok: true, json: async () => currentWorkReply};
       if (url.startsWith('api/ledger?')) return new Promise(resolve => { ledgerAnswer = resolve; });
-      return {ok: true, json: async () => ({notes_score: 9, revision_score: 10})};
+      if (url.startsWith('api/scores/saved?')) return {ok: true, json: async () => savedBatch(9, 10)};
+      throw new Error('Student work must not prepare or score while reading saved entry history: ' + url);
     };
     const loading = client.loadWork();
     while (!ledgerAnswer) await Promise.resolve();
@@ -1529,7 +1640,15 @@ test('a failed or superseded entry-history read cannot opt into late files or se
     assert.equal(requests.filter(url => url.startsWith('api/score?')).length, 0);
     assert.equal(client.closedRecheck(form), false);
     assert.equal(client.helperRows(form).length, 0);
-    assert.equal(client.work.scores[form.form_id], undefined);
+    assert.equal(requests.filter(isPreparation).length, 0);
+    if (stale) {
+      assert.equal(requests.filter(url => url.startsWith('api/scores/saved?')).length, 0);
+      assert.equal(client.work.scores[form.form_id], undefined);
+    } else {
+      assert.equal(requests.filter(url => url.startsWith('api/scores/saved?')).length, 1);
+      assert.equal(client.work.scores[form.form_id].SAMEFILE123.status, 'saved',
+        'saved Hub grades may be read while IC entry remains unverified');
+    }
   }
 });
 

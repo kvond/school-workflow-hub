@@ -1,10 +1,9 @@
-"""v2 dashboard: lesson plans and found student work, served at /v2/.
+"""Authenticated Hub HTTP boundary, served by the existing Cloud Run service.
 
-Runs inside the existing Cloud Run service behind the same Cloud IAP sign-in,
-and uses the same settings and service account as v1. It reads the Agenda, the
-roster workbook, Form responses, Drive file details and (to count completed
-boxes) the student decks themselves. Its one write is the Tidy button, which moves a previewed set of files and folders into a week's one
-📥 folder when the teacher confirms.
+Dashboard views read existing records without starting readiness or grading.
+Explicit processing, editing, filing and Helper operations retain their scoped
+authorization, source checks and readback. Optional display-result retention
+never waits for private storage on a Helper response.
 """
 import json
 import os
@@ -21,6 +20,7 @@ from contextvars import copy_context
 
 from . import printable_feedback_link, agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
 from . import deck_repair, lesson_summary, system_notes, weekly_packet, weekly_preflight
+from . import dashboard_records, saved_completion
 
 STATIC = Path(__file__).resolve().parent / "static"
 ASSETS = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
@@ -55,9 +55,11 @@ def feedback_sources():
         return combined_assessment.retained_sources(_feedback_sources)
 
 
-def lesson_work(token, config, agenda, class_key, week, fresh=True):
+def lesson_work(token, config, agenda, class_key, week, fresh=True, *, review_only=False):
     """Student work for a lesson, kept for ten minutes so scoring can reuse
     the list the page is showing instead of re-reading every folder."""
+    if review_only:
+        return work.lesson_work(token, config, agenda, class_key, week, review_only=True)
     key = (class_key, week)
     with _cache_lock:
         cached = _work_cache.get(key)
@@ -144,6 +146,10 @@ def teacher_links(config):
 
 
 def api(sub, query, config):
+    if sub == 'api/dashboard/records':
+        if query:
+            raise ValueError()
+        return dashboard_records.records(config)
     if sub == 'api/teacher-links':
         if query:
             raise ValueError()
@@ -159,6 +165,23 @@ def api(sub, query, config):
         return lesson_summary.read(config, {'class': _class_key(_one(query, 'class')), 'form': _one(query, 'form')})
     if sub == 'api/learning-report':
         return learning_report(config)
+    if sub == 'api/scores/saved':
+        if set(query) not in ({'class', 'week', 'form', 'file'}, {'class', 'week', 'form'}):
+            raise ValueError('saved score scope')
+        class_key, week, form_id = _form_args(query)
+        file_id = _one(query, 'file', False)
+        if file_id and not re.fullmatch(r'[A-Za-z0-9_-]{10,200}', file_id):
+            raise ValueError('file')
+        if config.get('HUB_STATE_BACKEND') != 'firestore':
+            if not file_id:
+                return saved_completion.read_many(None, config, None, class_key, week, form_id, None)
+            return saved_completion.read(None, config, None, class_key, week, form_id, file_id, None)
+        token = google.service_token(config)
+        current_agenda = load_agenda(token, config, fresh=True)
+        found = lesson_work(token, config, current_agenda, class_key, week, review_only=True)
+        if not file_id:
+            return saved_completion.read_many(token, config, current_agenda, class_key, week, form_id, found)
+        return saved_completion.read(token, config, current_agenda, class_key, week, form_id, file_id, found)
     token = google.service_token(config)
     if sub == 'api/spreadsheet-feedback/print-link':
         if query:
@@ -230,7 +253,9 @@ def api(sub, query, config):
         week = _one(query, "week")
         if not 1 <= len(week) <= 100:
             raise ValueError("week")
-        found = lesson_work(token, config, agenda, class_key, week)
+        # Page reads discover sources without readiness checks or assessment.
+        # Explicit Helper/worker paths still use the original guarded loader.
+        found = lesson_work(token, config, agenda, class_key, week, review_only=True)
         candidates = {f["form_id"]: {"rows": completion.recheck_candidates(f)}
                       for lesson in found.get("lessons", []) for f in lesson["forms"] if f.get("form_id")}
         return {**found, "entry_rechecks": candidates, "agenda": sheet}
@@ -357,6 +382,7 @@ def _form_rows(token, config, agenda, class_key, week, form_id):
 
 def _score_with_context(token, agenda, class_key, week, form_id, file_id, found, **kwargs):
     result = completion.score_file(token, agenda, class_key, week, form_id, file_id, found, **kwargs)
+    saved_completion.retain(token, agenda, class_key, week, form_id, file_id, found, result)
     return review_context.for_score(agenda, class_key, week, form_id, file_id, found, result)
 
 
@@ -387,6 +413,11 @@ def _score_rows(token, agenda, class_key, week, form_id, form, found, *, include
         # combined-source captures. Context never leaks into another request.
         scores = list(pool.map(lambda pair: pair[0].run(one, pair[1]),
                                [(copy_context(), row) for row in rows]))
+    for row, result in zip(rows, scores):
+        if not row.get('files'):
+            continue
+        upload = next((f for f in row['files'] if f.get('mime') in (completion.SLIDES, google.PPTX)), row['files'][0])
+        saved_completion.retain(token, agenda, class_key, week, form_id, upload['id'], found, result)
     return list(zip(rows, scores))
 
 
@@ -859,7 +890,7 @@ def recovery_post(environ, respond, config):
         return respond('502 Bad Gateway', {'error': 'Recovery record not confirmed; the block remains.'})
 
 
-def application(environ, start_response, config=None):
+def _application(environ, start_response, config=None):
     config = os.environ if config is None else config
     method = environ.get("REQUEST_METHOD", "GET")
     path = environ.get("PATH_INFO", "/")
@@ -986,6 +1017,13 @@ def application(environ, start_response, config=None):
     if body is None:
         return respond("404 Not Found", {"error": "Not found."})
     return respond("200 OK", body)
+
+
+def application(environ, start_response, config=None):
+    """Keep optional result retention outside the guarded operation's behavior."""
+    config = os.environ if config is None else config
+    with saved_completion.recording(config, defer=True):
+        return _application(environ, start_response, config)
 
 
 def student_records_post(environ, respond, config):

@@ -15,7 +15,7 @@
     <a href="#today" data-tab="today">Today</a>
     <a href="#plans" data-tab="plans">Lessons</a>
     <a href="#work" data-tab="work">Student work</a>
-    <a href="#data" data-tab="data">Data</a>
+    <a href="#records" data-tab="records">Records</a>
   </nav>
   <a class="agenda-link" id="agenda-link" target="_blank" rel="noopener noreferrer" hidden>Open Agenda ↗</a>
 </header>
@@ -26,36 +26,14 @@
       <div>
         <p class="eyebrow">TEACHER COCKPIT</p>
         <h1>Today</h1>
-        <p class="muted">Lessons, Week ahead, and teaching decisions.</p>
+        <p class="muted">What ran, what finished, and what still needs attention.</p>
       </div>
       <div class="controls"><button type="button" id="reload-today">Refresh</button></div>
     </div>
     <p id="today-status" class="status" role="status"></p>
-    <details class="readiness-strip" id="lesson-readiness">
-      <summary>VT readiness and feedback-code checks</summary>
-      <div id="lesson-readiness-body" aria-live="polite"></div>
-    </details>
-    <div id="today-week-ahead" aria-live="polite"></div>
-    <div id="today-next-agenda" aria-live="polite"></div>
+    <div id="today-body" aria-live="polite"></div>
   </section>
   <section id="page-plans" hidden>
-    <div class="lesson-access" aria-label="Feedback and lesson checks">
-      <div id="today-feedback" aria-live="polite"></div>
-      <details class="routine" id="saved-feedback">
-        <summary><h2>Saved feedback by date</h2></summary>
-        <div id="saved-feedback-body" aria-live="polite"></div>
-      </details>
-      <details class="routine" id="all-student-folders">
-        <summary><h2>All student folders</h2></summary>
-        <div id="all-student-folders-body" aria-live="polite"></div>
-      </details>
-      <details class="routine" id="link-check">
-        <summary><h2>Check lesson links</h2></summary>
-        <p class="muted">Checks Agenda Form and deck links. A lesson without an Agenda Form may use Schoology instead; this check cannot inspect Schoology. Run after moving or adding a lesson.</p>
-        <div class="action-row"><button type="button" id="run-link-check">Check links</button></div>
-        <div id="link-check-body"></div>
-      </details>
-    </div>
     <div class="bar">
       <div class="week-nav">
         <button type="button" id="prev-week" aria-label="Previous week">←</button>
@@ -68,7 +46,6 @@
         <button type="button" id="reload-plans">Reload</button>
       </div>
     </div>
-    <section id="week-packet" aria-live="polite" aria-label="Week packet"></section>
     <section id="next-week-notes" aria-label="Next week notes"></section>
     <details class="calendar-picker" open><summary>Choose a date</summary>
       <nav id="days" class="days" aria-label="Choose a calendar date across four weeks"></nav>
@@ -83,39 +60,18 @@
         <label>Class <select id="work-class"></select></label>
         <label>Week <select id="work-week"></select></label>
         <label>Section <select id="work-section"></select></label>
+        <label>Show <select id="work-display"><option value="all">All saved grades</option><option value="new">Newly graded today</option></select></label>
         <button type="button" id="reload-work">Reload</button>
       </div>
     </div>
     <p id="work-status" class="status" role="status"></p>
-    <div id="tidy-box" class="tidy-box"></div>
-    <div id="sheets-box" hidden></div>
     <div id="work-body"></div>
-    <details class="manual manual-tools">
-      <summary>Optional manual tools</summary>
-      <div class="controls">
-        <button type="button" id="tidy-work">Tidy this week's folders</button>
-        <button type="button" id="missing-sheets">Missing-work sheets</button>
-      </div>
-    </details>
-    <div id="student-growth" class="student-growth" aria-live="polite"></div>
   </section>
-  <section id="page-data" hidden>
-    <div class="bar"><h1>Data</h1><button type="button" id="reload-data">Refresh data</button></div>
-    <p id="data-status" class="status" role="status"></p>
-    <div id="today-body"></div>
-    <div id="agenda-diagnostics"></div>
-    <details id="morning-summary" class="routine" aria-live="polite"></details>
-    <details class="routine"><summary><h2>Feedback history and print controls</h2></summary><div id="today-feedback-tools"></div></details>
-    <details id="student-records" class="student-records">
-      <summary id="student-records-summary">Student records</summary>
-      <label>Class <select id="records-class"></select></label>
-      <div id="student-records-body" aria-live="polite"></div>
-    </details>
-    <details id="system-notes" class="routine notes-panel">
-      <summary><h2>System notes in Slack</h2></summary>
-      <p class="muted">Use the Slack conversation for Hub issues and repair updates. Earlier private Hub notes are retained below.</p>
-      <div id="system-notes-body" aria-live="polite"></div>
-    </details>
+  <section id="page-records" hidden>
+    <div class="bar"><h1>Records</h1><button type="button" id="reload-records">Refresh links</button></div>
+    <p class="muted">Operations and model trials are kept in their existing private records.</p>
+    <p id="records-status" class="status" role="status"></p>
+    <div id="records-body" aria-live="polite"></div>
   </section>
 </main>
 </body>
