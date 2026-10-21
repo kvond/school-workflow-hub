@@ -34,7 +34,8 @@ function boot(handler = cls => index(cls)) {
   const prelude = source.slice(0, source.indexOf('function issueAction('));
   const archive = source.slice(source.indexOf('// Saved artifacts across all connected'), source.indexOf('// ---------- Week ahead:'));
   const helpers = source.slice(source.indexOf('function recordFolderURL('), source.indexOf('async function loadStudentRecords('));
-  vm.runInContext(prelude + archive + helpers + '\nglobalThis.ui = {loadFeedbackArchive, renderFeedbackArchive, feedbackArchive, feedbackArtifact};', context);
+  const printable = source.slice(source.indexOf('function loadPrintableFeedbackLink('), source.indexOf('function renderFeedbackTools('));
+  vm.runInContext(prelude + printable + archive + helpers + '\nglobalThis.ui = {loadFeedbackArchive, renderFeedbackArchive, feedbackArchive, feedbackArtifact};', context);
   return {ui: context.ui, context, document, requests, dailyReads, dates: document.getElementById('saved-feedback-body'), folders: document.getElementById('all-student-folders-body')};
 }
 

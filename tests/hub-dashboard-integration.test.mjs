@@ -157,6 +157,7 @@ function fixtures() {
         status: 'partial', summary: 'Saved two fictional reports.', completed: 2, remaining: 1,
         unfinished: 'One exact source is unavailable.', next_action: 'Restore source access.', owner: 'Maintenance worker',
         links: [{label: 'Fictional output', url: 'https://drive.google.com/drive/folders/FICTIONALOUTPUT001'}]}]}},
+    printableFeedback: {status: 'unpublished'},
     day: {date: '2032-01-07', weekday: 'Tue', week: {label: 'Wk 03', monday: '2032-01-05'}, problems: [],
       agenda: {title: 'Fictional Agenda', url: 'https://docs.google.com/spreadsheets/d/FICTIONALAGENDA001/edit'},
       classes: [{key: 'biology', name: 'Biology', lessons: [{row: 2, week: 'Wk 03', topic: 'Fictional cell structures',
@@ -193,6 +194,7 @@ async function boot(hash = '#today', overrides = {}) {
       const parsed = new URL(request.url, ORIGIN + '/v2/'), path = parsed.pathname;
       let value;
       if (path === '/v2/api/dashboard/records') value = data.dashboard;
+      else if (path === '/v2/api/spreadsheet-feedback/print-link') value = data.printableFeedback;
       else if (path === '/v2/api/day') value = data.day;
       else if (path === '/v2/api/weeks') value = data.weeks;
       else if (path === '/v2/api/work') value = data.work;
@@ -263,7 +265,7 @@ test('Records aliases and Lessons execute only their own readers with the real p
     app.requests.length = 0; await app.navigate(hash);
     assert.equal(app.document.getElementById('page-records').hidden, false, hash);
     assert.equal(app.document.getElementById('page-today').hidden, true, hash);
-    assert.deepEqual([...new Set(paths(app))], ['/v2/api/dashboard/records'], hash);
+    assert.deepEqual([...new Set(paths(app))].sort(), ['/v2/api/dashboard/records', '/v2/api/spreadsheet-feedback/print-link'], hash);
     assert.match(app.document.getElementById('records-body').textContent, /Operations/);
   }
   app.requests.length = 0; await app.navigate('#plans');
@@ -271,6 +273,30 @@ test('Records aliases and Lessons execute only their own readers with the real p
   assert.deepEqual([...new Set(paths(app))], ['/v2/api/day']);
   assert.match(app.document.getElementById('cards').textContent, /Fictional cell structures/);
   assert.match(app.document.getElementById('cards').textContent, /Compare two fictional cell models/);
+});
+
+
+test('real Records page retains the independent verified PDF while directory failure stays explicit', async () => {
+  const printableFeedback = {status: 'ready', date: '2032-01-07', pages: 12, reports: 8, students: 4,
+    coverage: 'partial_verified_reports', url: 'https://drive.google.com/file/d/FICTIONALPACKET001/view',
+    spreadsheet_url: 'https://docs.google.com/spreadsheets/d/FICTIONALFEEDBACK001/edit'};
+  const app = await boot('#records', {printableFeedback, dashboard: new Error('Fictional directory unavailable')});
+  const body = app.document.getElementById('records-body');
+  assert.match(body.textContent, /Record links are unavailable/);
+  assert.match(body.textContent, /2032-01-07.*12 pages/);
+  assert.match(body.textContent, /8 reports.*4 students.*[Gg]aps/);
+  assert.ok(elements(body).some(node => node.tagName === 'A' && node.getAttribute('href') === printableFeedback.url));
+  assert.deepEqual([...new Set(paths(app))].sort(), ['/v2/api/dashboard/records', '/v2/api/spreadsheet-feedback/print-link']);
+  assert.ok(app.requests.every(request => request.method === 'GET'));
+  assert.ok(!paths(app).some(path => /catalog|packet|weekly|audit|feedback\/daily/.test(path)));
+});
+
+test('a failed independent PDF read leaves the real Records directory usable', async () => {
+  const app = await boot('#records', {printableFeedback: new Error('Fictional print reader unavailable')});
+  const body = app.document.getElementById('records-body');
+  assert.match(body.textContent, /Operations/);
+  assert.ok(!elements(body).some(node => node.tagName === 'A' && node.getAttribute('href')?.includes('/file/d/')));
+  assert.ok(app.requests.every(request => request.method === 'GET'));
 });
 
 test('Student work reads exact saved grades and latest-work links without calculating scores', async () => {
@@ -308,7 +334,7 @@ test('Helper status messages survive page simplification without starting a writ
   assert.equal(app.context.__dashboardState.helper.state, 'ready');
   assert.equal(app.context.__dashboardState.helper.version, '0.5.34');
   assert.ok(app.requests.every(request => request.method === 'GET'));
-  assert.deepEqual([...new Set(paths(app))], ['/v2/api/dashboard/records']);
+  assert.deepEqual([...new Set(paths(app))].sort(), ['/v2/api/dashboard/records', '/v2/api/spreadsheet-feedback/print-link']);
 });
 
 test('newly graded filter uses the actual saved grading date without a new read or assessment', async () => {

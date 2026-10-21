@@ -32,8 +32,9 @@ function boot(names, values = {}) {
 
 test('Records renders configured known links and refuses unsafe, unconfigured or unknown links', async () => {
   const calls = [];
-  const h = boot(['recordURL', 'loadRecords'], {dashboard: {recordsSeq: 0}, fetch: async (url, options) => {
+  const h = boot(['recordURL', 'renderRecordsPrintableFeedback', 'loadRecordsPrintableFeedback', 'loadRecords'], {dashboard: {recordsSeq: 0}, fetch: async (url, options) => {
     calls.push({url, options});
+    if (url === 'api/spreadsheet-feedback/print-link') return {ok: true, json: async () => ({status: 'unpublished'})};
     return {ok: true, json: async () => ({schema_version: 'hub-dashboard-records/v1', records: [
       {key: 'operations', label: 'Operations', configured: true, url: 'https://docs.google.com/spreadsheets/d/FICTIONALOPS/edit'},
       {key: 'model_trials', label: 'Models, rubrics and trials', configured: false, url: 'https://example.invalid/unconfigured'},
@@ -46,8 +47,83 @@ test('Records renders configured known links and refuses unsafe, unconfigured or
   assert.deepEqual(links.map(node => node.href), ['https://docs.google.com/spreadsheets/d/FICTIONALOPS/edit']);
   assert.match(body.textContent, /Models, rubrics and trials — link not configured.*Trial files — link not configured/);
   assert.doesNotMatch(body.textContent, /Unexpected/);
-  assert.deepEqual(calls.map(call => call.url), ['api/dashboard/records']);
-  assert.equal(calls[0].options.method, undefined);
+  assert.deepEqual(calls.map(call => call.url).sort(), ['api/dashboard/records', 'api/spreadsheet-feedback/print-link']);
+  assert.ok(calls.every(call => call.options.method === undefined));
+});
+
+
+const readyPacket = {status: 'ready', date: '2032-01-07', pages: 12, reports: 8, students: 4,
+  coverage: 'partial_verified_reports', url: 'https://drive.google.com/file/d/FICTIONALPACKET001/view',
+  spreadsheet_url: 'https://docs.google.com/spreadsheets/d/FICTIONALFEEDBACK001/edit'};
+function recordsBoot(reader = () => ({status: 'unpublished'}), directory) {
+  const requests = [];
+  const ordinary = directory || {schema_version: 'hub-dashboard-records/v1', records: [
+    {key: 'operations', label: 'Operations', configured: true, url: 'https://docs.google.com/spreadsheets/d/FICTIONALOPS001/edit'}]};
+  const h = boot(['recordURL', 'renderRecordsPrintableFeedback', 'loadRecordsPrintableFeedback', 'loadRecords'],
+    {dashboard: {recordsSeq: 0}, fetch: async (url, options) => {
+      requests.push({url, options});
+      const result = url === 'api/dashboard/records' ? ordinary : await reader(url);
+      return result instanceof Error ? {ok: false, status: 503, json: async () => ({error: result.message})}
+        : {ok: true, json: async () => result};
+    }});
+  return {...h, requests};
+}
+const pdfLinks = node => walk(node).filter(child => child.tagName === 'a' && child.href.includes('/file/d/'));
+
+test('Records independently reads the verified saved PDF and preserves partial counts and existing links', async () => {
+  const h = recordsBoot(() => readyPacket);
+  await h.ui.loadRecords();
+  const body = h.nodes.get('records-body'), links = walk(body).filter(node => node.tagName === 'a');
+  assert.ok(links.some(node => node.href === readyPacket.url));
+  assert.ok(links.some(node => node.href === readyPacket.spreadsheet_url));
+  assert.ok(links.some(node => node.textContent === 'Operations'));
+  assert.match(body.textContent, /2032-01-07.*12 pages/);
+  assert.match(body.textContent, /8 reports.*4 students.*[Gg]aps/);
+  assert.deepEqual(h.requests.map(item => item.url).sort(), ['api/dashboard/records', 'api/spreadsheet-feedback/print-link']);
+  assert.ok(h.requests.every(item => item.options.method === undefined));
+});
+
+test('an unavailable record directory does not hide an independently verified PDF', async () => {
+  const h = recordsBoot(() => readyPacket, new Error('Fictional record directory unavailable'));
+  await h.ui.loadRecords();
+  const body = h.nodes.get('records-body');
+  assert.equal(pdfLinks(body).length, 1);
+  assert.match(body.textContent, /Record links are unavailable/);
+  assert.match(body.textContent, /Print latest feedback/);
+});
+
+for (const [name, packet] of [
+  ['held', {status: 'held', problem: 'The PDF changed after publication.', url: readyPacket.url}],
+  ['unpublished', {status: 'unpublished'}],
+  ['failed', new Error('Fictional print-link reader unavailable')],
+  ['wrong PDF host', {...readyPacket, url: 'https://drive.google.com.evil.example/file/d/FICTIONALPACKET001/view'}],
+  ['credential URL', {...readyPacket, url: 'https://someone:secret@drive.google.com/file/d/FICTIONALPACKET001/view'}],
+  ['wrong spreadsheet host', {...readyPacket, spreadsheet_url: 'https://example.invalid/spreadsheets/d/FICTIONALFEEDBACK001/edit'}],
+  ['missing verified counts', {...readyPacket, reports: undefined}],
+  ['unknown coverage', {...readyPacket, coverage: 'ready'}],
+]) test('Records keeps its directory but offers no PDF fallback for ' + name, async () => {
+  const h = recordsBoot(() => packet);
+  await h.ui.loadRecords();
+  const body = h.nodes.get('records-body');
+  assert.equal(pdfLinks(body).length, 0);
+  assert.ok(walk(body).some(node => node.tagName === 'a' && node.textContent === 'Operations'));
+  assert.doesNotMatch(body.textContent, /Print latest feedback/);
+  if (name === 'held') assert.match(body.textContent, /PDF changed after publication/);
+});
+
+test('a stale print-link response cannot replace the newer Records result', async () => {
+  let finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  let reads = 0;
+  const h = recordsBoot(() => ++reads === 1 ? pending : readyPacket);
+  const first = h.ui.loadRecords();
+  await new Promise(resolve => setImmediate(resolve));
+  await h.ui.loadRecords();
+  finish({status: 'held', problem: 'Old result must not replace the latest publication.'});
+  await first;
+  const body = h.nodes.get('records-body');
+  assert.equal(pdfLinks(body).length, 1);
+  assert.doesNotMatch(body.textContent, /Old result must not replace/);
 });
 
 test('actual holds, next action, owner and recorded time remain visible without inventing start or completion', () => {

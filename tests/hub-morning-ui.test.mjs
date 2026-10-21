@@ -97,6 +97,7 @@ test('Today and Hub tools refresh keep receipt counts without fetching or render
     async function loadAudits() { return {}; }
     function renderAgendaDiagnostics() { return el('p', {text: 'Fictional lesson'}); }
     function renderNextLessons() { return el('p', {text: 'Teacher actions'}); }
+    ${source.slice(source.indexOf('function loadPrintableFeedbackLink('), source.indexOf('function renderFeedbackTools('))}
     ${today}
     globalThis.refreshToday = loadToday;
   `, context);

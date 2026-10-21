@@ -946,9 +946,22 @@ function retryFeedbackButton() {
 }
 
 function renderTodayFeedback() {
-  const url = cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
-  return el('div', {class: 'action-row'}, url
-    ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}));
+  const packet = cockpit.printableFeedback;
+  const ready = packet?.status === 'ready';
+  const url = ready ? packet.spreadsheet_url : cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
+  return el('div', {class: 'action-row'}, ...[
+    ready ? link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url) : null,
+    url ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}),
+    ready && packet.coverage === 'partial_verified_reports'
+      ? el('p', {class: 'muted', text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}) : null,
+    packet?.status === 'held' ? note(packet.problem, 'info') : null,
+  ].filter(Boolean));
+}
+function loadPrintableFeedbackLink(seq) {
+  getJSON('api/spreadsheet-feedback/print-link').catch(() => ({status: 'held', problem: 'The feedback print link could not be verified. Retry the page.'})).then(data => {
+    if (seq !== cockpit.seq) return;
+    cockpit.printableFeedback = data; renderTodayFeedbackArea(seq);
+  });
 }
 
 function renderFeedbackTools(data) {
@@ -1053,7 +1066,7 @@ function renderLearningReport(data) {
 
 function renderTodayFeedbackArea(seq) {
   if (seq !== cockpit.seq) return;
-  $('today-feedback').replaceChildren(...[cockpit.feedbackData ? renderTodayFeedback() : null].filter(Boolean));
+  $('today-feedback').replaceChildren(...[(cockpit.printableFeedback || cockpit.teacherLinks || cockpit.feedbackData) ? renderTodayFeedback() : null].filter(Boolean));
   $('student-growth')?.replaceChildren(...[renderLearningReport(cockpit.learningData)].filter(Boolean));
   const tools = $('today-feedback-tools');
   if (tools) tools.replaceChildren(...(cockpit.feedbackData ? [renderFeedbackTools(cockpit.feedbackData)] : []));
@@ -1175,6 +1188,7 @@ async function loadFeedbackArchive(fresh = false) {
 function loadLessonAccess(fresh = false) {
   const seq = ++cockpit.seq;
   loadTodayFeedback(seq);
+  loadPrintableFeedbackLink(seq);
   getJSON('api/teacher-links').catch(() => ({})).then(data => {
     if (seq !== cockpit.seq) return;
     cockpit.teacherLinks = data; renderTodayFeedbackArea(seq);
@@ -1464,26 +1478,63 @@ async function loadToday() {
     setStatus('today-status', error.message, true);
   }
 }
+function renderRecordsPrintableFeedback(packet) {
+  const box = el('section', {class: 'record-feedback'}, el('h2', {text: 'Saved feedback PDF'}));
+  if (packet?.status === 'unpublished') {
+    box.append(el('p', {class: 'muted', text: 'No feedback PDF has been published. This does not establish intake coverage.'}));
+    return box;
+  }
+  const ready = packet?.status === 'ready'
+    && /^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]{10,200}\/view$/.test(packet.url || '')
+    && /^https:\/\/docs\.google\.com\/spreadsheets\/d\/[A-Za-z0-9_-]{10,200}\/edit$/.test(packet.spreadsheet_url || '')
+    && /^\d{4}-\d{2}-\d{2}$/.test(packet.date || '')
+    && ['pages', 'reports', 'students'].every(key => Number.isInteger(packet[key]) && packet[key] > 0)
+    && ['partial_verified_reports', 'complete_verified_reports'].includes(packet.coverage);
+  if (!ready) {
+    box.append(note(packet?.status === 'held' && typeof packet.problem === 'string' ? packet.problem
+      : 'The saved feedback PDF link could not be verified. Reload Records to retry.', 'info'));
+    return box;
+  }
+  box.append(el('div', {class: 'links'},
+    link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url, 'chip'),
+    link('Feedback spreadsheet', packet.spreadsheet_url, 'chip')));
+  if (packet.coverage === 'partial_verified_reports') box.append(el('p', {class: 'muted',
+    text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}));
+  return box;
+}
+async function loadRecordsPrintableFeedback(seq, box) {
+  box.replaceChildren(el('p', {class: 'muted', text: 'Reading the saved feedback PDF link…'}));
+  let packet;
+  try { packet = await getJSON('api/spreadsheet-feedback/print-link'); }
+  catch { packet = {status: 'held', problem: 'The saved feedback PDF link could not be verified. Reload Records to retry.'}; }
+  if (seq !== dashboard.recordsSeq) return;
+  box.replaceChildren(renderRecordsPrintableFeedback(packet));
+}
 async function loadRecords() {
   const seq = ++dashboard.recordsSeq;
   setStatus('records-status', 'Reading configured record links…');
-  $('records-body').replaceChildren();
+  const directory = el('div'), printable = el('div');
+  $('records-body').replaceChildren(directory, printable);
+  // Independent saved records: an unavailable PDF never hides the directory,
+  // and neither read starts a catalog scan, packet build or delivery operation.
+  const printRead = loadRecordsPrintableFeedback(seq, printable);
   try {
     const data = await getJSON('api/dashboard/records');
     if (seq !== dashboard.recordsSeq) return;
     if (data?.schema_version !== 'hub-dashboard-records/v1' || !Array.isArray(data.records)) throw new Error('The configured record links could not be verified.');
     const allowed = ['operations', 'model_trials', 'model_trials_folder', 'agenda', 'work_index', 'feedback_checklist', 'growth_report', 'biology_analysis', 'system_notes'];
     const items = allowed.map(key => data.records.find(item => item?.key === key)).filter(Boolean);
-    $('records-body').replaceChildren(el('ul', {class: 'record-links'}, items.map(item => {
+    directory.replaceChildren(el('ul', {class: 'record-links'}, items.map(item => {
       const url = item.configured === true && recordURL(item.url);
       return el('li', {}, url ? link(item.label || item.key, url) : el('span', {text: (item.label || item.key) + ' — link not configured'}));
     })), ...(!items.length ? [note('Record links are not configured.', 'info')] : []));
     setStatus('records-status', 'Existing private records; opening this page does not run a workflow.');
   } catch (error) {
     if (seq !== dashboard.recordsSeq) return;
-    $('records-body').replaceChildren(note('Record links are unavailable. Existing records have not changed.', 'info'));
+    directory.replaceChildren(note('Record links are unavailable. Existing records have not changed.', 'info'));
     setStatus('records-status', error.message, true);
   }
+  await printRead;
 }
 
 function renderLessonReadiness(audits) {

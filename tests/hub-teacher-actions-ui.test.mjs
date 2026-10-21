@@ -19,11 +19,15 @@ function boot() {
     constructor(...args) { super(...(args.length ? args : ['2032-01-06T03:00:00Z'])); }
     static now() { return new Date('2032-01-06T03:00:00Z').getTime(); }
   }
-  const context = vm.createContext({Date: Clock, Node: Element, document: {createElement: tag => new Element(tag)}});
+  const nodes = new Map();
+  const context = vm.createContext({Date: Clock, Node: Element, document: {createElement: tag => new Element(tag),
+    getElementById(id) { if (!nodes.has(id)) nodes.set(id, new Element('div')); return nodes.get(id); }}});
   vm.runInContext(source.slice(0, source.indexOf('function issueAction(')).replace(/const todayISO = .*?;\n/, `const todayISO = () => '${DAY}';\n`) +
     source.slice(source.indexOf('const TEACHER_AGENDA_CHOICES'), source.indexOf('async function printTodayFeedback(')) +
     source.slice(source.indexOf('function renderTodayFeedback('), source.indexOf('function renderFeedbackTools(')) +
-    `\nglobalThis.ui = {renderTodayFeedback, renderNextLessons, cockpit};`, context);
+    source.slice(source.indexOf('function renderTodayFeedbackArea('), source.indexOf('async function loadTodayFeedback(')) +
+    `\nfunction renderLearningReport() { return null; } globalThis.ui = {renderTodayFeedback, renderTodayFeedbackArea, renderNextLessons, cockpit};`, context);
+  context.ui.nodes = nodes;
   context.ui.cockpit.teacherLinks = {feedback_list_url: 'https://docs.google.com/spreadsheets/d/FICTIONALCHECKLIST/edit'};
   return context.ui;
 }
@@ -88,4 +92,30 @@ test('Lessons retains the existing checklist fallback and marks an unavailable l
   const unavailable = ui.renderTodayFeedback();
   assert.equal(walk(unavailable).filter(n => n.tagName === 'a').length, 0);
   assert.equal(unavailable.textContent, 'Feedback checklist link unavailable');
+});
+
+test('verified independent PDF stays printable while unrelated feedback catalog is held', () => {
+  const ui = boot();
+  ui.cockpit.feedbackData = {problem: 'Unrelated source held'};
+  ui.cockpit.printableFeedback = {status: 'ready', date: '2032-01-05', pages: 12, reports: 8, students: 4,
+    coverage: 'partial_verified_reports', url: 'https://drive.google.com/file/d/FictionalPacket123/view',
+    spreadsheet_url: 'https://docs.google.com/spreadsheets/d/FictionalCurrentSheet123/edit'};
+  const rendered = ui.renderTodayFeedback(), links = walk(rendered).filter(n => n.tagName === 'a');
+  assert.match(links[0].textContent, /Print latest feedback.*2032-01-05.*12 pages/);
+  assert.equal(links[1].href, ui.cockpit.printableFeedback.spreadsheet_url);
+  assert.match(rendered.textContent, /8 reports for 4 students.*Remaining gaps/);
+  ui.cockpit.printableFeedback = {status: 'held', problem: 'PDF changed after publication'};
+  const held = ui.renderTodayFeedback();
+  assert.match(held.textContent, /PDF changed/);
+  assert.doesNotMatch(held.textContent, /Print latest/);
+});
+
+test('the published link renders before any retired catalog result exists', () => {
+  const ui = boot(); ui.cockpit.feedbackData = null;
+  ui.cockpit.printableFeedback = {status: 'ready', date: '2032-01-05', pages: 12,
+    url: 'https://drive.google.com/file/d/FictionalPacket123/view',
+    spreadsheet_url: 'https://docs.google.com/spreadsheets/d/FictionalCurrentSheet123/edit'};
+  ui.renderTodayFeedbackArea(ui.cockpit.seq);
+  assert.match(ui.nodes.get('today-feedback').textContent, /Print latest feedback/);
+  assert.equal(ui.nodes.get('today-feedback-tools').children.length, 0);
 });

@@ -18,7 +18,7 @@ from . import agenda as agenda_module
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
-from . import agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
+from . import printable_feedback_link, agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
 from . import deck_repair, lesson_summary, system_notes, weekly_packet, weekly_preflight
 from . import dashboard_records, saved_completion
 
@@ -183,6 +183,10 @@ def api(sub, query, config):
             return saved_completion.read_many(token, config, current_agenda, class_key, week, form_id, found)
         return saved_completion.read(token, config, current_agenda, class_key, week, form_id, file_id, found)
     token = google.service_token(config)
+    if sub == 'api/spreadsheet-feedback/print-link':
+        if query:
+            raise ValueError()
+        return printable_feedback_link.read(token, config)
     if sub == 'api/feedback/email/outbox':
         if query:
             raise ValueError()
