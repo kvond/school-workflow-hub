@@ -52,6 +52,28 @@ class DashboardRecordsTests(unittest.TestCase):
             self.assertNotIn('FictionalPrivate001', str(output))
         self.token.assert_not_called()
 
+    def test_account_specific_drive_folder_links_do_not_trigger_source_reads(self):
+        for url in ('https://drive.google.com/drive/folders/FictionalTrials001',
+                    'https://drive.google.com/drive/u/0/folders/FictionalTrials001',
+                    'https://drive.google.com/drive/u/1/folders/FictionalTrials001/'):
+            with self.subTest(url=url):
+                records = dashboard.records({'HUB_MODEL_TRIALS_FOLDER_URL': url})['records']
+                folder = next(item for item in records if item['key'] == 'model_trials_folder')
+                self.assertTrue(folder['configured'])
+                self.assertEqual(folder['url'], url)
+        for url in ('https://drive.google.com.evil.example/drive/u/0/folders/FictionalTrials001',
+                    'https://user:secret@drive.google.com/drive/u/0/folders/FictionalTrials001',
+                    'https://drive.google.com/drive/u/0/folders/FictionalTrials001?token=secret',
+                    'https://drive.google.com/drive/u/0/folders/FictionalTrials001/other',
+                    'http://drive.google.com/drive/u/0/folders/FictionalTrials001'):
+            with self.subTest(url=url):
+                records = dashboard.records({'HUB_MODEL_TRIALS_FOLDER_URL': url})['records']
+                folder = next(item for item in records if item['key'] == 'model_trials_folder')
+                self.assertFalse(folder['configured'])
+                self.assertIsNone(folder['url'])
+        for mock in (self.token, self.metadata, self.values, self.helper):
+            mock.assert_not_called()
+
     def test_operations_reads_header_row_after_title_and_only_known_fields(self):
         output = dashboard.records({'HUB_OPERATIONS_URL': SHEET})
         self.assertEqual(output['runs']['status'], 'available')

@@ -31,7 +31,7 @@ def _url(value, kind):
         return None
     patterns = {
         'sheet': r'https://docs\.google\.com/spreadsheets/d/' + ID + r'/edit(?:\?gid=\d{1,20})?(?:#gid=\d{1,20})?',
-        'folder': r'https://drive\.google\.com/drive/folders/' + ID,
+        'folder': r'https://drive\.google\.com/drive/(?:u/[0-9]+/)?folders/' + ID + r'/?',
         'slack': r'https://app\.slack\.com/client/T[A-Z0-9]+/C[A-Z0-9]+',
         'slack_thread': r'https://[a-z0-9][a-z0-9-]{0,62}\.slack\.com/archives/C[A-Z0-9]+/p\d{16}',
         'document': r'https://docs\.google\.com/(?:document|presentation)/d/' + ID + r'/edit',
