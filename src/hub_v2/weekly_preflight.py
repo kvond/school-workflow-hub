@@ -747,7 +747,7 @@ def numbered_slide_links(outline):
             # proof of a whole label, even when that linked part reads Slide N.
             before, after = value[:link["at"]], value[link["end"]:]
             if (not match or (before and before[-1].isalnum())
-                    or re.match(r"(?:[\w]|\s*(?:[-–—,/]|and\b)\s*(?:slide\s*)?\d)", after, re.I)):
+                    or re.match(r"(?:[\w]|\s*(?:[-–—,/&]|(?:and|or|to|through)\b)\s*(?:slides?\s*)?\d)", after, re.I)):
                 continue
             target = link["target"]
             if set(target) == {"pageObjectId"} and isinstance(target["pageObjectId"], str) and target["pageObjectId"]:
