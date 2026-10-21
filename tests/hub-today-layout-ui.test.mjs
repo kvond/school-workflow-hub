@@ -51,7 +51,8 @@ function boot(overrides = () => undefined) {
     openWork() {}, loadRoutine() { toolsReads.push('routine'); }, loadSystemNotes() { toolsReads.push('notes'); },
     loadLessonAccess(fresh = false) { toolsReads.push(fresh ? 'fresh-feedback' : 'feedback'); }, loadGrowthLink() {}, loadStudentRecords() {},
   });
-  vm.runInContext(renderers + `
+  const printable = source.slice(source.indexOf('function loadPrintableFeedbackLink('), source.indexOf('function renderFeedbackTools('));
+  vm.runInContext(renderers + printable + `
     function renderMorningCockpit() { return el('p', {text: 'Existing morning receipt'}); }
     function renderNeedsYou() { return el('p', {text: 'Existing teacher actions'}); }
     function currentSourceReviewPanel(active, options) {
