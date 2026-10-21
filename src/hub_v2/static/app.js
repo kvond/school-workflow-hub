@@ -946,9 +946,22 @@ function retryFeedbackButton() {
 }
 
 function renderTodayFeedback() {
-  const url = cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
-  return el('div', {class: 'action-row'}, url
-    ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}));
+  const packet = cockpit.printableFeedback;
+  const ready = packet?.status === 'ready';
+  const url = ready ? packet.spreadsheet_url : cockpit.teacherLinks?.feedback_list_url || cockpit.learningData?.checklist_url;
+  return el('div', {class: 'action-row'}, ...[
+    ready ? link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url) : null,
+    url ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}),
+    ready && packet.coverage === 'partial_verified_reports'
+      ? el('p', {class: 'muted', text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}) : null,
+    packet?.status === 'held' ? note(packet.problem, 'info') : null,
+  ].filter(Boolean));
+}
+function loadPrintableFeedbackLink(seq) {
+  getJSON('api/spreadsheet-feedback/print-link').catch(() => ({status: 'held', problem: 'The feedback print link could not be verified. Retry the page.'})).then(data => {
+    if (seq !== cockpit.seq) return;
+    cockpit.printableFeedback = data; renderTodayFeedbackArea(seq);
+  });
 }
 
 function renderFeedbackTools(data) {
@@ -1053,7 +1066,7 @@ function renderLearningReport(data) {
 
 function renderTodayFeedbackArea(seq) {
   if (seq !== cockpit.seq) return;
-  $('today-feedback').replaceChildren(...[cockpit.feedbackData ? renderTodayFeedback() : null].filter(Boolean));
+  $('today-feedback').replaceChildren(...[(cockpit.printableFeedback || cockpit.teacherLinks || cockpit.feedbackData) ? renderTodayFeedback() : null].filter(Boolean));
   $('student-growth')?.replaceChildren(...[renderLearningReport(cockpit.learningData)].filter(Boolean));
   const tools = $('today-feedback-tools');
   if (tools) tools.replaceChildren(...(cockpit.feedbackData ? [renderFeedbackTools(cockpit.feedbackData)] : []));
@@ -1175,6 +1188,7 @@ async function loadFeedbackArchive(fresh = false) {
 function loadLessonAccess(fresh = false) {
   const seq = ++cockpit.seq;
   loadTodayFeedback(seq);
+  loadPrintableFeedbackLink(seq);
   getJSON('api/teacher-links').catch(() => ({})).then(data => {
     if (seq !== cockpit.seq) return;
     cockpit.teacherLinks = data; renderTodayFeedbackArea(seq);
@@ -1421,6 +1435,7 @@ async function loadToday(force = false) {
     renderTodayFeedbackArea(seq);
   }
   loadTodayFeedback(seq);
+  loadPrintableFeedbackLink(seq);
   loadWeekAhead();
   getJSON('api/teacher-links').catch(() => ({})).then(data => {
     if (seq !== cockpit.seq) return;

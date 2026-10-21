@@ -74,6 +74,24 @@ Student work ends with one **Biology growth and DTGSS** link. No delivery marks
 are changed by these views, and the checklist link is independent of the growth
 report configuration.
 
+## Spreadsheet feedback print link
+
+Authenticated GET `/v2/api/spreadsheet-feedback/print-link` reads the last
+trusted publication independently of the retired daily feedback catalog.
+Lessons shows its print link and spreadsheet destination when the
+saved PDF still has its verified private location and exact Drive revision.
+Partial snapshots keep their report/student counts and visible gap notice.
+An unavailable, changed, moved, trashed or publicly shared PDF yields a hold
+with no clickable fallback. No record means unpublished, not empty intake.
+
+The trusted-host `printable_feedback_link.publish` operation verifies the full
+saved PDF hash, byte count, page count, private archive ancestry and metadata
+bookends before CAS-publishing counts-only metadata with immutable history.
+Use the last-read publication revision; recover uncertain publication by
+reading it before any retry. This is not an HTTP write route, an assessment,
+an index refresh, a packet builder, or printing/delivery evidence. Existing
+extension, helper, environment settings, provider and delivery state are untouched.
+
 ## Teacher review context
 
 Every request to review submitted work must identify the class/section,
