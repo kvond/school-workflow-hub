@@ -63,7 +63,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/6"
+RULES = "weekly-preflight-rules/7"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -662,34 +662,38 @@ AUTHORING_NOTE = re.compile(
     r"|[Cc]orrected|VERIFY|[Vv]erify)[ \t]*[—–:]|(?:verify|VERIFY)[ \t]+[A-Za-z])[^\]]{0,600}\]?")
 
 
-def _container_text(runs, links, index):
+def _container_text(runs, links, index, internal_links=None):
     """One shape's or table cell's words; each linked run's start goes to links."""
     value = ""
     for run in runs:
         piece = (run or {}).get("textRun") or {}
-        url = (((piece.get("style") or {}).get("link") or {}).get("url") or "")
+        target = (piece.get("style") or {}).get("link") or {}
+        url = target.get("url") or ""
         if url:
             links.append({"text": index, "at": len(value), "end": len(value) + len(piece.get("content", "")), "url": url})
+        if internal_links is not None and any(k in target for k in ("pageObjectId", "slideIndex", "relativeLink")):
+            internal_links.append({"text": index, "at": len(value),
+                                   "end": len(value) + len(piece.get("content", "")), "target": dict(target)})
         value += piece.get("content", "")
     # A soft line break (Shift+Enter) is \v in Slides; read it as a line break.
     # Same length, so the link offsets above still hold.
     return value.replace("\v", "\n")
 
 
-def _native_texts(elements, out, links, depth=0):
+def _native_texts(elements, out, links, depth=0, internal_links=None):
     for element in elements or []:
         if not isinstance(element, dict) or depth > 20:
             continue
         if "elementGroup" in element:
-            _native_texts((element["elementGroup"] or {}).get("children"), out, links, depth + 1)
+            _native_texts((element["elementGroup"] or {}).get("children"), out, links, depth + 1, internal_links)
         if "shape" in element:
             runs = ((element["shape"] or {}).get("text") or {}).get("textElements") or []
-            out.append(_container_text(runs, links, len(out)))
+            out.append(_container_text(runs, links, len(out), internal_links))
         if "table" in element:
             for table_row in (element["table"] or {}).get("tableRows") or []:
                 for table_cell in (table_row or {}).get("tableCells") or []:
                     runs = ((table_cell or {}).get("text") or {}).get("textElements") or []
-                    out.append(_container_text(runs, links, len(out)))
+                    out.append(_container_text(runs, links, len(out), internal_links))
 
 
 def outline_native(presentation):
@@ -700,10 +704,67 @@ def outline_native(presentation):
         raise completion.Unreadable("The native deck has no readable slide list.")
     out = []
     for number, page in enumerate(slides, 1):
-        texts, links = [], []
-        _native_texts((page or {}).get("pageElements"), texts, links)
-        out.append({"number": number, "object_id": (page or {}).get("objectId", ""), "texts": texts, "links": links})
+        texts, links, internal = [], [], []
+        _native_texts((page or {}).get("pageElements"), texts, links, internal_links=internal)
+        out.append({"number": number, "object_id": (page or {}).get("objectId", ""),
+                    "texts": texts, "links": links, "internal_links": internal})
     return out
+
+
+def numbered_slide_links(outline):
+    """Bounded native G4: compare a whole numbered label with its literal target.
+
+    No titles, inferred revision phases, external URLs or replacement suggestions.
+    Relative links and labels covering more than one slide are outside this check.
+    """
+    native = bool(outline) and all("internal_links" in s for s in outline)
+    result = {"status": "checked" if native else "not_supported", "checked": 0, "findings": []}
+    if not native:
+        return result
+    ids = [s.get("object_id") for s in outline]
+    positions = [s.get("number") for s in outline]
+    if (any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids)
+            or positions != list(range(1, len(outline) + 1))):
+        return {**result, "status": "unverified", "reason": "The complete native slide identity/order is unavailable."}
+    by_id = {ident: number for number, ident in enumerate(ids, 1)}
+    label_pattern = re.compile(r"(?:go to |see |return to |back to )?slide\s+([1-9][0-9]{0,5})[.!]?", re.I)
+    found = {}
+    for slide in outline:
+        spans = []
+        for link in sorted(slide["internal_links"], key=lambda x: (x["text"], x["at"])):
+            if link["end"] <= link["at"]:
+                continue
+            if (spans and spans[-1]["text"] == link["text"] and spans[-1]["end"] == link["at"]
+                    and spans[-1]["target"] == link["target"]):
+                spans[-1]["end"] = link["end"]
+            else:
+                spans.append(dict(link))
+        for link in spans:
+            value = slide["texts"][link["text"]]
+            label = value[link["at"]:link["end"]].strip()
+            match = label_pattern.fullmatch(label)
+            # A link on only part of a word or a multi-slide expression is not
+            # proof of a whole label, even when that linked part reads Slide N.
+            before, after = value[:link["at"]], value[link["end"]:]
+            if (not match or (before and before[-1].isalnum())
+                    or re.match(r"(?:[\w]|\s*(?:[-–—,/]|and\b)\s*(?:slide\s*)?\d)", after, re.I)):
+                continue
+            target = link["target"]
+            if set(target) == {"pageObjectId"} and isinstance(target["pageObjectId"], str) and target["pageObjectId"]:
+                actual = by_id.get(target["pageObjectId"])
+            elif set(target) == {"slideIndex"} and type(target["slideIndex"]) is int and target["slideIndex"] >= 0:
+                actual = target["slideIndex"] + 1 if target["slideIndex"] < len(outline) else None
+            else:
+                continue
+            result["checked"] += 1
+            shown = int(match.group(1))
+            if actual != shown:
+                evidence = {"slide": slide["number"], "label": label, "displayed_slide": shown,
+                            "target_slide": actual, "target": target,
+                            "problem": "missing_target" if actual is None else "number_mismatch"}
+                found[(slide["number"], label, content_hash(target))] = evidence
+    result["findings"] = list(found.values())
+    return result
 
 
 def _pptx_slide_order(archive):
@@ -937,7 +998,8 @@ def deck_summary(outline):
             "code_slides": {k: sorted(set(v)) for k, v in codes.items()},
             "page_ids": {str(s["number"]): s["object_id"] for s in outline if s["object_id"]},
             "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes,
-            "link_mismatches": deck_link_mismatches(outline)}
+            "link_mismatches": deck_link_mismatches(outline),
+            "slide_reference_check": numbered_slide_links(outline)}
 
 
 def _native_teacher(node):
@@ -2094,7 +2156,7 @@ def _content(ctx, lesson, counts):
                 lesson["pending"].append(node["id"])
                 continue
             node["outline"] = {k: outline.get(k) for k in ("ok", "slide_count", "teacher_only_slides", "stage",
-                                                            "http_status", "problem")}
+                                                            "http_status", "problem", "slide_reference_check")}
             node["readiness"] = {k: ready.get(k) for k in ("status", "label", "missing_ids", "extra_ids",
                                                            "issues", "readability")}
             if outline.get("ok"):
@@ -2143,6 +2205,24 @@ def _content(ctx, lesson, counts):
                                           "slide": line["slide"], "deck_id": node["id"], "url": line.get("url")})
         lesson.setdefault("deck_links", {})[node["id"]] = outline.get("web_links") or []
         pages = outline.get("page_ids") or {}
+        references = outline.get("slide_reference_check") or {}
+        if references.get("status") == "unverified":
+            lesson["exceptions"].append(_exception(
+                "deck_slide_reference_unverified", "inaccessible", lesson, references["reason"],
+                "Repair worker: reread the exact native deck before checking numbered slide links.",
+                url=node["url"], sources=[node["id"]], revision_key=node["revision"], detail="slide-references"))
+        for reference in references.get("findings", []):
+            page = pages.get(str(reference["slide"]))
+            target = reference["target_slide"]
+            reason = ("Slide %d has a link labeled “%s”, but %s." % (
+                reference["slide"], reference["label"],
+                "its target is absent from this deck" if target is None else "it opens slide %d" % target))
+            lesson["exceptions"].append(_exception(
+                "deck_slide_reference_mismatch", "needs_decision", lesson, reason,
+                "Repair worker: verify the intended slide before repairing the number or link; neither is assumed correct.",
+                url=node["url"] + ("#slide=id." + page if page and node["url"].endswith("/edit") else ""),
+                sources=[node["id"]], revision_key=node["revision"], detail=content_hash(reference),
+                slides=[reference["slide"]], evidence=reference))
         for mismatch in outline.get("link_mismatches") or []:
             page = pages.get(str(mismatch["slide"]))
             lesson["exceptions"].append(_exception(
