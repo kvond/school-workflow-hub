@@ -611,6 +611,23 @@ not activate a schedule, change grades or verify the reported September 30 run.
 
 ## Budget, ownership and durable continuation
 
+October 22 ownership: Codex executes and integrates the current repair, obtains
+independent exact-commit and combined-flow review, and verifies the established
+deployment. Claude is consulting-only when Katherine requests it. Preserve
+other writers' branches and reconcile their actual claims; this instruction
+does not disable an external worker or change a schedule by itself. The current
+Chrome helper remains the only IC writer and is not edited, reloaded or
+reconfigured as part of this repair.
+
+Before repeating a teacher question, read the existing operational Slack thread,
+private checklist and linked issue for the exact decision and any later change.
+Accepted joint-work attribution survives a technical version mismatch; verify
+the frozen copy proof rather than asking for the teaching decision again.
+Keep recurring technical failures on their existing issue through regression,
+review, deployment and native readback. Report implementation, fixture tests,
+deployment and live execution separately; a merged repair is not a repaired
+student record or a confirmed IC save.
+
 Development stays on the existing paid Claude allowance. Runtime AI calls use
 only the approved Anthropic workspace/key through protected secret storage.
 Retain the original $5 total pilot/batch budget INCLUDING prior calls and retries,

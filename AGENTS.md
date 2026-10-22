@@ -1,5 +1,15 @@
 # Cloud repository boundaries
 
+- October 22, 2026 ownership update: Codex is the execution and integration
+  owner for the SchoolHub repair and end-to-end acceptance. Claude is a
+  consultant only when Katherine requests it; do not wait for Claude to return.
+  Preserve other sessions' work and reconcile actual overlapping claims before
+  live operations. Independent exact-commit review remains required. This
+  ownership update does not change schedules, permissions, grade policy or the
+  existing Chrome helper, which remains the sole IC writer. Earlier references
+  below to a separate implementation owner describe the historical boundary,
+  not a requirement to hand this authorized repair back to another chat.
+
 - Parallel agents (Codex workers, Claude specialist, ChatGPT direction): read
   `docs/PARALLEL_AGENTS.md`. Every PR must pass `scripts/check.sh`; the
   `Checks` workflow (authorized 2026-10-15) runs it on pull requests.
