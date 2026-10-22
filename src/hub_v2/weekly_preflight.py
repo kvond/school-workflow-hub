@@ -63,7 +63,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/7"
+RULES = "weekly-preflight-rules/8"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -955,6 +955,79 @@ def _heading(line):
     return None
 
 
+DAY_DATE_HEADING = re.compile(
+    r"Day\s+[1-9]\d?\s*[-–—:·|]\s*"
+    r"(Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)"
+    r"\.?\s+(\d{1,2})/(\d{1,2})(?:/(\d{4}))?", re.I)
+
+
+def student_day_headings(outline, teacher_slides):
+    """Only whole dated Day N heading lines, never dates found in ordinary prose."""
+    headings = []
+    for slide in outline:
+        if slide["number"] in teacher_slides:
+            continue
+        for value in slide["texts"]:
+            for line in value.splitlines():
+                label = " ".join(line.split())
+                match = DAY_DATE_HEADING.fullmatch(label)
+                if match:
+                    row = {"slide": slide["number"], "heading": label,
+                           "weekday": match[1][:3].title(), "month": int(match[2]),
+                           "day": int(match[3]), "year": int(match[4]) if match[4] else None}
+                    if row not in headings:
+                        headings.append(row)
+    return headings
+
+
+def student_day_date_check(headings, lesson):
+    """Calendar compatibility only, not proof a particular lesson is taught that day.
+
+    A yearless date is bound only inside this exact lesson week. Dates outside
+    that window may belong to another part of a multiweek deck; never move them.
+    """
+    result = {"status": "checked", "candidates": len(headings), "checked": 0,
+              "unverified": [], "findings": [], "scope": "Current lesson-week calendar compatibility only"}
+    if not headings:
+        return result
+    monday = date.fromisoformat(lesson["monday"])
+    dates = [monday + timedelta(days=i) for i in range(7)]
+    by_date = {d["date"]: d for d in lesson["days"]}
+    for heading in headings:
+        proof = dict(heading)
+        when = None
+        if heading["year"] is not None:
+            try:
+                when = date(heading["year"], heading["month"], heading["day"])
+            except ValueError:
+                proof["reason"] = "invalid_date"
+        else:
+            when = next((d for d in dates if (d.month, d.day) == (heading["month"], heading["day"])), None)
+        if when not in dates:
+            proof.setdefault("reason", "outside_lesson_week_or_invalid")
+            result["unverified"].append(proof)
+            continue
+        proof["date"] = when.isoformat()
+        day = by_date.get(proof["date"])
+        problems = []
+        if heading["weekday"] != when.strftime("%a"):
+            problems.append("weekday_mismatch")
+        if lesson.get("calendar_problems") or (day and day["meets"] is None):
+            proof["reason"] = "calendar_unverified"
+            result["unverified"].append(proof.copy())
+        else:
+            if day is None or day["meets"] is False:
+                problems.append("not_a_class_meeting")
+                proof["calendar_reason"] = day["reason"] if day else "weekend"
+            result["checked"] += 1
+        if problems:
+            proof["problems"] = problems
+            result["findings"].append(proof)
+    if result["unverified"]:
+        result["status"] = "unverified"
+    return result
+
+
 def deck_summary(outline):
     """Slide count, teacher-only slides, the TO PRINT / BUY AHEAD / PREPARE /
     PUT OUT blocks of teacher-reference slides, where each code sits, the
@@ -999,7 +1072,8 @@ def deck_summary(outline):
             "page_ids": {str(s["number"]): s["object_id"] for s in outline if s["object_id"]},
             "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes,
             "link_mismatches": deck_link_mismatches(outline),
-            "slide_reference_check": numbered_slide_links(outline)}
+            "slide_reference_check": numbered_slide_links(outline),
+            "student_day_headings": student_day_headings(outline, teacher)}
 
 
 def _native_teacher(node):
@@ -1758,7 +1832,8 @@ def _plan_week(agenda, config, week, when, calendars, counts, repairs):
         empty_days = {d["date"]: d for d in meeting}
         for found in teaching:
             lesson = {**base, "row": found["row"], "topic": found["topic"], "agenda_url": found["edit_url"],
-                      "days": days, "meeting_dates": {s: [d["date"] for d in meeting] for s in sections},
+                      "days": days, "calendar_problems": calendar["problems"],
+                      "meeting_dates": {s: [d["date"] for d in meeting] for s in sections},
                       "week_policy": policy, "lesson_id": "%s:%s:%d" % (class_key, week["label"], found["row"]),
                       "found": found, "exceptions": [], "sources": [], "print_items": [], "supply_rows": [],
                       "teacher_prep": [], "pending": [], "repaired": []}
@@ -2205,6 +2280,23 @@ def _content(ctx, lesson, counts):
                                           "slide": line["slide"], "deck_id": node["id"], "url": line.get("url")})
         lesson.setdefault("deck_links", {})[node["id"]] = outline.get("web_links") or []
         pages = outline.get("page_ids") or {}
+        day_dates = student_day_date_check(outline.get("student_day_headings") or [], lesson)
+        node["outline"]["student_day_date_check"] = day_dates
+        for finding in day_dates["findings"]:
+            page = pages.get(str(finding["slide"]))
+            reasons = []
+            if "weekday_mismatch" in finding["problems"]:
+                reasons.append("that date is %s" % date.fromisoformat(finding["date"]).strftime("%A"))
+            if "not_a_class_meeting" in finding["problems"]:
+                reasons.append("the class does not meet then (%s)" % finding["calendar_reason"])
+            lesson["exceptions"].append(_exception(
+                "student_day_date_conflict", "needs_decision", lesson,
+                "Slide %d says “%s”, but %s." % (finding["slide"], finding["heading"], "; ".join(reasons)),
+                "Repair worker: compare the exact dated heading with the Agenda before proposing a correction; "
+                "do not change teaching dates, deadlines or grades from this diagnostic.",
+                url=node["url"] + ("#slide=id." + page if page and node["url"].endswith("/edit") else ""),
+                sources=[node["id"]], revision_key=node["revision"], detail=content_hash(finding),
+                slides=[finding["slide"]], date_value=finding["date"], evidence=finding, blocking=False))
         references = outline.get("slide_reference_check") or {}
         if references.get("status") == "unverified":
             lesson["exceptions"].append(_exception(
