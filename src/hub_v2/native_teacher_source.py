@@ -150,10 +150,10 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
             try:
                 box = _box(element, matrix)
             except _CollapsedGeometry:
-                # A top-level, zero-width painted CUSTOM shape has no response
-                # area. Do not extend this exception to groups, zero-height
-                # regions, text/metadata, images or unsupported content.
-                if (depth == 0 and matrix[0] == matrix[1] == matrix[2] == 0 and matrix[3] != 0
+                # A zero-width painted CUSTOM leaf has no response area, even
+                # inside a valid group. Never skip its parent or siblings, or
+                # zero-height regions, text/metadata or unsupported content.
+                if (matrix[0] == matrix[1] == matrix[2] == 0 and matrix[3] != 0
                         and _empty_custom_decoration(element)):
                     continue
                 raise

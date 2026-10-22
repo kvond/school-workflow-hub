@@ -130,7 +130,19 @@ class NativeModelTests(unittest.TestCase):
             with self.subTest(mutation=mutation), self.assertRaises(native_teacher_source.Unreadable):
                 self.read(value)
 
-    def test_empty_decoration_does_not_exempt_invalid_geometry_or_grouped_regions(self):
+    def test_grouped_empty_leaf_retains_every_sibling_and_original_group(self):
+        value = native()
+        group = {"objectId": "group", "transform": {
+            "scaleX": 1, "scaleY": 1, "translateX": 30, "translateY": 20, "unit": "PT"},
+            "elementGroup": {"children": value["slides"][1]["pageElements"]}}
+        value["slides"][1]["pageElements"] = [group]
+        expected = self.read(value)
+        group["elementGroup"]["children"].append(empty_decoration())
+        result = self.read(value)
+        self.assertEqual(result["slides"], expected["slides"])
+        self.assertEqual(result["native_source"], value)
+
+    def test_empty_decoration_does_not_exempt_invalid_geometry_or_grouped_response_regions(self):
         mutations = [lambda e: e.pop("transform"),
                      lambda e: e["size"]["width"].update(magnitude=0),
                      lambda e: e["size"]["height"].update(unit="PX"),
@@ -144,7 +156,8 @@ class NativeModelTests(unittest.TestCase):
                 self.read(value)
         value = native()
         value["slides"][1]["pageElements"].append({"objectId": "group", "transform": {
-            "scaleX": 1, "scaleY": 1, "unit": "PT"}, "elementGroup": {"children": [empty_decoration()]}})
+            "scaleX": 0, "scaleY": 1, "unit": "PT"}, "elementGroup": {
+                "children": [empty_decoration(), shape("group-answer", "[[NOTES:X:Q]]")]}})
         with self.assertRaises(native_teacher_source.Unreadable):
             self.read(value)
 
