@@ -763,6 +763,101 @@ class DeckTextTests(unittest.TestCase):
         self.assertEqual(summary['teacher_only_slides'], [4])
 
 
+class StudentDayDateTests(Base):
+    def scope(self, class_key='biology', monday='2026-10-19', closures='Fri 10/23 = B Friday'):
+        calendar = wp.week_calendar({'label': 'Fictional week', 'monday': monday, 'closures': closures})
+        return {'monday': monday, 'days': wp.class_days(calendar, class_key),
+                'calendar_problems': calendar['problems']}
+
+    def check_headings(self, texts, **scope):
+        summary = wp.deck_summary([outline_slide(i + 1, text) for i, text in enumerate(texts)])
+        return wp.student_day_date_check(summary['student_day_headings'], self.scope(**scope))
+
+    def test_whole_student_headings_only(self):
+        summary = wp.deck_summary([
+            outline_slide(1, 'Day 1 — Monday 10/19/2026'),
+            outline_slide(2, 'TEACHER REFERENCE', 'Day 2 — Tuesday 10/20/2026'),
+            outline_slide(3, 'The historical event was Tue 10/20/2026', 'Notes due Tue 10/20/2026',
+                          'Day 2 — Tue 10/20/2026 or Wed 10/21/2026',
+                          'Day 2 — Tue 10/20/2026: analyze the example', 'Tue 10/20/2026'),
+            outline_slide(4, 'Day 2: Wednesday 10/21', 'Day 2: Wednesday 10/21')])
+        self.assertEqual([h['slide'] for h in summary['student_day_headings']], [1, 4])
+        result = wp.student_day_date_check(summary['student_day_headings'], self.scope())
+        self.assertEqual((result['status'], result['checked'], result['findings']), ('checked', 2, []))
+
+    def test_calendar_conflicts_preserve_exact_origin_and_reason(self):
+        result = self.check_headings(['Day 1 — Mon 10/20/2026', 'Day 2 — Fri 10/23/2026',
+                                      'Day 3 — Sat 10/24/2026'])
+        self.assertEqual(result['checked'], 3)
+        self.assertEqual(result['findings'][0]['problems'], ['weekday_mismatch', 'not_a_class_meeting'])
+        self.assertEqual(result['findings'][1]['calendar_reason'], 'B Friday')
+        self.assertEqual(result['findings'][2]['calendar_reason'], 'weekend')
+        ap = self.check_headings(['Day 1 — Tue 10/20', 'Day 2 — Fri 10/23'], class_key='anatomy')
+        self.assertEqual((ap['checked'], ap['findings']), (2, []))
+
+    def test_closures_and_uncertain_calendars_are_not_inferred(self):
+        closed = self.check_headings(['Day 1 — Mon 10/19'], closures='Mon 10/19 Schools Closed')
+        self.assertIn('closed', closed['findings'][0]['calendar_reason'])
+        unknown = self.check_headings(['Day 1 — Fri 10/23'], closures='')
+        self.assertEqual((unknown['status'], unknown['checked'], unknown['findings']), ('unverified', 0, []))
+        malformed = self.check_headings(['Day 1 — Mon 10/19'], closures='Tue 10/19 Schools Closed')
+        self.assertEqual(malformed['unverified'][0]['reason'], 'calendar_unverified')
+        self.assertEqual(malformed['findings'], [])
+
+    def test_invalid_and_other_week_dates_are_unverified_with_no_lesson_guess(self):
+        result = self.check_headings(['Day 1 — Mon 10/12/2026', 'Day 2 — Tue 2/30/2026',
+                                      'Day 3 — Wed 10/28', 'Day 4 — Mon 10/19/2025'])
+        self.assertEqual((result['status'], result['checked'], result['findings']), ('unverified', 0, []))
+        self.assertEqual(len(result['unverified']), 4)
+        self.assertEqual(result['unverified'][1]['reason'], 'invalid_date')
+        new_year = self.check_headings(['Day 1 — Thu 1/1'], class_key='anatomy', monday='2026-12-28', closures='')
+        self.assertEqual(new_year['findings'][0]['date'], '2027-01-01')
+        self.assertEqual(new_year['findings'][0]['problems'], ['weekday_mismatch'])
+
+    def test_same_deck_date_is_scoped_independently_without_rewriting(self):
+        summary = wp.deck_summary([outline_slide(1, 'Day 1 — Tue 10/20/2026')])
+        headings = deepcopy(summary['student_day_headings'])
+        bio = wp.student_day_date_check(headings, self.scope())
+        ap = wp.student_day_date_check(headings, self.scope(class_key='anatomy'))
+        later = wp.student_day_date_check(headings, self.scope(monday='2026-10-26', closures=''))
+        self.assertEqual(len(bio['findings']), 1)
+        self.assertEqual(ap['findings'], [])
+        self.assertEqual(later['status'], 'unverified')
+        self.assertEqual(headings, summary['student_day_headings'])
+
+    def test_saved_nonblocking_diagnostic_revision_and_calendar_refresh(self):
+        original = self.src.native_presentation
+        def presentation(token, ident):
+            pres = original(token, ident)
+            if ident == FOR_DECK:
+                pres['slides'][0]['pageElements'].append({'shape': {'text': {'textElements': [
+                    {'textRun': {'content': 'Day 1 — Tue 10/20/2026'}}]}}})
+            return pres
+        with patch.object(google, 'native_presentation', side_effect=presentation):
+            result = self.run_check()
+            found = [e for e in result['exceptions'] if e['kind'] == 'student_day_date_conflict']
+            self.assertEqual(len(found), 1)
+            item = found[0]
+            self.assertFalse(item['blocking'])
+            self.assertEqual((item['class_key'], item['row'], item['slides']), ('forensics', 5, [1]))
+            self.assertIn('#slide=id.', item['source_url'])
+            self.assertNotIn(item['fingerprint'], self.lesson(result, 'forensics', 6)['exceptions'])
+            saved = wp.status(self.config, SHEET, '2026-10-19', 1, port=self.port)
+            self.assertIn(item, saved['exceptions'])
+            calls = self.src.calls['native:' + FOR_DECK]
+            again = self.run_check()
+            self.assertEqual(self.src.calls['native:' + FOR_DECK], calls)
+            self.grids['🗂 Weeks'][4, 5] = cell('Tue 10/20 Schools Closed\nFri 10/23 = A Friday')
+            calendar_changed = [e for e in self.run_check()['exceptions'] if e['kind'] == 'student_day_date_conflict']
+            self.assertIn('closed', calendar_changed[0]['evidence']['calendar_reason'])
+            self.assertNotEqual(calendar_changed[0]['fingerprint'], item['fingerprint'])
+            self.assertEqual(self.src.calls['native:' + FOR_DECK], calls)
+            self.src.bump(FOR_DECK)
+            changed = [e for e in self.run_check()['exceptions'] if e['kind'] == 'student_day_date_conflict']
+            self.assertNotEqual(changed[0]['fingerprint'], item['fingerprint'])
+        self.assertEqual((result['external_writes'], result['model_calls'], len(self.writes)), (0, 0, 0))
+
+
 class NumberedSlideLinkTests(Base):
     def native(self, runs, ids=('origin', 'destination', 'third')):
         return {'slides': [{'objectId': ident, 'pageElements': ([

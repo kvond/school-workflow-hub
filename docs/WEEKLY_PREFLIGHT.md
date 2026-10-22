@@ -120,6 +120,18 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   indexes, semantic revision-step references, G1/G3 and full G4/retirement
   acceptance remain unfinished; a clean numbered-link sample proves only this
   bounded check.
+- **Student day-heading dates (bounded G1).** Whole student-facing lines in the
+  form `Day 1 — Mon 10/19[/2026]` are compared with the exact lesson-week class
+  calendar. Wrong weekdays and dates on verified nonmeeting days produce
+  nonblocking repair-worker diagnostics with the source slide and revision.
+  Teacher-reference slides, ordinary prose, due-date instructions and bare dates
+  do not establish a lesson-day heading. Yearless dates bind only inside that
+  lesson week; other-week, invalid and uncertain-calendar cases remain explicitly
+  unverified in each source's `student_day_date_check`. Same-deck checks are
+  evaluated separately for each lesson/calendar even when the outline is cached.
+  Calendar compatibility does not prove the exact lesson is taught on that day.
+  No dates, source text, deadlines or grades change. Cross-week lesson mapping,
+  other heading formats and full G1/G3/retirement acceptance remain unfinished.
 - **Worksheets index integrity (bounded G5).** Only an explicit Week ahead run
   lazily reads the native Worksheets tab. Ordinary Agenda/day/feedback/roster
   reads and saved-result GETs do not load it. One dimensions read and one grid
@@ -197,8 +209,9 @@ rules version, and saved as each finishes; a run that runs out of time is
 reviews, repair receipts and packet manifests use content-derived keys, so
 reruns write no duplicates.
 
-Rules v6 discard earlier cached checks and add explicit independent worksheet-index
-coverage. Outlines retain hyperlink spans. Teacher readiness has a
+Rules v8 discard earlier cached checks and retain explicit day-heading evidence;
+calendar checks are computed per lesson from the current Agenda. Worksheet-index
+coverage remains independent. Outlines retain hyperlink spans. Teacher readiness has a
 separate cache identity from ordinary/student-only readiness, even for the same
 file and revision. Before and after a new check, and before reusing cached
 readiness or outlines, fresh Drive metadata must match the complete source snapshot from
