@@ -396,11 +396,35 @@ def reports(token, config):
     if target is None:
         return []
     history, _ = _report_history(token, target)
-    latest = {}
+    runs = {}
     for value in history:
-        latest.pop(value["run_id"], None)
-        latest[value["run_id"]] = value
-    return sorted(reversed(list(latest.values())), key=lambda r: r["day"], reverse=True)[:10]
+        prior = runs.pop(value["run_id"], [])
+        if value not in prior:
+            prior.append(value)
+        runs[value["run_id"]] = prior
+    recent = sorted(reversed(list(runs.values())), key=lambda values: max(r["day"] for r in values), reverse=True)[:10]
+    return [_project_report(values) for values in recent]
+
+
+def _project_report(values):
+    """Project only proven progress, never Sheets append arrival order.
+
+    The helper publishes exact completed-item prefixes while running and one
+    terminal snapshot. A late concurrent starting append cannot erase that
+    terminal result. Conflicting histories have no protocol sequence with which
+    to order them: refuse the read instead of inventing a successful receipt.
+    """
+    def prefix(earlier, later):
+        return (earlier["day"] == later["day"]
+                and earlier["items"] == later["items"][:len(earlier["items"])])
+
+    terminal = [value for value in values if value["code"] != "running"]
+    running = [value for value in values if value["code"] == "running"]
+    candidate = terminal[0] if terminal else max(running, key=lambda value: len(value["items"]))
+    if len(terminal) > 1 or any(not prefix(value, candidate) for value in running):
+        _report_event(candidate, "projection", "conflicting_saved_states")
+        raise google.GoogleError("Morning run %s has conflicting saved receipt states. Preserve its history and reconcile the exact helper receipt before reporting completion." % candidate["run_id"])
+    return candidate
 
 
 def _report_event(value, stage, outcome, error=None):

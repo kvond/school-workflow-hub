@@ -112,3 +112,58 @@ class MorningReportReconciliationTests(unittest.TestCase):
         self.find.assert_called_once()
         self.tab.assert_called_once()
         self.assertTrue(all(call.args[1] == "FICTIONAL_LEDGER" for call in self.read.call_args_list))
+
+    def test_concurrent_delayed_start_append_cannot_erase_terminal_failure(self):
+        started = report()
+        stopped = {**report(code="receipt_unconfirmed"),
+                   "preflight": {"stage": "summary_publish", "cause": "hub_network_error"}}
+        def interleaved(*args):
+            # This request read an empty history. Another request saves the
+            # stopped state before its delayed starting append reaches Sheets.
+            self.rows.append(row(stopped))
+            self._append(*args)
+        self.append.side_effect = interleaved
+        self.save(started)
+        self.assertEqual(morning.reports("t", {}), [stopped])
+        self.assertEqual(len(self.rows), 2)
+        self.save(started)
+        self.append.assert_called_once()
+
+    def test_terminal_and_running_projection_is_independent_of_arrival_order(self):
+        started, finished = report(), report(code="finished")
+        for states in ([started, finished], [finished, started], [started, finished, started]):
+            self.rows = list(map(row, states))
+            self.assertEqual(morning.reports("t", {}), [finished])
+
+    def test_conflicting_terminal_states_are_unverified_but_preserved_and_acknowledged(self):
+        finished, stopped = report(code="finished"), report(code="receipt_unconfirmed")
+        for states in ([finished, stopped], [stopped, finished]):
+            self.rows = list(map(row, states))
+            with self.assertRaisesRegex(morning.google.GoogleError, "conflicting saved receipt states"):
+                morning.reports("t", {})
+            self.save(finished)
+            self.save(stopped)
+            self.assertEqual(len(self.rows), 2)
+        self.append.assert_not_called()
+
+    def test_only_exact_item_prefixes_establish_progress(self):
+        item = {"assignment": "Fictional assignment", "code": "nothing_to_enter",
+                "filled": 0, "raised": 0, "kept": 1, "left": 0,
+                "reasons": {"flag": 0, "excused": 0, "check": 0, "name": 0, "missing": 0}}
+        first = {**report(), "items": [item]}
+        second = {**report(), "items": [item, {**item, "assignment": "Fictional second"}]}
+        self.rows = [row(second), row(first), row(report())]
+        self.assertEqual(morning.reports("t", {}), [second])
+        self.rows = [row(first), row({**report(code="finished"), "items": [{**item, "kept": 2}]})]
+        with self.assertRaisesRegex(morning.google.GoogleError, "conflicting saved receipt states"):
+            morning.reports("t", {})
+
+    def test_same_run_with_conflicting_days_cannot_claim_order(self):
+        self.rows = [row(report()), row(report(code="finished", day="2026-10-02"))]
+        with self.assertRaises(morning.google.GoogleError):
+            morning.reports("t", {})
+
+    def test_conflicting_older_run_outside_recent_window_does_not_hide_current_reports(self):
+        self.rows = [row(report(code="finished")), row(report(code="receipt_unconfirmed"))]
+        self.rows.extend(row(report(n, day="2026-10-02")) for n in range(2, 12))
+        self.assertEqual(len(morning.reports("t", {})), 10)

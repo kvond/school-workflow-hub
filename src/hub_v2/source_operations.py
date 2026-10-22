@@ -7,7 +7,8 @@ writers, and supply a real fresh activity check. A missing receipt or an idle
 agent list cannot supply that check. No school operation is executed here.
 """
 import math
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from school_workflow_hub.core.cloud_state import (
@@ -15,7 +16,8 @@ from school_workflow_hub.core.cloud_state import (
 )
 
 EASTERN = ZoneInfo("America/New_York")
-FINISH_MARGIN_SECONDS = 30
+RENEWAL_OVERHEAD_SECONDS = 30
+MAX_WRITE_SECONDS = 900 - RENEWAL_OVERHEAD_SECONDS
 
 
 class Held(Conflict):
@@ -29,6 +31,7 @@ class Held(Conflict):
             "source_operation_stopped": "Source preparation stopped after ownership or readiness could not be verified.",
             "source_operation_already_released": "This source-preparation owner has already released its claim.",
             "source_lease_too_short": "Source ownership could not be renewed long enough to finish the next write safely.",
+            "source_write_budget_invalid": "The next write needs a bounded operation and saved-readback budget; split an oversized operation before retrying.",
         }
         if code not in reasons:
             code = "source_activity_verification_unavailable"
@@ -86,23 +89,28 @@ class SourceOperations:
                 raise
             raise Held("source_activity_verification_unavailable") from None
 
-    def _window(self, *, require_owned=False):
+    def _window(self, *, require_owned=False, required_seconds=0, reserve_lease=False):
+        started = monotonic()
         snapshot = self.port.read([self.task_id])
-        now = instant(snapshot.read_time)
+        # Count the entire response interval conservatively. The server stamp
+        # alone can be stale by the time a delayed read reaches this host.
+        now = instant(snapshot.read_time) + timedelta(seconds=max(0, monotonic() - started))
         local = now.astimezone(EASTERN)
         cutoff = datetime.combine(local.date(), time(7), tzinfo=EASTERN)
         remaining = math.floor((cutoff - local).total_seconds())
-        if local.weekday() >= 5 or remaining <= FINISH_MARGIN_SECONDS:
+        if local.weekday() >= 5 or remaining < 30 or remaining <= required_seconds:
             self.stopped = True
             raise Held("source_mutation_window_closed")
         if require_owned:
             doc = snapshot.documents[self.task_id]
             if doc is None:
                 raise LeaseLost("source_owner_unavailable")
-            self.cloud._owns(self.claim, doc.value, snapshot.read_time)
-            if (instant(doc.value["expires_at"]) - now).total_seconds() <= FINISH_MARGIN_SECONDS:
+            self.cloud._owns(self.claim, doc.value, now.isoformat())
+            # A still-valid short lease may be renewed. Reserve its full write
+            # budget only AFTER renewal, never before that state-only action.
+            if reserve_lease and (instant(doc.value["expires_at"]) - now).total_seconds() <= required_seconds:
                 raise Held("source_lease_too_short")
-        return min(self.ttl_seconds, remaining)
+        return min(900, remaining, max(self.ttl_seconds, required_seconds + RENEWAL_OVERHEAD_SECONDS))
 
     def _claim(self, ttl):
         return self.cloud.claim(self.task_id, owner=self.owner, request_id=self.request_id,
@@ -113,12 +121,21 @@ class SourceOperations:
                 or self.claim.owner != self.owner or self.claim.input_hash != self.input_hash):
             raise LeaseLost("source_owner_mismatch")
 
-    def before_write(self):
+    def before_write(self, *, required_seconds):
+        """Reserve a trusted bound for this mutation AND its immediate readback.
+
+        The caller includes provider timeouts, bounded read retries, token work
+        after this guard and native readback in the budget. Long read-only
+        verification may continue later, but every following mutation requires
+        another call. Unknown/unbounded operations are not authorized here.
+        """
+        if type(required_seconds) is not int or not 1 <= required_seconds <= MAX_WRITE_SECONDS:
+            raise Held("source_write_budget_invalid")
         if self.stopped or self.released or self.claim is None:
             raise Held("source_operation_stopped")
         try:
             self._activity()
-            ttl = self._window(require_owned=True)
+            ttl = self._window(require_owned=True, required_seconds=required_seconds)
             previous = self.claim
             try:
                 self.claim = self.cloud.renew(previous, ttl_seconds=ttl)
@@ -130,7 +147,7 @@ class SourceOperations:
                     raise LeaseLost("source_owner_changed")
                 self.claim = current
             self._validate_claim()
-            self._window(require_owned=True)
+            self._window(require_owned=True, required_seconds=required_seconds, reserve_lease=True)
         except Exception:
             self.stopped = True
             raise
