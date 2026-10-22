@@ -1749,6 +1749,101 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(len(artifact_batches), 1)
         self.assertEqual(len(artifact_batches[0]), 6)  # Three copies plus retained original links.
 
+    def test_morning_guard_keeps_its_bounded_cutoff_explanation(self):
+        failure = archive.Conflict("opaque internal hold")
+        failure.source_operation_hold = "source_mutation_window_closed"
+        failure.source_operation_action = "Source writes are held until the next before-7:00 preparation window."
+        result = archive.archive_work("read", "write", self.config, "biology", found(),
+                                      before_source_write=Mock(side_effect=failure))
+        self.assertEqual(result["problems"], [failure.source_operation_action])
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(self.port.rows, {})
+
+    def test_morning_guard_denies_filing_before_any_archive_write(self):
+        guard = Mock(side_effect=archive.Conflict("Source ownership unavailable"))
+        result = archive.archive_work("read", "write", self.config, "biology", found(), before_source_write=guard)
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["filed"], 0)
+        self.assertEqual(self.port.rows, {})
+        self.assertEqual(self.drive.created, [])
+        self.assertEqual(self.drive.copied, [])
+
+    def test_lost_morning_guard_stops_after_read_without_copy_or_source_mutation(self):
+        expired = []
+        def fetch(token, ident, fields=None):
+            if ident == SOURCE:
+                expired.append(True)
+            return self.drive.metadata(token, ident, fields)
+        def guard(**kwargs):
+            if expired:
+                raise archive.Conflict("Source mutation window ended")
+        originals = {ident: deepcopy(self.drive.items[ident]) for ident in (SOURCE, EARLIER)}
+        with patch.object(google, "drive_file", side_effect=fetch):
+            result = archive.archive_work("read", "write", self.config, "biology", found(), before_source_write=guard)
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["filed"], 0)
+        self.assertEqual(self.drive.copied, [])
+        self.assertEqual({ident: self.drive.items[ident] for ident in originals}, originals)
+        self.assertFalse(any(doc.value.get("source_kind") == "submitted_work_copy" for doc in self.port.rows.values()))
+
+    def test_unavailable_former_history_keeps_verified_current_directory_without_erasing_history(self):
+        owner, copied, folder = self.former_student_fixture()
+        current = row(first="Ben", last="Stone", email="s.ben.stone@school.example",
+                      files=[{"id": EARLIER, "mime": google.PPTX}])
+        self.assertEqual(self.archive(found(current))["status"], "verified")
+        self.drive.items[owner["drive_file_id"]]["trashed"] = True
+        before = deepcopy(self.port.rows)
+        drive_before = deepcopy(self.drive.items)
+        listing = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(listing["status"], "held")
+        self.assertEqual(listing["history_coverage"], "partial_indexed_history")
+        self.assertEqual(listing["counts"], {"students": 1, "work": 1, "feedback": 0, "held": 1})
+        self.assertEqual([s["name"] for s in listing["students"]], ["Stone, Ben"])
+        self.assertEqual(listing["history_holds"][0]["student_key"], owner["student_key"])
+        self.assertEqual(listing["history_holds"][0]["status"], "unverified")
+        self.assertNotIn("record_key", listing["history_holds"][0])  # No preceding student's artifact.
+        with self.assertRaises(archive.Held):
+            archive._indexed("read", self.config, "biology")
+        with self.assertRaises(archive.Held):
+            archive.list_feedback("read", self.config)
+        index = archive.work_index_rows("read", self.config)
+        self.assertEqual([item["class_key"] for item in index["failed_class_histories"]], ["biology"])
+        self.assertEqual(self.port.rows, before)
+        self.assertEqual(self.drive.items, drive_before)
+
+    def test_partial_directory_keeps_exact_changed_artifact_scope_and_cannot_bless_it(self):
+        self.assertEqual(self.archive(found(row(), row(first="Ben", last="Stone",
+            email="s.ben.stone@school.example", files=[{"id": EARLIER, "mime": google.PPTX}])))["status"], "verified")
+        copied = next(doc.value for doc in self.port.rows.values()
+            if doc.value.get("source_kind") == "submitted_work_copy" and doc.value["source_file_id"] == SOURCE)
+        self.drive.items[copied["drive_file_id"]]["modifiedTime"] = "2026-10-22T12:00:00Z"
+        before = deepcopy(self.port.rows)
+        result = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(result["history_coverage"], "partial_indexed_history")
+        self.assertEqual(result["counts"]["work"], 1)
+        hold = result["history_holds"][0]
+        self.assertEqual((hold["record_key"], hold["file_id"], hold["source_file_id"]),
+                         (copied["record_key"], copied["drive_file_id"], SOURCE))
+        self.assertEqual(self.port.rows, before)
+
+    def test_partial_directory_rejects_index_change_during_metadata_reads(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        key = archive.key("archiveclass", [ROOT, "biology"])
+        changed = []
+        def fetch(token, ident, fields=None):
+            meta = self.drive.metadata(token, ident, fields)
+            if ident not in {ROOT, *COURSES.values()} and not changed:
+                changed.append(True)
+                old = self.port.rows[key]
+                self.port.commit({key: ({**old.value, "concurrent_edit": True}, old.version)})
+            return meta
+        with patch.object(google, "drive_file", side_effect=fetch):
+            result = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["students"], [])
+        self.assertEqual(result["history_coverage"], "unverified")
+        self.assertEqual(result["history_holds"], [])
+
     def test_concurrent_metadata_still_holds_private_parent_and_shortcut_target_failures(self):
         self.assertEqual(self.archive()["status"], "verified")
         listing = archive.archive_listing("read", self.config, "biology")
@@ -2142,6 +2237,139 @@ class StudentArchiveTests(unittest.TestCase):
         data["week_policy"]["school_year"] = "2026-27"
         data["lessons"][0]["problem"] = "The private submission folder is unavailable."
         self.assertEqual(self.archive(data)["status"], "held")
+
+    def joint_copy_fixture(self):
+        self.drive.items[SOURCE]["mimeType"] = "application/vnd.google-apps.presentation"
+        self.assertEqual(self.archive()["status"], "verified")
+        old_key, old = next((k, d) for k, d in self.port.rows.items()
+                            if d.value.get("source_kind") == "submitted_work_copy")
+        ident = archive.key("archivejointworkcopy", [ROOT, SOURCE, "teacher-attributed"])
+        proof = {"basis": "native_presentation/v1", "sha256": "d" * 64, "slides": 3, "image_instances": 2}
+        value = {**old.value, "record_key": ident, "source_kind": "teacher_attributed_joint_copy",
+                 "teacher_joint_attribution": True, "shared_source_key": "sharedfeedbacksource_" + "c" * 64,
+                 "copied_slide_content_sha256": "b" * 64, "native_content_proof": proof}
+        owner = self.port.rows[value["student_key"]]
+        items = {k: v for k, v in owner.value["items"].items() if k != old_key}
+        items[ident] = {"kind": "work", "date": value["date"]}
+        self.port.commit({ident: (value, None), value["student_key"]: ({**owner.value, "items": items}, owner.version)})
+        meta = self.drive.items[value["drive_file_id"]]
+        meta.update(version="2", properties={archive.TAG: ident, "hubCopiedSource": SOURCE,
+                    "hubSharedSource": value["shared_source_key"]})
+        return ident, value, proof
+
+    def test_joint_metadata_reconciliation_uses_frozen_copy_proof_and_retains_prior_record(self):
+        ident, original, proof = self.joint_copy_fixture()
+        # A legitimately newer original is not the frozen-copy proof operand.
+        self.drive.items[SOURCE]["version"] = "3"
+        self.drive.contents[SOURCE] = b"New student work since the archived joint revision"
+        before_drive, before_store = deepcopy(self.drive.items), deepcopy(self.port.rows)
+        reads = []
+        def content(token, meta, heartbeat=None):
+            reads.append(meta["id"])
+            self.assertEqual(meta["id"], original["drive_file_id"])
+            return proof
+        with patch.object(archive, "_work_content", side_effect=content):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            self.assertEqual(preview["status"], "ready")
+            self.assertEqual(self.port.rows, before_store)
+            guard = Mock()
+            result = archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
+        self.assertEqual((result["status"], result["from_version"], result["to_version"]), ("verified", "1", "2"))
+        self.assertGreater(guard.call_count, 0)
+        self.assertTrue(all(c.kwargs == {"required_seconds": archive.MUTATION_READBACK_SECONDS}
+                            for c in guard.call_args_list))
+        self.assertEqual(self.drive.items, before_drive)
+        updated = self.port.rows[ident].value
+        self.assertEqual(updated, {**original, "drive_version": "2", "last_metadata_reconciliation": result["history_key"]})
+        audit = self.port.rows[result["history_key"]].value
+        self.assertEqual(audit["before"], original)
+        self.assertEqual(audit["actor"], "fictional-operator")
+        self.assertEqual(audit["proof"]["native_content_proof"], proof)
+        for key in (original["student_key"], archive.key("archiveclass", [ROOT, "biology"])):
+            self.assertEqual(self.port.rows[key].value, before_store[key].value)
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "verified")
+        self.assertTrue(reads)
+
+    def test_joint_reconciliation_refuses_changed_content_or_missing_original_proof(self):
+        ident, record, proof = self.joint_copy_fixture()
+        for change in ({"native_content_proof": None}, {"teacher_joint_attribution": False},
+                       {"copied_modified_at": "unverified"}, {"source_version": "another"}):
+            with self.subTest(change=list(change)):
+                self.port.commit({ident: ({**record, **change}, self.port.rows[ident].version)})
+                before = deepcopy(self.port.rows)
+                with patch.object(archive, "_work_content", return_value=proof), self.assertRaises(archive.Held):
+                    archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+                self.assertEqual(self.port.rows, before)
+        self.port.commit({ident: (deepcopy(record), self.port.rows[ident].version)})
+        for changed_proof in ({**proof, "sha256": "e" * 64}, {**proof, "image_instances": 3}):
+            with patch.object(archive, "_work_content", return_value=changed_proof), self.assertRaises(archive.Held):
+                archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        self.assertEqual(self.port.rows[ident].value, record)
+
+    def test_joint_reconciliation_rejects_copy_change_during_content_read_and_stale_preview(self):
+        ident, record, proof = self.joint_copy_fixture()
+        def mutate(token, meta, heartbeat=None):
+            self.drive.items[record["drive_file_id"]]["version"] = "3"
+            return proof
+        with patch.object(archive, "_work_content", side_effect=mutate), self.assertRaises(archive.Held):
+            archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            self.port.rows[ident].value["name"] = "Teacher-renamed joint work"
+            with self.assertRaises(archive.Conflict):
+                archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                    expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+        self.assertEqual(self.port.rows[ident].value["drive_version"], "1")
+        self.assertFalse(any(k.startswith("archivejointreconciliation_") for k in self.port.rows))
+
+    def test_joint_reconciliation_stops_lost_source_guard_before_artifact_cas(self):
+        ident, record, proof = self.joint_copy_fixture()
+        stopped = []
+        def content(token, meta, heartbeat=None):
+            stopped.append(True)
+            return proof
+        def guard(**kwargs):
+            if stopped:
+                raise archive.Conflict("Source mutation window ended")
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        with patch.object(archive, "_work_content", side_effect=content), self.assertRaises(archive.Conflict):
+            archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
+        self.assertEqual(self.port.rows[ident].value, record)
+        self.assertFalse(any(k.startswith("archivejointreconciliation_") for k in self.port.rows))
+
+    def joint_uncertain_cas(self, commit_first):
+        ident, record, proof = self.joint_copy_fixture()
+        commits = []
+        commit = self.port.commit
+        def uncertain(changes):
+            if any(k.startswith("archivejointreconciliation_") for k in changes):
+                commits.append(list(changes))
+                if commit_first:
+                    commit(changes)
+                raise StoreUnavailable("unknown response")
+            return commit(changes)
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            with patch.object(self.port, "commit", side_effect=uncertain):
+                if commit_first:
+                    result = archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                        expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+                    self.assertEqual(result["status"], "verified")
+                else:
+                    with self.assertRaises(StoreUnavailable):
+                        archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                            expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+                    self.assertEqual(self.port.rows[ident].value, record)
+        self.assertEqual(len(commits), 1)
+
+    def test_joint_unknown_cas_does_not_retry_when_saved_outcome_is_unconfirmed(self):
+        self.joint_uncertain_cas(False)
+
+    def test_joint_lost_cas_response_accepts_only_the_exact_saved_receipt_readback(self):
+        self.joint_uncertain_cas(True)
 
     def test_teacher_attributed_joint_native_copy_is_read_only_and_revision_bound(self):
         self.assertEqual(self.archive()["status"], "verified")

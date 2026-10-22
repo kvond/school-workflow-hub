@@ -148,6 +148,41 @@ intact.
 `GET /v2/api/student-records?class=<class>` reads verified indexed records.
 It performs no Drive writes and does not depend on Agenda availability.
 
+The read-only directory isolates a failed student history only after its saved
+class/owner/index bindings have passed stable CAS bookends. It returns
+`history_coverage: partial_indexed_history`, exact private `history_holds`, and
+only independently verified student folders/artifacts; a trashed folder is not
+an inferred withdrawal or permission to restore, erase or replace history.
+Provider-wide reads and invalid/changed indexes remain whole-read failures.
+Complete-history consumers, including feedback discovery and WorkIndex refresh,
+retain strict reads and cannot overwrite a Sheet with this partial directory.
+
+`preview_joint_copy_reconciliation` and `reconcile_joint_copy` are trusted-host
+operations for one already teacher-attributed native work copy. A Drive version
+change alone is not a new teaching decision. The preview requires the saved
+`native_presentation/v1` full-content proof, copied modification timestamp,
+original revision, exact private folder/owner and source tags. It reads the
+copy's complete native structure and image content against that frozen proof,
+never against today's original. Missing methods/proof, changed content,
+modified timestamps, access, ownership or concurrent CAS changes remain held.
+The apply call requires the exact fresh preview digest, an attributed operator,
+and the existing source-owner/cutoff callback. It atomically preserves the prior
+artifact in immutable reconciliation history while changing only its verified
+Drive version and history pointer; unchanged owner/index values are CAS-checked.
+No Drive content, location, identity, source revision, grading or teacher decision
+changes. Uncertain CAS outcomes are read back, never blindly retried. Ordinary
+directory reads do not reconcile or mutate a version.
+
+Trusted morning callers may pass `before_source_write` to `archive_work` and
+its derived WorkIndex refresh. The callback is checked at mutation boundaries
+with an explicit 120-second budget for a bounded mutation and immediate saved
+readback. Full native-content verification is read-only; later writes reserve a
+fresh budget. The guard must renew a sufficient live lease and refuse a batch
+that cannot finish before the cutoff. Separate feedback callers keep their
+existing ownership. Supplying this hook is
+not proof that every external writer participates or that a live archive run
+finished before the cutoff.
+
 `POST /v2/api/student-records/archive` accepts only `class` and the exact
 registered Agenda `week`. It requires teacher authentication and an allowed
 same-origin JSON request, reloads source evidence and files eligible work.
