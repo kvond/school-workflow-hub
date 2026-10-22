@@ -953,7 +953,7 @@ function renderTodayFeedback() {
     ready ? link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url) : null,
     url ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}),
     ready && packet.coverage === 'partial_verified_reports'
-      ? el('p', {class: 'muted', text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}) : null,
+      ? el('p', {class: 'muted', text: `${packet.reports} reports for ${packet.students} students. Check the feedback spreadsheet for coverage details.`}) : null,
     packet?.status === 'held' ? note(packet.problem, 'info') : null,
   ].filter(Boolean));
 }
@@ -1499,7 +1499,7 @@ function renderRecordsPrintableFeedback(packet) {
     link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url, 'chip'),
     link('Feedback spreadsheet', packet.spreadsheet_url, 'chip')));
   if (packet.coverage === 'partial_verified_reports') box.append(el('p', {class: 'muted',
-    text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}));
+    text: `${packet.reports} reports for ${packet.students} students. Check the feedback spreadsheet for coverage details.`}));
   return box;
 }
 async function loadRecordsPrintableFeedback(seq, box) {
