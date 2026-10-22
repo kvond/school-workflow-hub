@@ -60,10 +60,23 @@ class RecoveryTests(unittest.TestCase):
 
     def test_latest_attempt_on_same_day_is_shown_first(self):
         from test_hub_morning import report
-        a = report(); b = {**a, 'run_id': EVENT['run_id'], 'code': 'panel_unusable'}
+        a = report(); b = {**a, 'run_id': EVENT['run_id'], 'code': 'running'}
         values = [a, b, {**b, 'code': 'finished'}]
         self.ledger([['', morning.KIND, '', '', '', '', json.dumps(v)] for v in values])
         self.assertEqual(morning.reports('read', {}), [values[2], a])
+
+    def test_terminal_conflict_is_not_a_successful_same_run_recovery(self):
+        from test_hub_morning import report
+        # Native retry/run-now creates a new UUID. The recovery control records
+        # a separate verification event; it never relabels the stopped report.
+        stopped = {**report(), 'run_id': EVENT['run_id'], 'code': 'panel_unusable'}
+        values = [stopped, {**stopped, 'code': 'finished'}]
+        rows = [['', morning.KIND, '', '', '', '', json.dumps(v)] for v in values]
+        append = self.ledger(rows)
+        with self.assertRaisesRegex(google.GoogleError, 'conflicting saved receipt states'):
+            morning.reports('read', {})
+        self.assertEqual([json.loads(row[6]) for row in rows], values)
+        append.assert_not_called()
 
 class RecoveryEndpointTests(unittest.TestCase):
     def post(self, event=EVENT, origin='https://hub.example.test'):
