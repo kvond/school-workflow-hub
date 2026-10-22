@@ -11,12 +11,16 @@ agent; this document adds the working model only.
 | Owner | Katherine | States goals, reviews delivered results afterward, may reject or request corrections, and resolves teaching decisions or new permissions |
 | Merge coordinator | Coordinating Codex agent | Obtains independent review, verifies current checks and dependencies, merges approved routine work to `main`, and verifies the existing deployment |
 | Direction | ChatGPT (Slack) | Decides what is worth building, sets priorities, writes the backlog as task issues, and stops work that would not make the school day easier |
-| Workers | Codex (cloud) | Implements one task issue per branch, opens a draft PR, does routine review of ordinary PRs |
-| Engineering specialist | Claude Code | Hard debugging, failures that cross components (IC helper, Cloud Run, auth, mismatched records), architecture second opinions, and review where several PRs or systems interact |
+| Workers | Codex in the verified execution environment | Implements one task issue per branch, opens a draft PR, does routine review of ordinary PRs |
+| Independent reviewer | A separate Codex reviewer | Reviews exact commits, interacting changes and end-to-end evidence without approving its own implementation |
+| Optional consultant | Claude Code, only at Katherine's request | Architecture or debugging advice; not a required executor or release dependency |
 | Record | GitHub | Issues, branches, PRs, test results: the permanent code truth |
 | Command center | Slack #parallel-agents | Direction and history in plain language |
 
-Claude is called in for a specific problem, not kept running as another worker.
+Katherine's October 22 decision makes Codex the sole execution and integration
+owner for the current SchoolHub repair. Claude is called in only at her request.
+Preserve existing branches and reconcile actual external claims before a live
+operation; an offline chat is not evidence that its claim was released.
 Before a batch is dispatched, the question is whether each task actually makes
 the school day easier; tasks that don't are dropped.
 
@@ -49,8 +53,9 @@ the school day easier; tasks that don't are dropped.
    goals under standing authorization and open draft PRs. No per-batch or per-PR
    teacher approval is needed; the escalation boundaries below still apply.
 4. The `Checks` workflow runs `scripts/check.sh` on every PR.
-5. Codex reviews ordinary PRs. Claude reviews when PRs interact or touch IC,
-   grades, rosters, browser runs or deployment.
+5. An independent Codex reviewer reviews the exact proposed commits. Interacting
+   PRs, IC, grades, rosters, browser runs and deployment also need combined
+   dependency and safety review; Claude's availability is not a prerequisite.
 6. The coordinating Codex agent merges routine authorized work after independent
    technical review and passing checks, following the delegation below.
 7. Report delivered behavior and verification in plain language. Katherine
@@ -84,7 +89,7 @@ Before merging, the coordinator must:
   another agent or person, resolve actionable findings, and record the reviewed
   commit and validation in the PR. Any later changes require independent review
   and checks on the new commit before merging. Authors cannot supply their own
-  independent approval. Preserve the specialist review
+  independent approval. Preserve the combined dependency and safety review
   requirements above for interacting PRs, IC, grades, rosters, browser runs and
   deployment changes.
 - Preserve original sources, student work, grade/history records, exact
