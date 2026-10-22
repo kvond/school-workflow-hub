@@ -953,7 +953,7 @@ function renderTodayFeedback() {
     ready ? link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url) : null,
     url ? link('Feedback checklist', url) : el('p', {class: 'muted', text: 'Feedback checklist link unavailable'}),
     ready && packet.coverage === 'partial_verified_reports'
-      ? el('p', {class: 'muted', text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}) : null,
+      ? el('p', {class: 'muted', text: `${packet.reports} reports for ${packet.students} students. Check the feedback spreadsheet for coverage details.`}) : null,
     packet?.status === 'held' ? note(packet.problem, 'info') : null,
   ].filter(Boolean));
 }
@@ -1499,7 +1499,7 @@ function renderRecordsPrintableFeedback(packet) {
     link(`Print latest feedback (${packet.date}, ${packet.pages} pages)`, packet.url, 'chip'),
     link('Feedback spreadsheet', packet.spreadsheet_url, 'chip')));
   if (packet.coverage === 'partial_verified_reports') box.append(el('p', {class: 'muted',
-    text: `${packet.reports} reports for ${packet.students} students. Remaining gaps are listed in the PDF.`}));
+    text: `${packet.reports} reports for ${packet.students} students. Check the feedback spreadsheet for coverage details.`}));
   return box;
 }
 async function loadRecordsPrintableFeedback(seq, box) {
@@ -1522,7 +1522,9 @@ async function loadRecords() {
     const data = await getJSON('api/dashboard/records');
     if (seq !== dashboard.recordsSeq) return;
     if (data?.schema_version !== 'hub-dashboard-records/v1' || !Array.isArray(data.records)) throw new Error('The configured record links could not be verified.');
-    const allowed = ['operations', 'model_trials', 'model_trials_folder', 'agenda', 'work_index', 'feedback_checklist', 'growth_report', 'biology_analysis', 'system_notes'];
+    // The independent verified publication below owns the feedback link. The
+    // legacy configured checklist may have been retired; do not offer both.
+    const allowed = ['operations', 'model_trials', 'model_trials_folder', 'agenda', 'work_index', 'growth_report', 'biology_analysis', 'system_notes'];
     const items = allowed.map(key => data.records.find(item => item?.key === key)).filter(Boolean);
     directory.replaceChildren(el('ul', {class: 'record-links'}, items.map(item => {
       const url = item.configured === true && recordURL(item.url);

@@ -284,7 +284,7 @@ test('real Records page retains the independent verified PDF while directory fai
   const body = app.document.getElementById('records-body');
   assert.match(body.textContent, /Record links are unavailable/);
   assert.match(body.textContent, /2032-01-07.*12 pages/);
-  assert.match(body.textContent, /8 reports.*4 students.*[Gg]aps/);
+  assert.match(body.textContent, /8 reports.*4 students.*feedback spreadsheet for coverage details/);
   assert.ok(elements(body).some(node => node.tagName === 'A' && node.getAttribute('href') === printableFeedback.url));
   assert.deepEqual([...new Set(paths(app))].sort(), ['/v2/api/dashboard/records', '/v2/api/spreadsheet-feedback/print-link']);
   assert.ok(app.requests.every(request => request.method === 'GET'));
