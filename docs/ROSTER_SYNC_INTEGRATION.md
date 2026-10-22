@@ -218,3 +218,42 @@ all named-only history while its crosswalk remains unverified. This is unfinishe
 engineering, not a request for Katherine to invent IDs, supply an adapter or
 repeat known identity decisions. No screen control, browser export, real roster
 capture, workbook setup or live acceptance occurred in this background repair.
+
+### Native Roster Report input investigation
+
+Infinite Campus documents a supported teacher export at **Instruction > Reports
+> Roster**, also reached from **Students > Roster > Print Options**. Select the
+exact term and sections, today's effective date, **Local Number**, **Show Incoming
+Students**, **Show Dropped Students**, and **Show Section Placement**; the arrow
+next to Generate offers CSV. Do not include unrelated demographic, guardian,
+health or program fields. The read-only Student Roster independently shows the
+active, incoming and dropped groups and their counts, enrollment start/end dates,
+and student contact details when authorized.
+
+These are supported source surfaces, not evidence that an export was actually
+captured or that an unattended connector exists. Preserve the original CSV and
+its byte hash privately, together with the observed school identity, school,
+calendar/year, term/date range, effective date, exact selected sections/options
+and independent status counts. A second complete capture must agree before an
+import can use it. File modification time, a row count computed from the same
+CSV, or a report filename cannot independently prove current complete coverage.
+
+The report's Local Student Number is not IC's person ID, and it is not an
+enrollment ID. IC explicitly documents that OneRoster enrollment `sourcedId`
+is not visible in the Campus UI. A future report adapter must name its derived
+student/section/year membership key explicitly rather than placing a hash under
+an **IC enrollment ID** header. The existing native-ID worker remains unchanged
+until a separate report-input contract is implemented, reviewed and accepted.
+The official OneRoster documentation page does not establish an authorized API
+connection, permission to acquire credentials, or a reason to query private IC
+endpoints.
+
+An initial mapping to existing mirror rows needs independently verified identity
+evidence. Do not infer a school email from a name or assign a native ID to an
+existing row merely because names match. A preserved names-only legacy row is
+not proof of current membership. Any separate initialization design must retain
+its teacher/formula cells and history and verify the exact native destination.
+
+Official references: [Roster Report](https://kb.infinitecampus.com/help/printing-a-sections-roster),
+[Viewing Your Roster](https://kb.infinitecampus.com/help/viewing-your-roster), and
+[OneRoster API Documentation](https://kb.infinitecampus.com/help/oneroster-api-documentation-oauth-2).
