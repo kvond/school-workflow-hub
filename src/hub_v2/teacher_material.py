@@ -158,6 +158,24 @@ def classify_entries(token, config, agenda, class_key, entries):
     plans = []
     try:
         port = configured_store(config)
+        # An exact previously registered teacher upload must not silently become
+        # student work when its respondent changes. Batch only its existing
+        # deterministic receipt-index lookups; absent indexes infer nothing.
+        changed_respondents = set()
+        for entry in entries:
+            form_id = entry.get('form', {}).get('form_id') or entry.get('form_id')
+            for submitted in entry['found']:
+                if submitted.get('source') != 'form' or submitted.get('email') in teachers(config):
+                    continue
+                for upload in submitted.get('files', []):
+                    response_id, file_id = submitted.get('key'), upload.get('id')
+                    if all(ID.fullmatch(str(x)) for x in (form_id, response_id, file_id)):
+                        changed_respondents.add(index_key({'agenda_id': agenda.spreadsheet_id,
+                            'class_key': class_key, 'form_id': form_id}, response_id, file_id))
+        changed_respondents = sorted(changed_respondents)
+        for offset in range(0, len(changed_respondents), 40):
+            if any(port.read(changed_respondents[offset:offset+40]).documents.values()):
+                raise Unverified('A registered teacher-material original has a different respondent.')
         for entry in entries:
             form_id = entry.get('form', {}).get('form_id') or entry.get('form_id')
             for submitted in entry['found']:
@@ -177,14 +195,25 @@ def classify_entries(token, config, agenda, class_key, entries):
                             or any(not isinstance(x,str) or not x.startswith('teachermaterial_') for x in keys)):
                         raise StoreUnavailable('Invalid teacher-material index.')
                     try:
-                        proof = capture(token, config, agenda, class_key, entry['week'], form_id, response_id, file_id)
-                        ident = record_key(proof)
-                        if ident not in keys:
-                            continue
-                        stored = port.read([ident]).documents.get(ident)
-                        if not stored:
-                            raise StoreUnavailable('Indexed teacher-material proof is unavailable.')
-                        value = validate(stored.value, config)
+                        # The immutable history binding is checked first, so a
+                        # later restore or revision cannot inherit its retained
+                        # classification through the ordinary capture path.
+                        from . import teacher_material_history as history
+                        historical = history.resolve(token, config, agenda, current_scope,
+                            response_id, file_id, keys, port=port)
+                        if historical:
+                            value, basis = historical
+                            proof = value['proof']
+                            ident = value['record_key']
+                        else:
+                            proof = capture(token, config, agenda, class_key, entry['week'], form_id, response_id, file_id)
+                            ident = record_key(proof)
+                            if ident not in keys:
+                                continue
+                            stored = port.read([ident]).documents.get(ident)
+                            if not stored:
+                                raise StoreUnavailable('Indexed teacher-material proof is unavailable.')
+                            value = validate(stored.value, config)
                         if (proof != value['proof'] or proof['event']['respondent'] != submitted['email']
                                 or proof['event']['submitted_at'] != submitted.get('submitted_at')):
                             continue
@@ -192,21 +221,24 @@ def classify_entries(token, config, agenda, class_key, entries):
                         # A registered proof that cannot be checked is an
                         # availability failure, never an identity question.
                         raise StoreUnavailable('Registered teacher-material proof cannot be verified.') from None
-                    plans.append((entry, submitted, upload, ident, proof))
+                    plans.append((entry, submitted, upload, ident, proof, historical))
         if plans:
             # A later artifact can take time to read. Recheck all earlier
             # staged originals before excluding any of them from this batch.
             from . import agenda as agenda_module
             fresh_agenda = agenda_module.load(token, agenda.spreadsheet_id)
-            for entry, submitted, upload, ident, proof in plans:
+            for entry, submitted, upload, ident, proof, historical in plans:
                 s = proof['scope']; event = proof['event']
                 if (scope(fresh_agenda, config, class_key, entry['week'], s['form_id']) != s
                         or google.drive_file(token, proof['file_id'], META) != proof['metadata']
                         or _event(token, s['form_id'], event['response_id'], proof['file_id'], config) != event):
                     raise Unverified('Teacher material changed before the batch was applied.')
+                if historical:
+                    from . import teacher_material_history as history
+                    history.bookend(token, config, fresh_agenda, proof, historical[1], port=port)
     except (google.GoogleError, StoreUnavailable, Unverified, ValueError, KeyError, TypeError):
         return 'The exact teacher-material verification is unavailable. Originals are preserved; no identity decision or grade is inferred.'
-    for entry, submitted, upload, ident, proof in plans:
+    for entry, submitted, upload, ident, proof, historical in plans:
         # Never remove a whole response: mixed teacher/student uploads survive.
         submitted['files'].remove(upload)
         if entry.get('current'):
