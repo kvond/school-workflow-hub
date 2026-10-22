@@ -103,7 +103,8 @@ test('verified independent PDF stays printable while unrelated feedback catalog 
   const rendered = ui.renderTodayFeedback(), links = walk(rendered).filter(n => n.tagName === 'a');
   assert.match(links[0].textContent, /Print latest feedback.*2032-01-05.*12 pages/);
   assert.equal(links[1].href, ui.cockpit.printableFeedback.spreadsheet_url);
-  assert.match(rendered.textContent, /8 reports for 4 students.*Remaining gaps/);
+  assert.match(rendered.textContent, /8 reports for 4 students.*feedback spreadsheet for coverage details/);
+  assert.doesNotMatch(rendered.textContent, /gaps are listed in the PDF/);
   ui.cockpit.printableFeedback = {status: 'held', problem: 'PDF changed after publication'};
   const held = ui.renderTodayFeedback();
   assert.match(held.textContent, /PDF changed/);

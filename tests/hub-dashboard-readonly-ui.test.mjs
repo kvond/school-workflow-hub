@@ -37,6 +37,7 @@ test('Records renders configured known links and refuses unsafe, unconfigured or
     if (url === 'api/spreadsheet-feedback/print-link') return {ok: true, json: async () => ({status: 'unpublished'})};
     return {ok: true, json: async () => ({schema_version: 'hub-dashboard-records/v1', records: [
       {key: 'operations', label: 'Operations', configured: true, url: 'https://docs.google.com/spreadsheets/d/FICTIONALOPS/edit'},
+      {key: 'feedback_checklist', label: 'Feedback checklist', configured: true, url: 'https://docs.google.com/spreadsheets/d/FICTIONALCURRENT/edit'},
       {key: 'model_trials', label: 'Models, rubrics and trials', configured: false, url: 'https://example.invalid/unconfigured'},
       {key: 'model_trials_folder', label: 'Trial files', configured: true, url: 'javascript:alert(1)'},
       {key: 'unknown', label: 'Unexpected', configured: true, url: 'https://example.invalid/extra'},
@@ -44,7 +45,7 @@ test('Records renders configured known links and refuses unsafe, unconfigured or
   }});
   await h.ui.loadRecords();
   const body = h.nodes.get('records-body'), links = walk(body).filter(node => node.tagName === 'a');
-  assert.deepEqual(links.map(node => node.href), ['https://docs.google.com/spreadsheets/d/FICTIONALOPS/edit']);
+  assert.deepEqual(links.map(node => node.href), ['https://docs.google.com/spreadsheets/d/FICTIONALOPS/edit', 'https://docs.google.com/spreadsheets/d/FICTIONALCURRENT/edit']);
   assert.match(body.textContent, /Models, rubrics and trials — link not configured.*Trial files — link not configured/);
   assert.doesNotMatch(body.textContent, /Unexpected/);
   assert.deepEqual(calls.map(call => call.url).sort(), ['api/dashboard/records', 'api/spreadsheet-feedback/print-link']);
@@ -78,7 +79,8 @@ test('Records independently reads the verified saved PDF and preserves partial c
   assert.ok(links.some(node => node.href === readyPacket.spreadsheet_url));
   assert.ok(links.some(node => node.textContent === 'Operations'));
   assert.match(body.textContent, /2032-01-07.*12 pages/);
-  assert.match(body.textContent, /8 reports.*4 students.*[Gg]aps/);
+  assert.match(body.textContent, /8 reports.*4 students.*feedback spreadsheet for coverage details/);
+  assert.doesNotMatch(body.textContent, /gaps are listed in the PDF/);
   assert.deepEqual(h.requests.map(item => item.url).sort(), ['api/dashboard/records', 'api/spreadsheet-feedback/print-link']);
   assert.ok(h.requests.every(item => item.options.method === undefined));
 });
