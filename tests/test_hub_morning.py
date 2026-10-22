@@ -127,7 +127,8 @@ class MorningTests(unittest.TestCase):
             with self.assertRaises(ValueError): morning.validate_report(value)
 
     def test_receipt_retry_is_read_only(self):
-        with patch.object(morning, "reports", return_value=[report()]), patch.object(morning.google, "append_rows") as append:
+        with patch.object(morning, "_report_target", return_value=("FICTIONAL", "'Sheet1'")), \
+                patch.object(morning, "_report_history", return_value=([report()], 1)), patch.object(morning.google, "append_rows") as append:
             morning.record("t", "w", {}, report())
             append.assert_not_called()
 
@@ -141,12 +142,13 @@ class MorningTests(unittest.TestCase):
             with self.assertRaises(ValueError): morning.validate_report(invalid)
         for change in ({"code": "finished"}, {"items": report()["items"]}):
             with self.assertRaises(ValueError): morning.validate_report({**value, **change})
-        with patch.object(morning, "reports", return_value=[value]), patch.object(morning.google, "append_rows") as append:
+        with patch.object(morning, "_report_target", return_value=("FICTIONAL", "'Sheet1'")), \
+                patch.object(morning, "_report_history", return_value=([value], 1)), patch.object(morning.google, "append_rows") as append:
             morning.record("t", "w", {}, value)
             append.assert_not_called()
 
     def test_receipt_requires_destination_readback(self):
-        with patch.object(morning, "reports", return_value=[]), patch.object(morning.ledger, "find", return_value={"id": "FICTIONAL"}), patch.object(morning.ledger, "_first_tab", return_value="'Sheet1'"), patch.object(morning.google, "append_rows") as append:
+        with patch.object(morning, "_report_history", return_value=([], 0)), patch.object(morning.ledger, "find", return_value={"id": "FICTIONAL"}), patch.object(morning.ledger, "_first_tab", return_value="'Sheet1'"), patch.object(morning.google, "append_rows") as append:
             with self.assertRaises(morning.google.GoogleError): morning.record("t", "w", {}, report())
             append.assert_called_once()
 

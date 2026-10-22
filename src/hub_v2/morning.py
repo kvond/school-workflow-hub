@@ -5,12 +5,14 @@ resource reference contract. No destination is inferred from a lesson title.
 """
 import hashlib
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
 from . import completion, google, ledger, work
 
 KIND = "Morning helper"
+_log = logging.getLogger(__name__)
 CODES = frozenset(("running", "finished", "no_scores", "mapping_required", "signed_out", "hub_unavailable",
     "ic_unavailable", "panel_unusable", "missed_noon", "interrupted", "disabled", "uncertain_blocked",
     "read_back", "nothing_to_enter", "ic_changed", "ic_unreadable", "typing_stopped", "typed_values_differ",
@@ -362,13 +364,22 @@ def validate_report(value):
     return value
 
 
-def reports(token, config):
+def _report_target(token, config):
     sheet = ledger.find(token, config)
     if not sheet:
-        return []
+        return None
     tab = ledger._first_tab(token, sheet["id"])
-    source = google.sheet_values(token, sheet["id"], f"{tab}!A1:G{ledger.MAX_ROWS}") if tab else []
-    latest = {}
+    return (sheet["id"], tab) if tab else None
+
+
+def _report_history(token, target):
+    # One sentinel row detects incomplete coverage. The ten-report dashboard
+    # projection is never an idempotency or persistence-verification source.
+    sheet, tab = target
+    source = google.sheet_values(token, sheet, f"{tab}!A1:G{ledger.MAX_ROWS + 1}")
+    if len(source) > ledger.MAX_ROWS:
+        raise google.GoogleError("The morning receipt history exceeds its bounded read; preserve it for repair.")
+    history = []
     for row in source:
         if len(row) < 7 or row[1] != KIND:
             continue
@@ -376,25 +387,71 @@ def reports(token, config):
             value = validate_report(json.loads(row[6]))
         except (ValueError, TypeError, KeyError, AttributeError):
             continue
+        history.append(value)
+    return history, len(source)
+
+
+def reports(token, config):
+    target = _report_target(token, config)
+    if target is None:
+        return []
+    history, _ = _report_history(token, target)
+    latest = {}
+    for value in history:
         latest.pop(value["run_id"], None)
         latest[value["run_id"]] = value
     return sorted(reversed(list(latest.values())), key=lambda r: r["day"], reverse=True)[:10]
 
 
+def _report_event(value, stage, outcome, error=None):
+    # Correlate only safe request identity and fixed stages/outcomes. Never log
+    # assignment labels, source IDs, tokens, raw payloads or provider messages.
+    event = {"event": "morning_report", "run_id": value["run_id"], "day": value["day"],
+             "code": value["code"], "stage": stage, "outcome": outcome}
+    status = getattr(error, "status", None)
+    if type(status) is int and 100 <= status <= 599:
+        event["provider_status"] = status
+    if google.read_timed_out(error):
+        event["provider_reason"] = "read_timeout"
+    _log.log(logging.WARNING if error else logging.INFO, json.dumps(event, sort_keys=True))
+
+
 def record(token, write_token, config, report):
     value = validate_report(report)
-    # Identical receipt retries append nothing and never execute IC again.
-    if any(r == value for r in reports(token, config)):
-        return
-    sheet = ledger.find(token, config)
-    if not sheet:
-        raise google.GoogleError("The Scores entered sheet is unavailable.")
-    tab = ledger._first_tab(token, sheet["id"])
-    if not tab:
-        raise google.GoogleError("The Scores entered sheet is unavailable.")
     payload = json.dumps(value, separators=(",", ":"))
     if len(payload) > 45000:
         raise ValueError("report")
-    google.append_rows(write_token, sheet["id"], tab + "!A1", [[ledger.eastern_now(), KIND, "", value["day"], "Morning run", value["run_id"], payload]])
-    if not any(r == value for r in reports(token, config)):
-        raise google.GoogleError("The morning summary could not be read back.")
+    stage = "locate"
+    try:
+        target = _report_target(token, config)
+        if target is None:
+            raise google.GoogleError("The Scores entered sheet is unavailable.")
+        stage = "history_read"
+        history, count = _report_history(token, target)
+        # A known older state must not replace a later saved state for this run.
+        # This also acknowledges historical outbox entries outside the UI list.
+        if value in history:
+            _report_event(value, stage, "already_recorded")
+            return
+        if count >= ledger.MAX_ROWS:
+            raise google.GoogleError("The morning receipt history is full; preserve it for repair before adding a report.")
+    except google.GoogleError as error:
+        _report_event(value, stage, "unconfirmed", error)
+        raise
+    sheet, tab = target
+    append_error = None
+    try:
+        google.append_rows(write_token, sheet, tab + "!A1", [[ledger.eastern_now(), KIND, "", value["day"], "Morning run", value["run_id"], payload]])
+    except google.GoogleError as error:
+        # The provider may have accepted the append before losing its response.
+        # Read this exact destination once; do not repeat the write.
+        append_error = error
+        _report_event(value, "append", "uncertain", error)
+    try:
+        saved, _ = _report_history(token, target)
+        if value not in saved:
+            raise google.GoogleError("The morning summary could not be read back.")
+    except google.GoogleError as error:
+        _report_event(value, "readback", "unconfirmed", error)
+        raise
+    _report_event(value, "readback", "recovered_after_uncertain_append" if append_error else "recorded")
