@@ -23,7 +23,7 @@ from time import monotonic
 
 from . import google, work, named_archival_work
 from school_workflow_hub.adapters.firestore_state import configured_store
-from school_workflow_hub.core.cloud_state import CloudState, Conflict, StoreUnavailable, key
+from school_workflow_hub.core.cloud_state import CloudState, Conflict, LeaseLost, StoreUnavailable, instant, key
 from school_workflow_hub.core.runs import content_hash
 
 ROOT_CONFIG = "HUB_STUDENT_RECORDS_ROOT_FOLDER"
@@ -51,6 +51,9 @@ LEASE_HEARTBEAT_SECONDS = 40
 # ACL/native proof and later exact readback are read-only, not part of this
 # reservation; every subsequent mutation must obtain a fresh reservation.
 MUTATION_SECONDS = 60
+# The final class-lease read follows the shared source guard. It has its own
+# allowance, never spends the 60 seconds reserved for the provider mutation.
+FINAL_OWNER_CHECK_SECONDS = 60
 
 
 def _registered_navigation_parent(run, class_key, old):
@@ -1022,24 +1025,42 @@ class _GuardedPort:
         if not callable(getattr(port, "commit_guarded", None)):
             raise Held("The private archive store does not support guarded writes. Preserve the records until that capability is available.")
         self.port, self.before_source_write, self.stopped = port, before_source_write, None
+        self.current_claim = None
 
     def read(self, ids):
         if self.stopped is not None:
             raise self.stopped
         return self.port.read(ids)
 
+    def check_write(self):
+        if self.stopped is not None:
+            raise self.stopped
+        try:
+            allowance = FINAL_OWNER_CHECK_SECONDS if self.current_claim is not None else 0
+            self.before_source_write(required_seconds=MUTATION_SECONDS + allowance)
+            # The shared guard can itself be slow. Only this fresh server read,
+            # after that guard, can establish the archive/index lease is still
+            # owned. Its full elapsed response/auth time also spends allowance.
+            if self.current_claim is not None:
+                began = monotonic()
+                claim = self.current_claim()
+                snapshot = self.port.read([claim.task_id])
+                elapsed = max(0, monotonic() - began)
+                task = snapshot.documents[claim.task_id]
+                if task is None:
+                    raise LeaseLost("archive_task_unavailable_before_write")
+                CloudState._owns(claim, task.value, snapshot.read_time)
+                remaining = (instant(task.value["expires_at"]) - instant(snapshot.read_time)).total_seconds() - elapsed
+                if elapsed > allowance or remaining < MUTATION_SECONDS:
+                    raise LeaseLost("archive_lease_too_short_before_write")
+        except Exception as error:
+            # CloudState may retry a CAS conflict. The next read preserves this
+            # exact ownership failure instead of retrying/diluting it.
+            self.stopped = error
+            raise
+
     def commit(self, changes):
-        def check():
-            if self.stopped is not None:
-                raise self.stopped
-            try:
-                self.before_source_write(required_seconds=MUTATION_SECONDS)
-            except Exception as error:
-                # CloudState may retry a CAS conflict. The next read preserves
-                # this exact guard failure instead of retrying/diluting it.
-                self.stopped = error
-                raise
-        return self.port.commit_guarded(changes, before_write=check)
+        return self.port.commit_guarded(changes, before_write=self.check_write)
 
 
 def _guarded_port(port, before_source_write):
@@ -1059,6 +1080,8 @@ class _Run:
         request = "archive-" + uuid.uuid4().hex
         self.claim = self.cloud.claim(task, owner="student-archive", request_id=request,
                                       input_hash=content_hash([self.root, cls, request]))
+        if isinstance(self.port, _GuardedPort):
+            self.port.current_claim = lambda: self.claim
         self._renewed_at, self._lease_error = monotonic(), None
         self.index_key = key("archiveclass", [self.root, cls])
         self.student_records = None
@@ -1066,8 +1089,8 @@ class _Run:
         self.feedback_checklists = None
 
     def _before_write(self):
-        if self.before_source_write is not None:
-            self.before_source_write(required_seconds=MUTATION_SECONDS)
+        if isinstance(self.port, _GuardedPort):
+            self.port.check_write()
 
     def renew(self):
         if self._lease_error is not None:
@@ -3428,6 +3451,8 @@ def refresh_work_index(token, write_token, config, *, before_source_write=None):
                                   "assignment_key": key("workindexscope", [scope, ident])})
         request = "work-index-" + uuid.uuid4().hex
         claim = cloud.claim(task, owner="student-work-index", request_id=request, input_hash=content_hash([ident, request]))
+        if isinstance(port, _GuardedPort):
+            port.current_claim = lambda: claim
         endpoint = "https://sheets.googleapis.com/v4/spreadsheets/" + quote(ident)
         read_params = {"ranges": "Records!A1:N%d" % (INDEX_ROW_LIMIT + 1), "includeGridData": "true",
             "fields": "spreadsheetId,sheets(properties,data(startRow,startColumn,rowData(values(userEnteredValue,note,textFormatRuns,userEnteredFormat,dataValidation))))"}
@@ -3470,8 +3495,8 @@ def refresh_work_index(token, write_token, config, *, before_source_write=None):
                     "startColumnIndex": 0, "endColumnIndex": 14}, "rows": rows[start:end], "fields": "userEnteredValue"}})
             requests.append({"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0,
                 "endRowIndex": len(prepared), "startColumnIndex": 0, "endColumnIndex": 13}}}})
-            if before_source_write is not None:
-                before_source_write(required_seconds=MUTATION_SECONDS)
+            if isinstance(port, _GuardedPort):
+                port.check_write()
             try:
                 google.get_json(endpoint + ":batchUpdate", write_token, method="POST", body={"requests": requests})
             except google.GoogleError:

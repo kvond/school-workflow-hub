@@ -181,6 +181,11 @@ batch reserves 60 seconds for that provider mutation and acknowledgement.
 Firestore acquires its token before checking the callback, and checks again for
 each individual CAS attempt, including CloudState contention retries. The
 source guard's own control/lease port remains unwrapped to prevent recursion.
+After the shared guard, every owned archive/index mutation freshly verifies its
+class task, run, owner, fence and remaining lease. This final server read has a
+separate 60-second allowance; elapsed authentication/response time is deducted
+from both that allowance and the local lease. Expiry, takeover or less than the
+full mutation budget stops the write, without renewing an expired claim.
 Complete paginated ACL checks, native-content proof and exact saved readback are
 read-only and may continue beyond a reservation; every later write obtains a
 new reservation. No prior guard authorizes a later write after those long reads.

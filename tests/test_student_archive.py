@@ -1820,6 +1820,81 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(grants[-1], 132)
         self.assertEqual(self.port.rows, before)
 
+    def test_final_class_check_refuses_slow_shared_guard_before_data_cas(self):
+        guard = Mock()
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        before = deepcopy(self.port.rows)
+        guard.side_effect = lambda **kwargs: self.port.advance(121)
+        with self.assertRaises(archive.LeaseLost):
+            run.put(archive.key("archivefictional", "late"), {"status": "verified"})
+        self.assertEqual(self.port.rows, before)
+        self.assertEqual(guard.call_args.kwargs, {
+            "required_seconds": archive.MUTATION_SECONDS + archive.FINAL_OWNER_CHECK_SECONDS})
+
+    def test_final_class_check_requires_full_mutation_budget_after_shared_guard(self):
+        guard = Mock()
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        before = deepcopy(self.port.rows)
+        guard.side_effect = lambda **kwargs: self.port.advance(61)  # Still owns, but only 59 seconds remain.
+        with self.assertRaisesRegex(archive.LeaseLost, "archive_lease_too_short_before_write"):
+            run.put(archive.key("archivefictional", "late"), {"status": "verified"})
+        self.assertEqual(self.port.rows, before)
+
+    def test_final_class_read_response_time_cannot_spend_the_shared_mutation_reservation(self):
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=Mock())
+        before, clock, read = deepcopy(self.port.rows), [0], self.port.read
+        def delayed(ids):
+            snapshot = read(ids)
+            clock[0] += 65
+            self.port.advance(65)
+            return snapshot  # Server time predates the delayed response.
+        with patch.object(archive, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.port, "read", side_effect=delayed), self.assertRaises(archive.LeaseLost):
+            run.put(archive.key("archivefictional", "late"), {"status": "verified"})
+        self.assertEqual(self.port.rows, before)
+
+    def test_final_class_check_refuses_takeover_during_shared_guard(self):
+        guard = Mock()
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        ident = archive.key("archivefictional", "late")
+        def takeover(**kwargs):
+            self.port.advance(121)
+            CloudState(self.port).claim(run.claim.task_id, owner="another-worker", request_id="takeover", input_hash="next")
+        guard.side_effect = takeover
+        with self.assertRaises(archive.LeaseLost):
+            run.put(ident, {"status": "verified"})
+        self.assertNotIn(ident, self.port.rows)
+        self.assertEqual(self.port.rows[run.claim.task_id].value["owner"], "another-worker")
+
+    def test_native_create_stops_after_slow_shared_guard_or_class_takeover(self):
+        for mode in ("expired", "short", "takeover"):
+            with self.subTest(mode=mode):
+                self.port.advance(901)
+                in_commit, triggered = [False], []
+                original_commit = self.port.commit_guarded
+                def guarded_commit(changes, *, before_write):
+                    in_commit[0] = True
+                    try:
+                        return original_commit(changes, before_write=before_write)
+                    finally:
+                        in_commit[0] = False
+                ident = archive.key("archivefictional", mode)
+                def guard(**kwargs):
+                    record = self.port.rows.get(ident)
+                    if not in_commit[0] and record and record.value.get("status") == "creating":
+                        triggered.append(True)
+                        self.port.advance(61 if mode == "short" else 121)
+                        if mode == "takeover":
+                            CloudState(self.port).claim(run.claim.task_id, owner="another-worker",
+                                request_id="takeover-native", input_hash="next-native")
+                with patch.object(self.port, "commit_guarded", side_effect=guarded_commit):
+                    run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+                    with self.assertRaises(archive.LeaseLost):
+                        run.create(ident, "Fictional folder", COURSES["biology"], google.FOLDER)
+                self.assertEqual(triggered, [True])
+                self.assertEqual(self.drive.created, [])
+                self.assertEqual(self.port.rows[ident].value["status"], "creating")
+
     def test_lost_morning_guard_stops_after_read_without_copy_or_source_mutation(self):
         expired = []
         def fetch(token, ident, fields=None):
@@ -2329,8 +2404,9 @@ class StudentArchiveTests(unittest.TestCase):
                 expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
         self.assertEqual((result["status"], result["from_version"], result["to_version"]), ("verified", "1", "2"))
         self.assertGreater(guard.call_count, 0)
-        self.assertTrue(all(c.kwargs == {"required_seconds": archive.MUTATION_SECONDS}
-                            for c in guard.call_args_list))
+        self.assertTrue(all(c.kwargs["required_seconds"] in {
+            archive.MUTATION_SECONDS, archive.MUTATION_SECONDS + archive.FINAL_OWNER_CHECK_SECONDS}
+            for c in guard.call_args_list))
         self.assertEqual(self.drive.items, before_drive)
         updated = self.port.rows[ident].value
         self.assertEqual(updated, {**original, "drive_version": "2", "last_metadata_reconciliation": result["history_key"]})
@@ -2371,6 +2447,22 @@ class StudentArchiveTests(unittest.TestCase):
                 expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
         self.assertEqual(result["status"], "verified")
         self.assertEqual(self.port.rows[ident].value["drive_version"], "2")
+
+    def test_joint_reconciliation_does_not_write_after_third_shared_guard_outlasts_class_lease(self):
+        ident, record, proof = self.joint_copy_fixture()
+        calls = []
+        def guard(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 3:
+                self.port.advance(121)
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            with self.assertRaises(archive.LeaseLost):
+                archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                    expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.port.rows[ident].value, record)
+        self.assertFalse(any(k.startswith("archivejointreconciliation_") for k in self.port.rows))
 
     def test_joint_reconciliation_rejects_copy_change_during_content_read_and_stale_preview(self):
         ident, record, proof = self.joint_copy_fixture()
