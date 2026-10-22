@@ -139,6 +139,39 @@ normal identity/source checks. Provider/state failures preserve all originals an
 block assessment as availability failures. No source, roster, grade, sharing or
 delivery record is changed; school proof stays in private runtime state, never Git.
 
+An already proven uploaded PPTX can retain its informational teacher-material
+classification after it is trashed only through the separate trusted-host
+`teacher_material_history.prepare` / `import_verified` contract. The read-only
+proposal requires the original immutable receipt and index, the same current
+Agenda/Form context and exact original response, and a full binary download
+whose SHA-256, MD5 and size match that receipt. The only permitted metadata
+changes are an advancing numeric Drive version and `trashed: false` to `true`;
+ID, parent, name, MIME, modification time and checksums must remain identical.
+Native Slides, restored files, changed bytes/provenance and unavailable reads
+do not qualify. This retains an established classification; it cannot decide
+that a different upload is teacher material.
+
+Publication uses an actual `SourceOperations` instance whose input hash is the
+exact proposal hash and whose trusted activity callback verifies the existing
+shared source ownership. The existing `FirestoreState.commit_guarded` adapter
+acquires its token before the guard. Each one-shot CAS reserves 180 seconds for
+final Agenda/event/metadata/store checks and 120 seconds for commit/readback;
+an exact final owner/fence/expiry and server-time cutoff check follows those
+reads. It neither renews a lost claim nor writes after the before-7:00 window.
+No source or old receipt/index is edited. A pending private intent blocks an
+uncertain publication from retrying; an exact committed receipt, binding and
+intent may only be recovered by readback. A pending-only result requires
+coordinator investigation, never automatic clearing or replay.
+
+The immutable binding lets discovery recheck the complete bytes and original
+proof before retaining only that exact attachment as information. Later
+restoration, revision or provenance changes stay held rather than falling back
+to ordinary classification. All staged attachments remain unchanged if any
+batch bookend fails; other files in a mixed response retain their normal source
+and identity checks. No HTTP writer, job, helper change, student/grade authority,
+empty-intake inference or partial-coverage success is introduced. Code/tests
+alone do not publish a disposition or release any live assessment hold.
+
 A typed read-only Google timeout (`GoogleError.reason == "read_timeout"`) during
 review discovery or the shared feedback catalog is repeated once, only within the
 first 20 seconds of the request. A timeout that remains returns `read_failure`
