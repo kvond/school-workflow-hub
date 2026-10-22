@@ -165,7 +165,9 @@ original revision, exact private folder/owner and source tags. It reads the
 copy's complete native structure and image content against that frozen proof,
 never against today's original. Missing methods/proof, changed content,
 modified timestamps, access, ownership or concurrent CAS changes remain held.
-The apply call requires the exact fresh preview digest, an attributed operator,
+The apply call completes its full read-only proof before acquiring a class
+lease, then bookends the saved record/owner/index and exact Drive metadata.
+It requires the exact fresh preview digest, an attributed operator,
 and the existing source-owner/cutoff callback. It atomically preserves the prior
 artifact in immutable reconciliation history while changing only its verified
 Drive version and history pointer; unchanged owner/index values are CAS-checked.
@@ -174,11 +176,16 @@ changes. Uncertain CAS outcomes are read back, never blindly retried. Ordinary
 directory reads do not reconcile or mutate a version.
 
 Trusted morning callers may pass `before_source_write` to `archive_work` and
-its derived WorkIndex refresh. The callback is checked at mutation boundaries
-with an explicit 120-second budget for a bounded mutation and immediate saved
-readback. Full native-content verification is read-only; later writes reserve a
-fresh budget. The guard must renew a sufficient live lease and refuse a batch
-that cannot finish before the cutoff. Separate feedback callers keep their
+its derived WorkIndex refresh. Each individual CAS, Drive mutation and Sheet
+batch reserves 60 seconds for that provider mutation and acknowledgement.
+Firestore acquires its token before checking the callback, and checks again for
+each individual CAS attempt, including CloudState contention retries. The
+source guard's own control/lease port remains unwrapped to prevent recursion.
+Complete paginated ACL checks, native-content proof and exact saved readback are
+read-only and may continue beyond a reservation; every later write obtains a
+new reservation. No prior guard authorizes a later write after those long reads.
+The guard must renew a sufficient live lease and refuse a mutation that cannot
+finish before the cutoff. Separate feedback callers keep their
 existing ownership. Supplying this hook is
 not proof that every external writer participates or that a live archive run
 finished before the cutoff.

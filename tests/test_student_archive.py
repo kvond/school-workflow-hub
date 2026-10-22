@@ -27,6 +27,13 @@ PERMISSIONS = [{"type": "user", "role": "owner", "emailAddress": "reader@fiction
                {"type": "user", "role": "writer", "emailAddress": "teacher@school.example"}]
 REAL_ARCHIVE_CREATE = google.archive_create
 REAL_ARCHIVE_FILE_ID = google.archive_file_id
+REAL_DRIVE_FILE = google.drive_file
+
+
+class GuardedMemoryCAS(MemoryCAS):
+    def commit_guarded(self, changes, *, before_write):
+        before_write()
+        return self.commit(changes)
 
 
 class FakeDrive:
@@ -172,7 +179,7 @@ class StudentArchiveTests(unittest.TestCase):
             self.assertEqual(result["feedback_date_basis"], "unverified")
 
     def setUp(self):
-        self.drive, self.port, self.config = FakeDrive(), MemoryCAS(), config()
+        self.drive, self.port, self.config = FakeDrive(), GuardedMemoryCAS(), config()
         self.patches = [patch.object(student_feedback_checklist, "refresh_run", return_value={"status": "verified"}),
                         patch.object(archive, "configured_store", return_value=self.port),
                         patch.object(google, "drive_file", side_effect=self.drive.metadata),
@@ -1768,6 +1775,51 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(self.drive.created, [])
         self.assertEqual(self.drive.copied, [])
 
+    def test_each_contended_state_cas_rechecks_source_guard_and_preserves_its_failure(self):
+        calls = []
+        failure = archive.Conflict("source_window_closed")
+        failure.source_operation_hold = "source_mutation_window_closed"
+        failure.source_operation_action = "Wait for the next source window."
+        def guard(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                raise failure
+        def conflict(changes):
+            raise archive.Conflict("state_version_conflict")
+        port = archive._guarded_port(self.port, guard)
+        with patch.object(self.port, "commit", side_effect=conflict) as writes, self.assertRaises(archive.Conflict) as caught:
+            CloudState(port).create_task({"workflow": "fictional", "class_key": "biology", "assignment_key": "test"})
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(writes.call_count, 1)
+        self.assertEqual(calls, [{"required_seconds": archive.MUTATION_SECONDS}] * 2)
+        self.assertEqual(self.port.rows, {})
+
+    def test_complete_paginated_acl_read_does_not_reuse_an_earlier_write_reservation(self):
+        elapsed, requests, grants = [0], [], []
+        def guard(**kwargs):
+            grants.append(elapsed[0])
+            if elapsed[0] >= 120:
+                raise archive.Conflict("source_window_closed")
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        before = deepcopy(self.port.rows)
+        meta = deepcopy(self.drive.items[ROOT]); meta.pop("permissions")
+        def get_json(url, token, params=None, **kwargs):
+            requests.append(url)
+            elapsed[0] += 12
+            if not url.endswith("/permissions"):
+                return meta
+            page = len(requests) - 2
+            return {"permissions": deepcopy(PERMISSIONS), **({"nextPageToken": str(page + 1)} if page < 9 else {})}
+        with patch.object(google, "get_json", side_effect=get_json):
+            checked = REAL_DRIVE_FILE("read", ROOT, archive.FIELDS)
+        self.assertEqual(len(requests), 11)
+        self.assertEqual(elapsed[0], 132)
+        self.assertEqual(len(checked["permissions"]), 20)  # Every ACL page retained.
+        with self.assertRaises(archive.Conflict):
+            run.put(archive.key("archivefictional", "new"), {"status": "verified"})
+        self.assertEqual(grants[-1], 132)
+        self.assertEqual(self.port.rows, before)
+
     def test_lost_morning_guard_stops_after_read_without_copy_or_source_mutation(self):
         expired = []
         def fetch(token, ident, fields=None):
@@ -2277,7 +2329,7 @@ class StudentArchiveTests(unittest.TestCase):
                 expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
         self.assertEqual((result["status"], result["from_version"], result["to_version"]), ("verified", "1", "2"))
         self.assertGreater(guard.call_count, 0)
-        self.assertTrue(all(c.kwargs == {"required_seconds": archive.MUTATION_READBACK_SECONDS}
+        self.assertTrue(all(c.kwargs == {"required_seconds": archive.MUTATION_SECONDS}
                             for c in guard.call_args_list))
         self.assertEqual(self.drive.items, before_drive)
         updated = self.port.rows[ident].value
@@ -2306,6 +2358,19 @@ class StudentArchiveTests(unittest.TestCase):
             with patch.object(archive, "_work_content", return_value=changed_proof), self.assertRaises(archive.Held):
                 archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
         self.assertEqual(self.port.rows[ident].value, record)
+
+    def test_joint_reconciliation_finishes_long_native_proof_before_claiming_class_lease(self):
+        ident, record, proof = self.joint_copy_fixture()
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        def slow_proof(token, meta, heartbeat=None):
+            self.port.advance(121)
+            return proof
+        with patch.object(archive, "_work_content", side_effect=slow_proof):
+            result = archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(self.port.rows[ident].value["drive_version"], "2")
 
     def test_joint_reconciliation_rejects_copy_change_during_content_read_and_stale_preview(self):
         ident, record, proof = self.joint_copy_fixture()

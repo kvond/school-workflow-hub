@@ -47,11 +47,18 @@ class FirestoreState:
             raise ValueError("invalid_state_record_id")
         return self.prefix + record_id
 
-    def _http(self, operation, body):
+    def _http(self, operation, body, *, before_write=None):
         import requests
         response = None
+        # Authentication can require several provider reads. It must not spend
+        # a source-write reservation before the actual one-shot CAS starts.
         try:
             token = self.token_provider()
+        except Exception:
+            raise StoreUnavailable("state_service_unavailable") from None
+        if before_write is not None:
+            before_write()  # Preserve ownership/cutoff exceptions; no request sent.
+        try:
             with requests.Session() as session:
                 session.trust_env = False
                 response = session.post(API + self.root + ":" + operation, json=body,
@@ -117,6 +124,19 @@ class FirestoreState:
             raise StoreUnavailable("invalid_state_snapshot") from None
 
     def commit(self, changes):
+        return self._commit(changes)
+
+    def commit_guarded(self, changes, *, before_write):
+        """One trusted CAS, guarded after token acquisition; never retry it.
+
+        The guard's own lease/control port must remain unwrapped. Injected
+        transports must implement their own bounded request/authentication.
+        """
+        if not callable(before_write):
+            raise ValueError("invalid_state_write_guard")
+        return self._commit(changes, before_write=before_write)
+
+    def _commit(self, changes, *, before_write=None):
         if not isinstance(changes, dict) or not 1 <= len(changes) <= 40:
             raise ValueError("invalid_state_write_batch")
         writes = []
@@ -131,7 +151,13 @@ class FirestoreState:
         body = {"writes": writes}
         if len(json.dumps(body).encode()) > 4_000_000:
             raise ValueError("state_commit_limit")
-        result = self.transport("commit", body)
+        if before_write is None:
+            result = self.transport("commit", body)
+        elif self.transport == self._http:
+            result = self._http("commit", body, before_write=before_write)
+        else:
+            before_write()
+            result = self.transport("commit", body)
         try:
             instant(result["commitTime"])
             if len(result["writeResults"]) != len(writes):

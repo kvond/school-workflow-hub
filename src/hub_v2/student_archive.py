@@ -46,10 +46,11 @@ SOURCE_FIELDS = ",".join(f for f in FIELDS.split(",") if f not in {"permissions"
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
 LEASE_HEARTBEAT_SECONDS = 40
-# The guarded batch is one metadata mutation/CAS plus its immediate saved
-# readback (Drive JSON calls <=25s; Firestore calls <=20s). Full native-image
-# proof is read-only and later writes independently reserve their own budget.
-MUTATION_READBACK_SECONDS = 120
+# Reserve only one provider mutation and its acknowledgement (Drive <=35s,
+# Firestore <=20s). Authentication precedes guarded Firestore commits. Complete
+# ACL/native proof and later exact readback are read-only, not part of this
+# reservation; every subsequent mutation must obtain a fresh reservation.
+MUTATION_SECONDS = 60
 
 
 def _registered_navigation_parent(run, class_key, old):
@@ -434,10 +435,13 @@ def reconcile_joint_copy(token, write_token, config, class_key, record_key, *, e
             or actor != _clean(actor, 200) or not isinstance(expected_revision, str)
             or not re.fullmatch(r"[a-f0-9]{64}", expected_revision)):
         raise Held("Joint-copy reconciliation requires its exact preview, attributed operator and current source-owner guard.")
-    run = _Run(token, write_token, config, class_key, before_source_write=before_source_write)
+    # Full native/image/ACL proof can take longer than an archive lease. Finish
+    # it before acquiring that lease, then bookend its exact metadata and CAS
+    # versions again before the guarded mutation.
     preview, documents, meta = _joint_copy_snapshot(token, config, class_key, record_key)
     if preview["revision"] != expected_revision:
         raise Conflict("The joint-copy reconciliation preview changed. Reread before applying.")
+    run = _Run(token, write_token, config, class_key, before_source_write=before_source_write)
     if preview["status"] == "unchanged":
         result = {"status": "verified", "class_key": class_key, "record_key": record_key, "changed": False}
         run.finish(result)
@@ -455,6 +459,11 @@ def reconcile_joint_copy(token, write_token, config, class_key, record_key, *, e
     # Their full prior values are retained, never rebuilt from a partial listing.
     desired = {k: v.value for k, v in documents.items()}
     desired.update({record_key: updated, history_key: history})
+    fresh = google.drive_file(token, meta["id"], SOURCE_FIELDS)
+    if any(fresh.get(field) != meta.get(field) for field in SOURCE_FIELDS.split(",")):
+        raise Held("The joint copy changed after its native proof. Preserve the prior record and reread.")
+    if run.port.read(list(documents)).documents != documents:
+        raise Conflict("The joint copy's owner/index changed after its native proof. Reread before applying.")
     run.heartbeat(force=True)
     try:
         run.port.commit({k: (v, documents[k].version if k in documents else None) for k, v in desired.items()})
@@ -1003,19 +1012,51 @@ def _source_id(url):
     return None
 
 
+class _GuardedPort:
+    """Guard each actual data CAS, including individual CloudState retries.
+
+    This wraps only the archive data port. The supplied source guard owns a
+    separate unwrapped control port, so its lease renewals cannot recurse.
+    """
+    def __init__(self, port, before_source_write):
+        if not callable(getattr(port, "commit_guarded", None)):
+            raise Held("The private archive store does not support guarded writes. Preserve the records until that capability is available.")
+        self.port, self.before_source_write, self.stopped = port, before_source_write, None
+
+    def read(self, ids):
+        if self.stopped is not None:
+            raise self.stopped
+        return self.port.read(ids)
+
+    def commit(self, changes):
+        def check():
+            if self.stopped is not None:
+                raise self.stopped
+            try:
+                self.before_source_write(required_seconds=MUTATION_SECONDS)
+            except Exception as error:
+                # CloudState may retry a CAS conflict. The next read preserves
+                # this exact guard failure instead of retrying/diluting it.
+                self.stopped = error
+                raise
+        return self.port.commit_guarded(changes, before_write=check)
+
+
+def _guarded_port(port, before_source_write):
+    return _GuardedPort(port, before_source_write) if before_source_write is not None else port
+
+
 class _Run:
     def __init__(self, token, write_token, config, cls, *, before_source_write=None):
         self.token, self.write_token, self.config, self.cls = token, write_token, config, cls
         self.before_source_write = before_source_write
         self.actual_root, self.course = _location(token, config, cls, write=True)
         self.root = _scope_root(config, self.actual_root)
-        self.port = configured_store(config)
+        self.port = _guarded_port(configured_store(config), before_source_write)
         self.cloud = CloudState(self.port)
-        self._before_write()
         task = self.cloud.create_task({"workflow": "student-archive", "class_key": cls,
                                       "assignment_key": key("archivescope", self.root)})
         request = "archive-" + uuid.uuid4().hex
-        self._before_write()
         self.claim = self.cloud.claim(task, owner="student-archive", request_id=request,
                                       input_hash=content_hash([self.root, cls, request]))
         self._renewed_at, self._lease_error = monotonic(), None
@@ -1026,13 +1067,12 @@ class _Run:
 
     def _before_write(self):
         if self.before_source_write is not None:
-            self.before_source_write(required_seconds=MUTATION_READBACK_SECONDS)
+            self.before_source_write(required_seconds=MUTATION_SECONDS)
 
     def renew(self):
         if self._lease_error is not None:
             raise self._lease_error
         try:
-            self._before_write()
             self.claim = self.cloud.renew(self.claim)
         except (Conflict, StoreUnavailable) as error:
             self._lease_error = error
@@ -1049,7 +1089,6 @@ class _Run:
 
     def put(self, ident, value, old=None):
         self.heartbeat()
-        self._before_write()
         return _put(self.port, ident, value, old)
 
     def finish(self, result):
@@ -1103,6 +1142,7 @@ class _Run:
             if existing:
                 raise Held("An existing archive folder or record has no confirmed index. Preserve it for identity review.")
             self.renew()
+            self._before_write()
             record = {"schema": SCHEMA, "record_key": ident,
                       "drive_file_id": google.archive_file_id(self.write_token, shortcut=mime == SHORTCUT),
                       "status": "reserved", **expected, **(attributes or {})}
@@ -1128,6 +1168,7 @@ class _Run:
             creation_error = None
             known_quota = False
             self.renew()
+            self._before_write()
             try:
                 google.archive_create(self.write_token, metadata, pdf if pdf is not None else media)
             except google.GoogleError as error:
@@ -1155,6 +1196,7 @@ class _Run:
             raise Held("This exported work snapshot changed after filing. Its original work is preserved.")
         if mime != PDF and meta.get("name") != name:
             self.renew()
+            self._before_write()
             try:
                 google.rename_item(self.write_token, file_id, name)
             except google.GoogleError:
@@ -1288,6 +1330,7 @@ class _Run:
             raise Held("This source link changed or left its verified private folders. No cleanup was applied.")
         if meta["parents"] != [navigation["drive_file_id"]]:
             self.renew()
+            self._before_write()
             try:
                 google.move_item(self.write_token, meta["id"], navigation["drive_file_id"], meta["parents"])
             except google.GoogleError:
@@ -1513,6 +1556,7 @@ class _Run:
                             parent=old_parent, folder=True)
             old_section = _private(google.drive_file(self.token, old_parent, FIELDS), parent=self.course["id"], folder=True)
             self.renew()
+            self._before_write()
             try:
                 google.move_item(self.write_token, meta["id"], section["drive_file_id"], [old_section["id"]])
             except google.GoogleError:
@@ -3379,9 +3423,7 @@ def refresh_work_index(token, write_token, config, *, before_source_write=None):
                     "problem": "The index was not refreshed because complete archived history could not be read for: "
                                + unavailable + ". Existing Sheet rows are preserved."}
         _private(google.drive_file(token, ident, FIELDS), parent=root)
-        port = configured_store(config); cloud = CloudState(port)
-        if before_source_write is not None:
-            before_source_write(required_seconds=MUTATION_READBACK_SECONDS)
+        port = _guarded_port(configured_store(config), before_source_write); cloud = CloudState(port)
         task = cloud.create_task({"workflow": "student-work-index", "class_key": "all-classes",
                                   "assignment_key": key("workindexscope", [scope, ident])})
         request = "work-index-" + uuid.uuid4().hex
@@ -3429,7 +3471,7 @@ def refresh_work_index(token, write_token, config, *, before_source_write=None):
             requests.append({"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0,
                 "endRowIndex": len(prepared), "startColumnIndex": 0, "endColumnIndex": 13}}}})
             if before_source_write is not None:
-                before_source_write(required_seconds=MUTATION_READBACK_SECONDS)
+                before_source_write(required_seconds=MUTATION_SECONDS)
             try:
                 google.get_json(endpoint + ":batchUpdate", write_token, method="POST", body={"requests": requests})
             except google.GoogleError:
@@ -3444,8 +3486,6 @@ def refresh_work_index(token, write_token, config, *, before_source_write=None):
         result = {"configured": True, "status": "held" if data["holds"] else "verified", "url": config[WORK_INDEX_CONFIG],
                   "rows": len(data["rows"]), "retained_manual_rows": len(manual), "summary": data["summary"], "holds": data["holds"],
                   "changed": changed, "checked_at": data["checked_at"], "coverage": data["coverage"]}
-        if before_source_write is not None:
-            before_source_write(required_seconds=MUTATION_READBACK_SECONDS)
         doc_key = key("workindexreceipt", [scope, ident]); _put(port, doc_key, result, _read(port, doc_key))
         cloud.finish(claim, records={"work_index": result})
         return result
