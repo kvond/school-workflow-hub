@@ -1522,9 +1522,7 @@ async function loadRecords() {
     const data = await getJSON('api/dashboard/records');
     if (seq !== dashboard.recordsSeq) return;
     if (data?.schema_version !== 'hub-dashboard-records/v1' || !Array.isArray(data.records)) throw new Error('The configured record links could not be verified.');
-    // The independent verified publication below owns the feedback link. The
-    // legacy configured checklist may have been retired; do not offer both.
-    const allowed = ['operations', 'model_trials', 'model_trials_folder', 'agenda', 'work_index', 'growth_report', 'biology_analysis', 'system_notes'];
+    const allowed = ['operations', 'model_trials', 'model_trials_folder', 'agenda', 'work_index', 'feedback_checklist', 'growth_report', 'biology_analysis', 'system_notes'];
     const items = allowed.map(key => data.records.find(item => item?.key === key)).filter(Boolean);
     directory.replaceChildren(el('ul', {class: 'record-links'}, items.map(item => {
       const url = item.configured === true && recordURL(item.url);
