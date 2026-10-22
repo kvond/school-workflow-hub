@@ -175,6 +175,31 @@ No Drive content, location, identity, source revision, grading or teacher decisi
 changes. Uncertain CAS outcomes are read back, never blindly retried. Ordinary
 directory reads do not reconcile or mutate a version.
 
+`archive_metadata_reconciliation.preview` and `.reconcile` provide the separate
+trusted-host contract for an existing `named_native_original_archive` native
+copy or `authenticated_schoology_original` PDF/PNG. These records never pass
+through the joint-copy API. Preview checks the original kind's validator after
+an in-memory change of only its saved revision's `version`. Every other revision
+field, full permissions, properties, name, owner/index attachment and registered
+source role must still agree. Named copies require their frozen original
+revision and complete native/image proof; imported originals require their
+authenticated external receipt and exact saved SHA256/MD5/size proof. Today's
+original is never substituted for a historical proof or read as part of repair.
+
+Apply repeats the full proof before acquiring the class lease and requires its
+exact preview digest, attributed operator and current source-owner/cutoff guard.
+It preserves the complete prior artifact, including earlier history pointers,
+in a new immutable kind-specific history record. Only the existing artifact's
+saved revision version and reconciliation pointer change; the full unchanged
+owner/index records participate in the same CAS. Exact saved CAS and native
+metadata/destination readback precede the completion receipt. Unknown CAS
+outcomes get readback only, never another write attempt. Unchanged previews are
+read-only no-ops. Changed content, access, parent, provenance or ownership remain
+held. This API has no HTTP route and writes no Drive files, sharing, source
+content, feedback, Form events, grades or delivery marks. Deployment is not
+execution: any live apply requires the trusted existing safe-window owner and
+fresh record-specific preview/readback.
+
 Trusted morning callers may pass `before_source_write` to `archive_work` and
 its derived WorkIndex refresh. Each individual CAS, Drive mutation and Sheet
 batch reserves 60 seconds for that provider mutation and acknowledgement.
