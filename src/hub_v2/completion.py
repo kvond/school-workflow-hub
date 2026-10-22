@@ -1550,14 +1550,23 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
                 'scope': 'assignment', 'action': '%s · %s · Form %s: connect this Form to its own exact teacher sources in assignment setup, then refresh.'
                 % (class_key, week_label, form_id)}
     lesson = scoped_lesson
-    context = "%s · %s · %s" % (agenda.classes[class_key]["name"], week_label, lesson["topic"])
+    selected = [form for form in lesson["forms"] if form.get("form_id") == form_id]
+    label = " ".join(str(selected[0].get("label") or "").split()) if len(selected) == 1 else ""
+    title = work.assignment_title(label)
+    named = bool(label and not re.match(r"https?://", label, re.I)
+                 and work.norm(title) not in {"turnin", "turnitin", "upload", "submission"})
+    # A shared weekly topic is not the selected assignment's name. This affects
+    # diagnostic context only; original source ownership and policy stay intact.
+    assignment = title if named else (lesson["topic"] if len(lesson["forms"]) == 1 else "Form " + form_id)
+    context = "%s · %s · %s" % (agenda.classes[class_key]["name"], week_label, assignment)
+    context_scope = {"agenda_topic": lesson["topic"], "form_label": label, "form_id": form_id}
     hold = completion_holds.check(config, agenda, class_key, week_label, form_id)
     if hold["held"]:
-        return {**hold, "context": context, "problem": context + ": " + hold["problem"],
+        return {**hold, **context_scope, "context": context, "problem": context + ": " + hold["problem"],
                 "student_copies_checked": False, "scope": "assignment"}
     sources = scoped_lesson_sources(token, lesson, binding=binding, ownership=ownership)
     if sources["problem"]:
-        return {"status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson", "context": context,
+        return {**context_scope, "status": "NOT_READY", "code": "deck_not_ready", "label": "Cannot read lesson", "context": context,
                 "source_resolution": sources, "problem": context + ": " + sources["problem"],
                 **({"read_failure": sources["read_failure"]} if sources.get("read_failure") else {}),
                 "action": "Check this exact Agenda lesson folder and current deck links, then recheck; no title-based replacement was selected."}
@@ -1592,7 +1601,7 @@ def assignment_readiness(token, config, agenda, class_key, week_label, form_id):
             results.append({'status': 'NOT_READY', 'code': 'deck_not_ready', 'label': 'Cannot read lesson',
                             'problem': str(error)})
     failed = next((r for r in results if r["status"] != "READY"), None)
-    return {"status": "NOT_READY" if failed else "READY", "code": "deck_not_ready" if failed else None,
+    return {**context_scope, "status": "NOT_READY" if failed else "READY", "code": "deck_not_ready" if failed else None,
             "label": failed.get("label", "Needs check") if failed else "Ready",
             "scope": "assignment", "context": context, "student_copies_checked": False, "linked_decks": results,
             "source_resolution": sources,

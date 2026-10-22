@@ -23,7 +23,7 @@ from time import monotonic
 
 from . import google, work, named_archival_work
 from school_workflow_hub.adapters.firestore_state import configured_store
-from school_workflow_hub.core.cloud_state import CloudState, Conflict, StoreUnavailable, key
+from school_workflow_hub.core.cloud_state import CloudState, Conflict, LeaseLost, StoreUnavailable, instant, key
 from school_workflow_hub.core.runs import content_hash
 
 ROOT_CONFIG = "HUB_STUDENT_RECORDS_ROOT_FOLDER"
@@ -46,6 +46,14 @@ SOURCE_FIELDS = ",".join(f for f in FIELDS.split(",") if f not in {"permissions"
 MAX_STUDENTS, MAX_ITEMS = 500, 500
 MAX_SCANS, MAX_HOLDS = 100, 500
 LEASE_HEARTBEAT_SECONDS = 40
+# Reserve only one provider mutation and its acknowledgement (Drive <=35s,
+# Firestore <=20s). Authentication precedes guarded Firestore commits. Complete
+# ACL/native proof and later exact readback are read-only, not part of this
+# reservation; every subsequent mutation must obtain a fresh reservation.
+MUTATION_SECONDS = 60
+# The final class-lease read follows the shared source guard. It has its own
+# allowance, never spends the 60 seconds reserved for the provider mutation.
+FINAL_OWNER_CHECK_SECONDS = 60
 
 
 def _registered_navigation_parent(run, class_key, old):
@@ -328,11 +336,165 @@ def _verify_work_export(meta, record):
     return meta
 
 
+def _verify_joint_copy(meta, record, *, allow_version_drift=False):
+    """Preserve an existing exact teacher attribution; never manufacture one."""
+    _private(meta, parent=record.get("parent"))
+    props = meta.get("properties") or {}
+    if (meta.get("id") != record.get("drive_file_id") or meta.get("mimeType") not in work.STUDENT_WORK
+            or meta.get("mimeType") != record.get("mime") or props.get(TAG) != record.get("record_key")
+            or props.get("hubCopiedSource") != record.get("source_file_id")
+            or props.get("hubSharedSource") != record.get("shared_source_key")
+            or not re.fullmatch(r"sharedfeedbacksource_[a-f0-9]{64}", record.get("shared_source_key") or "")
+            or not re.fullmatch(r"[a-f0-9]{64}", record.get("copied_slide_content_sha256") or "")
+            or record.get("teacher_joint_attribution") is not True
+            or (not allow_version_drift and meta.get("version") != record.get("drive_version"))
+            or (record.get("copied_modified_at") and meta.get("modifiedTime") != record["copied_modified_at"])):
+        raise Held("An archived joint work copy changed or no longer matches its verified source.")
+    return meta
+
+
+def _joint_copy_snapshot(token, config, class_key, record_key):
+    """Read the frozen copied-content proof, never today's original submission."""
+    if not isinstance(record_key, str) or not re.fullmatch(r"archivejointworkcopy_[a-f0-9]{64}", record_key):
+        raise Held("Choose the exact existing attributed joint-copy record.")
+    actual_root, course = _location(token, config, class_key)
+    root, port = _scope_root(config, actual_root), configured_store(config)
+    index_key = key("archiveclass", [root, class_key])
+    initial = port.read([index_key, record_key])
+    index, doc = (initial.documents[k] for k in (index_key, record_key))
+    record = doc.value if doc else {}
+    owner_key = record.get("student_key")
+    if not isinstance(owner_key, str) or not re.fullmatch(r"archivestudent_[a-f0-9]{64}", owner_key):
+        raise Held("The joint copy's saved student identity is unavailable; preserve its history.")
+    owner_doc = _read(port, owner_key)
+    owner = owner_doc.value if owner_doc else {}
+    if (not index or index.value.get("schema") != SCHEMA or not doc or not owner_doc
+            or record.get("schema") != SCHEMA or record.get("status") != "verified"
+            or record.get("record_key") != record_key or record.get("class_key") != class_key
+            or record.get("kind") != "work" or record.get("source_kind") != "teacher_attributed_joint_copy"
+            or owner.get("schema") != SCHEMA or owner.get("status") != "verified"
+            or owner.get("record_key") != owner_key or owner.get("student_key") != owner_key
+            or owner.get("class_key", class_key) != class_key
+            or index.value.get("students", {}).get(owner_key) != owner.get("drive_file_id")
+            or owner.get("items", {}).get(record_key) != {"kind": "work", "date": record.get("date")}
+            or record.get("parent") != owner.get("drive_file_id")):
+        raise Held("The joint copy and its existing private owner/index do not agree.")
+    source = record.get("source_revision") or {}
+    frozen = record.get("native_content_proof") or {}
+    if (not isinstance(source, dict) or not isinstance(frozen, dict)
+            or record.get("mime") != "application/vnd.google-apps.presentation"
+            or source.get("id") != record.get("source_file_id") or source.get("mimeType") != record.get("mime")
+            or source.get("version") != record.get("source_version")
+            or source.get("modifiedTime") != record.get("source_modified_at")
+            or source.get("trashed") is not False or not source.get("modifiedTime")
+            or not record.get("copied_modified_at")
+            or set(frozen) != {"basis", "sha256", "slides", "image_instances"}
+            or frozen.get("basis") != "native_presentation/v1"
+            or not re.fullmatch(r"[a-f0-9]{64}", frozen.get("sha256") or "")
+            or type(frozen.get("slides")) is not int or not 1 <= frozen["slides"] <= 500
+            or type(frozen.get("image_instances")) is not int or frozen["image_instances"] < 0):
+        raise Held("The joint copy needs its saved full native-content proof and original revision; do not substitute the current original.")
+    section = _private(google.drive_file(token, owner["parent"], FIELDS), parent=course["id"], folder=True)
+    folder = _private(google.drive_file(token, owner["drive_file_id"], FIELDS), parent=section["id"], folder=True)
+    if (folder.get("properties") or {}).get(TAG) != owner_key:
+        raise Held("The joint copy's existing student folder identity changed.")
+    meta = _verify_joint_copy(google.drive_file(token, record["drive_file_id"], FIELDS), record, allow_version_drift=True)
+    if (not re.fullmatch(r"[1-9][0-9]*", str(meta.get("version") or ""))
+            or not re.fullmatch(r"[1-9][0-9]*", str(record.get("drive_version") or ""))
+            or int(meta["version"]) < int(record["drive_version"])):
+        raise Held("The joint copy's metadata revision moved backward or is unavailable.")
+    if _work_content(token, meta) != frozen:
+        raise Held("The joint copy differs from its frozen native content. Preserve both histories; metadata reconciliation cannot clear it.")
+    expected = {index_key: index, owner_key: owner_doc, record_key: doc}
+    after = port.read(list(expected))
+    if (after.documents != expected or google.drive_file(token, meta["id"], FIELDS) != meta
+            or google.drive_file(token, folder["id"], FIELDS) != folder
+            or google.drive_file(token, section["id"], FIELDS) != section):
+        raise Held("The joint copy or private ownership changed during verification. Preserve the prior record and reread.")
+    proof = {"class_key": class_key, "record_key": record_key, "copy_file_id": meta["id"],
+        "source_file_id": record["source_file_id"], "from_version": record["drive_version"],
+        "to_version": meta["version"], "native_content_proof": frozen,
+        "documents": {k: {"version": v.version, "sha256": content_hash(v.value)} for k, v in expected.items()},
+        "metadata_sha256": content_hash([course, section, folder, meta])}
+    preview = {"status": "unchanged" if meta["version"] == record["drive_version"] else "ready",
+        "revision": content_hash(proof), "proof": proof, "checked_at": after.read_time}
+    return preview, expected, meta
+
+
+def preview_joint_copy_reconciliation(token, config, class_key, record_key):
+    """Trusted read-only preview for one existing teacher-attributed work copy."""
+    return _joint_copy_snapshot(token, config, class_key, record_key)[0]
+
+
+def reconcile_joint_copy(token, write_token, config, class_key, record_key, *, expected_revision,
+                         actor, before_source_write):
+    """Reconcile metadata only after frozen native content and private readback.
+
+    A trusted host supplies the existing source-owner/cutoff guard. No HTTP
+    endpoint, Drive mutation, current-original comparison or grading is added.
+    Unknown CAS outcomes are read once, never blindly written a second time.
+    """
+    if (not callable(before_source_write) or not isinstance(actor, str) or not actor
+            or actor != _clean(actor, 200) or not isinstance(expected_revision, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_revision)):
+        raise Held("Joint-copy reconciliation requires its exact preview, attributed operator and current source-owner guard.")
+    # Full native/image/ACL proof can take longer than an archive lease. Finish
+    # it before acquiring that lease, then bookend its exact metadata and CAS
+    # versions again before the guarded mutation.
+    preview, documents, meta = _joint_copy_snapshot(token, config, class_key, record_key)
+    if preview["revision"] != expected_revision:
+        raise Conflict("The joint-copy reconciliation preview changed. Reread before applying.")
+    run = _Run(token, write_token, config, class_key, before_source_write=before_source_write)
+    if preview["status"] == "unchanged":
+        result = {"status": "verified", "class_key": class_key, "record_key": record_key, "changed": False}
+        run.finish(result)
+        return result
+    doc, proof = documents[record_key], preview["proof"]
+    history_key = key("archivejointreconciliation", [record_key, expected_revision])
+    if _read(run.port, history_key):
+        raise Held("This joint-copy reconciliation already has a receipt. Read its saved outcome before any further write.")
+    history = {"schema": "hub-joint-copy-reconciliation/v1", "record_key": history_key,
+        "class_key": class_key, "actor": actor, "verified_at": preview["checked_at"],
+        "preview_revision": expected_revision, "proof": proof, "before": doc.value,
+        "verified_copy_metadata": meta}
+    updated = {**doc.value, "drive_version": meta["version"], "last_metadata_reconciliation": history_key}
+    # CAS-check the unchanged owner/index alongside the one artifact update.
+    # Their full prior values are retained, never rebuilt from a partial listing.
+    desired = {k: v.value for k, v in documents.items()}
+    desired.update({record_key: updated, history_key: history})
+    fresh = google.drive_file(token, meta["id"], SOURCE_FIELDS)
+    if any(fresh.get(field) != meta.get(field) for field in SOURCE_FIELDS.split(",")):
+        raise Held("The joint copy changed after its native proof. Preserve the prior record and reread.")
+    if run.port.read(list(documents)).documents != documents:
+        raise Conflict("The joint copy's owner/index changed after its native proof. Reread before applying.")
+    run.heartbeat(force=True)
+    try:
+        run.port.commit({k: (v, documents[k].version if k in documents else None) for k, v in desired.items()})
+    except (Conflict, StoreUnavailable):
+        actual = run.port.read(list(desired)).documents
+        if any(actual.get(k) is None or actual[k].value != v for k, v in desired.items()):
+            raise
+    actual = run.port.read(list(desired)).documents
+    if any(actual.get(k) is None or actual[k].value != v for k, v in desired.items()):
+        raise StoreUnavailable("joint_copy_reconciliation_readback_unconfirmed")
+    after_meta = google.drive_file(token, meta["id"], FIELDS)
+    if after_meta != meta:
+        raise Held("The joint copy changed after the index save. Preserve the receipt and stop before further writes.")
+    _verify_joint_copy(after_meta, actual[record_key].value)
+    result = {"status": "verified", "class_key": class_key, "record_key": record_key, "changed": True,
+              "history_key": history_key, "from_version": proof["from_version"], "to_version": proof["to_version"]}
+    run.finish(result)
+    return result
+
+
 class Held(ValueError):
     pass
 
 
 def _problem(error):
+    if (isinstance(error, Conflict) and getattr(error, "source_operation_hold", None)
+            and isinstance(getattr(error, "source_operation_action", None), str)):
+        return _clean(error.source_operation_action, 400)
     if isinstance(error, Conflict):
         return "Another student-records operation is running or its index changed. Reload after it finishes."
     if isinstance(error, StoreUnavailable):
@@ -853,23 +1015,82 @@ def _source_id(url):
     return None
 
 
+class _GuardedPort:
+    """Guard each actual data CAS, including individual CloudState retries.
+
+    This wraps only the archive data port. The supplied source guard owns a
+    separate unwrapped control port, so its lease renewals cannot recurse.
+    """
+    def __init__(self, port, before_source_write):
+        if not callable(getattr(port, "commit_guarded", None)):
+            raise Held("The private archive store does not support guarded writes. Preserve the records until that capability is available.")
+        self.port, self.before_source_write, self.stopped = port, before_source_write, None
+        self.current_claim = None
+
+    def read(self, ids):
+        if self.stopped is not None:
+            raise self.stopped
+        return self.port.read(ids)
+
+    def check_write(self):
+        if self.stopped is not None:
+            raise self.stopped
+        try:
+            allowance = FINAL_OWNER_CHECK_SECONDS if self.current_claim is not None else 0
+            self.before_source_write(required_seconds=MUTATION_SECONDS + allowance)
+            # The shared guard can itself be slow. Only this fresh server read,
+            # after that guard, can establish the archive/index lease is still
+            # owned. Its full elapsed response/auth time also spends allowance.
+            if self.current_claim is not None:
+                began = monotonic()
+                claim = self.current_claim()
+                snapshot = self.port.read([claim.task_id])
+                elapsed = max(0, monotonic() - began)
+                task = snapshot.documents[claim.task_id]
+                if task is None:
+                    raise LeaseLost("archive_task_unavailable_before_write")
+                CloudState._owns(claim, task.value, snapshot.read_time)
+                remaining = (instant(task.value["expires_at"]) - instant(snapshot.read_time)).total_seconds() - elapsed
+                if elapsed > allowance or remaining < MUTATION_SECONDS:
+                    raise LeaseLost("archive_lease_too_short_before_write")
+        except Exception as error:
+            # CloudState may retry a CAS conflict. The next read preserves this
+            # exact ownership failure instead of retrying/diluting it.
+            self.stopped = error
+            raise
+
+    def commit(self, changes):
+        return self.port.commit_guarded(changes, before_write=self.check_write)
+
+
+def _guarded_port(port, before_source_write):
+    return _GuardedPort(port, before_source_write) if before_source_write is not None else port
+
+
 class _Run:
-    def __init__(self, token, write_token, config, cls):
+    def __init__(self, token, write_token, config, cls, *, before_source_write=None):
         self.token, self.write_token, self.config, self.cls = token, write_token, config, cls
+        self.before_source_write = before_source_write
         self.actual_root, self.course = _location(token, config, cls, write=True)
         self.root = _scope_root(config, self.actual_root)
-        self.port = configured_store(config)
+        self.port = _guarded_port(configured_store(config), before_source_write)
         self.cloud = CloudState(self.port)
         task = self.cloud.create_task({"workflow": "student-archive", "class_key": cls,
                                       "assignment_key": key("archivescope", self.root)})
         request = "archive-" + uuid.uuid4().hex
         self.claim = self.cloud.claim(task, owner="student-archive", request_id=request,
                                       input_hash=content_hash([self.root, cls, request]))
+        if isinstance(self.port, _GuardedPort):
+            self.port.current_claim = lambda: self.claim
         self._renewed_at, self._lease_error = monotonic(), None
         self.index_key = key("archiveclass", [self.root, cls])
         self.student_records = None
         self.feedback_students = set()
         self.feedback_checklists = None
+
+    def _before_write(self):
+        if isinstance(self.port, _GuardedPort):
+            self.port.check_write()
 
     def renew(self):
         if self._lease_error is not None:
@@ -944,6 +1165,7 @@ class _Run:
             if existing:
                 raise Held("An existing archive folder or record has no confirmed index. Preserve it for identity review.")
             self.renew()
+            self._before_write()
             record = {"schema": SCHEMA, "record_key": ident,
                       "drive_file_id": google.archive_file_id(self.write_token, shortcut=mime == SHORTCUT),
                       "status": "reserved", **expected, **(attributes or {})}
@@ -969,6 +1191,7 @@ class _Run:
             creation_error = None
             known_quota = False
             self.renew()
+            self._before_write()
             try:
                 google.archive_create(self.write_token, metadata, pdf if pdf is not None else media)
             except google.GoogleError as error:
@@ -996,6 +1219,7 @@ class _Run:
             raise Held("This exported work snapshot changed after filing. Its original work is preserved.")
         if mime != PDF and meta.get("name") != name:
             self.renew()
+            self._before_write()
             try:
                 google.rename_item(self.write_token, file_id, name)
             except google.GoogleError:
@@ -1100,15 +1324,8 @@ class _Run:
             _verify_work_copy(copy_meta, copied)
         elif copied["source_kind"] == "submitted_work_export":
             _verify_work_export(copy_meta, copied)
-        elif ((copy_meta.get("properties") or {}).get(TAG) != copy_key
-              or (copy_meta.get("properties") or {}).get("hubCopiedSource") != copied["source_file_id"]
-              or (copy_meta.get("properties") or {}).get("hubSharedSource") != copied.get("shared_source_key")
-              or not re.fullmatch(r"sharedfeedbacksource_[a-f0-9]{64}", copied.get("shared_source_key") or "")
-              or copy_meta.get("mimeType") != copied.get("mime")
-              or copy_meta.get("version") != copied.get("drive_version")
-              or copied.get("teacher_joint_attribution") is not True
-              or not re.fullmatch(r"[a-f0-9]{64}", copied.get("copied_slide_content_sha256") or "")):
-            raise Held("The attributed joint copy needs its verified private content before cleanup.")
+        else:
+            _verify_joint_copy(copy_meta, copied)
         source = google.drive_file(self.token, shortcut["source_file_id"], SOURCE_FIELDS)
         if (source.get("trashed") is not False or source.get("mimeType") not in work.STUDENT_WORK
                 or str(source.get("version")) != str(copied.get("source_version"))
@@ -1136,6 +1353,7 @@ class _Run:
             raise Held("This source link changed or left its verified private folders. No cleanup was applied.")
         if meta["parents"] != [navigation["drive_file_id"]]:
             self.renew()
+            self._before_write()
             try:
                 google.move_item(self.write_token, meta["id"], navigation["drive_file_id"], meta["parents"])
             except google.GoogleError:
@@ -1204,6 +1422,7 @@ class _Run:
                       "copy_requested_at": datetime.now(timezone.utc).isoformat()}
             self.renew()
             old = self.put(ident, record)
+            self._before_write()
             try:
                 copied = google.get_json("https://www.googleapis.com/drive/v3/files/%s/copy" % quote(source["id"]),
                     self.write_token, {"supportsAllDrives": "true", "fields": "id"}, method="POST", body={
@@ -1360,6 +1579,7 @@ class _Run:
                             parent=old_parent, folder=True)
             old_section = _private(google.drive_file(self.token, old_parent, FIELDS), parent=self.course["id"], folder=True)
             self.renew()
+            self._before_write()
             try:
                 google.move_item(self.write_token, meta["id"], section["drive_file_id"], [old_section["id"]])
             except google.GoogleError:
@@ -1527,14 +1747,20 @@ def record_filing_receipt(token, write_token, config, class_key, found, result):
         raise
 
 
-def archive_work(token, write_token, config, class_key, found):
+def archive_work(token, write_token, config, class_key, found, *, before_source_write=None):
+    """File an exact source scan; trusted morning callers supply their write guard.
+
+    The optional callback is checked immediately before writes, including the
+    derived index. It is not an HTTP/configuration switch and does not change
+    the separately owned feedback filing path.
+    """
     if not enabled(config):
         return _result(class_key, configured=False, status="unconfigured")
     result = _result(class_key)
     run = None
     try:
         _scan_scope(class_key, found)
-        run = _Run(token, write_token, config, class_key)
+        run = _Run(token, write_token, config, class_key, before_source_write=before_source_write)
         roster_rows, source_metadata = None, {}
 
         def roster_reader():
@@ -1758,7 +1984,7 @@ def archive_work(token, write_token, config, class_key, found):
                 run.finish(result)
             except (Conflict, StoreUnavailable):
                 pass
-    result["index_sync"] = refresh_work_index(token, write_token, config)
+    result["index_sync"] = refresh_work_index(token, write_token, config, before_source_write=before_source_write)
     return result
 
 
@@ -2428,7 +2654,13 @@ def _batch_read(port, ids):
     return result
 
 
-def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
+def _indexed(token, config, cls, *, feedback_only=False, include_history=False, history_holds=None):
+    """Verify archived records; only the read-only directory may collect gaps.
+
+    Complete-history consumers leave history_holds unset and still fail closed.
+    Collecting a per-student gap neither retires its index entry nor establishes
+    current roster membership. Provider/index failures remain whole-read holds.
+    """
     actual_root, course = _location(token, config, cls)
     root = _scope_root(config, actual_root)
     port = configured_store(config)
@@ -2489,60 +2721,74 @@ def _indexed(token, config, cls, *, feedback_only=False, include_history=False):
         pool.shutdown(wait=True, cancel_futures=True)
     output = []
     for student, student_items in checked:
-        _private(metadata[student["parent"]], parent=course["id"], folder=True)
-        _private(metadata[student["drive_file_id"]], parent=student["parent"], folder=True)
-        artifacts = []
-        for item_id in student_items:
-            item = documents.get(item_id)
-            if not item or item.value.get("status") != "verified":
-                raise Held("An archived record has not been verified yet.")
-            artifact = dict(item.value)
-            if feedback_only and artifact["kind"] != "feedback":
-                continue
-            meta = (_feedback_file(token, root, course, student, artifact, metadata) if artifact["kind"] == "feedback"
-                    else _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"]))
-            if artifact.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE} and (meta.get("properties") or {}).get(TAG) != item_id:
-                raise Held("An archived record no longer matches its private index.")
-            if artifact["kind"] == "feedback":
-                if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
-                    raise Held("An archived feedback PDF changed and needs review.")
-                artifact["drive_version"] = meta.get("version")
-                if not _feedback_replacement_ready(token, root, course, student, artifact, documents, metadata):
+        artifact = None
+        try:
+            _private(metadata[student["parent"]], parent=course["id"], folder=True)
+            _private(metadata[student["drive_file_id"]], parent=student["parent"], folder=True)
+            artifacts = []
+            for item_id in student_items:
+                item = documents.get(item_id)
+                if not item or item.value.get("status") != "verified":
+                    raise Held("An archived record has not been verified yet.")
+                artifact = dict(item.value)
+                if feedback_only and artifact["kind"] != "feedback":
                     continue
-                if artifact.get("superseded_by"):
-                    _feedback_successor(token, root, course, student, artifact, documents, metadata)
-                    artifact["supersession_verified"] = True
-                    if not include_history:
+                meta = (_feedback_file(token, root, course, student, artifact, metadata) if artifact["kind"] == "feedback"
+                        else _private(metadata[artifact["drive_file_id"]], parent=student["drive_file_id"]))
+                if artifact.get("source_kind") not in {IMPORTED_ORIGINAL, NAMED_ARCHIVE} and (meta.get("properties") or {}).get(TAG) != item_id:
+                    raise Held("An archived record no longer matches its private index.")
+                if artifact["kind"] == "feedback":
+                    if meta.get("mimeType") != PDF or meta.get("md5Checksum") != artifact.get("pdf_md5"):
+                        raise Held("An archived feedback PDF changed and needs review.")
+                    artifact["drive_version"] = meta.get("version")
+                    if not _feedback_replacement_ready(token, root, course, student, artifact, documents, metadata):
                         continue
-            elif artifact.get("source_kind") == "teacher_attributed_joint_copy":
-                if (meta.get("mimeType") not in work.STUDENT_WORK
-                        or meta.get("mimeType") != artifact.get("mime")
-                        or meta.get("version") != artifact.get("drive_version")
-                        or (meta.get("properties") or {}).get("hubCopiedSource") != artifact.get("source_file_id")
-                        or (meta.get("properties") or {}).get("hubSharedSource") != artifact.get("shared_source_key")
-                        or not re.fullmatch(r"sharedfeedbacksource_[a-f0-9]{64}", artifact.get("shared_source_key") or "")
-                        or not re.fullmatch(r"[a-f0-9]{64}", artifact.get("copied_slide_content_sha256") or "")
-                        or artifact.get("teacher_joint_attribution") is not True):
-                    raise Held("An archived joint work copy changed or no longer matches its verified source.")
-            elif artifact.get("source_kind") == "submitted_work_copy":
-                _verify_work_copy(meta, artifact)
-            elif artifact.get("source_kind") == "submitted_work_export":
-                _verify_work_export(meta, artifact)
-            elif artifact.get("source_kind") == IMPORTED_ORIGINAL:
-                _verify_imported_original(meta, artifact)
-            elif artifact.get("source_kind") == NAMED_ARCHIVE:
-                named_archival_work.verify(meta, artifact, scope=root)
-            elif (meta.get("mimeType") != SHORTCUT
-                  or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
-                raise Held("An archived work shortcut no longer points to its verified source.")
-            artifacts.append(artifact)
-        # The original link is carried on the copy's source_file_id. Keeping
-        # both in the private CAS history must not double the displayed work.
-        copied_sources = {a.get("source_file_id") for a in artifacts
-                          if a.get("source_kind") in {"submitted_work_copy", "submitted_work_export", "teacher_attributed_joint_copy"}}
-        artifacts = [a for a in artifacts if not (a["kind"] == "work" and a.get("mime") == SHORTCUT
-                                                  and a.get("source_file_id") in copied_sources)]
-        output.append((student, artifacts))
+                    if artifact.get("superseded_by"):
+                        _feedback_successor(token, root, course, student, artifact, documents, metadata)
+                        artifact["supersession_verified"] = True
+                        if not include_history:
+                            continue
+                elif artifact.get("source_kind") == "teacher_attributed_joint_copy":
+                    _verify_joint_copy(meta, artifact)
+                elif artifact.get("source_kind") == "submitted_work_copy":
+                    _verify_work_copy(meta, artifact)
+                elif artifact.get("source_kind") == "submitted_work_export":
+                    _verify_work_export(meta, artifact)
+                elif artifact.get("source_kind") == IMPORTED_ORIGINAL:
+                    _verify_imported_original(meta, artifact)
+                elif artifact.get("source_kind") == NAMED_ARCHIVE:
+                    named_archival_work.verify(meta, artifact, scope=root)
+                elif (meta.get("mimeType") != SHORTCUT
+                      or (meta.get("shortcutDetails") or {}).get("targetId") != artifact["source_file_id"]):
+                    raise Held("An archived work shortcut no longer points to its verified source.")
+                artifacts.append(artifact)
+            # The original link is carried on the copy's source_file_id. Keeping
+            # both in the private CAS history must not double the displayed work.
+            copied_sources = {a.get("source_file_id") for a in artifacts
+                              if a.get("source_kind") in {"submitted_work_copy", "submitted_work_export", "teacher_attributed_joint_copy"}}
+            artifacts = [a for a in artifacts if not (a["kind"] == "work" and a.get("mime") == SHORTCUT
+                                                      and a.get("source_file_id") in copied_sources)]
+            output.append((student, artifacts))
+        except (Held, google.GoogleError) as error:
+            if history_holds is None:
+                raise
+            history_holds.append({"student_key": student["student_key"], "name": student["name"],
+                "section": student["section"], "folder_id": student["drive_file_id"],
+                "folder_url": student["url"], "status": "unverified", "problem": _problem(error),
+                **({"record_key": artifact["record_key"], "file_id": artifact["drive_file_id"],
+                    "file_url": artifact["url"], "week": artifact.get("week"),
+                    "assignment": artifact.get("assignment"), "source_file_id": artifact.get("source_file_id")}
+                   if artifact else {})})
+    if history_holds is not None:
+        # A partial directory is useful only when every saved ownership binding
+        # survived the read. Never make a moving/partial CAS snapshot look like
+        # a permanent unavailable student or a complete current roster.
+        before = {**students, **documents}
+        after = _batch_read(port, list(before))
+        current_index = _read(port, key("archiveclass", [root, cls]))
+        if (set(after) != set(before) or any(after[ident] != doc for ident, doc in before.items())
+                or current_index != index):
+            raise Held("The private class archive index changed during verification. Existing records are preserved.")
     return course, output
 
 
@@ -2599,11 +2845,15 @@ def archive_listing(token, config, class_key, section=None):
     base = {"schema": SCHEMA, "class_key": class_key, "class_name": CLASSES.get(class_key, ""),
             "configured": enabled(config), "status": "unconfigured", "students": [],
             "filing": {"scans": [], "held_count": 0, "coverage": "unverified"},
-            "teacher_reports_url": None, "problems": [], "counts": {"students": 0, "work": 0, "feedback": 0, "held": 0}}
+            "teacher_reports_url": None, "problems": [], "history_holds": [], "history_coverage": "unverified",
+            "counts": {"students": 0, "work": 0, "feedback": 0, "held": 0}}
     if not base["configured"]:
         return base
     try:
-        course, indexed = _indexed(token, config, class_key, include_history=True)
+        history_holds = []
+        course, indexed = _indexed(token, config, class_key, include_history=True, history_holds=history_holds)
+        base["history_holds"] = [hold for hold in history_holds if not section or hold["section"] == section]
+        base["history_coverage"] = "partial_indexed_history" if base["history_holds"] else "verified_indexed_history"
         canonical = _roster(config)
         for student, artifacts in indexed:
             if section and student["section"] != section:
@@ -2646,6 +2896,11 @@ def archive_listing(token, config, class_key, section=None):
             base.update(status="held", problems=[_problem(error)])
             base["counts"]["held"] = 1
             base["filing"] = {"scans": [], "held_count": 1, "coverage": "unverified"}
+        if base["history_holds"]:
+            base["status"] = "held"
+            base["counts"]["held"] += len(base["history_holds"])
+            base["problems"].append("Some indexed student histories remain unavailable. "
+                "Only independently verified folders and records are listed; no history was removed.")
         raw = config.get("HUB_TEACHER_REPORTS_COURSE_FOLDERS")
         if raw:
             folders = json.loads(raw)
@@ -2660,7 +2915,7 @@ def archive_listing(token, config, class_key, section=None):
                 _private(google.drive_file(token, matches[0]["id"], FIELDS), parent=course["id"], folder=True)
                 base["teacher_reports_url"] = _url(matches[0]["id"], True)
     except (Held, google.GoogleError, Conflict, StoreUnavailable, ValueError, TypeError) as error:
-        base.update(status="held", students=[], problems=[_problem(error)],
+        base.update(status="held", students=[], problems=[_problem(error)], history_holds=[], history_coverage="unverified",
                     counts={"students": 0, "work": 0, "feedback": 0, "held": 1})
     return base
 
@@ -3167,7 +3422,7 @@ def _index_layout(cells, generated, *, imported_anchor_feedback=None):
     return prepared, manual
 
 
-def refresh_work_index(token, write_token, config):
+def refresh_work_index(token, write_token, config, *, before_source_write=None):
     """Refresh keyed records, retaining keyed notes and untouched manual rows."""
     claim = cloud = None
     try:
@@ -3191,11 +3446,13 @@ def refresh_work_index(token, write_token, config):
                     "problem": "The index was not refreshed because complete archived history could not be read for: "
                                + unavailable + ". Existing Sheet rows are preserved."}
         _private(google.drive_file(token, ident, FIELDS), parent=root)
-        port = configured_store(config); cloud = CloudState(port)
+        port = _guarded_port(configured_store(config), before_source_write); cloud = CloudState(port)
         task = cloud.create_task({"workflow": "student-work-index", "class_key": "all-classes",
                                   "assignment_key": key("workindexscope", [scope, ident])})
         request = "work-index-" + uuid.uuid4().hex
         claim = cloud.claim(task, owner="student-work-index", request_id=request, input_hash=content_hash([ident, request]))
+        if isinstance(port, _GuardedPort):
+            port.current_claim = lambda: claim
         endpoint = "https://sheets.googleapis.com/v4/spreadsheets/" + quote(ident)
         read_params = {"ranges": "Records!A1:N%d" % (INDEX_ROW_LIMIT + 1), "includeGridData": "true",
             "fields": "spreadsheetId,sheets(properties,data(startRow,startColumn,rowData(values(userEnteredValue,note,textFormatRuns,userEnteredFormat,dataValidation))))"}
@@ -3238,6 +3495,8 @@ def refresh_work_index(token, write_token, config):
                     "startColumnIndex": 0, "endColumnIndex": 14}, "rows": rows[start:end], "fields": "userEnteredValue"}})
             requests.append({"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0,
                 "endRowIndex": len(prepared), "startColumnIndex": 0, "endColumnIndex": 13}}}})
+            if isinstance(port, _GuardedPort):
+                port.check_write()
             try:
                 google.get_json(endpoint + ":batchUpdate", write_token, method="POST", body={"requests": requests})
             except google.GoogleError:

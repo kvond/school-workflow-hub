@@ -241,5 +241,40 @@ class AuditReadabilityTests(unittest.TestCase):
         self.assertEqual(result['readability']['mime'], google.PPTX)
 
 
+class AssignmentDiagnosticContextTests(unittest.TestCase):
+    def check(self, label):
+        from types import SimpleNamespace
+        from hub_v2 import completion_holds, work
+        lesson = {'topic': 'Searching and Photographing', 'materials': [], 'forms': [
+            {'form_id': 'FictionalSiblingForm001', 'label': 'Searching — Turn in'},
+            {'form_id': FORM, 'label': label}]}
+        agenda = SimpleNamespace(classes={'forensics': {'name': 'Forensics'}},
+                                 lessons=lambda cls, week: [deepcopy(lesson)])
+        with patch.object(work, 'assignment_policy', return_value={}), \
+             patch.object(work, 'form_teacher_sources', return_value={'teacher_ids': [TEMPLATE]}), \
+             patch.object(completion, 'form_source_ownership', return_value=None), \
+             patch.object(completion_holds, 'check', return_value={'held': False}), \
+             patch.object(completion, 'scoped_lesson_sources', return_value={
+                 'problem': 'The native teacher source has collapsed geometry.', 'decks': []}):
+            result = completion.assignment_readiness('read', {}, agenda, 'forensics', 'Wk 04', FORM)
+        self.assertEqual(lesson['topic'], 'Searching and Photographing')
+        self.assertEqual(result['status'], 'NOT_READY')
+        self.assertEqual(result['agenda_topic'], lesson['topic'])
+        self.assertEqual(result['form_id'], FORM)
+        return result
+
+    def test_exact_selected_form_names_shared_week_diagnostic_without_rewriting_topic(self):
+        result = self.check('📤 Sketching the Scene — Turn in')
+        self.assertEqual(result['context'], 'Forensics · Wk 04 · Sketching the Scene')
+        self.assertTrue(result['problem'].startswith(result['context']))
+        self.assertNotIn('Searching', result['problem'])
+
+    def test_generic_or_raw_form_label_cannot_inherit_sibling_lesson_name(self):
+        for label in ('', 'Turn in', 'https://docs.google.com/forms/d/' + FORM + '/edit'):
+            with self.subTest(label=label):
+                result = self.check(label)
+                self.assertEqual(result['context'], 'Forensics · Wk 04 · Form ' + FORM)
+
+
 if __name__ == '__main__':
     unittest.main()
