@@ -986,11 +986,13 @@ def student_day_date_check(headings, lesson):
     A yearless date is bound only inside this exact lesson week. Dates outside
     that window may belong to another part of a multiweek deck; never move them.
     """
+    result = {"status": "checked", "candidates": len(headings), "checked": 0,
+              "unverified": [], "findings": [], "scope": "Current lesson-week calendar compatibility only"}
+    if not headings:
+        return result
     monday = date.fromisoformat(lesson["monday"])
     dates = [monday + timedelta(days=i) for i in range(7)]
     by_date = {d["date"]: d for d in lesson["days"]}
-    result = {"status": "checked", "candidates": len(headings), "checked": 0,
-              "unverified": [], "findings": [], "scope": "Current lesson-week calendar compatibility only"}
     for heading in headings:
         proof = dict(heading)
         when = None
