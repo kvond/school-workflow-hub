@@ -12,6 +12,7 @@ import json
 import re
 import unicodedata
 
+from . import roster_status
 from .google_sheets import SheetsReader, SheetsReadError
 from .hosted_agenda import ConnectionError, service_token
 
@@ -91,14 +92,22 @@ def read_roster_snapshot(config):
     roster_id = str(config.get("HUB_ROSTER_SPREADSHEET_ID") or "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{20,128}", roster_id):
         raise ConnectionError("roster_source_not_configured")
+    status_columns = roster_status.configured_columns(config, [s for v in CLASS_TABS.values() for s in v])
     try:
         reader = SheetsReader(service_token(
             config.get("HUB_READER_SERVICE_ACCOUNT", "")))
         metadata = reader.read(roster_id)
         tabs = _tab_mapping(metadata, config)
-        ranges = tuple("'" + tabs[tab].replace("'", "''") + "'!A1:B200"
+        ranges = tuple("'" + tabs[tab].replace("'", "''") + "'!A1:%s200" % chr(64 + status_columns.get(tab, 2))
                        for names in CLASS_TABS.values() for tab in names)
-        data = reader.read(roster_id, ranges)
+        if not status_columns:
+            data = reader.read(roster_id, ranges)
+        else:
+            # Keep the bounded Sheets reader's per-request cell limit. Status
+            # columns may be beyond teacher columns; parse only owned fields.
+            data = {"sheets": []}
+            for cell_range in ranges:
+                data["sheets"].extend(reader.read(roster_id, (cell_range,))["sheets"])
         returned = [s.get("properties", {}).get("title") for s in data.get("sheets", [])]
         if any(returned.count(title) != 1 for title in tabs.values()):
             raise ConnectionError("roster_source_unavailable")
@@ -110,7 +119,7 @@ def read_roster_snapshot(config):
         raise ConnectionError("roster_source_unavailable") from None
 
     layouts = _mapping(config, "HUB_ROSTER_COLUMN_LAYOUTS")
-    entries = parse_roster(data, tab_mapping=tabs, column_layouts=layouts)
+    entries = parse_roster(data, tab_mapping=tabs, column_layouts=layouts, status_columns=status_columns)
     ids = _mapping(config, "HUB_ROSTER_SECTION_IDS")
     sections, missing, seen_ids = [], [], set()
     for class_key, names in CLASS_TABS.items():
@@ -134,7 +143,7 @@ def read_roster(config):
     return read_roster_snapshot(config)["entries"]
 
 
-def parse_roster(data, *, tab_mapping=None, column_layouts=None):
+def parse_roster(data, *, tab_mapping=None, column_layouts=None, status_columns=None):
     """Explicitly accept Last/First headers, headerless pairs and Last, First.
 
     Configured section headings can introduce another section of the same
@@ -143,6 +152,7 @@ def parse_roster(data, *, tab_mapping=None, column_layouts=None):
     Blank rows do not terminate a roster. Malformed populated rows fail closed.
     """
     tables = _rows(data)
+    status_columns = status_columns or {}
     tab_mapping, column_layouts = tab_mapping or {}, column_layouts or {}
     known_sections = {tab for tabs in CLASS_TABS.values() for tab in tabs}
     if (set(column_layouts) - known_sections or any(layout not in {
@@ -155,9 +165,16 @@ def parse_roster(data, *, tab_mapping=None, column_layouts=None):
         for tab in tabs:
             actual_tab = tab_mapping.get(tab, tab)
             section, block, declared = tab, [], False
+            status_column = status_columns.get(tab)
+            if status_column:
+                header = dict(tables.get(actual_tab, [])).get(1, [])
+                roster_status.require_header(header[status_column-1] if len(header) >= status_column else None)
             column_layout = column_layouts.get(tab, "last_first_columns")
             for position, cells in tables.get(actual_tab, []):
                 cells = [c.strip() for c in cells]
+                status = cells[status_column-1] if status_column and len(cells) >= status_column else ""
+                if status_column:
+                    cells = cells[:2]
                 if not any(cells):
                     continue
                 last, first = (cells + ["", ""])[:2]
@@ -171,6 +188,8 @@ def parse_roster(data, *, tab_mapping=None, column_layouts=None):
                     if block or declared:
                         blocks.append((class_key, section, actual_tab, block))
                     section, block, declared = heading[1], [], True
+                    if status_columns.get(section) != status_column:
+                        raise ConnectionError("roster_status_mixed_section_layout")
                     column_layout = column_layouts.get(section, "last_first_columns")
                     continue
                 if ({last_norm, first_norm} == {"last name", "first name"}
@@ -195,6 +214,8 @@ def parse_roster(data, *, tab_mapping=None, column_layouts=None):
                 if (not last or not first or any(cells[2:])
                         or not _first_base(first) or not _norm(last)):
                     raise ConnectionError("roster_layout_needs_review")
+                if status_column and not roster_status.active_status(status):
+                    continue
                 first_key, last_key = _first_base(first), _norm(last)
                 digest = hashlib.sha256(
                     ("roster|" + class_key + "|" + section + "|" + first_key + "|" +
