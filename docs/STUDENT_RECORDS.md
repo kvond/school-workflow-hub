@@ -148,6 +148,53 @@ intact.
 `GET /v2/api/student-records?class=<class>` reads verified indexed records.
 It performs no Drive writes and does not depend on Agenda availability.
 
+The read-only directory isolates a failed student history only after its saved
+class/owner/index bindings have passed stable CAS bookends. It returns
+`history_coverage: partial_indexed_history`, exact private `history_holds`, and
+only independently verified student folders/artifacts; a trashed folder is not
+an inferred withdrawal or permission to restore, erase or replace history.
+Provider-wide reads and invalid/changed indexes remain whole-read failures.
+Complete-history consumers, including feedback discovery and WorkIndex refresh,
+retain strict reads and cannot overwrite a Sheet with this partial directory.
+
+`preview_joint_copy_reconciliation` and `reconcile_joint_copy` are trusted-host
+operations for one already teacher-attributed native work copy. A Drive version
+change alone is not a new teaching decision. The preview requires the saved
+`native_presentation/v1` full-content proof, copied modification timestamp,
+original revision, exact private folder/owner and source tags. It reads the
+copy's complete native structure and image content against that frozen proof,
+never against today's original. Missing methods/proof, changed content,
+modified timestamps, access, ownership or concurrent CAS changes remain held.
+The apply call completes its full read-only proof before acquiring a class
+lease, then bookends the saved record/owner/index and exact Drive metadata.
+It requires the exact fresh preview digest, an attributed operator,
+and the existing source-owner/cutoff callback. It atomically preserves the prior
+artifact in immutable reconciliation history while changing only its verified
+Drive version and history pointer; unchanged owner/index values are CAS-checked.
+No Drive content, location, identity, source revision, grading or teacher decision
+changes. Uncertain CAS outcomes are read back, never blindly retried. Ordinary
+directory reads do not reconcile or mutate a version.
+
+Trusted morning callers may pass `before_source_write` to `archive_work` and
+its derived WorkIndex refresh. Each individual CAS, Drive mutation and Sheet
+batch reserves 60 seconds for that provider mutation and acknowledgement.
+Firestore acquires its token before checking the callback, and checks again for
+each individual CAS attempt, including CloudState contention retries. The
+source guard's own control/lease port remains unwrapped to prevent recursion.
+After the shared guard, every owned archive/index mutation freshly verifies its
+class task, run, owner, fence and remaining lease. This final server read has a
+separate 60-second allowance; elapsed authentication/response time is deducted
+from both that allowance and the local lease. Expiry, takeover or less than the
+full mutation budget stops the write, without renewing an expired claim.
+Complete paginated ACL checks, native-content proof and exact saved readback are
+read-only and may continue beyond a reservation; every later write obtains a
+new reservation. No prior guard authorizes a later write after those long reads.
+The guard must renew a sufficient live lease and refuse a mutation that cannot
+finish before the cutoff. Separate feedback callers keep their
+existing ownership. Supplying this hook is
+not proof that every external writer participates or that a live archive run
+finished before the cutoff.
+
 `POST /v2/api/student-records/archive` accepts only `class` and the exact
 registered Agenda `week`. It requires teacher authentication and an allowed
 same-origin JSON request, reloads source evidence and files eligible work.

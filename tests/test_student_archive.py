@@ -27,6 +27,13 @@ PERMISSIONS = [{"type": "user", "role": "owner", "emailAddress": "reader@fiction
                {"type": "user", "role": "writer", "emailAddress": "teacher@school.example"}]
 REAL_ARCHIVE_CREATE = google.archive_create
 REAL_ARCHIVE_FILE_ID = google.archive_file_id
+REAL_DRIVE_FILE = google.drive_file
+
+
+class GuardedMemoryCAS(MemoryCAS):
+    def commit_guarded(self, changes, *, before_write):
+        before_write()
+        return self.commit(changes)
 
 
 class FakeDrive:
@@ -172,7 +179,7 @@ class StudentArchiveTests(unittest.TestCase):
             self.assertEqual(result["feedback_date_basis"], "unverified")
 
     def setUp(self):
-        self.drive, self.port, self.config = FakeDrive(), MemoryCAS(), config()
+        self.drive, self.port, self.config = FakeDrive(), GuardedMemoryCAS(), config()
         self.patches = [patch.object(student_feedback_checklist, "refresh_run", return_value={"status": "verified"}),
                         patch.object(archive, "configured_store", return_value=self.port),
                         patch.object(google, "drive_file", side_effect=self.drive.metadata),
@@ -1749,6 +1756,221 @@ class StudentArchiveTests(unittest.TestCase):
         self.assertEqual(len(artifact_batches), 1)
         self.assertEqual(len(artifact_batches[0]), 6)  # Three copies plus retained original links.
 
+    def test_morning_guard_keeps_its_bounded_cutoff_explanation(self):
+        failure = archive.Conflict("opaque internal hold")
+        failure.source_operation_hold = "source_mutation_window_closed"
+        failure.source_operation_action = "Source writes are held until the next before-7:00 preparation window."
+        result = archive.archive_work("read", "write", self.config, "biology", found(),
+                                      before_source_write=Mock(side_effect=failure))
+        self.assertEqual(result["problems"], [failure.source_operation_action])
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(self.port.rows, {})
+
+    def test_morning_guard_denies_filing_before_any_archive_write(self):
+        guard = Mock(side_effect=archive.Conflict("Source ownership unavailable"))
+        result = archive.archive_work("read", "write", self.config, "biology", found(), before_source_write=guard)
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["filed"], 0)
+        self.assertEqual(self.port.rows, {})
+        self.assertEqual(self.drive.created, [])
+        self.assertEqual(self.drive.copied, [])
+
+    def test_each_contended_state_cas_rechecks_source_guard_and_preserves_its_failure(self):
+        calls = []
+        failure = archive.Conflict("source_window_closed")
+        failure.source_operation_hold = "source_mutation_window_closed"
+        failure.source_operation_action = "Wait for the next source window."
+        def guard(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                raise failure
+        def conflict(changes):
+            raise archive.Conflict("state_version_conflict")
+        port = archive._guarded_port(self.port, guard)
+        with patch.object(self.port, "commit", side_effect=conflict) as writes, self.assertRaises(archive.Conflict) as caught:
+            CloudState(port).create_task({"workflow": "fictional", "class_key": "biology", "assignment_key": "test"})
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(writes.call_count, 1)
+        self.assertEqual(calls, [{"required_seconds": archive.MUTATION_SECONDS}] * 2)
+        self.assertEqual(self.port.rows, {})
+
+    def test_complete_paginated_acl_read_does_not_reuse_an_earlier_write_reservation(self):
+        elapsed, requests, grants = [0], [], []
+        def guard(**kwargs):
+            grants.append(elapsed[0])
+            if elapsed[0] >= 120:
+                raise archive.Conflict("source_window_closed")
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        before = deepcopy(self.port.rows)
+        meta = deepcopy(self.drive.items[ROOT]); meta.pop("permissions")
+        def get_json(url, token, params=None, **kwargs):
+            requests.append(url)
+            elapsed[0] += 12
+            if not url.endswith("/permissions"):
+                return meta
+            page = len(requests) - 2
+            return {"permissions": deepcopy(PERMISSIONS), **({"nextPageToken": str(page + 1)} if page < 9 else {})}
+        with patch.object(google, "get_json", side_effect=get_json):
+            checked = REAL_DRIVE_FILE("read", ROOT, archive.FIELDS)
+        self.assertEqual(len(requests), 11)
+        self.assertEqual(elapsed[0], 132)
+        self.assertEqual(len(checked["permissions"]), 20)  # Every ACL page retained.
+        with self.assertRaises(archive.Conflict):
+            run.put(archive.key("archivefictional", "new"), {"status": "verified"})
+        self.assertEqual(grants[-1], 132)
+        self.assertEqual(self.port.rows, before)
+
+    def test_final_class_check_refuses_slow_shared_guard_before_data_cas(self):
+        guard = Mock()
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        before = deepcopy(self.port.rows)
+        guard.side_effect = lambda **kwargs: self.port.advance(121)
+        with self.assertRaises(archive.LeaseLost):
+            run.put(archive.key("archivefictional", "late"), {"status": "verified"})
+        self.assertEqual(self.port.rows, before)
+        self.assertEqual(guard.call_args.kwargs, {
+            "required_seconds": archive.MUTATION_SECONDS + archive.FINAL_OWNER_CHECK_SECONDS})
+
+    def test_final_class_check_requires_full_mutation_budget_after_shared_guard(self):
+        guard = Mock()
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        before = deepcopy(self.port.rows)
+        guard.side_effect = lambda **kwargs: self.port.advance(61)  # Still owns, but only 59 seconds remain.
+        with self.assertRaisesRegex(archive.LeaseLost, "archive_lease_too_short_before_write"):
+            run.put(archive.key("archivefictional", "late"), {"status": "verified"})
+        self.assertEqual(self.port.rows, before)
+
+    def test_final_class_read_response_time_cannot_spend_the_shared_mutation_reservation(self):
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=Mock())
+        before, clock, read = deepcopy(self.port.rows), [0], self.port.read
+        def delayed(ids):
+            snapshot = read(ids)
+            clock[0] += 65
+            self.port.advance(65)
+            return snapshot  # Server time predates the delayed response.
+        with patch.object(archive, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.port, "read", side_effect=delayed), self.assertRaises(archive.LeaseLost):
+            run.put(archive.key("archivefictional", "late"), {"status": "verified"})
+        self.assertEqual(self.port.rows, before)
+
+    def test_final_class_check_refuses_takeover_during_shared_guard(self):
+        guard = Mock()
+        run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+        ident = archive.key("archivefictional", "late")
+        def takeover(**kwargs):
+            self.port.advance(121)
+            CloudState(self.port).claim(run.claim.task_id, owner="another-worker", request_id="takeover", input_hash="next")
+        guard.side_effect = takeover
+        with self.assertRaises(archive.LeaseLost):
+            run.put(ident, {"status": "verified"})
+        self.assertNotIn(ident, self.port.rows)
+        self.assertEqual(self.port.rows[run.claim.task_id].value["owner"], "another-worker")
+
+    def test_native_create_stops_after_slow_shared_guard_or_class_takeover(self):
+        for mode in ("expired", "short", "takeover"):
+            with self.subTest(mode=mode):
+                self.port.advance(901)
+                in_commit, triggered = [False], []
+                original_commit = self.port.commit_guarded
+                def guarded_commit(changes, *, before_write):
+                    in_commit[0] = True
+                    try:
+                        return original_commit(changes, before_write=before_write)
+                    finally:
+                        in_commit[0] = False
+                ident = archive.key("archivefictional", mode)
+                def guard(**kwargs):
+                    record = self.port.rows.get(ident)
+                    if not in_commit[0] and record and record.value.get("status") == "creating":
+                        triggered.append(True)
+                        self.port.advance(61 if mode == "short" else 121)
+                        if mode == "takeover":
+                            CloudState(self.port).claim(run.claim.task_id, owner="another-worker",
+                                request_id="takeover-native", input_hash="next-native")
+                with patch.object(self.port, "commit_guarded", side_effect=guarded_commit):
+                    run = archive._Run("read", "write", self.config, "biology", before_source_write=guard)
+                    with self.assertRaises(archive.LeaseLost):
+                        run.create(ident, "Fictional folder", COURSES["biology"], google.FOLDER)
+                self.assertEqual(triggered, [True])
+                self.assertEqual(self.drive.created, [])
+                self.assertEqual(self.port.rows[ident].value["status"], "creating")
+
+    def test_lost_morning_guard_stops_after_read_without_copy_or_source_mutation(self):
+        expired = []
+        def fetch(token, ident, fields=None):
+            if ident == SOURCE:
+                expired.append(True)
+            return self.drive.metadata(token, ident, fields)
+        def guard(**kwargs):
+            if expired:
+                raise archive.Conflict("Source mutation window ended")
+        originals = {ident: deepcopy(self.drive.items[ident]) for ident in (SOURCE, EARLIER)}
+        with patch.object(google, "drive_file", side_effect=fetch):
+            result = archive.archive_work("read", "write", self.config, "biology", found(), before_source_write=guard)
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["filed"], 0)
+        self.assertEqual(self.drive.copied, [])
+        self.assertEqual({ident: self.drive.items[ident] for ident in originals}, originals)
+        self.assertFalse(any(doc.value.get("source_kind") == "submitted_work_copy" for doc in self.port.rows.values()))
+
+    def test_unavailable_former_history_keeps_verified_current_directory_without_erasing_history(self):
+        owner, copied, folder = self.former_student_fixture()
+        current = row(first="Ben", last="Stone", email="s.ben.stone@school.example",
+                      files=[{"id": EARLIER, "mime": google.PPTX}])
+        self.assertEqual(self.archive(found(current))["status"], "verified")
+        self.drive.items[owner["drive_file_id"]]["trashed"] = True
+        before = deepcopy(self.port.rows)
+        drive_before = deepcopy(self.drive.items)
+        listing = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(listing["status"], "held")
+        self.assertEqual(listing["history_coverage"], "partial_indexed_history")
+        self.assertEqual(listing["counts"], {"students": 1, "work": 1, "feedback": 0, "held": 1})
+        self.assertEqual([s["name"] for s in listing["students"]], ["Stone, Ben"])
+        self.assertEqual(listing["history_holds"][0]["student_key"], owner["student_key"])
+        self.assertEqual(listing["history_holds"][0]["status"], "unverified")
+        self.assertNotIn("record_key", listing["history_holds"][0])  # No preceding student's artifact.
+        with self.assertRaises(archive.Held):
+            archive._indexed("read", self.config, "biology")
+        with self.assertRaises(archive.Held):
+            archive.list_feedback("read", self.config)
+        index = archive.work_index_rows("read", self.config)
+        self.assertEqual([item["class_key"] for item in index["failed_class_histories"]], ["biology"])
+        self.assertEqual(self.port.rows, before)
+        self.assertEqual(self.drive.items, drive_before)
+
+    def test_partial_directory_keeps_exact_changed_artifact_scope_and_cannot_bless_it(self):
+        self.assertEqual(self.archive(found(row(), row(first="Ben", last="Stone",
+            email="s.ben.stone@school.example", files=[{"id": EARLIER, "mime": google.PPTX}])))["status"], "verified")
+        copied = next(doc.value for doc in self.port.rows.values()
+            if doc.value.get("source_kind") == "submitted_work_copy" and doc.value["source_file_id"] == SOURCE)
+        self.drive.items[copied["drive_file_id"]]["modifiedTime"] = "2026-10-22T12:00:00Z"
+        before = deepcopy(self.port.rows)
+        result = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(result["history_coverage"], "partial_indexed_history")
+        self.assertEqual(result["counts"]["work"], 1)
+        hold = result["history_holds"][0]
+        self.assertEqual((hold["record_key"], hold["file_id"], hold["source_file_id"]),
+                         (copied["record_key"], copied["drive_file_id"], SOURCE))
+        self.assertEqual(self.port.rows, before)
+
+    def test_partial_directory_rejects_index_change_during_metadata_reads(self):
+        self.assertEqual(self.archive()["status"], "verified")
+        key = archive.key("archiveclass", [ROOT, "biology"])
+        changed = []
+        def fetch(token, ident, fields=None):
+            meta = self.drive.metadata(token, ident, fields)
+            if ident not in {ROOT, *COURSES.values()} and not changed:
+                changed.append(True)
+                old = self.port.rows[key]
+                self.port.commit({key: ({**old.value, "concurrent_edit": True}, old.version)})
+            return meta
+        with patch.object(google, "drive_file", side_effect=fetch):
+            result = archive.archive_listing("read", self.config, "biology")
+        self.assertEqual(result["status"], "held")
+        self.assertEqual(result["students"], [])
+        self.assertEqual(result["history_coverage"], "unverified")
+        self.assertEqual(result["history_holds"], [])
+
     def test_concurrent_metadata_still_holds_private_parent_and_shortcut_target_failures(self):
         self.assertEqual(self.archive()["status"], "verified")
         listing = archive.archive_listing("read", self.config, "biology")
@@ -2142,6 +2364,169 @@ class StudentArchiveTests(unittest.TestCase):
         data["week_policy"]["school_year"] = "2026-27"
         data["lessons"][0]["problem"] = "The private submission folder is unavailable."
         self.assertEqual(self.archive(data)["status"], "held")
+
+    def joint_copy_fixture(self):
+        self.drive.items[SOURCE]["mimeType"] = "application/vnd.google-apps.presentation"
+        self.assertEqual(self.archive()["status"], "verified")
+        old_key, old = next((k, d) for k, d in self.port.rows.items()
+                            if d.value.get("source_kind") == "submitted_work_copy")
+        ident = archive.key("archivejointworkcopy", [ROOT, SOURCE, "teacher-attributed"])
+        proof = {"basis": "native_presentation/v1", "sha256": "d" * 64, "slides": 3, "image_instances": 2}
+        value = {**old.value, "record_key": ident, "source_kind": "teacher_attributed_joint_copy",
+                 "teacher_joint_attribution": True, "shared_source_key": "sharedfeedbacksource_" + "c" * 64,
+                 "copied_slide_content_sha256": "b" * 64, "native_content_proof": proof}
+        owner = self.port.rows[value["student_key"]]
+        items = {k: v for k, v in owner.value["items"].items() if k != old_key}
+        items[ident] = {"kind": "work", "date": value["date"]}
+        self.port.commit({ident: (value, None), value["student_key"]: ({**owner.value, "items": items}, owner.version)})
+        meta = self.drive.items[value["drive_file_id"]]
+        meta.update(version="2", properties={archive.TAG: ident, "hubCopiedSource": SOURCE,
+                    "hubSharedSource": value["shared_source_key"]})
+        return ident, value, proof
+
+    def test_joint_metadata_reconciliation_uses_frozen_copy_proof_and_retains_prior_record(self):
+        ident, original, proof = self.joint_copy_fixture()
+        # A legitimately newer original is not the frozen-copy proof operand.
+        self.drive.items[SOURCE]["version"] = "3"
+        self.drive.contents[SOURCE] = b"New student work since the archived joint revision"
+        before_drive, before_store = deepcopy(self.drive.items), deepcopy(self.port.rows)
+        reads = []
+        def content(token, meta, heartbeat=None):
+            reads.append(meta["id"])
+            self.assertEqual(meta["id"], original["drive_file_id"])
+            return proof
+        with patch.object(archive, "_work_content", side_effect=content):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            self.assertEqual(preview["status"], "ready")
+            self.assertEqual(self.port.rows, before_store)
+            guard = Mock()
+            result = archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
+        self.assertEqual((result["status"], result["from_version"], result["to_version"]), ("verified", "1", "2"))
+        self.assertGreater(guard.call_count, 0)
+        self.assertTrue(all(c.kwargs["required_seconds"] in {
+            archive.MUTATION_SECONDS, archive.MUTATION_SECONDS + archive.FINAL_OWNER_CHECK_SECONDS}
+            for c in guard.call_args_list))
+        self.assertEqual(self.drive.items, before_drive)
+        updated = self.port.rows[ident].value
+        self.assertEqual(updated, {**original, "drive_version": "2", "last_metadata_reconciliation": result["history_key"]})
+        audit = self.port.rows[result["history_key"]].value
+        self.assertEqual(audit["before"], original)
+        self.assertEqual(audit["actor"], "fictional-operator")
+        self.assertEqual(audit["proof"]["native_content_proof"], proof)
+        for key in (original["student_key"], archive.key("archiveclass", [ROOT, "biology"])):
+            self.assertEqual(self.port.rows[key].value, before_store[key].value)
+        self.assertEqual(archive.archive_listing("read", self.config, "biology")["status"], "verified")
+        self.assertTrue(reads)
+
+    def test_joint_reconciliation_refuses_changed_content_or_missing_original_proof(self):
+        ident, record, proof = self.joint_copy_fixture()
+        for change in ({"native_content_proof": None}, {"teacher_joint_attribution": False},
+                       {"copied_modified_at": "unverified"}, {"source_version": "another"}):
+            with self.subTest(change=list(change)):
+                self.port.commit({ident: ({**record, **change}, self.port.rows[ident].version)})
+                before = deepcopy(self.port.rows)
+                with patch.object(archive, "_work_content", return_value=proof), self.assertRaises(archive.Held):
+                    archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+                self.assertEqual(self.port.rows, before)
+        self.port.commit({ident: (deepcopy(record), self.port.rows[ident].version)})
+        for changed_proof in ({**proof, "sha256": "e" * 64}, {**proof, "image_instances": 3}):
+            with patch.object(archive, "_work_content", return_value=changed_proof), self.assertRaises(archive.Held):
+                archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        self.assertEqual(self.port.rows[ident].value, record)
+
+    def test_joint_reconciliation_finishes_long_native_proof_before_claiming_class_lease(self):
+        ident, record, proof = self.joint_copy_fixture()
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        def slow_proof(token, meta, heartbeat=None):
+            self.port.advance(121)
+            return proof
+        with patch.object(archive, "_work_content", side_effect=slow_proof):
+            result = archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(self.port.rows[ident].value["drive_version"], "2")
+
+    def test_joint_reconciliation_does_not_write_after_third_shared_guard_outlasts_class_lease(self):
+        ident, record, proof = self.joint_copy_fixture()
+        calls = []
+        def guard(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 3:
+                self.port.advance(121)
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            with self.assertRaises(archive.LeaseLost):
+                archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                    expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(self.port.rows[ident].value, record)
+        self.assertFalse(any(k.startswith("archivejointreconciliation_") for k in self.port.rows))
+
+    def test_joint_reconciliation_rejects_copy_change_during_content_read_and_stale_preview(self):
+        ident, record, proof = self.joint_copy_fixture()
+        def mutate(token, meta, heartbeat=None):
+            self.drive.items[record["drive_file_id"]]["version"] = "3"
+            return proof
+        with patch.object(archive, "_work_content", side_effect=mutate), self.assertRaises(archive.Held):
+            archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            self.port.rows[ident].value["name"] = "Teacher-renamed joint work"
+            with self.assertRaises(archive.Conflict):
+                archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                    expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+        self.assertEqual(self.port.rows[ident].value["drive_version"], "1")
+        self.assertFalse(any(k.startswith("archivejointreconciliation_") for k in self.port.rows))
+
+    def test_joint_reconciliation_stops_lost_source_guard_before_artifact_cas(self):
+        ident, record, proof = self.joint_copy_fixture()
+        stopped = []
+        def content(token, meta, heartbeat=None):
+            stopped.append(True)
+            return proof
+        def guard(**kwargs):
+            if stopped:
+                raise archive.Conflict("Source mutation window ended")
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+        with patch.object(archive, "_work_content", side_effect=content), self.assertRaises(archive.Conflict):
+            archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                expected_revision=preview["revision"], actor="fictional-operator", before_source_write=guard)
+        self.assertEqual(self.port.rows[ident].value, record)
+        self.assertFalse(any(k.startswith("archivejointreconciliation_") for k in self.port.rows))
+
+    def joint_uncertain_cas(self, commit_first):
+        ident, record, proof = self.joint_copy_fixture()
+        commits = []
+        commit = self.port.commit
+        def uncertain(changes):
+            if any(k.startswith("archivejointreconciliation_") for k in changes):
+                commits.append(list(changes))
+                if commit_first:
+                    commit(changes)
+                raise StoreUnavailable("unknown response")
+            return commit(changes)
+        with patch.object(archive, "_work_content", return_value=proof):
+            preview = archive.preview_joint_copy_reconciliation("read", self.config, "biology", ident)
+            with patch.object(self.port, "commit", side_effect=uncertain):
+                if commit_first:
+                    result = archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                        expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+                    self.assertEqual(result["status"], "verified")
+                else:
+                    with self.assertRaises(StoreUnavailable):
+                        archive.reconcile_joint_copy("read", "write", self.config, "biology", ident,
+                            expected_revision=preview["revision"], actor="fictional-operator", before_source_write=Mock())
+                    self.assertEqual(self.port.rows[ident].value, record)
+        self.assertEqual(len(commits), 1)
+
+    def test_joint_unknown_cas_does_not_retry_when_saved_outcome_is_unconfirmed(self):
+        self.joint_uncertain_cas(False)
+
+    def test_joint_lost_cas_response_accepts_only_the_exact_saved_receipt_readback(self):
+        self.joint_uncertain_cas(True)
 
     def test_teacher_attributed_joint_native_copy_is_read_only_and_revision_bound(self):
         self.assertEqual(self.archive()["status"], "verified")

@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from school_workflow_hub.adapters.firestore_state import FirestoreState, configured_store
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, key
@@ -98,3 +98,38 @@ class FirestoreAdapterTests(unittest.TestCase):
             call = session.return_value.__enter__.return_value.post.call_args
         self.assertEqual(call.kwargs["headers"], {"Authorization": "Bearer private-token"})
         self.assertEqual(call.kwargs["timeout"], (5, 15))
+
+    def test_guarded_commit_checks_after_token_acquisition_and_before_single_request(self):
+        events = []
+        store = FirestoreState("fictional-hub", token_provider=lambda: events.append("token") or "private-token")
+        guard = lambda: events.append("guard")
+        response = self.http_store(200, {"commitTime": STAMP, "writeResults": [{}]})
+        with patch("requests.Session") as session:
+            session.return_value.__enter__.return_value.post.side_effect = lambda *a, **k: events.append("request") or response
+            store.commit_guarded({key("task", "a"): ({}, None)}, before_write=guard)
+        self.assertEqual(events, ["token", "guard", "request"])
+
+    def test_guard_denial_after_slow_token_is_not_an_uncertain_write_or_retry(self):
+        for error in (Conflict("source_window_closed"), StoreUnavailable("owner_read_failed")):
+            events = []
+            def token():
+                events.append("slow-auth-finished")
+                return "private-token"
+            store = FirestoreState("fictional-hub", token_provider=token)
+            guard = Mock(side_effect=error)
+            with patch("requests.Session") as session, self.assertRaises(type(error)) as caught:
+                store.commit_guarded({key("task", "a"): ({}, None)}, before_write=guard)
+            self.assertIs(caught.exception, error)
+            self.assertEqual(events, ["slow-auth-finished"])
+            guard.assert_called_once_with()
+            session.assert_not_called()
+
+    def test_guarded_commit_never_retries_an_uncertain_provider_response(self):
+        with patch("requests.Session") as session:
+            post = session.return_value.__enter__.return_value.post
+            post.side_effect = TimeoutError("fictional timeout")
+            guard = Mock()
+            with self.assertRaises(StoreUnavailable):
+                self.store(None).commit_guarded({key("task", "a"): ({}, None)}, before_write=guard)
+            post.assert_called_once()
+            guard.assert_called_once_with()
