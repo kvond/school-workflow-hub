@@ -178,8 +178,13 @@ private write intent. The concrete mirror rechecks the baseline and writes only
 individual declared `userEnteredValue` cells in a single native batch. It never
 sorts, deletes rows, replaces tabs, changes formats or touches unowned formulas.
 The concrete writer obtains tokens and its final baseline before reserving a
-170-second native write/readback budget through the shared guard. The roster
-lease is renewed at that same boundary. The reservation covers one bounded
+170-second native write/readback budget plus 30 seconds for a final roster-owner
+read through the shared guard. The roster lease is renewed before the potentially
+slow shared activity check and then independently rechecked after it. The final
+read must prove the same owner/fence and at least 170 seconds remaining after
+conservatively subtracting its measured response elapsed time. If that check
+takes more than its reserved 30 seconds, no native write starts; it cannot spend
+the shared cutoff/native-write reservation. The reservation covers one bounded
 native POST plus the two bounded readback GETs and their permitted read retries;
 readback reuses its in-memory token rather than refreshing credentials inside
 that window. The guard refuses the operation if that whole budget cannot finish

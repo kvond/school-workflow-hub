@@ -6,7 +6,9 @@ A durable intent precedes its one write; an uncertain write is read-only recover
 """
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import math
 import re
+from time import monotonic
 from urllib.parse import quote
 
 from hub_v2 import google
@@ -24,6 +26,7 @@ FIELDS = {"last": "Last Name", "first": "First Name", "status": "Roster status",
 STATUSES = {"active", "incoming", "withdrawn", "inactive"}
 SOURCE_STATUSES = STATUSES - {"inactive"}
 NATIVE_WRITE_READBACK_SECONDS = 170  # one65s POST + two read-onlyGETs (at most50s each) + margin
+FINAL_ROSTER_CHECK_SECONDS = 30
 
 
 def _fail(code):
@@ -425,10 +428,24 @@ class RosterWorker:
             self.state.release_for_review(claim, "roster_source_or_baseline_unavailable")
             raise
         def before_native_write(*, required_seconds):
-            # Renew the roster-specific lease after any token/baseline reads;
-            # the shared source guard separately checks its own lease and cutoff.
+            # The shared activity check may be slow. Renewal BEFORE it is not
+            # permission to write: recheck this exact roster owner afterward.
             self.state.renew(claim, ttl_seconds=max(300, required_seconds + 60))
-            self.before_write(required_seconds=required_seconds)
+            self.before_write(required_seconds=required_seconds + FINAL_ROSTER_CHECK_SECONDS)
+            started = monotonic()
+            final = self.port.read([claim.task_id])
+            elapsed = math.ceil(max(0, monotonic() - started))
+            task = final.documents[claim.task_id]
+            if elapsed > FINAL_ROSTER_CHECK_SECONDS or task is None:
+                _fail("final_ownership_check_unavailable")
+            # Treat the entire response round trip as time AFTER the server
+            # timestamp. This conservative estimate cannot stretch the lease.
+            conservative_now = instant(final.read_time) + timedelta(seconds=elapsed)
+            CloudState._owns(claim, task.value, conservative_now.isoformat())
+            if (instant(task.value["expires_at"]) - conservative_now).total_seconds() < required_seconds:
+                _fail("roster_lease_too_short")
+            # Shared ownership/cutoff reserved the native budget PLUS this
+            # bounded final check. No further I/O occurs before native POST.
         try:
             actual = self.mirror.apply(plan, before_native_write)
             if actual != plan["after"]:

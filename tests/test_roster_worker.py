@@ -243,6 +243,66 @@ class WorkerTests(unittest.TestCase):
             self.run_worker()
         self.assertEqual(self.mirror.writes, 0)
 
+    def test_slow_third_guard_cannot_write_after_roster_lease_expires(self):
+        calls = 0
+        def slow_guard(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.port.advance(301)
+        self.guard.side_effect = slow_guard
+        with self.assertRaisesRegex(ConnectionError, "uncertain"):
+            self.run_worker()
+        self.assertEqual(self.mirror.writes, 0)
+        self.assertEqual(self.guard.call_args.kwargs["required_seconds"],
+                         rw.NATIVE_WRITE_READBACK_SECONDS + rw.FINAL_ROSTER_CHECK_SECONDS)
+
+    def test_slow_third_guard_requires_full_remaining_roster_budget(self):
+        calls = 0
+        def slow_guard(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.port.advance(131)  # still owned, only169s remain
+        self.guard.side_effect = slow_guard
+        with self.assertRaisesRegex(ConnectionError, "uncertain"):
+            self.run_worker()
+        self.assertEqual(self.mirror.writes, 0)
+
+    def test_roster_takeover_during_shared_guard_refuses_old_worker(self):
+        calls = 0
+        def takeover(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.port.advance(301)
+                state = rw.CloudState(self.port)
+                task = state.create_task(rw.ROSTER_SYNC_SCOPE)
+                state.claim(task, owner="new-owner", request_id="new-run", input_hash="other-source")
+        self.guard.side_effect = takeover
+        with self.assertRaisesRegex(ConnectionError, "uncertain"):
+            self.run_worker()
+        self.assertEqual(self.mirror.writes, 0)
+
+    def test_final_state_response_elapsed_is_subtracted_from_roster_budget(self):
+        calls = 0
+        def slow_guard(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                self.port.advance(110)  #190s remain in the returned server snapshot
+        self.guard.side_effect = slow_guard
+        with patch.object(rw, "monotonic", side_effect=[0, 25]):
+            with self.assertRaisesRegex(ConnectionError, "uncertain"):
+                self.run_worker()
+        self.assertEqual(self.mirror.writes, 0)  #165s after conservative25s response
+
+    def test_final_check_cannot_spend_shared_native_reservation(self):
+        with patch.object(rw, "monotonic", side_effect=[0, 31]):
+            with self.assertRaisesRegex(ConnectionError, "uncertain"):
+                self.run_worker()
+        self.assertEqual(self.mirror.writes, 0)
+
     def test_lost_response_blocks_new_write_then_reconciles_exact_readback(self):
         self.mirror.lose_response = True
         with self.assertRaisesRegex(ConnectionError, "uncertain"):
