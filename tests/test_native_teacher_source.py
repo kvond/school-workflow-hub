@@ -38,6 +38,17 @@ def metadata(version="1", **changes):
             "trashed": False, "modifiedTime": "unchanged", "version": version, **changes}
 
 
+def empty_decoration():
+    value = shape("empty-decoration")
+    value["transform"].pop("scaleX")
+    value["shape"] = {"shapeType": "CUSTOM", "shapeProperties": {
+        "shapeBackgroundFill": {"solidFill": {"color": {"rgbColor": {"red": 1}}, "alpha": 1}},
+        "outline": {"weight": {"magnitude": 1, "unit": "PT"}, "dashStyle": "SOLID"},
+        "shadow": {"propertyState": "NOT_RENDERED"}, "contentAlignment": "MIDDLE",
+        "autofit": {"autofitType": "NONE", "fontScale": 1}}}
+    return value
+
+
 class NativeModelTests(unittest.TestCase):
     def read(self, value=None, **limits):
         return native_teacher_source.read(value if value is not None else native(),
@@ -81,6 +92,61 @@ class NativeModelTests(unittest.TestCase):
         unit = self.read(value)["slides"][0]["units"][0]
         self.assertIsNone(unit["picture"]["sha256"])
         self.assertEqual(unit["native_style"], image["image"])
+
+    def test_zero_width_empty_custom_decoration_does_not_hide_other_evidence(self):
+        original = native()
+        expected = self.read(original)
+        original["slides"][1]["pageElements"].append(empty_decoration())
+        snapshot = deepcopy(original)
+        result = self.read(original)
+        self.assertEqual(result["slides"], expected["slides"])
+        self.assertEqual(result["native_source"], snapshot)
+        self.assertEqual(original, snapshot)
+        self.assertEqual(completion.teacher_readiness(result, require_complete_codes=False),
+                         completion.teacher_readiness(expected, require_complete_codes=False))
+        # A drawable empty shape is retained, so this is not a blanket removal
+        # of shapes without text or a substitute for response-region checks.
+        original["slides"][1]["pageElements"][-1]["transform"]["scaleX"] = 1
+        self.assertEqual(self.read(original)["slides"][1]["units"][-1]["key"], "empty-decoration")
+
+    def test_collapsed_nonempty_or_ambiguous_nodes_still_hold(self):
+        mutations = [lambda e: e["shape"].update(text={"textElements": []}),
+                     lambda e: e["shape"].update(text={"textElements": [{"textRun": {"content": "Answer here"}}]}),
+                     lambda e: e["shape"].update(text={"textElements": [{"textRun": {"content": "[[NOTES:X:Q]]"}}]}),
+                     lambda e: e["shape"].update(placeholder={"type": "BODY"}),
+                     lambda e: e["shape"].update(shapeType="TEXT_BOX"),
+                     lambda e: e.update(description="Response evidence"),
+                     lambda e: e.update(title="Describe the scene"),
+                     lambda e: e.update(image={}), lambda e: e.update(table={}),
+                     lambda e: e.update(futureContent={}),
+                     lambda e: e["shape"].update(futureContent={}),
+                     lambda e: e["shape"]["shapeProperties"].update(link={"url": "https://example.invalid"}),
+                     lambda e: e["shape"]["shapeProperties"]["shapeBackgroundFill"].update(image={}),
+                     lambda e: e["shape"]["shapeProperties"]["outline"].update(futureContent={}),
+                     lambda e: e["shape"]["shapeProperties"].update(autofit=[])]
+        for mutation in mutations:
+            value = native(); node = empty_decoration(); mutation(node)
+            value["slides"][1]["pageElements"].append(node)
+            with self.subTest(mutation=mutation), self.assertRaises(native_teacher_source.Unreadable):
+                self.read(value)
+
+    def test_empty_decoration_does_not_exempt_invalid_geometry_or_grouped_regions(self):
+        mutations = [lambda e: e.pop("transform"),
+                     lambda e: e["size"]["width"].update(magnitude=0),
+                     lambda e: e["size"]["height"].update(unit="PX"),
+                     lambda e: e["transform"].update(scaleY=float("nan")),
+                     lambda e: e["transform"].update(scaleY=0),
+                     lambda e: e["transform"].update(scaleX=1, scaleY=0)]
+        for mutation in mutations:
+            value = native(); node = empty_decoration(); mutation(node)
+            value["slides"][1]["pageElements"].append(node)
+            with self.subTest(mutation=mutation), self.assertRaises(native_teacher_source.Unreadable):
+                self.read(value)
+        value = native()
+        value["slides"][1]["pageElements"].append({"objectId": "group", "transform": {
+            "scaleX": 1, "scaleY": 1, "unit": "PT"}, "elementGroup": {"children": [empty_decoration()]}})
+        with self.assertRaises(native_teacher_source.Unreadable):
+            self.read(value)
 
     def test_missing_binding_metadata_or_tables_require_original_export(self):
         for mutation in (lambda e: e.update(description=response_binding.PREFIX + '{"kind":"picture-activity"}'),
