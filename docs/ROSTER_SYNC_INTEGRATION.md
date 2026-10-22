@@ -80,7 +80,9 @@ does not enable or certify an unattended IC reader.
 
 `/api/roster-sync` is status-only. It returns `run_enabled: false` and does
 not create a task, read Infinite Campus, or write the roster workbook. Thus the
-required IC-to-Hub roster update is not implemented or live-verified yet. Keep
+live IC-to-Hub roster update is not accepted or activated yet. The trusted-host
+worker below now implements the guarded synchronization/mirror half; the actual
+IC transport and initial native-ID crosswalk remain unverified. Keep
 roster churn out of student-work exception lists; show the sync connection gap
 once as a system status until these adapters pass acceptance:
 
@@ -93,3 +95,121 @@ record a source fingerprint/baseline and destination readback receipt, and
 release the claim to `Needs you` on any partial scan. It must preserve grades,
 attendance, and non-roster columns. No scheduled job should be enabled until a
 supervised run produces that evidence.
+
+## Trusted-host integration (October 22 implementation)
+
+`adapters.roster_worker` now supplies the deterministic integration and a
+concrete `SheetsRosterMirror` using the existing Google backend. This is **code,
+not live reader acceptance or activation**. The status endpoint, schedules,
+Chrome helper and `run_enabled: false` remain unchanged. No HTTP run route was
+added. The earlier fixture-only reconciliation planner remains fixture-only.
+
+The trusted host supplies three independently verified capabilities:
+
+1. An IC reader implementing `read_complete(targets)`, under its existing school
+   identity. There is **no configured IC transport in this repository**:
+   `InfiniteCampusBrowserAdapter` is a disabled stub and a browser-run report
+   does not prove a complete roster. An accepted reader must produce native
+   student and enrollment IDs, explicit section/year, original observation time,
+   source revision, expected row count, complete unfiltered coverage and no
+   remaining pagination. All explicit active, incoming and withdrawn memberships
+   are included. Names-only UI observations cannot satisfy this contract. No new
+   login, credential copying, guessed IC endpoint or extension change is provided.
+2. Exact existing workbook/tab/owned-column bindings and the initial native-ID
+   crosswalk. `SheetsRosterMirror` verifies instructional target IDs against
+   `HUB_ROSTER_TABS` and `HUB_ROSTER_SECTION_IDS`; its status column must match
+   `HUB_ROSTER_STATUS_COLUMNS`. Study Hall uses its separately configured
+   `HUB_ROSTER_ONLY_SECTIONS` section/year/tab binding and never enters academic
+   readers. These are private runtime values, not repository examples to copy.
+3. The shared source-owner guard's required `before_write(required_seconds=...)` callable. The host
+   uses the same `SourceOperations` scope as all other preparation writers.
+   The callback freshly verifies the safe time window, helper inputs and actual
+   ownership. A no-op callback is suitable only for synthetic tests, not live
+   acceptance. This worker does not acquire or invent external-session evidence.
+
+Use `RosterWorker(port, reader, mirror, targets, before_write=guard.before_write)`
+from the trusted service host, then `run(owner=..., request_id=...)`. No optional
+flag or browser request turns a synthetic reader into an accepted integration.
+Keep real acceptance separate: the coordinator must record the actual complete
+IC capture, exact stable-ID crosswalk, ownership evidence, native mirror
+readback, and existing Hub-reader result before enabling or claiming execution.
+
+The capture's top-level fields are `source` (`infinite_campus`), `reader_id`,
+`complete`, `errors` (empty), and `sections`. Each section contains `section_id`,
+`school_year`, `complete`, `filtered` (false), `next_page` (null), `revision`,
+`checked_at`, `expected_count`, and `rows`. Each row contains `student_id`,
+`membership_id`, `first`, `last`, `status`, `start_date`, and `end_date`.
+Dates are ISO calendar dates, an explicitly observed empty string, or null when
+unavailable. Unavailable dates preserve the same enrollment's prior verified
+value; a new enrollment never borrows its predecessor's dates. Both source
+bookends must be at most 15 minutes old and agree on scope, revision and rows.
+Different sections may contain the same student ID with distinct native
+memberships; conflicting identities or reused enrollment IDs fail closed.
+
+Instructional mirrors require explicit eight-column ownership with existing headers:
+Last Name, First Name, Roster status, IC student ID, IC enrollment ID, Start date,
+End date, and IC checked at. Instructional names stay in A:B, in either header
+order. Status may be in C:Y. Study Hall preserves its existing A:E Full name/status/date/
+checked-at layout and adds separately verified first/last/native-ID columns;
+its existing roster-only reader can still consume the unchanged A:E schema.
+The configured column bound must cover the full
+native tab width, up to 26 columns; unsupported wider tabs hold rather than
+pretending unobserved teacher columns are empty. The bounded native read checks
+all rows of a tab (at most 2,000) and refuses named/ID/status data outside the
+existing readers' 200-row support. A larger mirror needs a separately reviewed
+reader expansion, not truncation. A new student occupies a completely empty
+physical row; existing students never move. Rows with teacher fields or formulas
+are not reused. Owned formulas, missing native IDs and undeclared columns hold
+before a write. No headers, tabs or ID crosswalks are created automatically.
+
+Departures change their owned status to `inactive`; original names, IDs, dates
+and teacher fields remain in the same row. Explicit IC withdrawal stays
+`withdrawn` for instructional rows and uses the existing `dropped` label for
+Study Hall; incoming stays `incoming`. Rejoining retains the row and records
+both old and new native enrollment identities in immutable private before/after
+receipts. The two existing instructional readers include only `active` rows
+when their exact status column is configured and its header/statuses verify.
+Unconfigured legacy rosters retain their existing parsing behavior. A blank or
+unknown configured status is an availability failure, not active membership.
+
+The existing roster `CloudState` task fences the run. The worker checks source
+bookends, the mirror baseline and shared ownership before persisting one
+private write intent. The concrete mirror rechecks the baseline and writes only
+individual declared `userEnteredValue` cells in a single native batch. It never
+sorts, deletes rows, replaces tabs, changes formats or touches unowned formulas.
+The concrete writer obtains tokens and its final baseline before reserving a
+170-second native write/readback budget through the shared guard. The roster
+lease is renewed at that same boundary. The reservation covers one bounded
+native POST plus the two bounded readback GETs and their permitted read retries;
+readback reuses its in-memory token rather than refreshing credentials inside
+that window. The guard refuses the operation if that whole budget cannot finish
+before the helper cutoff. Google Sheets has no native compare-and-swap for cells: the fresh baseline plus
+shared lease is not a provider-enforced transaction with Firestore. Independent
+human edits are detected by the complete post-write grid readback; conflicting
+or uncertain results stop further writes.
+
+A pending intent blocks later runs, even after process death or lease expiry.
+`reconcile()` is read-only at the school destination: it never resends the batch,
+clears uncertainty or takes a new claim. It accepts only the entire expected
+mirror readback and the original still-valid claim (or already persisted receipt).
+If ownership expired, or a cell differs, the coordinator must inspect the exact
+scope through the existing recovery procedure. Partial/stale/unavailable source
+reads do not advance the complete roster or invent missing work. Receipt storage
+is verified independently of the native write response.
+
+Tests use synthetic IC captures and mock the Google transport. They establish
+these contracts, including lost-response recovery, without claiming a live
+reader, changed workbook, updated roster, or grade entry.
+
+### Next live acceptance step — Codex owns this engineering work
+
+When a coordinated, signed-in school IC session is available for native access,
+the Codex coordinator inspects the supported roster/export capability for the
+four exact instructional sections and verified Study Hall. Establish observed
+native student/enrollment IDs, complete status/count coverage and the initial
+stable-ID-to-existing-row crosswalk; then implement and independently verify
+that capture transport through the existing trusted-host boundary. Preserve
+all named-only history while its crosswalk remains unverified. This is unfinished
+engineering, not a request for Katherine to invent IDs, supply an adapter or
+repeat known identity decisions. No screen control, browser export, real roster
+capture, workbook setup or live acceptance occurred in this background repair.

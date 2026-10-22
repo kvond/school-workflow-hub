@@ -12,6 +12,8 @@ import unicodedata
 from datetime import datetime
 
 from . import google
+from school_workflow_hub.adapters import roster_status
+from school_workflow_hub.adapters.hosted_agenda import ConnectionError
 
 SECTIONS = {"forensics": ("A2 Forensics", "A3 Forensics"),
             "biology": ("A4 Biology",),
@@ -65,11 +67,15 @@ def added_date(value):
 _ORIENTATION = {}
 
 
-def parse_tab(cells, class_key, section, layouts=None):
+def parse_tab(cells, class_key, section, layouts=None, status_columns=None):
     """Students in one roster tab. Each student records how their column order
     was known: a header row, a 'Last, First' cell, the configured layout, or
     only assumed (Last | First), which orient() can correct."""
     layouts = layouts or {}
+    status_columns = status_columns or {}
+    status_column = status_columns.get(section)
+    if status_column:
+        roster_status.require_header(cells.get((1, status_column), {}).get("formattedValue"))
     names = {plain(s): s for tabs in SECTIONS.values() for s in tabs}
 
     def start(name, first_row=1):
@@ -100,6 +106,8 @@ def parse_tab(cells, class_key, section, layouts=None):
             continue
         if plain(a) in names and not b:
             section = names[plain(a)]
+            if status_columns.get(section) != status_column:
+                raise ConnectionError("roster_status_mixed_section_layout")
             order, basis = start(section, r + 1)
             continue
         if {plain(a), plain(b)} == {"last name", "first name"}:
@@ -115,6 +123,9 @@ def parse_tab(cells, class_key, section, layouts=None):
             last, first, how = a, b, basis
         if not plain(last) or not plain(first):
             skipped += 1
+            continue
+        if status_column and not roster_status.active_status(
+                cells.get((r, status_column), {}).get("formattedValue", "")):
             continue
         added = added_date(cells.get((r, added_col), {}).get("formattedValue", "")) if added_col else ""
         students.append({"class_key": class_key, "section": section, "first": first, "last": last,
@@ -157,6 +168,10 @@ def load(token, config):
     except ValueError:
         layouts = {}
     try:
+        status_columns = roster_status.configured_columns(config, [s for v in SECTIONS.values() for s in v])
+    except ConnectionError:
+        return {}, ["The roster status column configuration could not be verified."]
+    try:
         _, tabs = google.sheet_tabs(token, roster_id)
     except google.GoogleError as error:
         return {}, ["The roster workbook couldn't be read: %s" % error]
@@ -176,8 +191,9 @@ def load(token, config):
         return {}, problems
     titles = sorted({title for _, title in wanted.values()})
     try:
-        grids = google.sheet_grid(token, roster_id, ["'%s'!A1:B200" % t.replace("'", "''")
-                                                     for t in titles])
+        grids = google.sheet_grid(token, roster_id, ["'%s'!A1:%s200" % (t.replace("'", "''"),
+            chr(64 + max([2] + [status_columns.get(s, 2) for s, (_, title) in wanted.items() if title == t])))
+            for t in titles])
     except google.GoogleError as error:
         return {}, problems + ["The roster tabs couldn't be read: %s" % error]
     roster, seen = {}, set()
@@ -187,8 +203,11 @@ def load(token, config):
     for section, (class_key, title) in wanted.items():
         first_section.setdefault(title, (class_key, section))
     for title, (class_key, section) in sorted(first_section.items()):
-        students, skipped = parse_tab(grids.get(title, {}), class_key, section,
-                                      layouts if isinstance(layouts, dict) else {})
+        try:
+            students, skipped = parse_tab(grids.get(title, {}), class_key, section,
+                layouts if isinstance(layouts, dict) else {}, status_columns)
+        except ConnectionError:
+            return {}, problems + ["Roster status in '%s' could not be verified; previous roster remains unchanged." % section]
         if skipped:
             problems.append("%d row(s) in roster tab '%s' couldn't be read as Last, First."
                             % (skipped, title))
