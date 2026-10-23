@@ -411,3 +411,20 @@ late-work rules, helper protocol/settings, saved grades and histories are unchan
 Configuration and a passing test suite do not establish live intake acceptance or
 IC save/readback. Activation still belongs to the coordinator's existing guarded
 private-configuration path after live writer ownership is settled.
+
+### An isolated student's ambiguous response codes
+
+An ordinary found-code submission with duplicate response codes can remain an
+individual check row while other verified students' scores proceed. This is
+limited to a fresh, complete readable original, an existing exact respondent
+email/Form match, a uniquely verified ready teacher source, and unchanged
+student/teacher metadata bookends. The scorer emits an internal typed hold
+bound to that student's identity, original event and exact source revision;
+serialized API or cached JSON is never authority for this exception. The held
+row has no numeric scores and cannot become a missing-work zero. Existing
+helper check-row and readback behavior is unchanged.
+
+Unavailable or incomplete reads, unresolved identities, changed sources,
+wrong lessons, teacher/source ambiguity and assignment-level holds still stop
+the assignment. Biology Photosynthesis retains its exact repair-first policy.
+Ordinary missing codes remain advisory and a zero denominator remains N/A.
