@@ -13,6 +13,43 @@ class Unreadable(ValueError):
     pass
 
 
+class _CollapsedGeometry(Unreadable):
+    pass
+
+
+def _empty_custom_decoration(element):
+    """Recognize only an unlabelled CUSTOM shape containing paint, not content.
+
+    A blank text box or placeholder can be a response region. Unknown native
+    fields, links and even an empty text object therefore keep the normal hold.
+    The complete original node remains in ``native_source`` in either case.
+    """
+    if set(element) != {"objectId", "size", "transform", "shape"}:
+        return False
+    shape = element.get("shape")
+    if (not isinstance(shape, dict) or shape.get("shapeType") != "CUSTOM"
+            or set(shape) - {"shapeType", "shapeProperties"}):
+        return False
+    color = {"rgbColor": {"red": None, "green": None, "blue": None}, "themeColor": None}
+    fill = {"solidFill": {"color": color, "alpha": None}, "propertyState": None}
+    dimension = {"magnitude": None, "unit": None}
+    transform = {key: None for key in ("scaleX", "scaleY", "shearX", "shearY", "translateX", "translateY", "unit")}
+    styles = {"shapeBackgroundFill": fill,
+              "outline": {"outlineFill": fill, "weight": dimension, "dashStyle": None, "propertyState": None},
+              "shadow": {"type": None, "transform": transform, "alignment": None, "blurRadius": dimension,
+                         "color": color, "alpha": None, "rotateWithShape": None, "propertyState": None},
+              "contentAlignment": None,
+              "autofit": {"autofitType": None, "fontScale": None, "lineSpacingReduction": None}}
+
+    def paint_only(value, fields):
+        if fields is None:
+            return isinstance(value, (str, bool, int, float)) and not (isinstance(value, float) and not math.isfinite(value))
+        return (isinstance(value, dict) and not set(value) - set(fields)
+                and all(paint_only(item, fields[key]) for key, item in value.items()))
+
+    return paint_only(shape.get("shapeProperties", {}), styles)
+
+
 def _mapping(value):
     if not isinstance(value, dict):
         raise Unreadable("The native teacher source has incomplete element metadata.")
@@ -63,7 +100,7 @@ def _box(element, matrix):
     left, right = min(p[0] for p in corners), max(p[0] for p in corners)
     top, bottom = min(p[1] for p in corners), max(p[1] for p in corners)
     if right <= left or bottom <= top:
-        raise Unreadable("The native teacher source has collapsed geometry.")
+        raise _CollapsedGeometry("The native teacher source has collapsed geometry.")
     return left, top, right - left, bottom - top
 
 
@@ -110,7 +147,16 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
             if "image" in element:
                 _mapping(element["image"])
             matrix = _compose(parent, _transform(element.get("transform")))
-            box = _box(element, matrix)
+            try:
+                box = _box(element, matrix)
+            except _CollapsedGeometry:
+                # A zero-width painted CUSTOM leaf has no response area, even
+                # inside a valid group. Never skip its parent or siblings, or
+                # zero-height regions, text/metadata or unsupported content.
+                if (matrix[0] == matrix[1] == matrix[2] == 0 and matrix[3] != 0
+                        and _empty_custom_decoration(element)):
+                    continue
+                raise
             shape = _mapping(element.get("shape", {}))
             text = _mapping(shape.get("text", {})).get("textElements", [])
             if not isinstance(text, list):
