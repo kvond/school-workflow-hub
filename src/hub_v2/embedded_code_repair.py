@@ -113,6 +113,44 @@ def _chars(element):
     return [[c, p] for c, p in zip(chars, paragraphs)]
 
 
+def _code_style_requests(ident, element, at, insertion, remove=()):
+    """Restore original adjacent newlines after Google's range expansion.
+
+    UpdateTextStyleRequest may extend its range to adjacent newlines. Only the
+    two fields changed for a marker are restored, including clearing a field
+    that was originally inherited. A restore can itself extend across a block
+    of newlines, so differently styled adjacent blocks are refused in preview.
+    All other original style fields and the exact readback comparison remain.
+    """
+    chars = _chars(element)
+    for span in reversed(remove):
+        del chars[span['start']:span['end']]
+    _need(type(at) is int and 0 <= at <= len(chars), 'Invalid code styling position.')
+    size = len(_units(insertion))
+    fields = 'fontSize,foregroundColor'
+    result = [{'updateTextStyle': {'objectId': ident, 'textRange': {
+        'type': 'FIXED_RANGE', 'startIndex': at, 'endIndex': at + size},
+        'style': {'fontSize': {'magnitude': 6, 'unit': 'PT'},
+                  'foregroundColor': {'opaqueColor': {'rgbColor': {'red': 1, 'green': 1, 'blue': 1}}}},
+        'fields': fields}}]
+    left, right = at, at
+    while left > 0 and chars[left - 1][0][0] == '0a00':
+        left -= 1
+    while right < len(chars) and chars[right][0][0] == '0a00':
+        right += 1
+    for start, end, shift in ((left, at, 0), (at, right, size)):
+        if start == end:
+            continue
+        styles = [{k: deepcopy(ch[0][1][k]) for k in fields.split(',') if k in ch[0][1]}
+                  for ch in chars[start:end]]
+        _need(all(style == styles[0] for style in styles),
+              'Differently styled adjacent original newlines cannot be safely restored.')
+        result.append({'updateTextStyle': {'objectId': ident, 'textRange': {
+            'type': 'FIXED_RANGE', 'startIndex': start + shift, 'endIndex': end + shift},
+            'style': styles[0], 'fields': fields}})
+    return result
+
+
 def _elements(native):
     result = {}
 
@@ -444,11 +482,8 @@ def _replacement_plan(before, operations, teacher):
     edits = {ident: {'remove': deepcopy(spans), 'insert': (span['start'], op['marker'])}}
     requests = [{'deleteText': {'objectId': ident, 'textRange': {'type': 'FIXED_RANGE',
                  'startIndex': span['start'], 'endIndex': span['end']}}},
-                {'insertText': {'objectId': ident, 'insertionIndex': span['start'], 'text': op['marker']}},
-                {'updateTextStyle': {'objectId': ident, 'textRange': {'type': 'FIXED_RANGE',
-                 'startIndex': span['start'], 'endIndex': span['start'] + len(_units(op['marker']))},
-                 'style': {'fontSize': {'magnitude': 6, 'unit': 'PT'}, 'foregroundColor': {'opaqueColor': {
-                     'rgbColor': {'red': 1, 'green': 1, 'blue': 1}}}}, 'fields': 'fontSize,foregroundColor'}}]
+                {'insertText': {'objectId': ident, 'insertionIndex': span['start'], 'text': op['marker']}}]
+    requests += _code_style_requests(ident, elements[ident][2], span['start'], op['marker'], spans)
     return requests, edits
 
 
@@ -531,12 +566,8 @@ def _plan(before, operations, reference=None, registered_teacher=None):
             description = response_binding.PREFIX + json.dumps(binding, sort_keys=True, separators=(',', ':'))
             edits[op['label_object_id']]['description'] = description
             requests.append({'updatePageElementAltText': {'objectId': op['label_object_id'], 'description': description}})
-        requests += [{'insertText': {'objectId': op['label_object_id'], 'insertionIndex': index, 'text': insertion}},
-                     {'updateTextStyle': {'objectId': op['label_object_id'], 'textRange': {
-                         'type': 'FIXED_RANGE', 'startIndex': index, 'endIndex': index + len(_units(insertion))},
-                         'style': {'fontSize': {'magnitude': 6, 'unit': 'PT'},
-                                   'foregroundColor': {'opaqueColor': {'rgbColor': {'red': 1, 'green': 1, 'blue': 1}}}},
-                         'fields': 'fontSize,foregroundColor'}}]
+        requests.append({'insertText': {'objectId': op['label_object_id'], 'insertionIndex': index, 'text': insertion}})
+        requests += _code_style_requests(op['label_object_id'], label, index, insertion)
         source, ranges = op['source_object_id'], op['remove']
         _need(isinstance(ranges, list) and len(ranges) <= 2, 'Only bounded exact code fragments may be removed.')
         if source is None:
