@@ -719,7 +719,7 @@ class RepairTests(unittest.TestCase):
         url = 'https://fictional.googleusercontent.com/image'
         self.source.native['slides'][0]['pageElements'].append({'objectId': 'OriginalImage', 'image': {'contentUrl': url}})
         content = {'sha256': 'a' * 64, 'basis': 'image_pixels'}
-        with patch.object(repair.student_archive, '_native_image_proof', side_effect=lambda u: deepcopy(content)):
+        with patch.object(repair.student_archive, '_native_image_proof', side_effect=lambda u, token: deepcopy(content)):
             self.source.after_write = lambda source: content.update(sha256='b' * 64)
             with self.assertRaisesRegex(repair.Uncertain, 'native content changed'):
                 self.apply()

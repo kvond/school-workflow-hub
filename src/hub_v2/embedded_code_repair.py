@@ -3,6 +3,9 @@
 The host supplies an exact original/Form proof and complete response-region
 manifest for each affected page. This module does not discover identity, decide
 which question was assigned, synchronize inventory or authorize assessment.
+An explicit in-place restoration can append one inventory-declared missing code
+to its exact original response box while preserving every original character.
+It cannot remove text, combine response regions, add questions or clear a hold.
 There is deliberately no browser endpoint. ``guard`` must reread the host's
 original Form/Agenda/ownership and question-set proofs and return their unchanged digests.
 Grouped fixed text shapes may use exact original response-panel containment only
@@ -218,7 +221,7 @@ def _element_box(elements, ident):
     return _box(elements[ident][2], elements[ident][3])
 
 
-def _media(native):
+def _media(native, token):
     urls = set()
     def visit(value):
         if isinstance(value, dict):
@@ -231,7 +234,7 @@ def _media(native):
                 visit(item)
     visit(native)
     _need(len(urls) <= 500, 'The source exceeds the bounded media proof.')
-    return {url: student_archive._native_image_proof(url) for url in sorted(urls)}
+    return {url: student_archive._native_image_proof(url, token) for url in sorted(urls)}
 
 
 def _canonical(native, images):
@@ -259,7 +262,7 @@ def capture(token, file_id):
     _need(native.get('presentationId') == file_id and native.get('revisionId')
           and isinstance(native.get('slides'), list) and 1 <= len(native['slides']) <= 200,
           'The complete original presentation is unavailable.')
-    images = _media(native)
+    images = _media(native, token)
     parsed = completion._read(token, file_id, meta)
     _need(google.drive_file(token, file_id, FIELDS) == meta, 'The source changed during capture.')
     return {'metadata': meta, 'native': native, 'images': images, 'parsed': parsed,
@@ -349,8 +352,11 @@ def _plan(before, operations, reference=None):
     for op in operations:
         fields = {'marker', 'page_id', 'label_object_id', 'source_object_id', 'remove',
                   'response_object_ids', 'page_response_object_ids'}
-        _need(isinstance(op, dict) and set(op) in (fields, fields | {'panel_object_id'}),
+        _need(isinstance(op, dict) and set(op) in (fields, fields | {'panel_object_id'},
+                                                    fields | {'placement'}),
               'Unexpected code-repair operation fields.')
+        in_place = op.get('placement') == 'in_place'
+        _need('placement' not in op or in_place, 'Unsupported original code placement.')
         marker = completion.MARKER.fullmatch(op['marker']) if isinstance(op['marker'], str) else None
         _need(marker is not None and marker.group(1) in ('NOTES', 'DRAFT')
               and marker.group(2) == inventories[0].group(1) and marker.group(3) == marker.group(3).strip(),
@@ -365,8 +371,11 @@ def _plan(before, operations, reference=None):
         response_ids, page_ids = op['response_object_ids'], op['page_response_object_ids']
         _need(isinstance(response_ids, list) and response_ids and isinstance(page_ids, list)
               and set(response_ids) <= set(page_ids) and len(set(page_ids)) == len(page_ids)
-              and len(set(response_ids)) == len(response_ids) and op['label_object_id'] not in page_ids,
-              'A separate verified label and complete original response-region manifest are required.')
+              and len(set(response_ids)) == len(response_ids)
+              and ((in_place and response_ids == [op['label_object_id']])
+                   or (not in_place and op['label_object_id'] not in page_ids)),
+              ('An exact original response and complete original response-region manifest are required.'
+               if in_place else 'A separate verified label and complete original response-region manifest are required.'))
         for ident in page_ids:
             _shape(elements, ident, op['page_id'])
         _need(op['page_id'] not in pages or pages[op['page_id']] == set(page_ids),
@@ -374,17 +383,24 @@ def _plan(before, operations, reference=None):
         pages[op['page_id']] = set(page_ids)
         binding = _panel_binding(before, reference, op, elements, label) if 'panel_object_id' in op else None
         lx, ly, lw, lh = _element_box(elements, op['label_object_id'])
-        for ident in [op['panel_object_id']] if binding else response_ids:
+        for ident in ([] if in_place else [op['panel_object_id']] if binding else response_ids):
             x, y, w, _ = _element_box(elements, ident)
             _need(ly + lh <= y + 127 and y - (ly + lh) <= .08 * before['parsed']['size'][1]
                   and max(lx, x) < min(lx + lw, x + w),
                   'The verified code label must be separate and immediately above its response region.')
         _need(not completion.MARKER.search(_text(label)) and not completion.INVENTORY.search(_text(label)),
-              'The existing label already contains a code or inventory.')
+              'The existing code location already contains a code or inventory.')
         _need(op['label_object_id'] not in edits, 'One label cannot receive multiple repairs.')
         text = _text(label)
         _need(text.endswith('\n') and text.strip(), 'An existing printed label is required.')
         index, insertion = len(_units(text[:-1])), ' ' + op['marker']
+        if in_place:
+            # Preserve every original character. A malformed token, student
+            # writing and paragraph structure are never interpreted or removed
+            # by this path. The host proves the original question/object; the
+            # normal parser must bind the sole restored code to this exact box.
+            _need(op['source_object_id'] is None and op['remove'] == [],
+                  'In-place restoration preserves all original text; no removal is allowed.')
         edits[op['label_object_id']] = {'remove': [], 'insert': (index, insertion)}
         if binding:
             description = response_binding.PREFIX + json.dumps(binding, sort_keys=True, separators=(',', ':'))
