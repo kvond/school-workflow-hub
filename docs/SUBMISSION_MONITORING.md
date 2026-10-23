@@ -365,3 +365,66 @@ reserved hidden second-deck URL slot and explicit `_deck2URL` headers preserve t
 second-deck role. Inventory parsing uses inventory-bearing text boxes, excluding
 adjacent lesson prose; an otherwise valid summary on a later slide asks the teacher
 to move that existing summary to slide 1, rather than invent missing question IDs.
+
+### Exact historical original-event intake
+
+`hub_v2.historical_intake` adds a read-only exception for an explicitly reviewed,
+fully enumerated historical Form. It does not make retired Forms, shared folders,
+filenames or all responses from a respondent eligible. The existing
+`HUB_ACCEPTED_FORM_ROUTES` contract remains unchanged.
+
+The private `HUB_HISTORICAL_FORM_EVENTS` manifest binds one Agenda, school year
+and course, an attributed existing decision reference/instruction hash, the
+complete original Form definition and response census, and at most twenty exact
+single-upload events. Each event retains its original response ID, upload
+question, respondent email, both original event timestamps, file ID and revision.
+Its separate current target has an exact Agenda/Form/teacher binding, reviewed
+original and teacher content fingerprints, cycle, and specific question-object
+proofs. A changed event, extra upload, revision, target or incomplete read holds
+the entire affected target; no absence zeros are prepared from that failure.
+The original Form and files are never moved, renamed or written.
+
+The manifest is preparation storage, not identity authority. A trusted host must
+wire `verified_host(read_config=..., read_identities=...)` to actual read-only
+runtime configuration and the existing complete canonical IC receipt plus
+native-observed school-email-to-local-student-number evidence. `read_identities`
+returns `source=infinite_campus`, `complete`, the native capture's `checked_at`,
+`canonical_receipt_reference`, `canonical_receipt_sha256`, and exactly the
+requested `identities`. Each identity has `school_email`, `local_student_number`,
+`membership_id`, `section`, `native_email_proof_sha256`, `class_key`, `school_year`,
+`active`, `first`, and `last`. The capture must be at most fifteen minutes old;
+current workbook membership must agree. A local student number is never relabeled
+as an internal IC person ID. Callback results must come from the real canonical
+receipt and native email evidence, not names, username construction or a caller's
+boolean assertion. There is no HTTP route or new writer for this adapter. Until
+that concrete host reader is independently reviewed and wired, its default is
+**unavailable**, including when a manifest exists.
+
+Original Form responses, metadata/content, exact Agenda context, current private
+configuration and canonical identity evidence are read before attachment and
+bookended afterward, including a final check after ordinary folder discovery.
+Only then are the events attached to their declared target. The exact historical
+file IDs are reserved from folder/title routing so a held or differently targeted
+original cannot silently become another lesson's work. Independent target Forms
+retain their normal processing. Current-Form response counts, scoring policy,
+late-work rules, helper protocol/settings, saved grades and histories are unchanged.
+Configuration and a passing test suite do not establish live intake acceptance or
+IC save/readback. Activation still belongs to the coordinator's existing guarded
+private-configuration path after live writer ownership is settled.
+
+### An isolated student's ambiguous response codes
+
+An ordinary found-code submission with duplicate response codes can remain an
+individual check row while other verified students' scores proceed. This is
+limited to a fresh, complete readable original, an existing exact respondent
+email/Form match, a uniquely verified ready teacher source, and unchanged
+student/teacher metadata bookends. The scorer emits an internal typed hold
+bound to that student's identity, original event and exact source revision;
+serialized API or cached JSON is never authority for this exception. The held
+row has no numeric scores and cannot become a missing-work zero. Existing
+helper check-row and readback behavior is unchanged.
+
+Unavailable or incomplete reads, unresolved identities, changed sources,
+wrong lessons, teacher/source ambiguity and assignment-level holds still stop
+the assignment. Biology Photosynthesis retains its exact repair-first policy.
+Ordinary missing codes remain advisory and a zero denominator remains N/A.

@@ -122,6 +122,13 @@ def folder_submission(item):
 def identify(submission, students, domains, prefix):
     """(student, how): school email, then the username or uploader name in a
     file's name, then a name typed into the Form."""
+    # Only the read-only exact historical adapter sets this internal binding,
+    # after native IC email/ID proof. Never fall back to a typed/name guess.
+    if '_historical_identity' in submission:
+        identity = submission['_historical_identity']
+        matches = [s for s in students if s.get('section') == identity.get('section')
+                   and all(roster.plain(s.get(k)) == roster.plain(identity.get(k)) for k in ('first', 'last'))]
+        return (matches[0], 'email') if len(matches) == 1 else (None, None)
     student = roster.match_email(submission["email"], students, domains, prefix)
     if student:
         return student, "email"
@@ -156,7 +163,8 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
         moment = when(submission["submitted_at"])
         submission["late"] = bool(cutoff and moment and moment > cutoff)
         for f in submission["files"]:
-            f["other_week"] = named_week(f.get("name"), lesson_week)
+            f["other_week"] = (None if submission.get('_historical_target') == f.get('assignment_form_id')
+                               and f.get('historical_intake_sha256') else named_week(f.get("name"), lesson_week))
             f["from_folder"] = submission["source"] == "folder"
             f["from_shared"] = bool(submission.get("shared"))
             f["late"] = submission["late"]
@@ -749,6 +757,8 @@ def wrong_form_moves(entries, held=None):
         if entry.get('form', {}).get('_combined_scope'):
             continue
         for submission in entry["found"]:
+            if submission.get('_historical_target'):
+                continue  # Exact current target was verified from original event/content.
             words = {w for f in submission["files"] for w in deck_words(f.get("name"))}
             # Fresh exact Form teachers outrank nearby heuristic deck pairings.
             # Every attachment must agree; conflicting or partial claims stay put.
@@ -1379,6 +1389,14 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
         route_problem = str(error)
     if route_problem:
         problems.append(route_problem)
+    from . import historical_intake
+    historical_reserved = set()
+    try:
+        historical_reserved = historical_intake.attach(token, config, agenda, class_key, week_label,
+            forms, students, roster_problems=problems)
+    except historical_intake.Unverified as error:
+        route_problem = str(error)
+        problems.append(route_problem)
     # A lesson moved to another week keeps its deck's name ("… Week 04 …"), so
     # its weeks are its Agenda week and the week its own decks are named for.
     deck_ids = {m.group(1) for lesson in lessons for material in lesson["materials"]
@@ -1494,7 +1512,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                   for u in [roster.file_username(i.get("name"), prefix)] if u}
     roster.orient(students, usernames - {""})
 
-    referenced = set(response_ids) | set(shared_ids)
+    referenced = set(response_ids) | set(shared_ids) | historical_reserved
     readable = [form for form in forms if form["form_id"]]
     pending, other = [], []
     loose = [(entry["id"], folder_submission(entry)) for entry in items
@@ -1624,6 +1642,7 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
         out_forms = []
         for form, open_for in zip(forms[index:index + len(lesson["forms"])],
                                   windows[index:index + len(lesson["forms"])]):
+            historical_intake.bookend(form)
             describe_files(token, form["found"], known)
             rows, missing = group(form["found"], students, domains, prefix, numbers,
                                   cutoff=open_for["at"] if open_for else None)
