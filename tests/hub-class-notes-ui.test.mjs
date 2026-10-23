@@ -78,6 +78,8 @@ test('a changed saved version requires explicit comparison before replacing it',
   await ui.loadClassNotes(state);
   assert.equal(state.draft, 'My draft');
   assert.match(state.body.textContent, /Another tab policy/);
+  await ui.loadClassNotes(state); // Repeated reads cannot waive the unresolved comparison.
+  assert.equal(state.comparison.text, 'Another tab policy');
   await ui.saveClassNotes(state);
   assert.equal(calls.filter(c => c.method === 'POST').length, 0);
   await ui.saveClassNotes(state, true);

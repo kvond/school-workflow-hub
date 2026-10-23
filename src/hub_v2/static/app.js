@@ -1708,7 +1708,8 @@ async function loadClassNotes(state) {
     const dirty = state.loaded && (state.draft !== previous.text || state.draft !== startingDraft);
     state.saved = saved; state.loaded = true; state.needsReload = false;
     if (!dirty) state.draft = saved.text;
-    state.comparison = dirty && state.draft !== saved.text && saved.revision !== previous.revision ? saved : null;
+    state.comparison = dirty && state.draft !== saved.text
+      && (saved.revision !== previous.revision || state.comparison) ? saved : null;
     state.info = state.draft === saved.text ? 'Saved class notes read back.' : 'Your draft is preserved.';
   } catch (error) {
     if (seq !== state.seq) return;
