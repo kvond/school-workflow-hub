@@ -218,3 +218,89 @@ all named-only history while its crosswalk remains unverified. This is unfinishe
 engineering, not a request for Katherine to invent IDs, supply an adapter or
 repeat known identity decisions. No screen control, browser export, real roster
 capture, workbook setup or live acceptance occurred in this background repair.
+
+### Native Roster Report input
+
+Infinite Campus documents a supported teacher export at **Instruction > Reports
+> Roster**, also reached from **Students > Roster > Print Options**. Select the
+exact term and sections, today's effective date, **Local Number**, **Show Incoming
+Students**, **Show Dropped Students**, and **Show Section Placement**; the arrow
+next to Generate offers CSV. Do not include unrelated demographic, guardian,
+health or program fields. The read-only Student Roster independently shows the
+active, incoming and dropped groups and their counts, enrollment start/end dates,
+and student contact details when authorized.
+
+These are supported source surfaces, not evidence that an export was actually
+captured or that an unattended connector exists. Preserve the original CSV and
+its byte hash privately, together with the observed school identity, school,
+calendar/year, term/date range, effective date, exact selected sections/options
+and independent status counts. A second complete capture must agree before an
+import can use it. File modification time, a row count computed from the same
+CSV, or a report filename cannot independently prove current complete coverage.
+
+The report's Local Student Number is not IC's person ID, and it is not an
+enrollment ID. IC explicitly documents that OneRoster enrollment `sourcedId`
+is not visible in the Campus UI. The separate `adapters.roster_report` input
+names its derived student/section/year relationship key explicitly rather than
+placing a hash under an **IC enrollment ID** header. Native-ID targets retain
+their existing schema; report targets explicitly set
+`identity_scheme: ic_roster_report_v1` and require the distinct owned headers
+**IC local student number** and **IC membership key**. Switching schemes never
+relabels existing IDs. A report relationship key does not claim to identify a
+hidden native enrollment episode; every observed status/start/end value remains
+in the immutable source and mirror receipts, including reentry observations.
+The official OneRoster documentation page does not establish an authorized API
+connection, permission to acquire credentials, or a reason to query private IC
+endpoints.
+
+An initial mapping to existing mirror rows needs independently verified identity
+evidence. Do not infer a school email from a name or assign a native ID to an
+existing row merely because names match. A preserved names-only legacy row is
+not proof of current membership. Any separate initialization design must retain
+its teacher/formula cells and history and verify the exact native destination.
+
+`parse_csv(bytes)` accepts the observed official 15-column header, optionally
+one strictly empty trailing column, numeric Local Student Numbers as text
+(retaining leading zeros), full first/middle/last/suffix and recorded aliases,
+and original start/end dates. It refuses changed headers, extra populated
+columns, malformed dates, duplicate identities or conflicting identities across
+sections. A successful parse proves file format only. The CSV does **not** have
+an explicit roster-status column: blank End Date cannot prove active membership,
+and dates never substitute for native Active/Incoming/Dropped groups.
+
+`prepare_capture(raw, observation, expected_context=..., bindings=...,
+targets=..., now=...)` joins those exact CSV rows to independent native status
+groups by Local Student Number. The trusted caller supplies current account,
+origin, school/calendar/structure/year, term and actual term dates, effective
+date, exact report options, original generation/read times, byte hash and unique
+capture identity. Private `bindings` map each already verified native section
+ID to the exact CSV State Code/Course/Room/Term(s)/Period tuple. Each separately
+observed native section must give complete unfiltered/unpaginated status groups
+and independent active/incoming/withdrawn counts; their exact IDs and counts
+must agree with the CSV. An empty section requires independent native zero
+coverage. The native Roster screen or a verified same-context grouped PDF may
+supply that evidence; a count computed from the CSV cannot.
+
+`NativeRosterReportReader(capture, expected_context=..., bindings=...)` adapts
+an accepted host capture callback to the existing worker. Every callback must
+obtain original native source evidence; no browser transport, file watcher,
+login or persistent-file fallback is configured by this module. A supervised
+capture capability does not establish unattended execution. Captures must be
+at most 15 minutes old on the current Eastern effective date, within the exact
+term. The worker requires a genuinely separate second generation after the
+first native observation, with a distinct capture identity, and matching full
+CSV/context/status/binding proof. Re-reading one downloaded artifact cannot
+satisfy bookends. Both captures are retained in the immutable private receipt.
+Unknown dates are not carried forward by this path: each CSV date is actually
+observed, including explicit blank values. All existing source-owner/cutoff,
+native-write budget, intent/uncertainty and complete readback gates still apply.
+
+Native format observation and synthetic tests do not establish an accepted
+current roster, an initialized mirror, a configured capture transport or a
+changed workbook. `run_enabled` and the helper remain unchanged. Codex owns the
+remaining live capture, exact private binding/crosswalk, reviewed initialization
+and source/destination acceptance; Katherine need not supply engineering.
+
+Official references: [Roster Report](https://kb.infinitecampus.com/help/printing-a-sections-roster),
+[Viewing Your Roster](https://kb.infinitecampus.com/help/viewing-your-roster), and
+[OneRoster API Documentation](https://kb.infinitecampus.com/help/oneroster-api-documentation-oauth-2).

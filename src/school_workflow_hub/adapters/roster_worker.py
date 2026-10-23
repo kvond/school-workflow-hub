@@ -27,6 +27,8 @@ STATUSES = {"active", "incoming", "withdrawn", "inactive"}
 SOURCE_STATUSES = STATUSES - {"inactive"}
 NATIVE_WRITE_READBACK_SECONDS = 170  # one65s POST + two read-onlyGETs (at most50s each) + margin
 FINAL_ROSTER_CHECK_SECONDS = 30
+REPORT_SCHEME = "ic_roster_report_v1"
+REPORT_MEMBER_PREFIX = "ic-report-membership:"
 
 
 def _fail(code):
@@ -43,7 +45,10 @@ def _id(value):
 
 
 def owned_headers(target):
-    return {**FIELDS, **({"name": "Full name"} if target["class_key"] == "study_hall" else {})}
+    headers = {**FIELDS, **({"name": "Full name"} if target["class_key"] == "study_hall" else {})}
+    if target.get("identity_scheme") == REPORT_SCHEME:
+        headers.update(student_id="IC local student number", membership_id="IC membership key")
+    return headers
 
 
 def validate_targets(targets):
@@ -51,8 +56,9 @@ def validate_targets(targets):
         _fail("targets_invalid")
     sections, sheets = set(), set()
     for t in targets:
-        if (not isinstance(t, dict) or set(t) != {"class_key", "section_name", "section_id",
+        if (not isinstance(t, dict) or set(t) - {"identity_scheme"} != {"class_key", "section_name", "section_id",
                 "school_year", "sheet_id", "columns", "row_limit", "column_limit"}
+                or ("identity_scheme" in t and t["identity_scheme"] != REPORT_SCHEME)
                 or not _id(t["section_id"]) or not _text(t["section_name"])
                 or not re.fullmatch(r"20\d{2}-\d{2}", str(t["school_year"]))
                 or type(t["sheet_id"]) is not int or t["sheet_id"] < 0
@@ -82,18 +88,25 @@ def validate_targets(targets):
 
 
 def validate_capture(capture, targets, now):
-    """Validate every section before planning any departure; native IDs mandatory.
+    """Validate every section before planning any departure; explicit ID scheme.
 
     Completeness/counts/revision must come from the accepted reader's original
     IC response, never a names-only workbook or an assistant-supplied claim.
     Pagination/filtered views cannot be relabeled a complete response.
     """
+    report = all(t.get("identity_scheme") == REPORT_SCHEME for t in targets)
+    if any(t.get("identity_scheme") == REPORT_SCHEME for t in targets) and not report:
+        _fail("mixed_identity_schemes")
     if (not isinstance(capture, dict)
-            or set(capture) != {"source", "reader_id", "complete", "errors", "sections"}
+            or set(capture) != ({"source", "reader_id", "complete", "errors", "sections"}
+                               | ({"report_proof"} if report else set()))
             or capture.get("source") != "infinite_campus"
             or capture.get("complete") is not True or capture.get("errors") != []
             or not _id(capture.get("reader_id")) or not isinstance(capture.get("sections"), list)):
         _fail("complete_capture_required")
+    if report:
+        from .roster_report import validate_proof
+        validate_proof(capture["report_proof"], now)
     wanted = {t["section_id"]: t for t in targets}
     if len(capture["sections"]) != len(wanted):
         _fail("section_coverage_incomplete")
@@ -135,6 +148,16 @@ def validate_capture(capture, targets, now):
                     except ValueError:
                         _fail("membership_date_invalid")
             student, member = row["student_id"], row["membership_id"]
+            if report:
+                from .roster_report import membership_key
+                if (not re.fullmatch(r"[0-9]{1,20}", student)
+                        or not re.fullmatch(REPORT_MEMBER_PREFIX + r"[0-9a-f]{64}", member)
+                        or member != membership_key(capture["report_proof"]["context"], section["section_id"], student)
+                        or capture["report_proof"]["context"]["school_year"] != section["school_year"]
+                        or row["start_date"] is None or row["end_date"] is None):
+                    _fail("report_identity_invalid")
+            elif member.startswith(REPORT_MEMBER_PREFIX):
+                _fail("report_identity_scheme_required")
             if student in student_ids or member in memberships:
                 _fail("identity_conflict")
             student_ids.add(student)
@@ -152,6 +175,9 @@ def source_fingerprint(capture):
     copy = deepcopy(capture)
     for section in copy["sections"]:
         section.pop("checked_at", None)
+    if "report_proof" in copy:
+        for field in ("capture_id", "captured_at", "observed_at"):
+            copy["report_proof"].pop(field, None)
     return content_hash(copy)
 
 
@@ -200,6 +226,8 @@ def plan_mirror(capture, targets, baseline):
                     or cells["status"] not in (STATUSES | ({"dropped"} if target["class_key"] == "study_hall" else set()))):
                 _fail("verified_crosswalk_required")
             student, member = cells["student_id"], cells["membership_id"]
+            if (member.startswith(REPORT_MEMBER_PREFIX)) != (target.get("identity_scheme") == REPORT_SCHEME):
+                _fail("mirror_identity_scheme_mismatch")
             if student in existing or member in member_owner:
                 _fail("mirror_identity_conflict")
             existing[student] = (position, cells)
@@ -398,6 +426,11 @@ class RosterWorker:
                                      instant(self.port.read([task_id]).read_time))
             if source_fingerprint(fresh) != plan["source_sha256"]:
                 _fail("source_changed")
+            if "report_proof" in source:
+                before, after = source["report_proof"], fresh["report_proof"]
+                if (before["capture_id"] == after["capture_id"]
+                        or instant(after["captured_at"]) <= instant(before["observed_at"])):
+                    _fail("independent_native_report_bookend_required")
             if self.mirror.read() != baseline:
                 _fail("destination_changed")
             claim = self.state.renew(claim, ttl_seconds=300)
@@ -417,6 +450,8 @@ class RosterWorker:
             intent = {"state": "pending", "request_id": request_id, "claim": claim.__dict__, "source": source,
                       "targets": self.targets, "plan": plan, "baseline": baseline_record,
                       "expected_checkpoint": (checkpoint or {}).get("checkpoint_token")}
+            if "report_proof" in fresh:
+                intent["source_bookend"] = fresh
             # Check private state size before any native action; an oversized
             # receipt must not first be discovered after the sheet was changed.
             bounded_json(intent)
@@ -485,7 +520,8 @@ class RosterWorker:
         receipt = self.state.finish(claim, records={"roster_sync": {
             "source": intent["source"], "targets": intent["targets"],
             "before": intent["plan"]["before"], "after": actual,
-            "counts": intent["plan"]["counts"], "source_sha256": intent["plan"]["source_sha256"]}},
+            "counts": intent["plan"]["counts"], "source_sha256": intent["plan"]["source_sha256"],
+            **({"source_bookend": intent["source_bookend"]} if "source_bookend" in intent else {})}},
             baseline=intent["baseline"], expected_checkpoint=intent["expected_checkpoint"], complete_scan=True)
         result = {"status": "verified", "counts": intent["plan"]["counts"],
                   "receipt": receipt, "external_writes": int(bool(intent["plan"]["changes"]))}
