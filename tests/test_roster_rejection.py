@@ -14,6 +14,8 @@ class RejectionTests(unittest.TestCase):
     def setUp(self):
         fixture = fixtures.BootstrapTests('runTest'); fixture.setUp()
         self.f = fixture; self.port = fixture.port; self.cloud = CloudState(self.port)
+        self.port.now = self.port.now.replace(hour=10, minute=30)
+        fixture.captures = [fixture.capture('first',8),fixture.capture('second',3)]
         source_task = self.cloud.create_task(rejection.SOURCE_SCOPE)
         self.source = self.cloud.claim(source_task, owner='coordinator', request_id='bootstrap-1',
                                        input_hash='source-input-1', ttl_seconds=900)
@@ -153,6 +155,57 @@ class RejectionTests(unittest.TestCase):
         prior = deepcopy(self.port.rows)
         with self.assertRaises(StoreUnavailable): self.record()
         self.assertEqual(prior,self.port.rows)
+
+    def test_real_source_operations_success_and_cutoff_never_open_native_retry(self):
+        from hub_v2.source_operations import SourceOperations, Held
+        ops = SourceOperations.acquire(self.port, source_scope='school-morning-preparation-and-repair',
+            owner='coordinator',request_id='bootstrap-1',input_hash='source-input-1',check_activity=lambda:None)
+        self.recorder.source_claim = ops.claim
+        self.recorder.before_write = ops.before_write
+        prepared = self.recorder.prepare()
+        result = self.recorder.record_rejected_bootstrap(prepared)
+        self.assertEqual(result['status'],'verified_rejection_record')
+        self.f.mirror.apply.assert_called_once()
+        self.assertEqual(self.port.rows[self.f.worker.intent_key].value['state'],'pending')
+        # Separate fixture: enough actual ownership to prepare, but insufficient
+        # native source window for the complete state-only proof reservation.
+        self.setUp()
+        self.cloud.release_for_review(self.source,'test-source-release')
+        self.port.advance(26*60)
+        ops = SourceOperations.acquire(self.port, source_scope='school-morning-preparation-and-repair',
+            owner='coordinator',request_id='new-source-only',input_hash='rejection-proof',check_activity=lambda:None)
+        self.recorder.source_claim = ops.claim
+        self.recorder.before_write = ops.before_write
+        prepared = self.recorder.prepare()
+        with self.assertRaisesRegex(Held,'source_mutation_window_closed'):
+            self.recorder.record_rejected_bootstrap(prepared)
+        self.assertNotIn(prepared['record_id'],self.port.rows)
+
+    def test_slow_post_proof_cannot_be_reported_as_verified(self):
+        clock = [0.0]
+        original = self.recorder._proof
+        calls = [0]
+        def proof():
+            value = original(); calls[0] += 1
+            if calls[0] == 3: clock[0] += rejection.FINAL_CHECK_SECONDS+1
+            return value
+        prepared = self.recorder.prepare()
+        self.recorder._proof = proof
+        with patch.object(rejection,'monotonic',side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(StoreUnavailable,'post_proof_timed_out'):
+                self.recorder.record_rejected_bootstrap(prepared)
+        self.assertIn(prepared['record_id'],self.port.rows)
+        self.assertFalse(self.port.rows[prepared['record_id']].value['retry_allowed'])
+
+    def test_slow_post_commit_readback_is_unconfirmed_and_not_repeated(self):
+        clock=[0.0]; original=self.port.commit_guarded
+        def slow(changes,**kwargs):
+            original(changes,**kwargs);clock[0]+=rejection.READBACK_SECONDS+1
+        self.port.commit_guarded=slow
+        with patch.object(rejection,'monotonic',side_effect=lambda:clock[0]):
+            with self.assertRaisesRegex(StoreUnavailable,'post_readback_timed_out'):self.record()
+        self.guard.assert_called_once()
+        self.f.mirror.apply.assert_called_once()
 
 
 class CapabilityTests(unittest.TestCase):

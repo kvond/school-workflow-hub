@@ -16,9 +16,9 @@ from ..core.runs import content_hash
 
 SOURCE_SCOPE = {"workflow": "school-source-preparation", "class_key": "all",
                 "assignment_key": key("sourcescope", "school-morning-preparation-and-repair")}
-RESERVATION_SECONDS = 450
+RESERVATION_SECONDS = 500
 FINAL_CHECK_SECONDS = 200
-READBACK_SECONDS = 220
+READBACK_SECONDS = 280
 
 
 def fail(reason):
@@ -179,6 +179,7 @@ class RejectedBootstrap:
             if elapsed > FINAL_CHECK_SECONDS or remaining < READBACK_SECONDS:
                 fail("final_source_budget_unavailable")
             final["snapshot"] = snapshot
+            final["dispatch_started"] = monotonic()
         error = None
         try:
             self.port.commit_guarded({rid: (payload, None)}, before_write=guard)
@@ -189,8 +190,15 @@ class RejectedBootstrap:
         if not final:
             if error: raise error
             fail("final_guard_unavailable")
+        proof_started = monotonic()
         post, snapshot = self._proof()
+        if monotonic() - proof_started > FINAL_CHECK_SECONDS:
+            raise StoreUnavailable("roster_bootstrap_rejection_post_proof_timed_out") from error
+        stored_started = monotonic()
         stored = self.port.read([rid]).documents[rid]
+        if (monotonic() - stored_started > 30
+                or monotonic() - final["dispatch_started"] > READBACK_SECONDS):
+            raise StoreUnavailable("roster_bootstrap_rejection_post_readback_timed_out") from error
         if (post != {"record_id": rid, "payload": payload} or stored is None or stored.value != payload
                 or any(snapshot.documents[k] != v for k, v in final["snapshot"].documents.items())):
             raise StoreUnavailable("roster_bootstrap_rejection_readback_unconfirmed") from error

@@ -559,7 +559,10 @@ The caller supplies a real currently held `SourceOperations` Claim and its
 `before_write` callback. An expired original roster claim remains historical;
 a takeover or changed owner/fence/run refuses the classification. A live shared
 claim must belong to the supplied guard. Do not steal or clear it. The final
-state request reserves 450 seconds for complete proof and readback, reacquires
+state request reserves 500 seconds: at most 200 for final proof, then 280 for the
+one bounded CAS, at most 200 seconds of post-proof and a final read capped at
+30 seconds, with remaining margin. Authentication for the CAS occurs before
+the guard; any slow proof/read fails closed. The operation reacquires
 no domain lease, and creates the sidecar with a create-if-absent precondition.
 It preserves the original intent, uncertainty marker, task and run values **and
 versions**. Firestore REST has no `Write.verify` operation; these are guarded
