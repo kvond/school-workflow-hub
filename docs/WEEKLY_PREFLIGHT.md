@@ -75,6 +75,10 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   skip the Form checks only.
 - **Deck content.** Completion codes via `audit._release_deck` (non-ready
   results read "Needs embedded codes" with the missing/extra IDs and slides);
+  inventory failures include required slide 1 and every observed inventory
+  location from the verified outline, with an exact native slide link when
+  available. An unreadable outline never establishes that an inventory is
+  absent. These diagnostics do not change the marker/readiness policy.
   only exact teacher-deck and second-deck links in the current Agenda row may
   use the existing native teacher reader after a Slides export returns HTTP
   403. It checks the actual embedded codes and preserves missing/extra-code

@@ -1338,6 +1338,77 @@ class NativeReadinessTests(Base):
                     self.assert_unavailable(ctx, node, ctx.check('readiness', node, wp._readiness))
 
 
+class InventoryContextTests(Base):
+    def codes(self, result):
+        return next(e for e in self.exceptions(result, 'biology', 5) if e['kind'] == 'needs_embedded_codes')
+
+    def test_missing_inventory_has_required_first_slide_and_saved_context(self):
+        self.src.decks[BIO_DECK] = ready_deck('C06')[1:]
+        result = self.run_check()
+        finding = self.codes(result)
+        self.assertEqual(finding['slides'], [1])
+        self.assertEqual(finding['evidence']['inventory_slides'], [])
+        self.assertEqual(finding['evidence']['required_inventory_slide'], 1)
+        self.assertIn('No inventory marker was found', finding['reason'])
+        self.assertEqual(finding['source_url'], deck_url(BIO_DECK) + '#slide=id.' + BIO_DECK[-4:] + '_p1')
+        self.assertTrue(finding['blocking'])
+        saved = wp.status(self.config, SHEET, '2026-10-19', 1, port=self.port)
+        self.assertEqual(self.codes(saved), finding)
+        self.assertEqual(result['external_writes'], 0)
+        self.assertEqual(result['model_calls'], 0)
+
+    def test_misplaced_inventory_names_both_required_and_actual_slides(self):
+        self.src.decks[BIO_DECK] = list(reversed(ready_deck('C06')))
+        finding = self.codes(self.run_check())
+        self.assertEqual(finding['slides'], [1, 2])
+        self.assertEqual(finding['evidence']['inventory_slides'], [2])
+        self.assertIn('Existing inventory markers: slides 2.', finding['reason'])
+
+    def test_duplicate_inventory_preserves_all_locations(self):
+        deck = ready_deck('C06')
+        self.src.decks[BIO_DECK] = deck + [deepcopy(deck[0])]
+        finding = self.codes(self.run_check())
+        self.assertEqual(finding['slides'], [1, 3])
+        self.assertEqual(finding['evidence']['inventory_slides'], [1, 3])
+        self.assertIn('found 2', finding['reason'])
+
+    def test_unparsed_inventory_and_response_mismatch_keep_existing_locations(self):
+        self.src.decks[BIO_DECK] = [[('inventory', '[[MARKER-INVENTORY:C06]]')], ready_deck('C06')[1]]
+        first = self.codes(self.run_check())
+        self.assertEqual(first['slides'], [1])
+        self.assertIn('marker_inventory_counts_unparsed', first['evidence']['issues'])
+        self.src.decks[BIO_DECK] = deepcopy(BIO_SLIDES)
+        self.src.bump(BIO_DECK)
+        second = self.codes(self.run_check())
+        self.assertEqual(second['slides'], [1, 3])
+        self.assertIn('NOTES Q3 (slide 3)', second['reason'])
+
+    def test_unreadable_outline_does_not_invent_inventory_locations_or_absence(self):
+        self.src.decks[BIO_DECK] = list(reversed(ready_deck('C06')))
+        with patch.object(wp, '_outline', return_value={'ok': False, 'stage': 'parse', 'problem': 'unreadable'}):
+            finding = self.codes(self.run_check())
+        self.assertEqual(finding['slides'], [])
+        self.assertNotIn('inventory_slides', finding['evidence'])
+        self.assertNotIn('No inventory marker was found', finding['reason'])
+        self.assertEqual(finding['source_url'], deck_url(BIO_DECK))
+
+    def test_pptx_locations_never_manufacture_a_native_slide_link(self):
+        self.src.decks[BIO_DECK] = list(reversed(ready_deck('C06')))
+        self.src.files[BIO_DECK]['mimeType'] = google.PPTX
+        finding = self.codes(self.run_check())
+        self.assertEqual(finding['slides'], [1, 2])
+        self.assertEqual(finding['evidence']['inventory_slides'], [2])
+        self.assertEqual(finding['source_url'], 'https://drive.google.com/open?id=' + BIO_DECK)
+
+    def test_repaired_new_revision_removes_old_inventory_failure(self):
+        self.src.decks[BIO_DECK] = ready_deck('C06')[1:]
+        self.codes(self.run_check())
+        self.src.decks[BIO_DECK] = ready_deck('C06')
+        self.src.bump(BIO_DECK)
+        result = self.run_check()
+        self.assertNotIn('needs_embedded_codes', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
+
+
 class PreflightRunTests(Base):
     def test_calendar_conflicts_needs_content_and_prep_deadlines(self):
         result = self.run_check()
