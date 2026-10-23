@@ -406,6 +406,8 @@ class RosterWorker:
             _fail("uncertain_write_requires_readback")
         old = state.documents[self.intent_key]
         if old and old.value.get("request_id") == request_id:
+            if old.value.get("kind") == "bootstrap":
+                _fail("bootstrap_requires_its_read_only_reconciliation")
             if old.value.get("claim", {}).get("owner") != owner:
                 _fail("request_owner_conflict")
             return self.reconcile()
