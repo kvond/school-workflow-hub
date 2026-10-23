@@ -28,6 +28,7 @@ STUDY = {"name": 1, "status": 2, "start_date": 3, "end_date": 4, "checked_at": 5
          "student_id": 6, "membership_id": 7, "first": 8, "last": 9}
 CELL_FIELDS = "userEnteredValue,userEnteredFormat,note,textFormatRuns,dataValidation"
 SHEET_FIELDS = "properties,merges,conditionalFormats,basicFilter,filterViews,protectedRanges,rowGroups,columnGroups"
+MAX_SHEETS, MAX_GRID_CELLS = 30, 300_000
 
 
 def fail(reason):
@@ -83,6 +84,23 @@ def _new_rows(capture, targets):
     return plan["after"], plan["counts"]
 
 
+def _project_destination(plan):
+    projected = deepcopy(plan["original"])
+    for target in plan["targets"]:
+        sid = str(target["sheet_id"])
+        projected["sheets"][sid] = {"properties": {
+            "sheetId": target["sheet_id"], "title": plan["titles"][sid], "sheetType": "GRID",
+            "gridProperties": {"rowCount": 200, "columnCount": target["column_limit"]}},
+            "cells": {f"{r}:{c}": {"userEnteredValue": value}
+                      for r, row in enumerate(plan["canonical_rows"][sid]) for c, value in enumerate(row) if value}}
+    if (len(projected["sheets"]) > MAX_SHEETS or sum(
+            s["properties"]["gridProperties"]["rowCount"] * s["properties"]["gridProperties"]["columnCount"]
+            for s in projected["sheets"].values()) > MAX_GRID_CELLS):
+        fail("projected_workbook_bounds_unverified")
+    bounded_json(projected)
+    return projected
+
+
 def prepare_plan(first, second, *, config, original, targets, titles, now):
     targets = targets_valid(targets, titles)
     config = basis(config)
@@ -122,6 +140,7 @@ def prepare_plan(first, second, *, config, original, targets, titles, now):
     proposal = {"schema": "roster-bootstrap/v1", "config_basis": config, "original": deepcopy(original),
                 "targets": targets, "titles": deepcopy(titles), "source_before": first, "source_after": second,
                 "canonical_rows": rows, "counts": counts, "legacy": legacy, "proposed_config_updates": updates}
+    _project_destination(proposal)
     bounded_json(proposal)
     return proposal
 
@@ -136,7 +155,7 @@ class SheetsBootstrap:
         url = "https://sheets.googleapis.com/v4/spreadsheets/" + quote(self.workbook)
         metadata = google.get_json(url, token, {"fields": "spreadsheetId,sheets(properties)"}, timeout=20)
         sheets = metadata.get("sheets", [])
-        if metadata.get("spreadsheetId") != self.workbook or not 1 <= len(sheets) <= 30:
+        if metadata.get("spreadsheetId") != self.workbook or not 1 <= len(sheets) <= MAX_SHEETS:
             fail("workbook_coverage_unverified")
         total = 0
         for sheet in sheets:
@@ -147,7 +166,7 @@ class SheetsBootstrap:
                     or type(grid.get("columnCount")) is not int or not 1 <= grid["columnCount"] <= 52):
                 fail("workbook_bounds_unverified")
             total += grid["rowCount"] * grid["columnCount"]
-        if total > 300_000:
+        if total > MAX_GRID_CELLS:
             fail("workbook_bounds_unverified")
         data = google.get_json(url, token, {"includeGridData": "true",
             "fields": "spreadsheetId,sheets(" + SHEET_FIELDS + ",data(startRow,startColumn,rowData(values(" + CELL_FIELDS + "))))"}, timeout=20)
@@ -220,6 +239,35 @@ def verify_destination(plan, actual):
         if sheet["cells"] != expected:
             fail("canonical_readback_mismatch")
     return True
+
+
+def _record(plan, destination_sha256):
+    return {"plan": plan, "destination_sha256": destination_sha256,
+            "activation": "pending_coordinator_runtime_map_update"}
+
+
+def _result(intent, receipt):
+    return {"status": "verified_not_activated", "counts": intent["plan"]["counts"],
+            "receipt": receipt, "proposed_config_updates": intent["plan"]["proposed_config_updates"],
+            "targets": intent["plan"]["targets"], "legacy_status": "legacy_unlinked"}
+
+
+def _check_state_size(intent):
+    """Prove all eventual envelopes fit before committing the first intent.
+
+    Hash lengths and record IDs are exact. The timestamp slot deliberately
+    exceeds any supported server ISO timestamp; no evidence is truncated.
+    """
+    claim = Claim(**intent["claim"])
+    payload = _record(intent["plan"], "f" * 64)
+    bounded_json(payload)
+    bounded_json({"scope": ROSTER_SYNC_SCOPE, "run_id": claim.run_id,
+                  "name": "roster_bootstrap", "payload": payload})
+    receipt = {"run_id": claim.run_id, "result_hash": "f" * 64,
+               "record_ids": {"roster_bootstrap": key("record", {
+                   "task": claim.task_id, "run": claim.run_id, "name": "roster_bootstrap"})},
+               "stored_at": "x" * 64, "checkpoint_token": None}
+    bounded_json({**intent, "state": "verified", "result": _result(intent, receipt)})
 
 
 class BootstrapWorker:
@@ -305,6 +353,7 @@ class BootstrapWorker:
         intent = {"state": "pending", "claim": self.claim.__dict__, "plan": plan, "sha256": expected_sha256,
                   "request_id": request_id}
         bounded_json(intent)
+        _check_state_size(intent)
         marker = {"state": "pending", "kind": "bootstrap", "request_id": request_id,
                   "bootstrap_intent": self.intent_key, "claim": self.claim.__dict__}
         changes = {self.intent_key: (intent, None), self.task_id: (task.value, task.version),
@@ -352,12 +401,9 @@ class BootstrapWorker:
                 return worker.port.read(ids)
             def commit(self, changes):
                 return worker.port.commit_guarded(changes, before_write=lambda: worker._owned(60))
-        receipt = CloudState(GuardedData()).finish(self.claim, records={"roster_bootstrap": {
-            "plan": intent["plan"], "destination_sha256": content_hash(actual),
-            "activation": "pending_coordinator_runtime_map_update"}})
-        result = {"status": "verified_not_activated", "counts": intent["plan"]["counts"],
-                  "receipt": receipt, "proposed_config_updates": intent["plan"]["proposed_config_updates"],
-                  "targets": intent["plan"]["targets"], "legacy_status": "legacy_unlinked"}
+        receipt = CloudState(GuardedData()).finish(self.claim, records={"roster_bootstrap":
+            _record(intent["plan"], content_hash(actual))})
+        result = _result(intent, receipt)
         task = self._owned(60, finished=True)
         self.port.commit_guarded({self.intent_key: ({**intent, "state": "verified", "result": result}, current.version),
                                   self.task_id: (task.value, task.version),

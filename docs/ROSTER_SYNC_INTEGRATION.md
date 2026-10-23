@@ -456,6 +456,11 @@ The concrete `SheetsBootstrap` reader preserves original user-entered values,
 formulas, notes, text styling, validation and sheet metadata; unavailable,
 oversized, partial, changed or malformed scope holds. There is no partial-class
 initialization or activation when one section is unavailable.
+Preparation also checks the projected workbook with all five new grids against
+the same readback tab/cell/serialization bounds. Before the pending intent is
+committed, the full eventual immutable record wrapper and verified intent/result
+envelopes must fit the existing private-state limit. These checks never truncate
+original preservation evidence or enlarge storage limits after a native write.
 
 `worker.apply(proposal, expected_sha256=..., owner=..., request_id=...)` freshly
 validates the proposal, source freshness, original workbook and configuration.

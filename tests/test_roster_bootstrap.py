@@ -8,7 +8,8 @@ from unittest.mock import Mock, patch
 from hub_v2 import roster
 from school_workflow_hub.adapters import roster_bootstrap as rb, roster_worker as rw, roster_report as rr
 from school_workflow_hub.adapters.hosted_agenda import ConnectionError
-from school_workflow_hub.core.cloud_state import Conflict, LeaseLost, StoreUnavailable
+from school_workflow_hub.core.cloud_state import Conflict, LeaseLost, StoreUnavailable, bounded_json
+from school_workflow_hub.core.runs import content_hash
 from tests.test_cloud_state import MemoryCAS
 from tests.test_roster_report import raw_csv
 from tests.test_roster_worker import Mirror as OrdinaryMirror
@@ -143,6 +144,24 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaises(ConnectionError): rb.targets_valid(self.targets[:4], self.titles)
         self.assertEqual(self.mirror.writes, 0)
 
+    def test_projected_tab_and_grid_bounds_hold_before_any_write(self):
+        original = self.mirror.read()
+        for i in range(6, 27):
+            extra = deepcopy(original["sheets"]["1"])
+            extra["properties"].update(sheetId=i, title=f"Preserved legacy {i}")
+            self.mirror.data["sheets"][str(i)] = extra
+        with self.assertRaisesRegex(ConnectionError, "projected_workbook_bounds"):
+            self.worker.prepare()
+        self.mirror.data = original
+        self.captures = [self.capture("first", 8), self.capture("second", 3)]
+        for sid in ("1", "2"):
+            self.mirror.data["sheets"][sid]["properties"]["gridProperties"] = {"rowCount":2000,"columnCount":52}
+        self.mirror.data["sheets"]["3"]["properties"]["gridProperties"] = {"rowCount":1615,"columnCount":50}
+        with self.assertRaisesRegex(ConnectionError, "projected_workbook_bounds"):
+            self.worker.prepare()
+        self.assertEqual(self.mirror.writes, 0)
+        self.assertEqual(self.port.rows, {})
+
     def test_changed_teacher_formula_or_proposal_stops_without_writes(self):
         proposal = self.worker.prepare()
         self.mirror.data["sheets"]["1"]["cells"]["1:3"]["userEnteredValue"]["formulaValue"] = "=2+2"
@@ -186,6 +205,22 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaises(StoreUnavailable): self.apply(proposal)
         self.assertEqual(self.mirror.writes, 0)
         with self.assertRaisesRegex(ConnectionError, "existing_intent"): self.apply(proposal)
+
+    def test_near_limit_final_state_envelope_holds_before_intent_or_native_write(self):
+        proposal = self.worker.prepare()
+        plan = proposal["plan"]
+        # This complete original snapshot fits alone and in the pending intent,
+        # but cannot fit the final verified receipt/result envelope.
+        padding = 248_000 - len(bounded_json(plan).encode())
+        plan["original"]["sheets"]["1"]["cells"]["1:0"]["note"] += "x" * padding
+        self.mirror.data = deepcopy(plan["original"])
+        proposal["sha256"] = content_hash(plan)
+        self.assertEqual(len(bounded_json(plan).encode()), 248_000)
+        with self.assertRaisesRegex(ValueError, "oversized_state_record"):
+            self.apply(proposal)
+        self.assertEqual(self.mirror.writes, 0)
+        self.assertNotIn(self.worker.intent_key, self.port.rows)
+        self.assertNotIn(self.worker.sync_intent_key, self.port.rows)
 
     def test_mismatched_readback_preserves_pending_marker(self):
         proposal = self.worker.prepare()
