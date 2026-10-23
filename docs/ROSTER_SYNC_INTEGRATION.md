@@ -530,3 +530,50 @@ hash. Receiving this receipt is not feedback/grade eligibility or email proof.
 An importer requiring a native email-to-local-number crosswalk must independently
 verify that exact correspondence and the actually active runtime mapping; it
 cannot infer it from the new tab, old name, or a pending initialization receipt.
+
+
+### Rejected bootstrap evidence is not recovery admission
+
+The native `SheetsBootstrap` checks the configured Hub writer's exact Drive
+`capabilities.canEdit` on the existing roster workbook before the domain claim
+and pending intent, then checks it again before the final guarded native batch.
+A write-scoped token alone cannot prove edit permission. Missing, malformed,
+wrong-workbook or unavailable capability evidence holds; no permission is
+changed by this reader. The native batch builder is shared with the exact
+rejection-evidence digest and still sends only the five new grids and their
+initial owned values.
+
+For an already attempted batch, `roster_rejection.RejectedBootstrap` is a
+trusted-host, state-only diagnostic. `prepare()` performs no writes.
+`record_rejected_bootstrap(preview)` creates one immutable sidecar only after
+fresh complete workbook/configuration reads agree with the original intent,
+all five new sheet IDs remain absent, the exact reconstructed batch is bound,
+and the directly observed HTTP 403, preserved local attempt, pinned native code,
+original source claim and historical `canEdit=false` evidence are attributed.
+The provider's reason remains explicitly unavailable when the exited process
+retained only the status. Fresh capability may be true after a separately
+approved access repair; the sidecar retains both historical and current facts.
+No new access is authorized by a stored diagnostic.
+
+The caller supplies a real currently held `SourceOperations` Claim and its
+`before_write` callback. An expired original roster claim remains historical;
+a takeover or changed owner/fence/run refuses the classification. A live shared
+claim must belong to the supplied guard. Do not steal or clear it. The final
+state request reserves 450 seconds for complete proof and readback, reacquires
+no domain lease, and creates the sidecar with a create-if-absent precondition.
+It preserves the original intent, uncertainty marker, task and run values **and
+versions**. Firestore REST has no `Write.verify` operation; these are guarded
+observed dependency bookends, not an atomic dependency transaction. Any changed
+post-read leaves the new diagnostic unaccepted and all barriers pending.
+A lost response permits exact readback only, never a second commit or batch.
+
+The result always has `retry_allowed=false`, `activation_allowed=false` and
+`grade_eligibility_changed=false`. Existing ordinary sync and bootstrap writers
+still refuse the pending barriers. An authorized coordinator may separately
+release only a still-owned exact source claim after the sidecar and unchanged
+source readback are verified, using the existing state-only release contract;
+expired or superseded claims remain unchanged. This module never releases a
+claim or clears a fence. It does not provide recovery admission: any later
+attempt needs a separately reviewed explicit lifecycle, a fresh complete native
+pair, current writer capability, exact unchanged destination/configuration and
+full shared-ownership guards. Permission repair alone never retries a batch.

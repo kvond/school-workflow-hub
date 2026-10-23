@@ -164,10 +164,40 @@ def prepare_plan(first, second, *, config, original, targets, titles, now):
     return proposal
 
 
+def require_editable(capability):
+    if not isinstance(capability, dict) or capability.get("can_edit") is not True:
+        fail("writer_not_editable")
+
+
+def native_requests(plan):
+    """Exact deterministic addSheet/cell batch, also used by rejection evidence."""
+    requests = []
+    for target in plan["targets"]:
+        sid = target["sheet_id"]
+        requests.append({"addSheet": {"properties": {"sheetId": sid, "title": plan["titles"][str(sid)],
+            "gridProperties": {"rowCount": 200, "columnCount": target["column_limit"]}}}})
+        values = [[{"userEnteredValue": cell} if cell else {} for cell in row]
+                  for row in _canonical_grid(plan, target)]
+        requests.append({"updateCells": {"start": {"sheetId": sid, "rowIndex": 0, "columnIndex": 0},
+            "rows": [{"values": row} for row in values], "fields": "userEnteredValue"}})
+    return requests
+
+
 class SheetsBootstrap:
     """Concrete native reader and ONE atomic addSheet+initial cells request."""
     def __init__(self, config):
         self.config, self.workbook = config, basis(config)[CONFIG_KEYS[0]]
+
+    def write_capability(self, token=None):
+        """Read the actual configured writer's capability; scopes do not grant ACLs."""
+        identity = self.config.get("HUB_READER_SERVICE_ACCOUNT", "")
+        if not isinstance(identity, str) or not re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.gserviceaccount\.com", identity):
+            fail("writer_identity_unverified")
+        token = token or google.service_token(self.config, write=True)
+        value = google.drive_file(token, self.workbook, "id,capabilities(canEdit)")
+        if (value.get("id") != self.workbook or type(value.get("capabilities", {}).get("canEdit")) is not bool):
+            fail("writer_capability_unverified")
+        return {"workbook": self.workbook, "identity": identity, "can_edit": value["capabilities"]["canEdit"]}
 
     def read(self, token=None):
         token = token or google.service_token(self.config)
@@ -222,15 +252,8 @@ class SheetsBootstrap:
         write_token = google.service_token(self.config, write=True)
         if self.read(read_token) != plan["original"]:
             fail("original_changed")
-        requests = []
-        for target in plan["targets"]:
-            sid = target["sheet_id"]
-            requests.append({"addSheet": {"properties": {"sheetId": sid, "title": plan["titles"][str(sid)],
-                "gridProperties": {"rowCount": 200, "columnCount": target["column_limit"]}}}})
-            values = [[{"userEnteredValue": cell} if cell else {} for cell in row]
-                      for row in _canonical_grid(plan, target)]
-            requests.append({"updateCells": {"start": {"sheetId": sid, "rowIndex": 0, "columnIndex": 0},
-                "rows": [{"values": row} for row in values], "fields": "userEnteredValue"}})
+        require_editable(self.write_capability(write_token))
+        requests = native_requests(plan)
         before_write(required_seconds=rw.NATIVE_WRITE_READBACK_SECONDS)
         google.batch_update(write_token, self.workbook, requests)
         return self.read(read_token)
@@ -358,6 +381,9 @@ class BootstrapWorker:
                                now=instant(self.port.read([self.task_id]).read_time))
         if rebuilt != plan:
             fail("preview_changed")
+        if not callable(getattr(self.mirror, "write_capability", None)):
+            fail("writer_capability_unavailable")
+        require_editable(self.mirror.write_capability())
         self.before_write(required_seconds=60)
         self.cloud.create_task(ROSTER_SYNC_SCOPE)
         self.claim = self.cloud.claim(self.task_id, owner=owner, request_id=request_id,
