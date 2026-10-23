@@ -1,7 +1,7 @@
 """Exact native text, styles and geometry with explicit source roles.
 
 This reads an official presentations.get response without fetching images.
-Explicit response activities and tables still require the original export.
+Explicit response activities and unsupported table geometry require the export.
 Submitted copies use this bounded model only after a proven export-size limit.
 """
 import copy
@@ -105,6 +105,81 @@ def _box(element, matrix):
     return left, top, right - left, bottom - top
 
 
+def _table_units(element, matrix, depth):
+    """Read only complete, unmerged native cells with explicit dimensions.
+
+    Slides table rowHeight/columnWidth describe the cells; PageElement.size is
+    not a grid to stretch them into. Keep the same panel-proof limitation as
+    exported tables. See the official presentations.pages/tables reference.
+    """
+    reason = "This native table needs its original export to verify response geometry."
+    if (depth or matrix[:4] != (1, 0, 0, 1)
+            or set(element) - {"objectId", "size", "transform", "table", "title", "description"}):
+        raise Unreadable(reason)
+    # Validate the retained nominal dimensions, without using them as a scale.
+    _box(element, matrix)
+    table = _mapping(element["table"])
+    if set(table) - {"rows", "columns", "tableRows", "tableColumns", "horizontalBorderRows", "verticalBorderRows"}:
+        raise Unreadable(reason)
+    rows, columns = table.get("rows"), table.get("columns")
+    if (type(rows) is not int or type(columns) is not int or rows < 1 or columns < 1
+            or rows * columns > 10_000):
+        raise Unreadable(reason)
+    native_rows, native_columns = table.get("tableRows"), table.get("tableColumns")
+    if (not isinstance(native_rows, list) or len(native_rows) != rows
+            or not isinstance(native_columns, list) or len(native_columns) != columns):
+        raise Unreadable(reason)
+    if (any(set(_mapping(col)) - {"columnWidth"} for col in native_columns)
+            or any(set(_mapping(row)) - {"rowHeight", "tableRowProperties", "tableCells"} for row in native_rows)):
+        raise Unreadable(reason)
+    widths = [_dimension(_mapping(col).get("columnWidth")) for col in native_columns]
+    heights = [_dimension(_mapping(row).get("rowHeight")) for row in native_rows]
+    units, y = [], matrix[5]
+    for r, row in enumerate(native_rows):
+        cells = row.get("tableCells")
+        if not isinstance(cells, list) or len(cells) != columns:
+            raise Unreadable(reason)
+        x = matrix[4]
+        for c, raw_cell in enumerate(cells):
+            cell = _mapping(raw_cell)
+            if set(cell) - {"location", "rowSpan", "columnSpan", "text", "tableCellProperties"}:
+                raise Unreadable(reason)
+            location = _mapping(cell.get("location"))
+            indices = (location.get("rowIndex", 0), location.get("columnIndex", 0))
+            if (set(location) - {"rowIndex", "columnIndex"} or indices != (r, c)
+                    or any(type(i) is not int for i in indices)
+                    or any(type(cell.get(k)) is not int or cell[k] != 1 for k in ("rowSpan", "columnSpan"))):
+                raise Unreadable(reason)
+            # Complete native responses omit text on a blank cell, while still
+            # supplying its exact location/span. Retain that blank response area.
+            text = _mapping(cell.get("text", {"textElements": []}))
+            runs = text.get("textElements")
+            if set(text) - {"textElements", "lists"} or not isinstance(runs, list):
+                raise Unreadable("The complete native table text could not be read.")
+            chunks = []
+            for raw_run in runs:
+                run = _mapping(raw_run)
+                kinds = set(run) & {"paragraphMarker", "textRun"}
+                if len(kinds) != 1 or set(run) - {"paragraphMarker", "textRun", "startIndex", "endIndex"}:
+                    raise Unreadable("The complete native table text could not be read.")
+                if "textRun" in run:
+                    value = _mapping(run["textRun"]).get("content")
+                    if not isinstance(value, str):
+                        raise Unreadable("The complete native table text could not be read.")
+                    chunks.append(value)
+                else:
+                    _mapping(run["paragraphMarker"])
+            units.append({"key": "%s/r%dc%d" % (element["objectId"], r, c),
+                          "text": "".join(chunks).strip(), "box": (x, y, widths[c], heights[r]),
+                          "title": False, "panel_geometry_unverified": True,
+                          "native_style": copy.deepcopy(cell),
+                          "native_transform": copy.deepcopy(element["transform"]),
+                          "native_absolute_transform": matrix})
+            x += widths[c]
+        y += heights[r]
+    return units
+
+
 def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_bytes=5_000_000,
          max_deck_bytes=60_000_000, source_role="teacher"):
     """Retain every slide/text/style/box, with a separate submitted-source role."""
@@ -138,7 +213,13 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
             if element.get("description") and response_binding.description(element["description"]) is not None:
                 raise Unreadable("This native teacher activity needs its original export to verify response evidence.")
             if "table" in element:
-                raise Unreadable("This native teacher table needs its original export to verify response geometry.")
+                matrix = _compose(parent, _transform(element.get("transform")))
+                cells = _table_units(element, matrix, depth)
+                if any(cell["key"] in seen for cell in cells):
+                    raise Unreadable("The native table has conflicting cell identifiers.")
+                seen.update(cell["key"] for cell in cells)
+                units.extend(cells)
+                continue
             if "elementGroup" in element:
                 matrix = _compose(parent, _transform(element.get("transform")))
                 walk(_mapping(element["elementGroup"]).get("children"), units, matrix, depth + 1)
