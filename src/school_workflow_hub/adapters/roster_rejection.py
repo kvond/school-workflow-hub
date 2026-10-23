@@ -29,6 +29,22 @@ def digest(value):
     return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value)
 
 
+def _evidence_reference(value):
+    """Opaque state-style reference or a bounded private JSON basename.
+
+    Evidence references are preserved metadata, not database document IDs or
+    paths to open. Keep the global identifier contract strict and never accept
+    directories, traversal, control characters or arbitrary file suffixes here.
+    """
+    try:
+        return identifier(value)
+    except ValueError:
+        if (not isinstance(value, str) or len(value) > 160
+                or not re.fullmatch(r"[A-Za-z0-9_-]+\.private\.json", value)):
+            fail("evidence_reference_invalid")
+        return value
+
+
 def capability(value, workbook, identity):
     if (not isinstance(value, dict) or set(value) != {"workbook", "identity", "can_edit"}
             or value["workbook"] != workbook or value["identity"] != identity
@@ -73,8 +89,9 @@ class RejectedBootstrap:
             fail("direct_403_evidence_required")
         for field in ("trace_sha256", "attempt_sha256", "native_code_sha256", "proposal_sha256", "historical_capability_sha256"):
             if not digest(failure[field]): fail("evidence_hash_invalid")
-        for field in ("observer", "trace_reference", "attempt_reference", "historical_capability_reference"):
-            identifier(failure[field])
+        identifier(failure["observer"])
+        for field in ("trace_reference", "attempt_reference", "historical_capability_reference"):
+            _evidence_reference(failure[field])
         try:
             original_source = Claim(**failure["original_source_claim"])
         except (TypeError, ValueError):
