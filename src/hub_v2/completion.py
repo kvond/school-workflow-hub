@@ -1149,11 +1149,34 @@ def _remember(cache, key, value, limit):
     return value
 
 
-def _read(token, file_id, meta):
-    from . import google
+def _read(token, file_id, meta, *, source_role="student"):
+    from . import google, native_teacher_source
     if meta.get("trashed"):
         raise Unreadable("This exact deck is in trash; no contents were scored or restored.")
-    return read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
+    try:
+        return read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
+    except google.GoogleError as error:
+        # A provider export-size limit is distinct from missing access, quota,
+        # or a generic 403. Native reading changes no source or grade policy.
+        if (source_role != "student" or meta.get("mimeType") != SLIDES
+                or error.status != 403 or error.reason != "exportSizeLimitExceeded"):
+            raise
+    before = google.drive_file(token, file_id, google.FILE_FIELDS + ",version")
+    fields = ("id", "mimeType", "trashed", "version", "modifiedTime")
+    if (before.get("id") != file_id or before.get("mimeType") != SLIDES
+            or before.get("trashed") is not False or not str(before.get("version", "")).isdigit()
+            or not before.get("modifiedTime")
+            or any(before.get(field) != meta.get(field) for field in fields)):
+        raise Unreadable("The exact submitted source changed or lacks a verified revision.")
+    try:
+        deck = native_teacher_source.read(google.native_presentation(token, file_id),
+            presentation_id=file_id, revision=before["version"], max_slides=MAX_SLIDES,
+            max_slide_bytes=MAX_SLIDE_BYTES, source_role="student")
+    except native_teacher_source.Unreadable as error:
+        raise Unreadable(str(error)) from None
+    if google.drive_file(token, file_id, google.FILE_FIELDS + ",version") != before:
+        raise Unreadable("The exact submitted source changed during its native read; recheck it.")
+    return deck
 
 
 def _template(token, deck_id):
@@ -1164,7 +1187,7 @@ def _template(token, deck_id):
         raise Unreadable("This linked deck is in trash. It is not a current lesson source; it was not restored.")
     key = (deck_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
     if key not in _templates:
-        _remember(_templates, key, _read(token, deck_id, meta), MAX_CACHED_TEMPLATES)
+        _remember(_templates, key, _read(token, deck_id, meta, source_role="teacher"), MAX_CACHED_TEMPLATES)
     return meta, _templates[key]
 
 

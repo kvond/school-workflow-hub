@@ -1,7 +1,8 @@
-"""Exact native teacher text, styles and geometry; submitted copies use PPTX.
+"""Exact native text, styles and geometry with explicit source roles.
 
 This reads an official presentations.get response without fetching images.
 Explicit response activities and tables still require the original export.
+Submitted copies use this bounded model only after a proven export-size limit.
 """
 import copy
 import math
@@ -105,9 +106,11 @@ def _box(element, matrix):
 
 
 def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_bytes=5_000_000,
-         max_deck_bytes=60_000_000):
-    """Teacher-only model retaining every slide, text run, native style and box."""
+         max_deck_bytes=60_000_000, source_role="teacher"):
+    """Retain every slide/text/style/box, with a separate submitted-source role."""
     import json
+    if source_role not in ("teacher", "student"):
+        raise Unreadable("The exact native source role is unavailable.")
     if not isinstance(presentation, dict) or presentation.get("presentationId") != presentation_id:
         raise Unreadable("The native teacher source does not match the exact linked deck.")
     if not str(revision or "").strip():
@@ -181,6 +184,6 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
         units = []
         walk(page.get("pageElements", []), units)
         slides.append({"number": number, "units": units})
-    return {"slides": slides, "size": size, "source_kind": "native_teacher_source",
+    return {"slides": slides, "size": size, "source_kind": "native_" + source_role + "_source",
             "native_source_id": presentation_id, "native_source_revision": str(revision),
             "native_source": copy.deepcopy(presentation)}
