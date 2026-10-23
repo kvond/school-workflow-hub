@@ -271,3 +271,53 @@ class RecoveryTests(unittest.TestCase):
         with patch.object(recovery,'monotonic',side_effect=lambda:tick[0]):
             with self.assertRaisesRegex(Conflict,'uncertain_native'):self.worker.execute_recovery(aid)
         self.assertEqual(self.f.mirror.writes,0);self.assertEqual(self.port.rows[aid].value['state'],'consumed')
+
+    def test_delayed_actual_claim_read_cannot_advance_domain_after_expiry(self):
+        aid=self.authorize();before=deepcopy(self.port.rows);read=self.port.read
+        def slow(ids):
+            result=read(ids)
+            if len(ids)==3 and self.worker.task_id in ids and any(k.startswith('completed_') for k in ids):
+                self.port.advance(601)
+            return result
+        self.port.read=slow
+        with self.assertRaises(Conflict):self.worker.execute_recovery(aid)
+        self.assertEqual(before,self.port.rows);self.assertEqual(self.f.mirror.writes,0)
+
+    def test_delayed_actual_claim_auth_stops_at_commit_and_latches(self):
+        aid=self.authorize();before=deepcopy(self.port.rows);commit=self.port.commit_guarded
+        def delayed_auth(changes,**kwargs):
+            if self.worker.task_id in changes and len(changes)==2:self.port.advance(601)
+            return commit(changes,**kwargs)
+        self.port.commit_guarded=delayed_auth
+        with self.assertRaises(Conflict):self.worker.execute_recovery(aid)
+        self.assertEqual(before,self.port.rows);self.assertEqual(self.f.mirror.writes,0)
+        # A failed dispatch guard is latched, even if a later read would look current.
+        self.port.advance(-601)
+        with self.assertRaises(Conflict):self.worker.execute_recovery(aid)
+        self.assertEqual(before,self.port.rows)
+
+    def test_claim_cas_contention_rechecks_authority_before_retry_commit(self):
+        aid=self.authorize();before=deepcopy(self.port.rows);commit=self.port.commit_guarded;attempts=[0]
+        def contention(changes,**kwargs):
+            if self.worker.task_id in changes and len(changes)==2:
+                attempts[0]+=1
+                if attempts[0]==1:
+                    kwargs['before_write']();self.port.advance(601)
+                    raise Conflict('synthetic_cas_contention')
+            return commit(changes,**kwargs)
+        self.port.commit_guarded=contention
+        with self.assertRaises(Conflict):self.worker.execute_recovery(aid)
+        self.assertEqual(before,self.port.rows);self.assertEqual(self.f.mirror.writes,0)
+        self.assertEqual(attempts[0],2)
+
+    def test_renew_auth_delay_preserves_consumed_barrier_and_existing_lease(self):
+        aid=self.authorize();commit=self.port.commit_guarded;lease_before=[]
+        def slow_renew(changes,**kwargs):
+            if set(changes)=={self.worker.task_id}:
+                lease_before.append(deepcopy(self.port.rows[self.worker.task_id]));self.port.advance(601)
+            return commit(changes,**kwargs)
+        self.port.commit_guarded=slow_renew
+        with self.assertRaisesRegex(Conflict,'uncertain_native'):self.worker.execute_recovery(aid)
+        self.assertEqual(self.port.rows[aid].value['state'],'consumed')
+        self.assertEqual(len(lease_before),1);self.assertEqual(self.port.rows[self.worker.task_id],lease_before[0])
+        self.assertEqual(self.f.mirror.writes,0)

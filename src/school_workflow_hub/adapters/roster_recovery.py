@@ -42,6 +42,30 @@ class RecoveryBootstrap(rb.BootstrapWorker):
         self.read_authorization, self.source_claim = read_authorization, source_claim
         self.original_intent_id = self.intent_key
         self.admission = self.admission_id = self.consumed = None
+        # Only this worker's domain claim/renew commits use this wrapper. The
+        # raw shared SourceOperations port is unchanged, avoiding recursion.
+        worker=self
+        class GuardedDomainControl:
+            stopped=False
+            error=None
+            def read(self, ids):
+                return worker.port.read(ids)
+            def commit(self, changes):
+                if self.stopped:fail('domain_control_stopped')
+                def final():
+                    if self.stopped:fail('domain_control_stopped')
+                    try:
+                        authority=worker.admission['authority']
+                        allowed={worker.task_id,key('run',{'task':worker.task_id,'request':authority['request_id']})}
+                        if not set(changes)<=allowed:fail('domain_control_scope_changed')
+                        worker._authority_control_guard(authority)
+                    except BaseException as error:
+                        self.stopped=True
+                        self.error=error
+                        raise
+                return worker.port.commit_guarded(changes,before_write=final)
+        self._domain_control=GuardedDomainControl()
+        self.cloud=CloudState(self._domain_control)
 
     def _authority(self, now=None):
         value = deepcopy(self.read_authorization())
@@ -178,9 +202,12 @@ class RecoveryBootstrap(rb.BootstrapWorker):
         self.admission_id,self.admission=aid,deepcopy(admission_doc.value)
         self.intent_key=self.admission['new_intent_reference']
         authority=self.admission['authority'];plan=proposal['plan']
-        self._authority_control_guard(authority)
-        self.claim=self.cloud.claim(self.task_id,owner=authority['owner'],request_id=authority['request_id'],
-                                    input_hash=proposal['sha256'],ttl_seconds=900)
+        try:
+            self.claim=self.cloud.claim(self.task_id,owner=authority['owner'],request_id=authority['request_id'],
+                                        input_hash=proposal['sha256'],ttl_seconds=900)
+        except Conflict:
+            if self._domain_control.error is not None:raise self._domain_control.error
+            raise
         if self.claim.completed:fail('prior_recovery_readback_required')
         context={'admission_reference':aid,'authorization_version':admission_doc.version,
                  'intent_reference':self.intent_key,'prior_intent':self.admission['prior_intent'],
@@ -243,7 +270,6 @@ class RecoveryBootstrap(rb.BootstrapWorker):
             report.validate_proof(plan[source]['report_proof'],instant(state.read_time)+timedelta(seconds=STATE_SECONDS))
 
     def _native_guard(self, *, required_seconds):
-        self._authority_control_guard(self.admission['authority'])
         self.claim=self.cloud.renew(self.claim,ttl_seconds=900)
         self._owned(required_seconds)
 

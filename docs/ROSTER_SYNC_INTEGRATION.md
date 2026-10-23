@@ -626,7 +626,10 @@ authority must also cover each entire state or native write/readback reservation
 after the final proof, including conservatively rounded elapsed read time.
 An authority with insufficient time cannot authorize or consume state; if it
 becomes too short after consumption, the pending consumed barrier remains and
-no native batch is sent. The domain lease can be
+no native batch is sent. Domain claim/renew commits use a worker-local guarded
+port that checks the exact authority after token acquisition at actual dispatch;
+a failed dispatch guard remains latched across claim contention retries. The
+shared source guard retains its original raw port. The domain lease can be
 renewed to at most 900 seconds; this never extends source capture validity,
 shared ownership, maintenance authorization or the morning cutoff.
 
