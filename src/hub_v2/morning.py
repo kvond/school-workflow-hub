@@ -272,7 +272,8 @@ def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
     # scorer and list preserve it while other verified candidates proceed.
     scored = (score_rows(token, agenda, cls, week, fid, form, found, include_late=True) if recheck
               else score_rows(token, agenda, cls, week, fid, form, found))
-    blocked = next((score for _, score in scored if score.get("code") == "deck_not_ready"), None)
+    blocked = next((score for row, score in scored if score.get("code") == "deck_not_ready"
+                    and not completion.is_student_content_hold(row, score, fid)), None)
     if blocked:
         return {"code": "coverage_incomplete", "readiness": blocked.get("readiness"),
                 "problem": blocked["problem"], "action": blocked.get("action")}

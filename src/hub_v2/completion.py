@@ -1854,6 +1854,62 @@ def recheck_candidates(form, *, now=None):
     return derived
 
 
+class _StudentContentHold(dict):
+    """In-process source proof only; serialized API/cache data is not authority."""
+
+
+def _student_content_identity(row, upload, form_id):
+    """Use the existing verified email/Form match, never a filename identity."""
+    from . import work
+    if (row.get('matched') is not True or row.get('matched_by') != 'email'
+            or row.get('source') != 'form' or row.get('selection_problem')
+            or not all(isinstance(row.get(k), str) and row[k].strip() for k in ('first', 'last', 'section', 'email'))
+            or '@' not in row['email'] or len(row.get('files', [])) != 1
+            or not upload.get('source_form_id') or not upload.get('source_response_id')
+            or not work.when(upload.get('source_submitted_at'))
+            or upload.get('source_submitted_at') != row.get('submitted_at')
+            or (upload['source_form_id'] != form_id and upload.get('assignment_form_id') != form_id)
+            or any(upload.get(k) for k in ('trashed', 'other_week'))):
+        return None
+    return {k: row[k] for k in ('first', 'last', 'section', 'email', 'matched_by', 'source', 'submitted_at')}
+
+
+def _student_content_candidate(row, upload, form_id, meta, deck, check, complete_codes):
+    # Multiple cycles/wrong lesson and missing coding under the Photosynthesis
+    # repair-first policy remain assignment holds. Ordinary missing codes are
+    # already advisory in student_readiness; only real ambiguity is local.
+    allowed = {'duplicate_feedback_marker', 'marker_inventory_missing_or_duplicated',
+               'marker_inventory_not_on_first_slide', 'marker_inventory_counts_unparsed',
+               'marker_inventory_count_mismatch', 'marker_inventory_id_mismatch', 'draft_without_matching_notes'}
+    issues = set(check.get('issues') or [])
+    return (not complete_codes and 'duplicate_feedback_marker' in issues and issues <= allowed
+            and _student_content_identity(row, upload, form_id) is not None
+            and meta.get('id') == upload['id'] and meta.get('trashed') is False
+            and meta.get('version') and meta.get('modifiedTime')
+            and meta.get('mimeType') == upload.get('mime')
+            and 0 < len(deck.get('slides', [])) < MAX_SLIDES)
+
+
+def is_student_content_hold(row, result, form_id):
+    """Only a fresh producer's exact unchanged row/source proof is local."""
+    proof = result.get('_student_content_hold')
+    if type(proof) is not _StudentContentHold or result.get('code') != 'deck_not_ready':
+        return False
+    uploads = [u for u in row.get('files', []) if u.get('id') == result.get('file_id')]
+    if len(uploads) != 1:
+        return False
+    upload = uploads[0]
+    return (proof.get('cause') == 'ambiguous_student_response_codes' and proof.get('form_id') == form_id
+            and proof.get('identity') == _student_content_identity(row, upload, form_id)
+            and proof.get('identity') is not None
+            and proof.get('source_event') == {k: upload.get(k) for k in
+                ('source_form_id', 'source_response_id', 'source_submitted_at', 'assignment_form_id')}
+            and proof.get('file_id') == upload['id'] and proof.get('version') == result.get('file_version')
+            and proof.get('modified_at') == result.get('file_updated')
+            and bool(proof.get('version')) and bool(proof.get('modified_at'))
+            and all(result.get(k) is None for k in ('notes_score', 'revision_score')))
+
+
 def score_file(token, agenda, class_key, week_label, form_id, file_id, work_result, *, include_late=False, component_only=False):
     """Score a current file; late candidates require an explicit entry recheck."""
     from . import google
@@ -1968,7 +2024,8 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     check = student_readiness(deck, revision=meta.get("version") or meta.get("modifiedTime", ""),
                               require_complete_codes=complete_codes)
     student_check = check
-    if check["status"] != "READY":
+    local_candidate = _student_content_candidate(row, upload, form_id, meta, deck, check, complete_codes)
+    if check["status"] != "READY" and not local_candidate:
         return not_ready(check, upload.get("name") or meta.get("name", ""), "student copy")
     best = pick_template(deck, [t[2] for t in templates])
     # A correctly selected copy with no codes has no grade denominator. Keep
@@ -1977,7 +2034,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if (not complete_codes and not has_codes and len(templates) == 1
             and (not inventory(deck)[0] or inventory(deck)[0] == inventory(templates[0][2])[0])):
         best = templates[0][2]
-    if has_codes and coverage(deck, best) < 0.8 and not binding and not ownership:
+    if has_codes and coverage(deck, best) < 0.8 and not binding and not ownership and not local_candidate:
         # Look only in the actual linked lesson/source folders. A same-title
         # file elsewhere, including an obsolete lesson, is not a replacement.
         title = original_title(upload.get("name") or meta.get("name", ""))
@@ -2006,7 +2063,8 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
                     "problem": "This submitted copy does not uniquely match one exact registered teacher source."}
     chosen = next((t for t in templates if t[2] is best), None)
     if chosen is None:
-        return {**out, "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
+        return {**out, **({'code': 'deck_not_ready'} if local_candidate else {}),
+                "problem": "No handed-out copy of this deck is linked in the lesson's Agenda row "
                                   "(Student copy or Teacher deck), so its boxes can't be checked."}
     check = teacher_readiness(chosen[2], revision=chosen[1].get("version") or chosen[1].get("modifiedTime", ""),
                              require_complete_codes=complete_codes)
@@ -2024,6 +2082,33 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         except (google.GoogleError, Unreadable) as error:
             return {**out, 'code': 'deck_not_ready', 'label': 'Cannot read lesson', 'problem': str(error),
                     'action': 'Refresh this exact Form teacher source; no scores were calculated.'}
+    if local_candidate:
+        # Readiness failed on this original's ambiguous codes. Only after all
+        # teacher/source checks and final metadata bookends can other students
+        # proceed. Failed reads never create a local proof or a zero.
+        result = not_ready(student_check, upload.get('name') or meta.get('name', ''), 'student copy')
+        same = [t for t in templates if inventory(t[2])[0] == inventory(deck)[0]
+                and coverage(deck, t[2]) == coverage(deck, chosen[2])]
+        if (len(templates) != len(deck_ids) or len(set(deck_ids)) != len(deck_ids)
+                or {item[0] for item in templates} != set(deck_ids) or chosen[0] not in deck_ids
+                or len(same) != 1 or coverage(deck, chosen[2]) < 0.8):
+            return result
+        try:
+            if (any(google.drive_file(token, tid, google.FILE_FIELDS + ',version') != tmeta
+                    for tid, tmeta, _ in templates)
+                    or google.drive_file(token, file_id, google.FILE_FIELDS + ',version') != meta):
+                return {**out, 'code': 'deck_not_ready', 'label': 'Cannot verify source',
+                        'problem': 'The exact student or teacher source changed during readiness verification.'}
+        except (google.GoogleError, Unreadable) as error:
+            return {**out, 'code': 'deck_not_ready', 'label': 'Cannot read lesson',
+                    'problem': 'The final student/teacher source read was unavailable: %s' % error}
+        proof = _StudentContentHold(cause='ambiguous_student_response_codes', form_id=form_id,
+            identity=_student_content_identity(row, upload, form_id), file_id=file_id,
+            version=str(meta['version']), modified_at=meta['modifiedTime'],
+            source_event={k: upload.get(k) for k in
+                ('source_form_id', 'source_response_id', 'source_submitted_at', 'assignment_form_id')})
+        return {**result, 'notes_score': None, 'revision_score': None,
+                'file_version': str(meta['version']), '_student_content_hold': proof}
     source_key = (file_id, meta.get("modifiedTime", ""), str(meta.get("version") or ""))
     template_key = (chosen[0], chosen[1].get("modifiedTime", ""), str(chosen[1].get("version") or ""))
     cached = _results.get(source_key)
