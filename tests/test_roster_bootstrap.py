@@ -30,6 +30,9 @@ class Workbook:
     def read(self):
         return deepcopy(self.data)
 
+    def write_capability(self):
+        return {"workbook": self.data["workbook"], "identity": "writer@fictional.iam.gserviceaccount.com", "can_edit": True}
+
     def apply(self, plan, before_write):
         before_write(required_seconds=rw.NATIVE_WRITE_READBACK_SECONDS)
         if self.data != plan["original"]:
@@ -59,6 +62,7 @@ class BootstrapTests(unittest.TestCase):
                          "identity_scheme": rw.REPORT_SCHEME} for i, (cls, name) in enumerate(sections)]
         self.titles = {str(t["sheet_id"]): "Current " + t["section_name"] for t in self.targets}
         self.config = {"HUB_ROSTER_SPREADSHEET_ID": "fictional_roster_workbook_12345",
+            "HUB_READER_SERVICE_ACCOUNT": "writer@fictional.iam.gserviceaccount.com",
             "HUB_ROSTER_TABS": {name: i+1 for i, (cls, name) in enumerate(sections) if cls != "study_hall"},
             "HUB_ROSTER_SECTION_IDS": {name: str(10+i) for i, (cls, name) in enumerate(sections) if cls != "study_hall"},
             "HUB_ROSTER_STATUS_COLUMNS": {}, "HUB_ROSTER_COLUMN_LAYOUTS": {},
@@ -249,6 +253,7 @@ class BootstrapTests(unittest.TestCase):
         self.mirror.apply(plan, lambda **kwargs: None)
         with patch.object(native, "read", side_effect=[plan["original"], self.mirror.read()]), \
              patch("hub_v2.google.service_token", return_value="synthetic-token"), \
+             patch.object(native, "write_capability", return_value={"can_edit": True}), \
              patch("hub_v2.google.batch_update") as write:
             actual = native.apply(plan, self.guard)
         self.assertTrue(rb.verify_destination(plan, actual))
@@ -283,6 +288,7 @@ class BootstrapTests(unittest.TestCase):
             plan["canonical_rows"]["101"] = rows
             with patch.object(native, "read", return_value=plan["original"]), \
                  patch("hub_v2.google.service_token", return_value="synthetic-token"), \
+             patch.object(native, "write_capability", return_value={"can_edit": True}), \
                  patch("hub_v2.google.batch_update") as write:
                 with self.assertRaisesRegex(ConnectionError, "canonical_grid_invalid"):
                     native.apply(plan, self.guard)
