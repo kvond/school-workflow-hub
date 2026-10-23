@@ -344,6 +344,8 @@ refresh a timestamp without a new native observation:
   preceding native observation; reading an old file is not a new observation.
   The unchanged popup's visible, enabled **Run all mapped assignments now**
   control carries its existing no-busy/no-block/inflight/pending/outbox gate.
+  The separately reviewed terminal source-gap observation below can establish
+  source idleness when that replay control is absent; it never enables replay.
   Root is the sole browser operator; no extension storage, hidden transport,
   package changes or toggles are needed or authorized by this adapter.
 - `read_receipts()`: `read_morning_receipts(token, config)` reads the existing
@@ -352,8 +354,9 @@ refresh a timestamp without a new native observation:
   complete receipt evidence. There must be exactly one current-day terminal
   receipt matching the popup's displayed date/outcome, and no current-day
   running or uncertain competing receipt. Supported settled outcomes are
-  `finished`, `source_scores_held`, and an empty `missed_noon`. Other outcomes
-  remain held pending a separately reviewed exact disposition.
+  `finished`, `source_scores_held`, an empty `missed_noon`, and the strictly
+  validated `coverage_incomplete` terminal batch below. Other outcomes remain
+  held pending a separately reviewed exact disposition.
 
 The private I-12 `source_activity` object has this contract (all actual account,
 references, IDs, authorization contents and evidence remain outside Git):
@@ -390,13 +393,34 @@ run_now_visible: true; run_now_enabled: true
 last_attempt_day / last_attempt_code: literal displayed attempt date/outcome
 ```
 
+For a finalized `coverage_incomplete` batch with replay controls absent, retain
+`run_now_visible: false` and `run_now_enabled: false`; never invent availability.
+The same fresh observation must additionally contain `recovery_visible: false`,
+the actual native `morning_text`, and the **full** actual native `next_text`.
+The adapter compares both complete texts against the current-day outcome and
+all held items in the exact ledger receipt. Top-level **Ready** alone proves
+only manual-list state. Active-run text, a recovery pane, partial/truncated text,
+an old day or any mismatch holds. Do not generate the observation from the ledger.
+
+This batch must be nonempty with the first non-completed item explicitly
+`coverage_incomplete`, matching the unchanged helper's aggregation. Source,
+mapping, no-score and excluded items require zero counters and reasons.
+`nothing_to_enter` permits retained and left counts but no filled/raised score;
+only a `read_back` item may contain filled/raised counts. Comparison reason
+totals must match left counts. In-progress, uncertain, contradictory or partial
+outcomes still hold. A completed scheduled run and the sole coordinator's
+explicit maintenance ownership do not authorize another run or permit a hidden
+automatic retry. Helper code, settings and recovery state remain unchanged.
+
 Record, claim and full receipt bookends must agree within 60 seconds; availability
 failures hold with no retry or mutation. `last_evidence` identifies the exact Hub
 receipt using `correlation_basis: unique_day_and_outcome`. The native popup does
 not display a run ID: do not claim one was observed there. This is source-writer
 idleness evidence, **not grade verification**. Multiple matching runs remain
 ambiguous. All native grade counts still require their own exact saved-cell
-readback. A failed check stops further source writes and preserves helper
+readback. `source_idle_correlation` records the same honest correlation, and
+`reentry_available` records only the observed control availability; false is not
+changed to true to permit source maintenance. A failed check stops further source writes and preserves helper
 recovery, historical claims, receipts and student records.
 
 Tests use synthetic records and the real maintenance/shared-lease guard. They

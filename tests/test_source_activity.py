@@ -69,6 +69,74 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual(self.read_record.call_count, 2)
         self.assertEqual(self.read_receipts.call_count, 2)
 
+    def coverage(self):
+        reasons = {k: 0 for k in ("flag", "exempt", "excused", "check", "name", "missing")}
+        hold = {"assignment": "Fictional lesson", "class_name": "Fictional class", "week": "Week 9",
+                "code": "coverage_incomplete", "filled": 0, "raised": 0, "kept": 0, "left": 0, "reasons": reasons}
+        compared = {**deepcopy(hold), "assignment": "Compared lesson", "code": "nothing_to_enter",
+                    "kept": 15, "left": 2, "reasons": {**reasons, "name": 2}}
+        self.report.update(code="coverage_incomplete", items=[hold, compared])
+        self.helper.update(last_attempt_code="coverage_incomplete", run_now_visible=False,
+            run_now_enabled=False, recovery_visible=False,
+            morning_text="Weekday mornings enabled. Last attempt: 2026-10-23, coverage incomplete. See the Hub morning summary.",
+            next_text="The run stopped at Fictional lesson (coverage incomplete). No completion is confirmed for those items. "
+                      "Open the named assignment in IC, check its scores and the Hub morning summary, "
+                      "then correct/save only if needed; do not retry automatically.")
+
+    def test_exact_terminal_coverage_is_source_idle_without_reentry_controls(self):
+        self.coverage()
+        before = deepcopy(self.port.rows)
+        self.activity()
+        self.assertEqual(self.port.rows, before)
+        self.assertFalse(self.activity.last_evidence["reentry_available"])
+        self.assertEqual(self.activity.last_evidence["source_idle_correlation"], "unique_day_and_outcome")
+
+    def test_terminal_gap_can_include_verified_readback_but_not_uncertain_items(self):
+        self.coverage()
+        item = self.report["items"][1]
+        item.update(code="read_back", filled=1, raised=2)
+        self.activity()
+        for code in ("running", "receipt_unconfirmed", "save_unconfirmed", "readback_incomplete", "interrupted"):
+            item["code"] = code
+            self.held_without_write()
+
+    def test_top_ready_or_partial_terminal_text_cannot_replace_morning_idle_evidence(self):
+        self.coverage()
+        for field, value in (("morning_text", "Ready."), ("next_text", "The run stopped at"),
+                             ("morning_text", "The class run is active. Keep the Hub and Infinite Campus tabs open."),
+                             ("recovery_visible", True), ("busy", True), ("blocked", True),
+                             ("last_attempt_day", "2026-10-22")):
+            prior = self.helper[field]
+            self.helper[field] = value
+            self.held_without_write()
+            self.helper[field] = prior
+
+    def test_coverage_contradicted_hold_comparison_counts_and_empty_batch_hold(self):
+        self.coverage()
+        hold, compared = self.report["items"]
+        for field in ("filled", "raised", "kept", "left"):
+            hold[field] = 1
+            self.held_without_write("activity_coverage_counts_contradicted")
+            hold[field] = 0
+        hold["reasons"]["name"] = 1
+        self.held_without_write("activity_coverage_counts_contradicted")
+        hold["reasons"]["name"] = 0
+        compared["filled"] = 1
+        self.held_without_write("activity_coverage_counts_contradicted")
+        compared["filled"] = 0
+        compared["left"] = 3
+        self.held_without_write("activity_coverage_counts_contradicted")
+        self.report["items"] = []
+        self.held_without_write("activity_coverage_outcome_contradicted")
+
+    def test_competing_current_receipt_with_in_progress_item_holds(self):
+        self.coverage()
+        competitor = deepcopy(self.report)
+        competitor.update(code="finished", run_id="00000000-0000-4000-8000-000000000002")
+        competitor["items"][0]["code"] = "running"
+        self.receipts["reports"].append(competitor)
+        self.held_without_write("activity_receipt_unsettled")
+
     def test_note_hash_includes_actual_cell_value_and_preserves_siblings(self):
         note = json.dumps({"source_activity": self.record, "teacher_text": "Keep this."})
         first = i12_record(record_id="I-12", value="one", note=note)

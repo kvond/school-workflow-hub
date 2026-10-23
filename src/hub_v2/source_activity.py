@@ -17,9 +17,53 @@ from .morning import validate_report
 
 EASTERN = ZoneInfo("America/New_York")
 CLAIM_ROLES = frozenset(("roster", "grading", "archive_biology", "archive_forensics", "archive_anatomy"))
-TERMINAL = frozenset(("finished", "source_scores_held", "missed_noon"))
+TERMINAL = frozenset(("finished", "source_scores_held", "missed_noon", "coverage_incomplete"))
 ITEM_TERMINAL = frozenset(("read_back", "nothing_to_enter", "no_scores", "mapping_required",
                            "coverage_incomplete", "excluded_week", "source_scores_held"))
+
+
+def _coverage_settled(report):
+    """Validate this helper's completed source-gap batch, not grade success."""
+    completed = {"read_back", "nothing_to_enter", "no_scores", "excluded_week"}
+    held = [item for item in report["items"] if item["code"] not in completed]
+    _require(held and held[0]["code"] == "coverage_incomplete"
+             and all(i["code"] in {"coverage_incomplete", "mapping_required"} for i in held),
+             "activity_coverage_outcome_contradicted")
+    for item in report["items"]:
+        code = item["code"]
+        if code in {"coverage_incomplete", "mapping_required", "no_scores", "excluded_week"}:
+            _require(not any(item[k] for k in ("filled", "raised", "kept", "left"))
+                     and not any(item["reasons"].values()), "activity_coverage_counts_contradicted")
+        elif code in {"nothing_to_enter", "read_back"}:
+            _require(sum(item["reasons"].values()) == item["left"]
+                     and ((code == "nothing_to_enter" and item["filled"] + item["raised"] == 0)
+                          or (code == "read_back" and item["filled"] + item["raised"] > 0)),
+                     "activity_coverage_counts_contradicted")
+        else:
+            _require(False, "activity_receipt_unsettled")
+
+
+def _terminal_native_text(helper, report):
+    """A native morning-status observation; generic top-level Ready is insufficient.
+
+    The unchanged popup displays these terminal strings only outside its busy,
+    blocked and recovery branches. Controls may remain absent because replay is
+    a separate permission. This does not inspect hidden extension state.
+    """
+    _require(report["code"] == "coverage_incomplete"
+             and helper.get("run_now_visible") is False and helper.get("run_now_enabled") is False
+             and helper.get("recovery_visible") is False, "activity_helper_not_idle")
+    morning = (f"Weekday mornings enabled. Last attempt: {report['day']}, coverage incomplete. "
+               "See the Hub morning summary.")
+    stuck = [i for i in report["items"] if i["code"] not in {"read_back", "nothing_to_enter", "no_scores"}]
+    detail = "; ".join(f"{i['assignment']} ({i['code'].replace('_', ' ')})" for i in stuck)
+    next_text = (f"The run stopped at {detail}. No completion is confirmed for those items. "
+                 "Open the named assignment in IC, check its scores and the Hub morning summary, "
+                 "then correct/save only if needed; do not retry automatically.")
+    def same(actual, expected):
+        return isinstance(actual, str) and " ".join(actual.split()) == " ".join(expected.split())
+    _require(same(helper.get("morning_text"), morning) and same(helper.get("next_text"), next_text),
+             "activity_native_terminal_text_unverified")
 
 
 class ActivityHold(Conflict):
@@ -221,8 +265,7 @@ class PostRunSourceActivity:
                  and helper.get("account") == self.account and helper.get("source_origin") == self.source_origin
                  and helper.get("destination_origin") == self.destination_origin, "activity_helper_identity_unverified")
         _require(helper.get("busy") is False and helper.get("blocked") is False
-                 and helper.get("ready") is True and helper.get("run_now_visible") is True
-                 and helper.get("run_now_enabled") is True, "activity_helper_not_idle")
+                 and helper.get("ready") is True, "activity_helper_not_idle")
         _require(helper.get("last_attempt_day") == day and helper.get("last_attempt_code") in TERMINAL,
                  "activity_helper_today_not_settled")
         _require(isinstance(receipts, dict) and receipts.get("complete") is True
@@ -234,11 +277,18 @@ class PostRunSourceActivity:
         _require(len({r["run_id"] for r in reports}) == len(reports), "activity_receipt_conflict")
         today = [r for r in reports if r["day"] == day]
         _require(all(r["code"] in TERMINAL for r in today), "activity_receipt_unsettled")
+        _require(all(i["code"] in ITEM_TERMINAL for r in today for i in r["items"]),
+                 "activity_receipt_unsettled")
+        for candidate in today:
+            if candidate["code"] == "coverage_incomplete":
+                _coverage_settled(candidate)
         matches = [r for r in today if r["code"] == helper["last_attempt_code"]]
         _require(len(matches) == 1, "activity_receipt_correlation_ambiguous")
         report = matches[0]
         _require(all(item["code"] in ITEM_TERMINAL for item in report["items"]), "activity_receipt_unsettled")
         _require(report["code"] != "missed_noon" or not report["items"], "activity_receipt_unsettled")
+        if not (helper.get("run_now_visible") is True and helper.get("run_now_enabled") is True):
+            _terminal_native_text(helper, report)
         return report
 
     def __call__(self):
@@ -271,7 +321,9 @@ class PostRunSourceActivity:
             self.last_evidence = {"record_revision": self.expected_revision, "read_time": now.isoformat(),
                                   "historical_expired_claims": historical,
                                   "receipt_run_id": report["run_id"], "receipt_day": report["day"],
-                                  "correlation_basis": "unique_day_and_outcome"}
+                                  "correlation_basis": "unique_day_and_outcome",
+                                  "source_idle_correlation": "unique_day_and_outcome",
+                                  "reentry_available": helper["run_now_visible"] and helper["run_now_enabled"]}
         except ActivityHold:
             raise
         except Exception:
