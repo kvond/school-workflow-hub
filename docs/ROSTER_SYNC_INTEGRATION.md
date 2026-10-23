@@ -580,3 +580,58 @@ claim or clears a fence. It does not provide recovery admission: any later
 attempt needs a separately reviewed explicit lifecycle, a fresh complete native
 pair, current writer capability, exact unchanged destination/configuration and
 full shared-ownership guards. Permission repair alone never retries a batch.
+
+### Explicit recovery admission after a proved rejection
+
+`roster_recovery.RecoveryBootstrap` is a separate trusted-host entry point.
+It never resumes an old `apply()` call. `prepare_recovery(proposal)` verifies
+an attributed rejection sidecar against all preserved dependency versions,
+the complete unchanged original workbook, a separately repaired current writer
+capability, and two new independent native captures. Targets, new tab IDs/titles
+and existing map basis must remain exact. It also proves every eventual intent,
+immutable result and receipt envelope fits before authorization is stored.
+An explicit root-controlled authorization must bind its current reference and
+revision, owner, new request, exact new proposal, original intent and rejection
+hashes, one permitted attempt and a currently valid bounded interval. The normal
+SourceOperations activity/cutoff or independently authorized maintenance guard
+continues to apply. This is not a browser or request-body approval.
+
+`authorize_recovery(preview)` stores a new per-request admission and complete
+immutable proposal using create-if-absent CAS. This state-only step does not
+claim the roster domain or dispatch a native request. It never repeats an
+uncertain commit. `execute_recovery(admission_id)` requires a successful fresh
+read of that exact authorized admission, the original domain claim expired
+without changing its stored owner/run/fence, and current exact source/destination/
+authority evidence. A separately released or changed domain record needs its
+own accepted disposition; this narrow entry point does not infer that proof. It acquires
+a new roster run/fence, then atomically compares the authorized admission
+version, old roster-intent pointer version, current domain-task version and
+absence of the new recovery intent. That one CAS consumes the admission,
+creates the dynamic new intent, and advances only the coordination pointer.
+The complete prior pointer and original domain-task value/version remain in
+the admission; original fixed bootstrap intent, old runs, rejection evidence
+and external attempt fence remain unchanged. The admission is a **mutable
+coordination record** with its original authorized envelope fully retained.
+
+An uncertain consumption response permits readback only: it never continues to
+the native writer, even when the CAS later proves saved. An already consumed
+admission can never dispatch again. A pending recovery pointer keeps ordinary
+roster writers blocked. The authorized new dispatch uses the same concrete
+native request builder, exact source proof, canEdit check and complete original/
+canonical readback. Its final guard checks the new domain owner/fence and lease,
+current authority, original immutable history and exact consumed admission after
+shared activity verification. It reserves the bounded final reads plus the
+unchanged 170-second native write/readback budget. The domain lease can be
+renewed to at most 900 seconds; this never extends source capture validity,
+shared ownership, maintenance authorization or the morning cutoff.
+
+`reconcile_recovery(admission_id)` only reads the destination and finalizes the
+new intent after its full exact expected readback. It never resends a request.
+The result and immutable bootstrap payload reference the dynamic recovery intent,
+consumed admission and original rejection/history. Old fixed-intent reconciliation
+cannot establish recovery completion. The existing coordinator activation wrapper
+currently accepts only the original fixed-intent receipt and therefore remains
+blocked for recovery. It requires a separate reviewed update to verify the
+new dynamic receipt and consumed admission, in addition to all existing complete
+native membership, workbook, runtime/map, traffic/image and source-freshness
+gates. Neither admission nor receipt alone activates a map or grades students.

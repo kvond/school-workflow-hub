@@ -283,15 +283,21 @@ def verify_destination(plan, actual):
     return True
 
 
-def _record(plan, destination_sha256):
-    return {"plan": plan, "destination_sha256": destination_sha256,
-            "activation": "pending_coordinator_runtime_map_update"}
+def _record(plan, destination_sha256, recovery=None):
+    result = {"plan": plan, "destination_sha256": destination_sha256,
+              "activation": "pending_coordinator_runtime_map_update"}
+    if recovery is not None:
+        result["recovery"] = deepcopy(recovery)
+    return result
 
 
 def _result(intent, receipt):
-    return {"status": "verified_not_activated", "counts": intent["plan"]["counts"],
+    result = {"status": "verified_not_activated", "counts": intent["plan"]["counts"],
             "receipt": receipt, "proposed_config_updates": intent["plan"]["proposed_config_updates"],
             "targets": intent["plan"]["targets"], "legacy_status": "legacy_unlinked"}
+    if "recovery" in intent:
+        result["recovery"] = deepcopy(intent["recovery"])
+    return result
 
 
 def _check_state_size(intent):
@@ -301,7 +307,7 @@ def _check_state_size(intent):
     exceeds any supported server ISO timestamp; no evidence is truncated.
     """
     claim = Claim(**intent["claim"])
-    payload = _record(intent["plan"], "f" * 64)
+    payload = _record(intent["plan"], "f" * 64, intent.get("recovery"))
     bounded_json(payload)
     bounded_json({"scope": ROSTER_SYNC_SCOPE, "run_id": claim.run_id,
                   "name": "roster_bootstrap", "payload": payload})
@@ -313,6 +319,8 @@ def _check_state_size(intent):
 
 
 class BootstrapWorker:
+    FINISH_LEASE_SECONDS = 300
+
     def __init__(self, port, reader, mirror, *, read_config, targets, titles, before_write):
         if not all(callable(v) for v in (getattr(reader, "read_complete", None), read_config, before_write,
                                         getattr(port, "commit_guarded", None))):
@@ -437,7 +445,7 @@ class BootstrapWorker:
         if run is None:
             fail("run_unavailable")
         if run.value.get("receipt") is None:
-            self.claim = self.cloud.renew(self.claim, ttl_seconds=300)
+            self.claim = self.cloud.renew(self.claim, ttl_seconds=self.FINISH_LEASE_SECONDS)
         if current is None or current.value != intent:
             raise Conflict("roster_bootstrap_intent_changed")
         worker = self
@@ -447,7 +455,7 @@ class BootstrapWorker:
             def commit(self, changes):
                 return worker.port.commit_guarded(changes, before_write=lambda: worker._owned(60))
         receipt = CloudState(GuardedData()).finish(self.claim, records={"roster_bootstrap":
-            _record(intent["plan"], content_hash(actual))})
+            _record(intent["plan"], content_hash(actual), intent.get("recovery"))})
         result = _result(intent, receipt)
         task = self._owned(60, finished=True)
         self.port.commit_guarded({self.intent_key: ({**intent, "state": "verified", "result": result}, current.version),
