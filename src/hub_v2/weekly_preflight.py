@@ -63,7 +63,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/8"
+RULES = "weekly-preflight-rules/9"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -1069,6 +1069,8 @@ def deck_summary(outline):
                           "note": found[0] if len(found[0]) <= 80 else found[0][:79].rstrip() + "…"})
     return {"slide_count": len(outline), "teacher_only_slides": teacher, "blocks": blocks,
             "code_slides": {k: sorted(set(v)) for k, v in codes.items()},
+            "inventory_slides": sorted({s["number"] for s in outline
+                                        if any(completion.INVENTORY.search(t) for t in s["texts"])}),
             "page_ids": {str(s["number"]): s["object_id"] for s in outline if s["object_id"]},
             "web_links": links[:MAX_WEB_LINKS], "authoring_notes": notes,
             "link_mismatches": deck_link_mismatches(outline),
@@ -2260,18 +2262,35 @@ def _content(ctx, lesson, counts):
                     missing, extra = ready.get("missing_ids") or [], ready.get("extra_ids") or []
                     slides = [1] if missing else []
                     slides += [n for ident in extra for n in slides_of.get(ident, [])]
+                    inventory = None
+                    if (outline.get("ok") and outline.get("slide_count", 0) > 0
+                            and any(i.startswith("marker_inventory_") for i in ready.get("issues", []))):
+                        # These positions come from the same revision-checked outline,
+                        # not parsed diagnostic prose. Slide 1 is the required location.
+                        inventory = outline.get("inventory_slides")
+                        slides += [1] + (inventory or [])
                     detail = "; ".join(filter(None, [
                         "declared but not embedded: " + ", ".join(missing) if missing else "",
                         "embedded but not declared: " + ", ".join("%s (slide %s)" % (
                             ident, ", ".join(str(n) for n in slides_of.get(ident, [])) or "?") for ident in extra)
                         if extra else ""]))
+                    reason = completion.NEEDS_CODES + ": " + (detail or ready.get("problem") or "the code list needs checking.")
+                    if inventory is not None:
+                        reason += " The inventory belongs on slide 1. " + (
+                            "Existing inventory markers: slides %s." % ", ".join(map(str, inventory))
+                            if inventory else "No inventory marker was found in the readable deck.")
+                    page = (outline.get("page_ids") or {}).get(str(min(slides))) if slides else None
+                    source_url = node["url"] + ("#slide=id." + page if page and node["mimeType"] == completion.SLIDES
+                                                and node["url"].endswith("/edit") else "")
                     lesson["exceptions"].append(_exception(
                         "needs_embedded_codes", "needs_decision", lesson,
-                        completion.NEEDS_CODES + ": " + (detail or ready.get("problem") or "the code list needs checking."),
+                        reason,
                         "Run the embed-coding program on this deck (or sync its inventory), preserving content; "
-                        "then run the check again.", url=node["url"], sources=[node["id"]],
+                        "then run the check again.", url=source_url, sources=[node["id"]],
                         revision_key=node["revision"], detail="codes", slides=slides,
-                        evidence={"issues": ready.get("issues"), "missing_ids": missing, "extra_ids": extra}))
+                        evidence={"issues": ready.get("issues"), "missing_ids": missing, "extra_ids": extra,
+                                  **({"inventory_slides": inventory, "required_inventory_slide": 1}
+                                     if inventory is not None else {})}))
     for node, outline in summaries:
         blocks = outline.get("blocks") or {}
         teacher = outline.get("teacher_only_slides") or []
