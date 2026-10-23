@@ -23,6 +23,7 @@ class SourceActivityTests(unittest.TestCase):
         self.record = {"schema": "source-activity/v1", "record_id": "I-12", "source_scope": "fictional-sources",
                        "owner": "coordinator", "sole_live_executor": "coordinator", "authorization_ref": "decision-1",
                        "authorized_from": "2026-10-23T11:00:00Z", "authorized_until": "2026-10-24T02:00:00Z",
+                       "claim_owners": {role: "coordinator" for role in CLAIM_ROLES},
                        "participants": {name: {"mode": mode, "evidence_ref": "existing-private-reference",
                            "valid_until": "2026-10-24T02:00:00Z"} for name, mode in self.modes.items()}}
         self.envelope = i12_record(record_id="I-12", value={"stringValue": "existing status"},
@@ -291,3 +292,27 @@ class SourceActivityTests(unittest.TestCase):
         self.port.now = datetime(2026, 10, 23, 12, 0, tzinfo=timezone.utc)
         self.envelope["record"]["authorized_until"] = "2026-10-23T21:00:00Z"
         self.held_without_write("activity_maintenance_binding_changed")
+
+    def test_real_foreign_owned_claim_is_rejected_outside_pinned_domain_owner(self):
+        foreign = CloudState(self.port).claim(self.claims["archive_biology"], owner="foreign-worker",
+                                             request_id="foreign-request", input_hash="source-proof")
+        self.owned = [foreign]
+        self.held_without_write("activity_owned_claims_owner_mismatch")
+
+    def test_pinned_domain_owner_needs_exact_executor_acquired_claim_and_run(self):
+        # Pin the actual permitted domain owner in the immutable I-12 basis.
+        self.envelope["record"]["claim_owners"]["archive_biology"] = "archive-domain"
+        self.envelope = i12_record(record_id="I-12", value="status",
+                                  note=json.dumps({"source_activity": self.envelope["record"]}))
+        self.activity.expected_revision = self.envelope["revision"]
+        claim = CloudState(self.port).claim(self.claims["archive_biology"], owner="archive-domain",
+                                           request_id="own-archive-request", input_hash="source-proof")
+        self.held_without_write("activity_foreign_claim_active")
+        self.owned = [claim]
+        self.activity()
+        self.owned = [replace(claim, input_hash="wrong")]
+        self.held_without_write("activity_owned_run_unverified")
+
+    def test_missing_or_changed_domain_owner_pin_is_not_an_exemption(self):
+        del self.envelope["record"]["claim_owners"]["archive_biology"]
+        self.held_without_write("activity_claim_owners_unverified")

@@ -334,8 +334,10 @@ refresh a timestamp without a new native observation:
   server time. Do not discover or create replacement tasks. Missing/partial
   claims hold. Expired claims remain historical and unmodified. A live claim
   blocks unless `owned_claims()` supplies this coordinator's exact actual
-  `Claim` object and its run record also verifies task, owner, fence and input
-  hash. A matching owner string alone cannot establish ownership.
+  `Claim` object from its own acquisition, its owner matches that role in the
+  pinned I-12 `claim_owners`, and its run record verifies task, owner, fence and
+  input hash. Never reconstruct this callback from foreign live records. A
+  matching owner string alone cannot establish ownership.
 - `read_helper()`: read the coordinator's fresh private native-popup observation
   (maximum age 60 seconds), with the exact school account and configured
   source/destination origins. It may read an evidence file from the immediately
@@ -361,6 +363,7 @@ schema: source-activity/v1
 record_id: I-12
 source_scope: the one existing shared preparation scope
 owner / sole_live_executor: exact coordinator owner ID
+claim_owners: exact five known role keys, each with its permitted domain owner
 authorization_ref: current teacher decision reference
 authorized_from / authorized_until: explicit offset timestamps
 participants: exact expected participant-ID map, each containing:

@@ -161,6 +161,10 @@ class PostRunSourceActivity:
         _require(all(record.get(k) == v for k, v in self.authority.items()), "activity_maintenance_binding_changed")
         _require(isinstance(record.get("authorization_ref"), str) and bool(record["authorization_ref"]) and instant(record["authorized_from"]) <= now
                  < instant(record["authorized_until"]), "activity_authorization_expired")
+        owners = record.get("claim_owners")
+        _require(isinstance(owners, dict) and set(owners) == CLAIM_ROLES
+                 and all(isinstance(owner, str) and owner for owner in owners.values()),
+                 "activity_claim_owners_unverified")
         people = record.get("participants")
         _require(isinstance(people, dict) and set(people) == set(self.participants), "activity_participants_changed")
         for name, mode in self.participants.items():
@@ -170,9 +174,12 @@ class PostRunSourceActivity:
                      and instant(person["valid_until"]) >= instant(record["authorized_until"]),
                      "activity_participant_deferral_unavailable")
 
-    def _claims(self, snapshot, now, owned):
+    def _claims(self, snapshot, now, owned, claim_owners):
         _require(set(snapshot.documents) == set(self.known_claims.values()) | {c.run_id for c in owned},
                  "activity_claim_read_partial")
+        roles = {task_id: role for role, task_id in self.known_claims.items()}
+        _require(all(claim.owner == claim_owners[roles[claim.task_id]] for claim in owned),
+                 "activity_owned_claims_owner_mismatch")
         historical = []
         for role, task_id in self.known_claims.items():
             doc = snapshot.documents[task_id]
@@ -189,7 +196,7 @@ class PostRunSourceActivity:
                 continue  # Preserve the old task and its uncertainty verbatim.
             matching = [claim for claim in owned if isinstance(claim, Claim) and not claim.completed
                         and claim.task_id == task_id and claim.run_id == value["active_run"]
-                        and claim.owner == value.get("owner") and claim.fence == value.get("fence")
+                        and claim.owner == claim_owners[role] and claim.owner == value.get("owner") and claim.fence == value.get("fence")
                         and instant(claim.expires_at) > now]
             if len(matching) != 1:
                 raise ActivityHold("activity_foreign_claim_active", task_id=task_id,
@@ -257,8 +264,9 @@ class PostRunSourceActivity:
             _require(first_receipts == last_receipts, "activity_receipt_changed_during_read")
             _require(first_claims.documents == last_claims.documents, "activity_claim_changed_during_read")
             self._record(last_record, now)
-            self._claims(first_claims, instant(first_claims.read_time), owned)
-            historical = self._claims(last_claims, now, owned)
+            owners = last_record["record"]["claim_owners"]
+            self._claims(first_claims, instant(first_claims.read_time), owned, owners)
+            historical = self._claims(last_claims, now, owned, owners)
             report = self._helper(helper, last_receipts, now)
             self.last_evidence = {"record_revision": self.expected_revision, "read_time": now.isoformat(),
                                   "historical_expired_claims": historical,
