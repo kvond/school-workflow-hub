@@ -33,34 +33,108 @@ def bindings(config):
     return value
 
 
+def _form_contexts(agenda, cls):
+    """Enumerate exact Agenda contexts before dropping future/excluded rows."""
+    reader = getattr(agenda, "week_options", None)
+    weeks = reader(cls) if callable(reader) else None
+    if not isinstance(weeks, list):
+        raise ValueError("The current Agenda contexts could not be verified.")
+    grouped = {}
+    for week in weeks:
+        for lesson in agenda.lessons(cls, week["label"]):
+            for form in lesson["forms"]:
+                if form.get("form_id"):
+                    grouped.setdefault(form["form_id"], []).append({
+                        "week": week, "lesson": lesson, "form": form})
+    return grouped
+
+
+def _current_form_context(config, agenda, cls, fid, contexts, today):
+    """A repeated Form needs one explicit existing teacher-source scope.
+
+    No row chronology, title, filename or newest deck establishes the choice.
+    Actual source/parent/revision checks remain in normal readiness and scoring.
+    """
+    if len(contexts) == 1 and not config.get("HUB_FORM_TEACHER_SOURCES"):
+        return contexts[0]
+    if not contexts:
+        raise ValueError("The exact Form is not in the current Agenda.")
+    reason = "The repeated Form needs one verified current Agenda teacher-source context."
+    fields = {"school_year", "agenda_id", "class_key", "week", "form_id",
+              "source_folder_id", "teacher_ids"}
+    declarations = work._scoped_config(config, "HUB_FORM_TEACHER_SOURCES", fields)
+    declared = [d for d in declarations if
+                (d["agenda_id"], d["class_key"], d["form_id"])
+                == (agenda.spreadsheet_id, cls, fid)]
+    if len(contexts) == 1 and not declared:
+        return contexts[0]
+    labels = {c["week"]["label"] for c in contexts}
+    years = {work._school_year(agenda, label) for label in labels}
+    if None in years or len(years) != 1:
+        raise ValueError(reason)
+    relevant = [d for d in declared if d["school_year"] == next(iter(years))]
+    if len(contexts) == 1 and not relevant:
+        return contexts[0]
+    if len(relevant) != 1 or relevant[0]["week"] not in labels:
+        raise ValueError(reason)
+    selected = []
+    for context in contexts:
+        label = context["week"]["label"]
+        policy = work.assignment_policy(config, agenda, cls, label, fid)
+        # A confirmed exclusion cannot be bypassed through a duplicate row.
+        if policy["problem"] or policy["excluded"]:
+            raise ValueError(reason)
+        binding = work.form_teacher_sources(config, agenda, cls, label, fid)
+        if binding:
+            selected.append(context)
+    if len(selected) != 1:
+        raise ValueError(reason)
+    chosen = selected[0]
+    if not chosen["week"].get("monday") or chosen["week"]["monday"] > today:
+        raise ValueError(reason)
+    return {**chosen, "resolution_basis": {
+        "declaration": relevant[0], "contexts": contexts}}
+
+
 def catalog(agenda, config=None):
     today = ledger.eastern_now()[:10]
-    out, seen, exclusions, problems = [], set(), [], []
+    config = config or {}
+    out, exclusions, problems = [], [], []
     for cls in agenda.classes:
+        groups = _form_contexts(agenda, cls)
+        eligible = set()
         for week in agenda.week_options(cls):
             if not week.get("monday") or week["monday"] > today:
                 continue
-            policy = work.week_policy(config or {}, agenda, cls, week["label"])
+            policy = work.week_policy(config, agenda, cls, week["label"])
             if policy["problem"]:
                 problems.append(policy["problem"])
-                continue
-            if policy["excluded"]:
+            elif policy["excluded"]:
                 exclusions.append({"class": cls, "class_name": agenda.classes[cls]["name"],
                                    "week": week["label"], "school_year": policy["school_year"],
                                    "reason": policy["reason"]})
+            else:
+                eligible.add(week["label"])
+        for fid, contexts in groups.items():
+            visible = [c for c in contexts if c["week"]["label"] in eligible]
+            if not visible:
                 continue
-            for lesson in agenda.lessons(cls, week["label"]):
-                for form in lesson["forms"]:
-                    fid = form.get("form_id")
-                    if fid and (cls, fid) not in seen:
-                        seen.add((cls, fid))
-                        label = form.get("label")
-                        if label and re.fullmatch(r"https://docs\.google\.com/forms/d/" + re.escape(str(fid))
-                                                  + r"(?:/(?:edit|viewform))?/?(?:[?#]\S*)?", str(label).strip()):
-                            label = lesson["topic"]
-                        out.append({"class": cls, "class_name": agenda.classes[cls]["name"],
-                                    "week": week["label"], "form": fid,
-                                    "assignment": str(label or lesson["topic"])[:200]})
+            try:
+                context = _current_form_context(config, agenda, cls, fid, contexts, today)
+            except (ValueError, TypeError, KeyError) as error:
+                # Retain one diagnostic entry so the unchanged helper reports
+                # this scope held. make_list independently refuses every scope;
+                # this representative row is not a scoring-source selection.
+                context = visible[0]
+                problems.append(str(error))
+            week, lesson, form = context["week"], context["lesson"], context["form"]
+            label = form.get("label")
+            if label and re.fullmatch(r"https://docs\.google\.com/forms/d/" + re.escape(str(fid))
+                                     + r"(?:/(?:edit|viewform))?/?(?:[?#]\S*)?", str(label).strip()):
+                label = lesson["topic"]
+            out.append({"class": cls, "class_name": agenda.classes[cls]["name"],
+                        "week": week["label"], "form": fid,
+                        "assignment": str(label or lesson["topic"])[:200]})
     return {"assignments": out, "exclusions": exclusions, "problems": list(dict.fromkeys(problems)), "roster": "unavailable",
             "roster_note": "IC is the roster source of truth. Roster sync is not connected; normal additions and departures are not student-work exceptions."}
 
@@ -238,6 +312,13 @@ def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
         return {"code": "coverage_incomplete", "problem": policy["problem"]}
     if policy["excluded"]:
         return {"code": "excluded_week", "problem": policy["reason"]}
+    try:
+        contexts = _form_contexts(agenda, cls).get(fid, [])
+        current = _current_form_context(config, agenda, cls, fid, contexts, ledger.eastern_now()[:10])
+        if current["week"]["label"] != week:
+            raise ValueError("This request uses a historical Agenda context for the repeated Form.")
+    except (ValueError, TypeError, KeyError) as error:
+        return {"code": "coverage_incomplete", "problem": str(error)}
     found = load_work(token, config, agenda, cls, week, fresh=True)
     forms = [(lesson, form) for lesson in found["lessons"] for form in lesson["forms"] if form["form_id"] == fid]
     if len(forms) != 1:
@@ -301,6 +382,8 @@ def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
         "form_label": label, "status": "closed" if closed else "open", "status_text": "Morning scores",
         "sent_at": now.isoformat(), "rows": values}
     basis = [form, scored, values, targets] if partial else [form, scored]
+    if current.get("resolution_basis"):
+        basis.append(current["resolution_basis"])
     revision = hashlib.sha256(json.dumps(basis, sort_keys=True, default=str).encode()).hexdigest()
     return {"code": "ready", "list": value, "revision": revision, "targets": targets,
             **({"partial_components": True} if partial else {})}

@@ -101,7 +101,9 @@ class FormResponseCompletenessTests(unittest.TestCase):
         with patch.object(work, "assignment_policy", return_value={"problem": None, "excluded": False}), \
                 patch.object(morning.completion, "assignment_readiness") as readiness:
             scored = unittest.mock.Mock()
-            result = morning.make_list("read-token", {}, object(), "forensics", "Wk 01",
+            from test_hub_morning import single_context_agenda
+            agenda = single_context_agenda("Wk 01", "fictional-form", "forensics")
+            result = morning.make_list("read-token", {}, agenda, "forensics", "Wk 01",
                                        "fictional-form", lambda *args, **kwargs: found, scored)
         self.assertEqual(result, {"code": "coverage_incomplete"})
         readiness.assert_not_called()
