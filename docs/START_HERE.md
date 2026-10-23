@@ -75,6 +75,47 @@ originals, teaching content, private records and the before-Helper mutation
 cutoff. Existing backend policies below remain relevant to authorized work;
 they do not require those controls to appear on dashboard pages.
 
+### Explicit bounded source maintenance
+
+`SourceOperations` still defaults to the weekday before-7:00 a.m. Eastern
+source window. A trusted host may pass a separately authorized maintenance
+envelope to the same guard; this adds no HTTP endpoint, configuration switch,
+schedule, helper action or permission to perform an operation.
+
+Use `SourceOperations.acquire(..., operation_scope=..., maintenance_authorization=...,
+read_maintenance_authorization=...)`. The exact envelope schema is
+`school-source-maintenance/v1`, with `authorization_ref`, `authorization_revision`,
+`status` (`authorized`), `source_scope`, `owner`, `request_id`, `input_hash`,
+`operation_scope`, `starts_at` and `expires_at`. All fields are strings. References
+and bindings use the existing bounded identifier format; timestamps require
+explicit timezone offsets. The interval must stay within one Eastern weekday
+and end no later than 10:00 p.m. Its exact operation is one of `roster_sync`,
+`student_filing`, `source_repair` or `approved_access_repair`. The input hash must
+bind the actual reviewed targets, source revisions and planned mutations;
+the authorization does not approve additional access or invent source matches.
+
+The trusted `read_maintenance_authorization(authorization_ref)` adapter must
+freshly read the original authenticated teacher decision/current authority
+record, verify its attribution and exact scope, and return the complete current
+envelope. Echoing a caller's dictionary, returning a boolean, or treating an old
+cached decision as current authorization is not a live integration. Keep the
+reference, decision contents, targets and school configuration private. The
+guard pins a detached immutable envelope and binds its hash into the existing
+lease; the same request cannot be rebound to changed authority. Unknown,
+revoked, changed, future or expired evidence stops writes, including after the
+date rolls over. An expired maintenance guard does not fall back to the normal
+morning window; a new normal operation must acquire its own fresh claim.
+
+The original trusted activity callback must still verify the helper and feedback
+workers are idle, inputs unfrozen and actual external ownership compatible.
+Every native mutation uses `before_write(required_seconds=...)` with its full
+bounded write/readback interval. After slow source checks, use
+`validate_write_budget(required_seconds=...)` for a fresh authorization,
+activity, owner/fence, lease and server-time check without renewal. Neither
+operation clears uncertain state or authorizes a competing writer. A reviewed
+implementation is separate from actual private authorization, native write
+readback and IC acceptance.
+
 ## Spreadsheet feedback print link
 
 Authenticated GET `/v2/api/spreadsheet-feedback/print-link` reads the last
@@ -157,7 +198,8 @@ shared source ownership. The existing `FirestoreState.commit_guarded` adapter
 acquires its token before the guard. Each one-shot CAS reserves 180 seconds for
 final Agenda/event/metadata/store checks and 120 seconds for commit/readback;
 an exact final owner/fence/expiry and server-time cutoff check follows those
-reads. It neither renews a lost claim nor writes after the before-7:00 window.
+reads. It neither renews a lost claim nor writes outside the guard's default
+before-7:00 window or its exact separately authorized maintenance interval.
 No source or old receipt/index is edited. A pending private intent blocks an
 uncertain publication from retrying; an exact committed receipt, binding and
 intent may only be recovered by readback. A pending-only result requires

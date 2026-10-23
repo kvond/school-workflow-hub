@@ -7,6 +7,7 @@ writers, and supply a real fresh activity check. A missing receipt or an idle
 agent list cannot supply that check. No school operation is executed here.
 """
 import math
+from types import MappingProxyType
 from datetime import datetime, time, timedelta
 from time import monotonic
 from zoneinfo import ZoneInfo
@@ -18,6 +19,10 @@ from school_workflow_hub.core.cloud_state import (
 EASTERN = ZoneInfo("America/New_York")
 RENEWAL_OVERHEAD_SECONDS = 30
 MAX_WRITE_SECONDS = 900 - RENEWAL_OVERHEAD_SECONDS
+MAINTENANCE_SCHEMA = "school-source-maintenance/v1"
+MAINTENANCE_OPERATIONS = frozenset(("roster_sync", "student_filing", "source_repair", "approved_access_repair"))
+MAINTENANCE_FIELDS = frozenset(("schema", "authorization_ref", "authorization_revision", "status",
+    "source_scope", "owner", "request_id", "input_hash", "operation_scope", "starts_at", "expires_at"))
 
 
 class Held(Conflict):
@@ -32,6 +37,11 @@ class Held(Conflict):
             "source_operation_already_released": "This source-preparation owner has already released its claim.",
             "source_lease_too_short": "Source ownership could not be renewed long enough to finish the next write safely.",
             "source_write_budget_invalid": "The next write needs a bounded operation and saved-readback budget; split an oversized operation before retrying.",
+            "source_maintenance_authorization_invalid": "This maintenance operation lacks an exact verified authorization and fresh authorization reader.",
+            "source_maintenance_authorization_unavailable": "The current maintenance authorization could not be verified; source writes are held.",
+            "source_maintenance_authorization_changed": "The maintenance authorization changed; preserve completed work and prepare a newly authorized operation.",
+            "source_maintenance_authorization_revoked": "The maintenance authorization is no longer active; source writes are held.",
+            "source_maintenance_window_closed": "This maintenance operation cannot finish within its explicitly authorized window; source writes are held.",
         }
         if code not in reasons:
             code = "source_activity_verification_unavailable"
@@ -51,7 +61,8 @@ class SourceOperations:
 
     @classmethod
     def acquire(cls, port, *, source_scope, owner, request_id, input_hash,
-                check_activity, ttl_seconds=120):
+                check_activity, ttl_seconds=120, maintenance_authorization=None,
+                read_maintenance_authorization=None, operation_scope=None):
         for value in (source_scope, owner, request_id, input_hash):
             identifier(value)
         if not callable(check_activity):
@@ -66,6 +77,21 @@ class SourceOperations:
         self.task_id = key("task", self.scope)
         self.owner, self.request_id, self.input_hash = owner, request_id, input_hash
         self.claim, self.stopped, self.released = None, False, False
+        self._maintenance = None
+        self._read_maintenance_authorization = read_maintenance_authorization
+        if any(v is not None for v in (maintenance_authorization, read_maintenance_authorization, operation_scope)):
+            if not callable(read_maintenance_authorization) or operation_scope not in MAINTENANCE_OPERATIONS:
+                raise Held("source_maintenance_authorization_invalid")
+            value = self._maintenance_value(maintenance_authorization)
+            expected = dict(source_scope=source_scope, owner=owner, request_id=request_id,
+                            input_hash=input_hash, operation_scope=operation_scope)
+            if any(value[k] != v for k, v in expected.items()):
+                raise Held("source_maintenance_authorization_invalid")
+            # All values are immutable strings. Neither mutation of the caller's
+            # dict nor a changed approval can silently extend this reservation.
+            self._maintenance = MappingProxyType(value)
+        self._claim_input_hash = (input_hash if self._maintenance is None else
+                                  key("maintenance", dict(self._maintenance)))
         self._activity()
         ttl = self._window()
         self.cloud.create_task(self.scope)
@@ -77,6 +103,41 @@ class SourceOperations:
         self._validate_claim()
         self._window(require_owned=True)
         return self
+
+    @staticmethod
+    def _maintenance_value(value):
+        if (not isinstance(value, dict) or set(value) != MAINTENANCE_FIELDS
+                or any(not isinstance(v, str) for v in value.values())
+                or value.get("schema") != MAINTENANCE_SCHEMA):
+            raise Held("source_maintenance_authorization_invalid")
+        if value["status"] != "authorized":
+            raise Held("source_maintenance_authorization_revoked")
+        try:
+            for name in ("authorization_ref", "authorization_revision", "source_scope", "owner",
+                         "request_id", "input_hash", "operation_scope"):
+                identifier(value[name])
+            start, end = (instant(value[name]).astimezone(EASTERN) for name in ("starts_at", "expires_at"))
+            if (start >= end or start.date() != end.date() or start.weekday() >= 5
+                    or end > datetime.combine(end.date(), time(22), tzinfo=EASTERN)
+                    or value["operation_scope"] not in MAINTENANCE_OPERATIONS):
+                raise ValueError()
+        except (ValueError, TypeError, OverflowError):
+            raise Held("source_maintenance_authorization_invalid") from None
+        return dict(value)
+
+    def _authorization(self):
+        if self._maintenance is None:
+            return
+        try:
+            value = self._maintenance_value(self._read_maintenance_authorization(
+                self._maintenance["authorization_ref"]))
+            if value != self._maintenance:
+                raise Held("source_maintenance_authorization_changed")
+        except Exception as error:
+            self.stopped = True
+            if isinstance(error, Held):
+                raise
+            raise Held("source_maintenance_authorization_unavailable") from None
 
     def _activity(self):
         try:
@@ -90,17 +151,20 @@ class SourceOperations:
             raise Held("source_activity_verification_unavailable") from None
 
     def _window(self, *, require_owned=False, required_seconds=0, reserve_lease=False):
+        self._authorization()
         started = monotonic()
         snapshot = self.port.read([self.task_id])
         # Count the entire response interval conservatively. The server stamp
         # alone can be stale by the time a delayed read reaches this host.
         now = instant(snapshot.read_time) + timedelta(seconds=max(0, monotonic() - started))
         local = now.astimezone(EASTERN)
-        cutoff = datetime.combine(local.date(), time(7), tzinfo=EASTERN)
+        cutoff = (instant(self._maintenance["expires_at"]).astimezone(EASTERN) if self._maintenance
+                  else datetime.combine(local.date(), time(7), tzinfo=EASTERN))
         remaining = math.floor((cutoff - local).total_seconds())
-        if local.weekday() >= 5 or remaining < 30 or remaining <= required_seconds:
+        outside = (self._maintenance is not None and now < instant(self._maintenance["starts_at"]))
+        if outside or local.weekday() >= 5 or remaining < 30 or remaining <= required_seconds:
             self.stopped = True
-            raise Held("source_mutation_window_closed")
+            raise Held("source_maintenance_window_closed" if self._maintenance else "source_mutation_window_closed")
         if require_owned:
             doc = snapshot.documents[self.task_id]
             if doc is None:
@@ -114,11 +178,13 @@ class SourceOperations:
 
     def _claim(self, ttl):
         return self.cloud.claim(self.task_id, owner=self.owner, request_id=self.request_id,
-                                input_hash=self.input_hash, ttl_seconds=ttl)
+                                input_hash=self._claim_input_hash, ttl_seconds=ttl)
 
     def _validate_claim(self):
         if (self.claim.completed or self.claim.task_id != self.task_id
-                or self.claim.owner != self.owner or self.claim.input_hash != self.input_hash):
+                or self.claim.owner != self.owner or self.claim.input_hash != self._claim_input_hash
+                or self.input_hash != (self._maintenance["input_hash"] if self._maintenance else self._claim_input_hash)
+                or (self._maintenance and self.request_id != self._maintenance["request_id"])):
             raise LeaseLost("source_owner_mismatch")
 
     def before_write(self, *, required_seconds):
@@ -146,6 +212,25 @@ class SourceOperations:
                 if (current.run_id, current.fence) != (previous.run_id, previous.fence):
                     raise LeaseLost("source_owner_changed")
                 self.claim = current
+            self._validate_claim()
+            self._window(require_owned=True, required_seconds=required_seconds, reserve_lease=True)
+        except Exception:
+            self.stopped = True
+            raise
+
+    def validate_write_budget(self, *, required_seconds):
+        """Fresh final permission/ownership/time read; never claim or renew.
+
+        Use after a slow source bookend and immediately before its mutation.
+        A stale, revoked, changed or expired maintenance authorization stops the
+        same way as lost ownership. This is not a replacement for before_write.
+        """
+        if type(required_seconds) is not int or not 1 <= required_seconds <= MAX_WRITE_SECONDS:
+            raise Held("source_write_budget_invalid")
+        if self.stopped or self.released or self.claim is None:
+            raise Held("source_operation_stopped")
+        try:
+            self._activity()
             self._validate_claim()
             self._window(require_owned=True, required_seconds=required_seconds, reserve_lease=True)
         except Exception:
