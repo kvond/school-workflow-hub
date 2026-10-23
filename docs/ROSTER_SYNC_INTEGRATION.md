@@ -464,6 +464,12 @@ the same readback tab/cell/serialization bounds. Before the pending intent is
 committed, the full eventual immutable record wrapper and verified intent/result
 envelopes must fit the existing private-state limit. These checks never truncate
 original preservation evidence or enlarge storage limits after a native write.
+The plan omits only wholly empty trailing rows from its new canonical grids;
+the native batch reconstructs all 200 rows. Internal blanks, explicit empty
+values, every original workbook field and both complete native captures remain
+exact. Older dense 200-row pending intents remain readable and reconcilable
+without resending their native batch. The same pending/final envelope limits
+still apply before any intent or native write.
 
 `worker.apply(proposal, expected_sha256=..., owner=..., request_id=...)` freshly
 validates the proposal, source freshness, original workbook and configuration.
