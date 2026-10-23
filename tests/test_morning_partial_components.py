@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from hub_v2 import app, completion, google, ledger, morning, morning_entry
 from test_morning_eligible_entry import TARGET, RUN
+from test_hub_morning import single_context_agenda
 
 NOW = datetime(2026, 10, 11, 14, tzinfo=timezone.utc)
 FORM = "FICTIONAL_REASONING_FORM_123"
@@ -44,7 +45,7 @@ class PartialComponentTests(unittest.TestCase):
         self.found = {"lessons": [{"topic": "Reasoning", "forms": [self.form]}], "problems": []}
         self.scored = [(self.students[0], {"notes_score": 7.8, "revision_score": 6.7}),
                        (self.students[1], {"notes_score": 8.2, "revision_score": 9.1})]
-        self.agenda = Mock(classes={"forensics": {"name": "Forensics"}})
+        self.agenda = single_context_agenda("Wk 03", FORM, "forensics")
         self.notes = [target(), target("A3 Fictional")]
 
     def make(self, targets=None, *, config=None):

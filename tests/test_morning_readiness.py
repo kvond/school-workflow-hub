@@ -113,7 +113,9 @@ class WholeAssignmentTests(unittest.TestCase):
         config={'HUB_IC_ASSIGNMENT_MAP':json.dumps([{'class_key':CLASS,'form_id':FORM,'targets':[]}])}
         with patch.object(completion,'assignment_readiness',return_value=ready), \
              patch.object(morning.ledger,'read',return_value={'configured':True}),patch.object(morning,'rows',wraps=morning.rows) as rows:
-            result=morning.make_list('read',config,fixture(),CLASS,WEEK,FORM,Mock(return_value=found),scorer)
+            agenda=fixture()
+            agenda.week_options=lambda cls:[{'label':WEEK,'monday':'2026-09-21'}]
+            result=morning.make_list('read',config,agenda,CLASS,WEEK,FORM,Mock(return_value=found),scorer)
         return result,scorer,rows
 
     def test_empty_form_cannot_make_missing_zeros_when_linked_codes_not_ready(self):
