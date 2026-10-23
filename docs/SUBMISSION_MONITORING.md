@@ -354,6 +354,28 @@ verified_at, copies:[{file_id, version, status:"READY"}]}` with nonempty verifie
 copy evidence. Neither a zero-response Form nor a changed teacher deck automatically
 clears the teacher's hold. Registration remains in place after clearance.
 
+A teacher may instead authorize repair and an eligible rerun conditionally,
+before the copies have been repaired. The distinct
+`operator_verified_copies_under_teacher_authorization` basis records that
+authorization honestly: `teacher_confirmed_at` is the actual conditional
+authorization time, and `verified_at` is the trusted operator's later complete
+copy verification. It also requires `operator`, an exact-scope
+`authorization={schema:"teacher-conditional-copy-repair/v1", ref, sha256,
+authorized_at, scope:{agenda_id,school_year,class_key,week,form_id}}`, and
+`census={schema:"complete-current-copy-census/v1", complete:true, source_count,
+copies_sha256, evidence_sha256}`. The census count and canonical sorted copy-row
+hash must match every nonempty unique READY revision in `copies`.
+
+These fields are an evidence contract, not an authorization grant. Before its
+expected-version CAS, the trusted host must independently verify the original
+teacher instruction, current authorization and writer ownership, complete
+current original Form/copy coverage, saved source revisions and readiness, and
+unchanged assignment/roster/configuration bookends. Preserve the original hold
+in immutable private history and read back both records. Neither a successful
+repair, a partial census nor a hash-shaped caller assertion clears a hold by
+itself. Existing grading, identity, zero-denominator and IC readback gates remain.
+There is no browser writer, automatic clearance, or new source/grade operation.
+
 Source lookup reads the current Agenda's exact linked IDs and verifies the actual
 Lesson folder before listing it. An unavailable/incomplete folder read is not an
 empty folder. Trash and links outside the current verified folder are reported as
