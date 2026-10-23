@@ -43,7 +43,11 @@ class FirestoreState:
         self.transport = transport or self._http
 
     def _name(self, record_id):
-        if not isinstance(record_id, str) or not re.fullmatch(r"[a-z]+_[a-f0-9]{64}", record_id):
+        # Keep the existing deterministic roster uncertainty keys. These two
+        # reviewed namespaces contain hyphens; arbitrary hyphenated prefixes,
+        # paths and non-hash suffixes remain outside this adapter's contract.
+        if not isinstance(record_id, str) or not re.fullmatch(
+                r"(?:[a-z]+|roster-intent|roster-bootstrap-intent)_[a-f0-9]{64}", record_id):
             raise ValueError("invalid_state_record_id")
         return self.prefix + record_id
 
