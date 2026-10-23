@@ -55,13 +55,12 @@ h4 { font-size: 14px; margin: 12px 0 6px; }
 .days button small { color: var(--muted); }
 .days button[aria-current="date"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .days button[aria-current="date"] small { color: inherit; }
-.next-week-notes {
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 10px; }
-.next-week-note { margin-top: 12px; font-size: 15px; }
-.next-week-note > summary { font-weight: 600; }
+.class-notes { border-top: 1px solid var(--line); margin-top: 18px; padding-top: 16px; }
+.class-notes.notes-panel textarea { min-height: 160px; }
+.class-notes .saved-comparison, .class-notes .legacy-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+.class-notes .legacy-notes { margin-top: 16px; }
 .notes-panel textarea { display: block; width: 100%; min-height: 280px; resize: vertical; font: inherit;
   color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 10px; }
-.next-week-note small { min-height: 1em; }
 details > summary { cursor: pointer; }
 details > summary h2, details > summary h3 { display: inline; margin: 0; }
 details[open] > summary { margin-bottom: 10px; }

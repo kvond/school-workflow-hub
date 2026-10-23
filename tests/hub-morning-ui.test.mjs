@@ -736,13 +736,13 @@ test('a pending or failed calendar read cannot show the previous date’s lesson
   const {context, document} = boot([]);
   let answer;
   context.fetch = () => new Promise(resolve => { answer = resolve; });
-  const calendar = source.slice(source.indexOf('const plans ='), source.indexOf('function renderNextWeekNotes('));
+  const calendar = source.slice(source.indexOf('const plans ='), source.indexOf('function loadClassPolicyNotes('));
   vm.runInContext(calendar + '\nglobalThis.calendarClient = {loadPlans, plans};', context);
-  for (const id of ['week-label', 'week-closures', 'cards', 'next-week-notes']) document.getElementById(id).textContent = 'Previous week';
+  for (const id of ['week-label', 'week-closures', 'cards']) document.getElementById(id).textContent = 'Previous week';
   context.calendarClient.plans.data = {old: true};
   const pending = context.calendarClient.loadPlans('2032-01-14');
   assert.match(document.getElementById('week-label').textContent, /Jan 14, 2032/);
-  for (const id of ['week-closures', 'cards', 'next-week-notes']) assert.equal(document.getElementById(id).textContent, '');
+  for (const id of ['week-closures', 'cards']) assert.equal(document.getElementById(id).textContent, '');
   assert.equal(context.calendarClient.plans.data, null);
   answer({ok: false, status: 503, json: async () => ({error: 'Agenda access temporarily unavailable'})});
   await pending;
