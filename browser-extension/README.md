@@ -1,5 +1,14 @@
 # Signed-in school browser companion ("Chrome helper")
 
+## Explicit recheck with the intentional Week 01 case exclusion (0.5.35)
+
+A delivered completed or partial pass can use its existing explicit recheck
+when it contains the exact 2026–27 Forensics Wk 01 **Work a case** exclusion with zero
+score and reason counts. Other exclusions and malformed items do not gain a
+recheck. The existing once-per-day/version limits, pending-receipt and uncertain
+Save blocks remain. Run now already supports a teacher-started pass after noon;
+automatic alarms retain their weekday 7 a.m. to noon window and never rerun it.
+
 ## Teacher test reruns after a no-write stop (0.5.34)
 
 **Run all mapped assignments now** is available again, any time and as often
