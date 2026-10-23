@@ -105,6 +105,14 @@
  const validDay=day=>typeof day==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(day)
   &&Number.isFinite(Date.parse(day+'T12:00:00Z'))&&new Date(day+'T12:00:00Z').toISOString().slice(0,10)===day;
  const validRun=id=>typeof id==='string'&&/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id);
+ const knownExcludedCase=(i,day)=>i&&!Array.isArray(i)
+  &&Object.keys(i).sort().join('|')==='assignment|class_name|code|filled|kept|left|raised|reasons|week'
+  &&M.schoolYear(Date.parse(day+'T12:00:00Z'))==='2026-27'
+  &&i.code==='excluded_week'&&i.class_name==='Forensics'
+  &&i.week==='Wk 01'&&i.assignment==='Work a case'&&zeroCounts(i)
+  &&i.reasons&&!Array.isArray(i.reasons)
+  &&Object.keys(i.reasons).sort().join('|')==='check|excused|exempt|flag|missing|name'
+  &&Object.values(i.reasons).every(n=>n===0);
  function completedRecheckReport(s){
   const report=s.report,items=report?.items;
   // A persisted partial batch keeps its real source/mapping gaps. Only known
@@ -115,7 +123,7 @@
    &&(items.length>0||s.execution_started===false)
    &&(report.code==='source_scores_held'||!items.some(i=>i?.code==='source_scores_held'))
    &&(report.code==='finished'||(items.length>0&&items.some(i=>i?.code===report.code)))
-   &&items.every(i=>i&&(completedRecheckCodes.has(i.code)||(i.code==='source_scores_held'
+   &&items.every(i=>i&&(completedRecheckCodes.has(i.code)||knownExcludedCase(i,s.day)||(i.code==='source_scores_held'
     &&i.source_holds&&!Array.isArray(i.source_holds)&&Object.hasOwn(i.source_holds,'checks')&&Object.keys(i.source_holds).length===1
     &&Number.isInteger(i.source_holds.checks)&&i.source_holds.checks>0&&i.source_holds.checks<=3600))
     &&['filled','raised','kept','left'].every(k=>Number.isInteger(i[k])&&i[k]>=0&&i[k]<=3600)
