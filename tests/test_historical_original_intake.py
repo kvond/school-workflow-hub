@@ -3,6 +3,8 @@ from contextlib import ExitStack
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import io
+import zipfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -259,6 +261,8 @@ class HistoricalIntakeTests(unittest.TestCase):
             hi.bookend(forms[0])
         self.assertIn('Historical intake unverified', forms[0]['problem'])
         self.assertNotIn('_historical_bookend', forms[0])
+        self.assertNotIn('_historical_staged', forms[0])
+        self.assertEqual(forms[0]['found'], [])
 
     def test_exact_bound_route_cannot_be_moved_by_filename_heuristics(self):
         form, _ = self.run_attach()
@@ -298,8 +302,11 @@ class HistoricalIntakeTests(unittest.TestCase):
                 else: current['operator'] = 'unapproved@fictional.example'
                 with self.assertRaises(hi.Unverified): hi.manifest({**self.config, hi.CONFIG: json.dumps(current)})
 
-    def discovery(self, *, host=True):
+    def discovery(self, *, host=True, current=None):
         forms = self.forms()
+        if current is not None:
+            forms[0]['found'] = work.submissions([current], FORMS[0])
+            forms[0]['responses'] = 1
         forms[0].update(label='Fictional historical lesson', url='https://fictional.example/current', name='Fictional', folders=set())
         items = [deepcopy(self.metadata[e['original']['metadata']['id']]) for e in self.entries]
         with ExitStack() as scope:
@@ -335,6 +342,31 @@ class HistoricalIntakeTests(unittest.TestCase):
                                     Mock(return_value=result), scorer)
         self.assertEqual(answer['code'], 'coverage_incomplete'); scorer.assert_not_called()
 
+    def test_final_identity_failure_discards_historical_rows_but_preserves_current_event(self):
+        current = deepcopy(self.responses[0])
+        current['responseId'] = 'FICTIONAL_CURRENT_RESPONSE_12345'
+        current['respondentEmail'] = 'synthetic0.person0@fictional.example'
+        fid = 'FICTIONAL_CURRENT_ORIGINAL_12345'
+        current['answers']['upload']['fileUploadAnswers']['answers'][0].update(fileId=fid, fileName='Current exact copy')
+        self.metadata[fid] = metadata(fid, 'FICTIONAL_CURRENT_UPLOAD_FOLDER_12345')
+        valid = self.read_identities('forensics', '2026-27', [p['school_email'] for p in self.people[:2]])
+        changed = deepcopy(valid); changed['identities'][0]['active'] = False
+        self.identity_reader.side_effect = [deepcopy(valid), deepcopy(valid), changed]
+        result = self.discovery(current=current)
+        form = result['lessons'][0]['forms'][0]
+        self.assertIn('Historical intake unverified', form['problem'])
+        self.assertEqual(form['responses'], 1)
+        self.assertEqual(len(form['students']), 1)
+        self.assertEqual(form['students'][0]['email'], current['respondentEmail'])
+        self.assertEqual(form['students'][0]['files'][0]['id'], fid)
+        self.assertEqual(form['students'][0]['earlier'], [])
+        self.assertEqual(result['other_files'], [])  # All seven remain reserved.
+        self.assertNotIn('native.alias', json.dumps(form['students']))
+        scorer = Mock()
+        answer = morning._make_list('test', self.config, self.agenda, 'forensics', WEEKS[0], FORMS[0],
+                                    Mock(return_value=result), scorer)
+        self.assertEqual(answer['code'], 'coverage_incomplete'); scorer.assert_not_called()
+
     def test_currently_registered_legacy_form_cannot_use_historical_exception(self):
         self.agenda.rows[WEEKS[1]][0]['forms'].append({'form_id': LEGACY, 'label': 'Current', 'url': 'current', 'problem': None})
         self.assert_held()
@@ -344,6 +376,28 @@ class HistoricalIntakeTests(unittest.TestCase):
 
     def test_historical_config_is_in_saved_completion_fingerprint(self):
         self.assertIn(hi.CONFIG, saved_completion._POLICY_SETTINGS)
+
+
+class FullSlideBoundaryTests(unittest.TestCase):
+    def test_actual_201_slide_pptx_reader_truncation_never_authorizes_a_route(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            for number in range(1, 202):
+                archive.writestr('ppt/slides/slide%d.xml' % number,
+                    '<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+                    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>'
+                    '<p:sp><p:nvSpPr><p:cNvPr id="1" name="question"/></p:nvSpPr>'
+                    '<p:txBody><a:p><a:r><a:t>' + ('Conflicting lesson at tail' if number == 201 else 'Earlier lesson') +
+                    '</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>')
+        raw = data.getvalue()
+        self.assertEqual(len(completion.read_deck(raw)['slides']), completion.MAX_SLIDES)
+        for role in ('student', 'teacher'):
+            with self.subTest(role=role):
+                fid = 'FICTIONAL_201_SLIDE_' + role.upper() + '_12345'
+                md = {**metadata(fid, 'FICTIONAL_SOURCE_FOLDER_12345'), 'mimeType': google.PPTX}
+                with patch.object(google, 'drive_file', return_value=md), patch.object(google, 'deck_bytes', return_value=raw):
+                    with self.assertRaisesRegex(hi.Unverified, 'slide boundary'):
+                        hi.source_capture('test', fid, role=role)
 
 
 if __name__ == '__main__':

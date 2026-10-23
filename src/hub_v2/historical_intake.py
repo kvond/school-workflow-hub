@@ -87,8 +87,9 @@ def source_capture(token, fid, *, role):
     else:
         deck = completion._read(token, fid, before, source_role='student')
     _require(_metadata(token, fid) == before, 'An original source changed during its content read.')
-    _require(isinstance(deck, dict) and isinstance(deck.get('slides'), list) and deck['slides'],
-             'The original deck content could not be completely read.')
+    _require(isinstance(deck, dict) and isinstance(deck.get('slides'), list)
+             and 0 < len(deck['slides']) < completion.MAX_SLIDES,
+             'The original deck content is incomplete or reaches the reader slide boundary.')
     return {'metadata': before, 'content_sha256': content_hash(deck)}, deck
 
 
@@ -356,11 +357,19 @@ def verify(token, config, agenda, value, entries, students, *, roster_problems=(
 def bookend(form):
     """Recheck after ordinary discovery as well, before rows can be returned."""
     check = form.pop('_historical_bookend', None)
+    staged = form.pop('_historical_staged', ())
     if check is None:
         return
     try:
         check()
     except (Unverified, google.GoogleError, completion.Unreadable, ValueError, KeyError, TypeError) as error:
+        # Drop only this request's staged derived candidates. Original current
+        # Form events and their counts remain intact; reserved source IDs are
+        # independent, so folder/title routing cannot resurrect failed proof.
+        form['found'][:] = [s for s in form['found'] if not any(s is candidate for candidate in staged)]
+        for candidate in staged:
+            candidate.pop('_historical_identity', None)
+            candidate.pop('_historical_target', None)
         form['problem'] = 'Historical intake unverified: ' + str(error)
 
 
@@ -398,6 +407,7 @@ def attach(token, config, agenda, class_key, week, forms, students, *, roster_pr
                      'An original historical file also has a current Form event; reconcile its exact history.')
             form['found'].extend(plans)
             form['_historical_bookend'] = check
+            form['_historical_staged'] = plans
         except (Unverified, google.GoogleError, completion.Unreadable, ValueError, KeyError, TypeError) as error:
             form['problem'] = 'Historical intake unverified: ' + str(error)
     return reserved
