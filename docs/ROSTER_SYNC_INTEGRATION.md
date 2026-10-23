@@ -477,6 +477,11 @@ It acquires the existing roster task's fence, then atomically writes the full
 private pending intent and a **pending bootstrap marker in the existing
 roster-intent key**. The ordinary roster worker therefore refuses an uncertain
 bootstrap even after its lease expires. No separate job or schedule is created.
+The real Firestore adapter accepts these two exact existing key prefixes,
+`roster-intent` and `roster-bootstrap-intent`, with their unchanged 64-character
+lowercase hexadecimal suffixes. Other hyphenated prefixes and paths remain
+invalid. No intent is renamed or migrated; native adapter integration tests
+exercise both workers and their shared pending-write barrier.
 One native Sheets batch adds all five tabs and their initial user-entered cells:
 
 - Instructional: A First Name, B Last Name, C Roster status, D IC local student

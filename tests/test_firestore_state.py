@@ -57,6 +57,40 @@ class FirestoreAdapterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.store(None).read([record])
 
+    def test_exact_existing_roster_intent_namespaces_keep_fixed_paths_and_cas(self):
+        from school_workflow_hub.adapters.roster_sync import ROSTER_SYNC_SCOPE
+        for kind in ("roster-intent", "roster-bootstrap-intent"):
+            record = key(kind, ROSTER_SYNC_SCOPE)
+            store = self.store(None)
+            missing = self.http_store(200, [{"missing": store.prefix + record, "readTime": STAMP}])
+            committed = self.http_store(200, {"commitTime": STAMP, "writeResults": [{}]})
+            with patch("requests.Session") as session:
+                post = session.return_value.__enter__.return_value.post
+                post.side_effect = [missing, committed]
+                self.assertIsNone(store.read([record]).documents[record])
+                guard = Mock()
+                store.commit_guarded({record: ({"state": "pending"}, None)}, before_write=guard)
+            self.assertEqual(post.call_count, 2)
+            guard.assert_called_once_with()
+            write = post.call_args.kwargs["json"]["writes"][0]
+            self.assertEqual(write["update"]["name"], store.prefix + record)
+            self.assertEqual(write["currentDocument"], {"exists": False})
+
+    def test_unrecognized_hyphenated_prefix_or_path_is_rejected_before_transport(self):
+        transport = Mock()
+        store = self.store(transport)
+        for prefix in ("roster-other-intent", "roster--intent", "roster-bootstrap", "Roster-intent",
+                       "roster-intent/child", "../roster-intent", "roster-intent%2Fchild"):
+            record = prefix + "_" + "a"*64
+            with self.subTest(prefix=prefix):
+                with self.assertRaisesRegex(ValueError, "invalid_state_record_id"):
+                    store.read([record])
+                with self.assertRaisesRegex(ValueError, "invalid_state_record_id"):
+                    store.commit({record: ({}, None)})
+        for suffix in ("a"*63, "A"*64, "a"*65, "a"*64 + "/child"):
+            with self.assertRaises(ValueError): store.read(["roster-intent_" + suffix])
+        transport.assert_not_called()
+
     def test_disabled_store_never_acquires_credentials(self):
         with patch("school_workflow_hub.adapters.firestore_state.attached_token") as token:
             with self.assertRaises(StoreUnavailable):
