@@ -81,7 +81,26 @@ def _new_rows(capture, targets):
             rows[0][column-1] = {"stringValue": rw.owned_headers(target)[field]}
         baseline[str(target["sheet_id"])] = rows
     plan = rw.plan_mirror(capture, targets, baseline)
-    return plan["after"], plan["counts"]
+    rows = plan["after"]
+    # New sheets are always 200 rows. Empty trailing placeholders add no
+    # evidence, but can push an otherwise complete real plan over the store's
+    # unchanged per-record limit. Keep every populated row/cell and reconstruct
+    # the full grid only at the native boundary; original/source proof is intact.
+    for grid in rows.values():
+        while len(grid) > 1 and not any(grid[-1]):
+            grid.pop()
+    return rows, plan["counts"]
+
+
+def _canonical_grid(plan, target):
+    rows = plan["canonical_rows"][str(target["sheet_id"])]
+    width = target["column_limit"]
+    if (not isinstance(rows, list) or not 1 <= len(rows) <= 200
+            or any(not isinstance(row, list) or len(row) != width for row in rows)):
+        fail("canonical_grid_invalid")
+    # Older full-size intents remain readable. Only absent trailing blank rows
+    # are reconstructed; internal blanks and explicit empty values stay exact.
+    return deepcopy(rows) + [[{} for _ in range(width)] for _ in range(200-len(rows))]
 
 
 def _project_destination(plan):
@@ -209,7 +228,7 @@ class SheetsBootstrap:
             requests.append({"addSheet": {"properties": {"sheetId": sid, "title": plan["titles"][str(sid)],
                 "gridProperties": {"rowCount": 200, "columnCount": target["column_limit"]}}}})
             values = [[{"userEnteredValue": cell} if cell else {} for cell in row]
-                      for row in plan["canonical_rows"][str(sid)]]
+                      for row in _canonical_grid(plan, target)]
             requests.append({"updateCells": {"start": {"sheetId": sid, "rowIndex": 0, "columnIndex": 0},
                 "rows": [{"values": row} for row in values], "fields": "userEnteredValue"}})
         before_write(required_seconds=rw.NATIVE_WRITE_READBACK_SECONDS)

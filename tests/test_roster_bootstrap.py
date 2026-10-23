@@ -2,6 +2,7 @@
 from copy import deepcopy
 from datetime import timedelta
 import hashlib
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -256,6 +257,119 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(sum("addSheet" in r for r in requests), 5)
         self.assertEqual({r["updateCells"]["start"]["sheetId"] for r in requests if "updateCells" in r}, {101,102,103,104,105})
         self.assertTrue(all(r["updateCells"]["fields"] == "userEnteredValue" for r in requests if "updateCells" in r))
+        self.assertTrue(all(len(r["updateCells"]["rows"]) == 200 for r in requests if "updateCells" in r))
+        self.assertTrue(all(len(rows) == 2 for rows in plan["canonical_rows"].values()))
+
+    def test_only_wholly_empty_trailing_rows_are_omitted_and_exactly_reconstructed(self):
+        blank = [{} for _ in range(8)]
+        for value in ({"stringValue": ""}, {"numberValue": 0}, {"boolValue": False}, {"stringValue": "last"}):
+            dense = [deepcopy(blank) for _ in range(200)]
+            dense[0][0] = {"stringValue": "Header"}
+            dense[7][7] = deepcopy(value)
+            with patch.object(rw, "plan_mirror", return_value={"after": {"101": deepcopy(dense)}, "counts": {}}):
+                rows, _ = rb._new_rows({}, self.targets)
+            self.assertEqual(len(rows["101"]), 8)
+            self.assertEqual(rows["101"][1], blank)
+            self.assertEqual(rb._canonical_grid({"canonical_rows": rows}, self.targets[0]), dense)
+        dense[-1][-1] = {"stringValue": "Do not trim this row"}
+        with patch.object(rw, "plan_mirror", return_value={"after": {"101": deepcopy(dense)}, "counts": {}}):
+            rows, _ = rb._new_rows({}, self.targets)
+        self.assertEqual(rows["101"], dense)
+
+    def test_malformed_compact_grid_is_not_sent_to_native_transport(self):
+        plan = self.worker.prepare()["plan"]
+        native = rb.SheetsBootstrap(self.config)
+        for rows in ([], [[{}] * 7], [[{}] * 8] * 201):
+            plan["canonical_rows"]["101"] = rows
+            with patch.object(native, "read", return_value=plan["original"]), \
+                 patch("hub_v2.google.service_token", return_value="synthetic-token"), \
+                 patch("hub_v2.google.batch_update") as write:
+                with self.assertRaisesRegex(ConnectionError, "canonical_grid_invalid"):
+                    native.apply(plan, self.guard)
+                write.assert_not_called()
+
+    def test_populated_row_removed_from_preview_holds_before_write(self):
+        proposal = self.worker.prepare()
+        proposal["plan"]["canonical_rows"]["101"].pop()
+        proposal["sha256"] = content_hash(proposal["plan"])
+        with self.assertRaisesRegex(ConnectionError, "preview_changed"):
+            self.apply(proposal)
+        self.assertEqual(self.mirror.writes, 0)
+        self.assertEqual(self.port.rows, {})
+
+    def test_prior_dense_pending_intent_reconciles_without_native_retry(self):
+        compact_builder = rb._new_rows
+        def old_dense_builder(capture, targets):
+            rows, counts = compact_builder(capture, targets)
+            plan = {"canonical_rows": rows}
+            return {str(t["sheet_id"]): rb._canonical_grid(plan, t) for t in targets}, counts
+        with patch.object(rb, "_new_rows", side_effect=old_dense_builder):
+            proposal = self.worker.prepare()
+            self.mirror.lose_response = True
+            with self.assertRaisesRegex(ConnectionError, "uncertain_native_write"):
+                self.apply(proposal)
+        self.assertTrue(all(len(rows) == 200 for rows in proposal["plan"]["canonical_rows"].values()))
+        result = self.worker.reconcile()
+        self.assertEqual(result["status"], "verified_not_activated")
+        self.assertEqual(self.mirror.writes, 1)
+
+    def test_complete_real_sized_plan_fits_without_truncating_original_or_sources(self):
+        # Synthetic 112-membership/large-preserved-workbook counterexample.
+        # Its old dense representation is the same size as the observed failure;
+        # no native school records or source bytes are embedded in this fixture.
+        sizes = [19, 19, 34, 6, 34]
+        rows, sections = [], []
+        for target, count in zip(self.targets, sizes):
+            scope = self.bindings[target["section_id"]]
+            students = []
+            for index in range(count):
+                number = f"{target['sheet_id']}{index:05d}"
+                rows.append([scope[f] for f in rr.SCOPE_FIELDS] + ["Fictional", f"Student{index}",
+                    "", "", "", "", "10", "09/10/2026", "", number])
+                students.append({"student_number": number, "status": "active"})
+            sections.append({"section_id": target["section_id"], "scope": scope, "complete": True,
+                "filtered": False, "next_page": None, "counts": {"active": count, "incoming": 0, "withdrawn": 0},
+                "students": students})
+        raw = raw_csv(rows)
+        captures = []
+        for ident, seconds in (("many-first", 8), ("many-second", 3)):
+            observation = {"capture_id": ident, "captured_at": (self.port.now-timedelta(seconds=seconds)).isoformat(),
+                "observed_at": (self.port.now-timedelta(seconds=seconds-1)).isoformat(),
+                "csv_sha256": hashlib.sha256(raw).hexdigest(), "context": deepcopy(self.context),
+                "effective_date": self.port.now.date().isoformat(), "options": deepcopy(rr.OPTIONS),
+                "sections": deepcopy(sections)}
+            captures.append(rr.prepare_capture(raw, observation, expected_context=self.context,
+                bindings=self.bindings, targets=self.targets, now=self.port.now))
+        def prepare(original):
+            return rb.prepare_plan(*captures, config=self.config, original=original,
+                targets=self.targets, titles=self.titles, now=self.port.now)
+        small = prepare(self.mirror.read())
+        dense = deepcopy(small)
+        dense["canonical_rows"] = {str(t["sheet_id"]): rb._canonical_grid(small, t) for t in self.targets}
+        encoded_size = lambda value: len(json.dumps(value, sort_keys=True, ensure_ascii=False,
+            allow_nan=False, separators=(",", ":")).encode("utf-8"))
+        padding = 260_419 - encoded_size(dense)
+        self.assertGreater(padding, 0)
+        self.mirror.data["sheets"]["1"]["cells"]["1:0"]["note"] += "x" * padding
+        plan = prepare(self.mirror.read())
+        dense["original"] = deepcopy(plan["original"])
+        self.assertEqual(encoded_size(dense), 260_419)
+        with self.assertRaisesRegex(ValueError, "oversized_state_record"):
+            bounded_json(dense)
+        self.assertLess(len(bounded_json(plan).encode("utf-8")), 240_000)
+        self.assertEqual(plan["original"], self.mirror.read())
+        self.assertEqual(plan["source_before"], captures[0])
+        self.assertEqual(plan["source_after"], captures[1])
+        self.assertEqual([len(plan["canonical_rows"][str(t["sheet_id"])]) for t in self.targets], [n+1 for n in sizes])
+        self.assertEqual(rb._project_destination(plan), rb._project_destination(dense))
+        for target in self.targets:
+            self.assertEqual(rb._canonical_grid(plan, target), dense["canonical_rows"][str(target["sheet_id"])])
+        result = self.apply({"plan": plan, "sha256": content_hash(plan)})
+        self.assertEqual(result["status"], "verified_not_activated")
+        self.assertEqual(self.mirror.writes, 1)
+        self.assertTrue(rb.verify_destination(plan, self.mirror.read()))
+        for doc in self.port.rows.values():
+            bounded_json(doc.value)  # Every actual immutable/final state envelope.
 
     def test_explicit_start_date_controls_canonical_eligibility_and_legacy_added_remains(self):
         proposal = self.worker.prepare()
