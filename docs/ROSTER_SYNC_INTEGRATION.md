@@ -304,3 +304,99 @@ and source/destination acceptance; Katherine need not supply engineering.
 Official references: [Roster Report](https://kb.infinitecampus.com/help/printing-a-sections-roster),
 [Viewing Your Roster](https://kb.infinitecampus.com/help/viewing-your-roster), and
 [OneRoster API Documentation](https://kb.infinitecampus.com/help/oneroster-api-documentation-oauth-2).
+
+### Post-run maintenance activity evidence
+
+`hub_v2.source_activity.PostRunSourceActivity` supplies the **post-run maintenance**
+`SourceOperations.check_activity` callback. It does not replace the normal 6:30
+preparation reader: it requires an observed current-day settled helper attempt
+at or after 7:00 Eastern. It grants no maintenance window by itself. Continue
+using the separately verified maintenance authorization, shared source scope,
+full native write/readback budgets and final owner/fence/time checks. Pass that
+same detached `maintenance_authorization` envelope into the activity adapter;
+its `authorization_revision` must equal the I-12 cell hash. The I-12 authority
+reference/start/expiration must match the grant exactly, so a source reservation
+cannot outlive the participant deferrals or the authority record.
+
+The coordinator supplies these private readers; none may echo fixture data or
+refresh a timestamp without a new native observation:
+
+- `read_record()`: `read_i12_cell(token, spreadsheet_id=..., tab=..., row=...,
+  id_column=1, note_column=6)` reads the exact existing I-12 row and its cell
+  note through the normal Google Sheets reader. The note is JSON containing
+  `source_activity`; sibling properties remain untouched. The hash of the
+  exact raw cell value, note and row ID is the `expected_revision`. There is
+  no note writer here. Preserve any teacher text before an authorized note
+  update; a changed note/value requires fresh review and a new pinned revision.
+- `port`: the existing authorized state port, with `known_claims` mapping exactly
+  `roster`, `grading`, `archive_biology`, `archive_forensics`, `archive_anatomy`
+  to their established private task IDs. Both reads are bounded batches, using
+  server time. Do not discover or create replacement tasks. Missing/partial
+  claims hold. Expired claims remain historical and unmodified. A live claim
+  blocks unless `owned_claims()` supplies this coordinator's exact actual
+  `Claim` object and its run record also verifies task, owner, fence and input
+  hash. A matching owner string alone cannot establish ownership.
+- `read_helper()`: read the coordinator's fresh private native-popup observation
+  (maximum age 60 seconds), with the exact school account and configured
+  source/destination origins. It may read an evidence file from the immediately
+  preceding native observation; reading an old file is not a new observation.
+  The unchanged popup's visible, enabled **Run all mapped assignments now**
+  control carries its existing no-busy/no-block/inflight/pending/outbox gate.
+  Root is the sole browser operator; no extension storage, hidden transport,
+  package changes or toggles are needed or authorized by this adapter.
+- `read_receipts()`: `read_morning_receipts(token, config)` reads the existing
+  full bounded native ledger and projects every exact run, rejecting truncated,
+  malformed and conflicting history. The ten-run dashboard projection is not
+  complete receipt evidence. There must be exactly one current-day terminal
+  receipt matching the popup's displayed date/outcome, and no current-day
+  running or uncertain competing receipt. Supported settled outcomes are
+  `finished`, `source_scores_held`, and an empty `missed_noon`. Other outcomes
+  remain held pending a separately reviewed exact disposition.
+
+The private I-12 `source_activity` object has this contract (all actual account,
+references, IDs, authorization contents and evidence remain outside Git):
+
+```text
+schema: source-activity/v1
+record_id: I-12
+source_scope: the one existing shared preparation scope
+owner / sole_live_executor: exact coordinator owner ID
+authorization_ref: current teacher decision reference
+authorized_from / authorized_until: explicit offset timestamps
+participants: exact expected participant-ID map, each containing:
+  mode: code_read_only | deferred | consulting_only
+  evidence_ref: existing explicit disposition evidence
+  valid_until: at least the authorization expiration
+```
+
+The pinned expected participant map includes exactly three code/read-only agents,
+feedback and secondary workers' explicit deferrals, and any actually known
+consulting-only participant. Offline processes do not invent extra participants.
+A withdrawn, missing, changed or too-short disposition holds.
+
+The private native helper observation contract is:
+
+```text
+schema: native-helper-observation/v1
+observed_at: actual native observation timestamp
+observer: the coordinator owner ID
+evidence_ref: the existing private native observation reference
+account / source_origin / destination_origin: exact freshly verified values
+busy: false; blocked: false; ready: true
+run_now_visible: true; run_now_enabled: true
+last_attempt_day / last_attempt_code: literal displayed attempt date/outcome
+```
+
+Record, claim and full receipt bookends must agree within 60 seconds; availability
+failures hold with no retry or mutation. `last_evidence` identifies the exact Hub
+receipt using `correlation_basis: unique_day_and_outcome`. The native popup does
+not display a run ID: do not claim one was observed there. This is source-writer
+idleness evidence, **not grade verification**. Multiple matching runs remain
+ambiguous. All native grade counts still require their own exact saved-cell
+readback. A failed check stops further source writes and preserves helper
+recovery, historical claims, receipts and student records.
+
+Tests use synthetic records and the real maintenance/shared-lease guard. They
+verify duplicate-writer exclusion, delayed ownership loss, zero native writes
+on holds, complete receipt reads and native Sheet note parsing. They do not
+establish current live idleness, source repairs or roster completion.
