@@ -264,7 +264,10 @@ one strictly empty trailing column, numeric Local Student Numbers as text
 (retaining leading zeros), full first/middle/last/suffix and recorded aliases,
 and original start/end dates. It refuses changed headers, extra populated
 columns, malformed dates, duplicate identities or conflicting identities across
-sections. A successful parse proves file format only. The CSV does **not** have
+sections. The observed native Gender cell may be blank, M or F; its original
+bytes remain in the private capture hash but the value is discarded from every
+canonical row and never used for identity, status or membership. Other values
+remain an unsupported-format hold. A successful parse proves file format only. The CSV does **not** have
 an explicit roster-status column: blank End Date cannot prove active membership,
 and dates never substitute for native Active/Incoming/Dropped groups.
 
