@@ -109,8 +109,11 @@ def parse_csv(raw):
             _fail("row_invalid")
         row = [v.strip() for v in row]
         if (not all(row[:5]) or not row[5] or not row[6]
-                or not re.fullmatch(r"[0-9]{1,20}", row[14]) or row[10]):
+                or not re.fullmatch(r"[0-9]{1,20}", row[14]) or row[10] not in ("", "M", "F")):
             _fail("identity_or_scope_invalid")
+        # The native report can emit these observed values despite optional
+        # demographic display settings. Preserve original bytes/hash; this
+        # field never participates in identity, membership, status or output.
         scope, number = dict(zip(SCOPE_FIELDS, row[:5])), row[14]
         identity = tuple(row[5:10])
         # A repeated ID in a section is ambiguous even if rows happen to match.

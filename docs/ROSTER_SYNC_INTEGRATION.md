@@ -264,7 +264,10 @@ one strictly empty trailing column, numeric Local Student Numbers as text
 (retaining leading zeros), full first/middle/last/suffix and recorded aliases,
 and original start/end dates. It refuses changed headers, extra populated
 columns, malformed dates, duplicate identities or conflicting identities across
-sections. A successful parse proves file format only. The CSV does **not** have
+sections. The observed native Gender cell may be blank, M or F; its original
+bytes remain in the private capture hash but the value is discarded from every
+canonical row and never used for identity, status or membership. Other values
+remain an unsupported-format hold. A successful parse proves file format only. The CSV does **not** have
 an explicit roster-status column: blank End Date cannot prove active membership,
 and dates never substitute for native Active/Incoming/Dropped groups.
 
@@ -427,3 +430,85 @@ Tests use synthetic records and the real maintenance/shared-lease guard. They
 verify duplicate-writer exclusion, delayed ownership loss, zero native writes
 on holds, complete receipt reads and native Sheet note parsing. They do not
 establish current live idleness, source repairs or roster completion.
+
+### One-time initialization without a names-only crosswalk
+
+The trusted-host `adapters.roster_bootstrap.BootstrapWorker` can initialize all
+four instructional sections and the one verified Study Hall in **new canonical
+current tabs inside the same existing Rosters workbook**. It does not create a
+workbook, match an old row to a native ID, invent an email, migrate student
+history, rename/delete a tab, mark a legacy learner inactive, or activate any
+configuration. Original tabs, cells, formulas, notes, formatting and history
+remain in place. The immutable receipt labels their scope `legacy_unlinked`;
+that label is not written into any old student's cells or treated as a departure.
+
+The coordinator first supplies the exact five new stable tab IDs/titles, verified
+existing section/year mappings, current private configuration reader, accepted
+`NativeRosterReportReader`, existing cloud state port with `commit_guarded`,
+and actual shared guard. New tab IDs/titles must be absent from a complete fresh
+workbook read; there is no collision fallback or guessed destination replacement.
+Both native captures must independently cover all five sections, be no older
+than fifteen minutes, carry distinct original capture IDs/times, and agree in
+all canonical content, context, membership/status and provenance. Study Hall
+incoming/withdrawn membership stays separate from instructional eligibility.
+
+`worker.prepare()` is read-only. It returns `plan` and `sha256`, binding both
+native captures, the current configuration-map basis, exact original workbook
+snapshot, new tab IDs/titles/owned cells and proposed existing-map updates.
+The concrete `SheetsBootstrap` reader preserves original user-entered values,
+formulas, notes, text styling, validation and sheet metadata; unavailable,
+oversized, partial, changed or malformed scope holds. There is no partial-class
+initialization or activation when one section is unavailable.
+Preparation also checks the projected workbook with all five new grids against
+the same readback tab/cell/serialization bounds. Before the pending intent is
+committed, the full eventual immutable record wrapper and verified intent/result
+envelopes must fit the existing private-state limit. These checks never truncate
+original preservation evidence or enlarge storage limits after a native write.
+
+`worker.apply(proposal, expected_sha256=..., owner=..., request_id=...)` freshly
+validates the proposal, source freshness, original workbook and configuration.
+It acquires the existing roster task's fence, then atomically writes the full
+private pending intent and a **pending bootstrap marker in the existing
+roster-intent key**. The ordinary roster worker therefore refuses an uncertain
+bootstrap even after its lease expires. No separate job or schedule is created.
+One native Sheets batch adds all five tabs and their initial user-entered cells:
+
+- Instructional: A First Name, B Last Name, C Roster status, D IC local student
+  number, E IC membership key, F Start date, G End date, H IC checked at.
+- Study Hall: existing A:E display contract, F IC local student number,
+  G IC membership key, H First Name, I Last Name.
+
+Each tab has 200 rows and exactly eight or nine columns. Canonical identity is
+the explicitly named local-number/report-membership scheme. The existing reader
+uses an explicit native Start date for membership eligibility when there is no
+teacher Added/Joined column; existing Added/Joined data retains precedence.
+Names-only legacy history is not a canonical current member list or an email
+identity source.
+
+The native operation reserves the established 170-second one-POST/two-GET
+readback budget plus the bounded final roster-ownership check. Native tokens
+are acquired before that reservation. Each private state mutation uses the
+existing guarded CAS adapter; failed ownership/activity/time checks dispatch no
+native write. Exact readback must show every new canonical cell and all original
+tabs/cells unchanged before the immutable receipt and verified uncertainty marker
+are published. A lost write response or differing readback leaves the pending
+marker intact. `worker.reconcile()` only reads that exact destination and verifies
+its existing intent/claim; it cannot create tabs, resend the batch, acquire a
+replacement owner or clear an expired/foreign uncertainty hold.
+
+A verified result says `verified_not_activated`, gives counts separately from
+its immutable receipt, and returns `targets` plus `proposed_config_updates`.
+Only then may the coordinator update the existing `HUB_ROSTER_TABS`,
+`HUB_ROSTER_STATUS_COLUMNS`, `HUB_ROSTER_COLUMN_LAYOUTS` and
+`HUB_ROSTER_ONLY_SECTIONS` in **one verified runtime revision**, preserving
+section IDs, helper mappings, unrelated configuration and the old map until
+complete success. The module does not perform that cutover. Fresh deployed
+readback must prove all instructional active counts/status/date filtering and
+Study Hall isolation before calling roster initialization active.
+
+The private receipt's `roster_bootstrap` payload contains `plan.source_before`,
+`plan.source_after`, original snapshots, exact canonical rows and a destination
+hash. Receiving this receipt is not feedback/grade eligibility or email proof.
+An importer requiring a native email-to-local-number crosswalk must independently
+verify that exact correspondence and the actually active runtime mapping; it
+cannot infer it from the new tab, old name, or a pending initialization receipt.

@@ -99,6 +99,11 @@ def parse_tab(cells, class_key, section, layouts=None, status_columns=None):
     order, basis = start(section)
     added_col = next((c for r in range(1, 201) for c in range(3, 11)
                       if plain(cells.get((r, c), {}).get("formattedValue", "")) in ADDED), None)
+    if added_col is None:
+        # The canonical IC mirror uses its explicit membership Start date.
+        # Existing teacher Added/Joined columns retain precedence unchanged.
+        added_col = next((c for r in range(1, 201) for c in range(3, 11)
+                          if plain(cells.get((r, c), {}).get("formattedValue", "")) == "start date"), None)
     for r in range(1, 201):
         a = str(cells.get((r, 1), {}).get("formattedValue", "")).strip()
         b = str(cells.get((r, 2), {}).get("formattedValue", "")).strip()

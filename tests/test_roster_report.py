@@ -71,6 +71,26 @@ class ReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ConnectionError, "count_mismatch"):
             self.prepare()
 
+    def test_observed_native_gender_cells_preserve_raw_proof_but_not_canonical_identity(self):
+        original = self.raw
+        row = next(csv.reader(io.StringIO(original.decode()).read().splitlines()[1:]))[:15]
+        baseline = self.prepare()["sections"]
+        hashes = set()
+        for value in ("", "M", "F"):
+            row[10] = value
+            self.raw = raw_csv([row])
+            self.observation = self.observe("native-" + (value or "empty"))
+            result = self.prepare()
+            self.assertEqual(result["sections"], baseline)
+            self.assertEqual(result["report_proof"]["csv_sha256"], hashlib.sha256(self.raw).hexdigest())
+            self.assertNotIn("gender", result["sections"][0]["rows"][0])
+            hashes.add(result["report_proof"]["csv_sha256"])
+        self.assertEqual(len(hashes), 3)
+        for value in ("X", "unknown", "m"):
+            row[10] = value
+            with self.assertRaisesRegex(ConnectionError, "identity_or_scope_invalid"):
+                rr.parse_csv(raw_csv([row]))
+
     def test_unknown_status_and_partial_filtered_paginated_reads_hold(self):
         for field, value in [("complete", False), ("filtered", True), ("next_page", "more")]:
             with self.subTest(field=field):
