@@ -8,9 +8,11 @@ import re
 from . import work
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import StoreUnavailable, instant, key
+from school_workflow_hub.core.runs import content_hash
 
 CONFIG = 'HUB_COMPLETION_READINESS_HOLDS'
 SCHEMA = 'hub-completion-teacher-hold/v1'
+OPERATOR_VERIFIED = 'operator_verified_copies_under_teacher_authorization'
 
 
 def hold_key(agenda_id, school_year, class_key, week, form_id):
@@ -26,11 +28,16 @@ def _cleared(value, *, allow_found_codes=False):
     bases = {'teacher_confirmed_distributed_copies_coded'}
     if allow_found_codes:
         bases.add('teacher_confirmed_count_found_codes')
-    if (not isinstance(proof, dict) or set(proof) != {'basis', 'teacher_confirmed_at', 'verified_at', 'copies'}
-            or proof['basis'] not in bases
+    if not isinstance(proof, dict):
+        return False
+    operator_verified = proof.get('basis') == OPERATOR_VERIFIED
+    fields = {'basis', 'teacher_confirmed_at', 'verified_at', 'copies'}
+    if operator_verified:
+        fields |= {'operator', 'authorization', 'census'}
+    if (set(proof) != fields or (not operator_verified and proof['basis'] not in bases)
             or not isinstance(proof['copies'], list) or not 1 <= len(proof['copies']) <= 500):
         return False
-    instant(proof['teacher_confirmed_at']); instant(proof['verified_at'])
+    confirmed, verified = instant(proof['teacher_confirmed_at']), instant(proof['verified_at'])
     seen = set()
     for item in proof['copies']:
         if (not isinstance(item, dict) or set(item) != {'file_id', 'version', 'status'}
@@ -39,6 +46,27 @@ def _cleared(value, *, allow_found_codes=False):
                 or item['file_id'] in seen):
             return False
         seen.add(item['file_id'])
+    if operator_verified:
+        # This basis records a teacher's conditional repair authorization and
+        # the trusted operator's later verification. It never says the teacher
+        # personally inspected completed copies. There is still no HTTP writer.
+        authorization, census = proof['authorization'], proof['census']
+        scope = {k: value.get(k) for k in ('agenda_id', 'school_year', 'class_key', 'week', 'form_id')}
+        sha = lambda v: isinstance(v, str) and bool(re.fullmatch(r'[a-f0-9]{64}', v))
+        if (not _text(proof['operator'], 200) or confirmed > verified
+                or not isinstance(authorization, dict)
+                or set(authorization) != {'schema', 'ref', 'sha256', 'authorized_at', 'scope'}
+                or authorization['schema'] != 'teacher-conditional-copy-repair/v1'
+                or not _text(authorization['ref'], 1000) or not sha(authorization['sha256'])
+                or authorization['authorized_at'] != proof['teacher_confirmed_at']
+                or authorization['scope'] != scope
+                or not isinstance(census, dict)
+                or set(census) != {'schema', 'complete', 'source_count', 'copies_sha256', 'evidence_sha256'}
+                or census['schema'] != 'complete-current-copy-census/v1' or census['complete'] is not True
+                or type(census['source_count']) is not int or census['source_count'] != len(seen)
+                or not sha(census['evidence_sha256'])
+                or census['copies_sha256'] != content_hash(sorted(proof['copies'], key=lambda c: c['file_id']))):
+            return False
     return True
 
 
