@@ -482,6 +482,13 @@ Each tab has 200 rows and exactly eight or nine columns. Canonical identity is
 the explicitly named local-number/report-membership scheme. The existing reader
 uses an explicit native Start date for membership eligibility when there is no
 teacher Added/Joined column; existing Added/Joined data retains precedence.
+For a configured status-bearing instructional tab, the live reader includes
+the existing date-header scope through column J, bounded by actual native grid
+dimensions and extended only as needed for its configured status column.
+This includes Start date in the eight-column canonical tab without requesting
+nonexistent columns. Missing dimensions or a status column beyond the grid
+holds the read; unconfigured legacy ranges and Study Hall separation remain
+unchanged.
 Names-only legacy history is not a canonical current member list or an email
 identity source.
 

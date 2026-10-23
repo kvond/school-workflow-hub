@@ -10,6 +10,7 @@ import json
 import re
 import unicodedata
 from datetime import datetime
+from urllib.parse import quote
 
 from . import google
 from school_workflow_hub.adapters import roster_status
@@ -176,8 +177,24 @@ def load(token, config):
         status_columns = roster_status.configured_columns(config, [s for v in SECTIONS.values() for s in v])
     except ConnectionError:
         return {}, ["The roster status column configuration could not be verified."]
+    dimensions = {}
     try:
-        _, tabs = google.sheet_tabs(token, roster_id)
+        if status_columns:
+            # Status-bearing mirrors also carry membership dates. Read their
+            # native grid bounds with the usual tab metadata, so the existing
+            # A:J date-header parser receives its columns without requesting
+            # cells beyond a narrow canonical tab's actual grid.
+            metadata = google.get_json(
+                "https://sheets.googleapis.com/v4/spreadsheets/" + quote(roster_id), token,
+                {"fields": "sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"})
+            properties = [s.get("properties", {}) for s in metadata.get("sheets", [])]
+            tabs = {p.get("title"): p.get("sheetId") for p in properties}
+            dimensions = {p.get("title"): p.get("gridProperties", {}) for p in properties}
+            if (len(tabs) != len(properties) or len(set(tabs.values())) != len(properties)
+                    or any(not isinstance(t, str) or not t or type(i) is not int for t, i in tabs.items())):
+                return {}, ["The roster tab metadata could not be verified."]
+        else:
+            _, tabs = google.sheet_tabs(token, roster_id)
     except google.GoogleError as error:
         return {}, ["The roster workbook couldn't be read: %s" % error]
     by_id = {sheet_id: title for title, sheet_id in tabs.items()}
@@ -195,10 +212,21 @@ def load(token, config):
     if not wanted:
         return {}, problems
     titles = sorted({title for _, title in wanted.values()})
+    ranges = []
+    for title in titles:
+        status_column = max([0] + [status_columns.get(s, 0)
+                                  for s, (_, tab) in wanted.items() if tab == title])
+        last_column, last_row = max(2, status_column), 200
+        if status_column:
+            grid = dimensions.get(title, {})
+            columns, rows = grid.get("columnCount"), grid.get("rowCount")
+            if (type(columns) is not int or type(rows) is not int
+                    or columns < last_column or rows < 1):
+                return {}, ["Roster grid bounds in '%s' could not be verified." % title]
+            last_column, last_row = max(last_column, min(10, columns)), min(200, rows)
+        ranges.append("'%s'!A1:%s%d" % (title.replace("'", "''"), chr(64 + last_column), last_row))
     try:
-        grids = google.sheet_grid(token, roster_id, ["'%s'!A1:%s200" % (t.replace("'", "''"),
-            chr(64 + max([2] + [status_columns.get(s, 2) for s, (_, title) in wanted.items() if title == t])))
-            for t in titles])
+        grids = google.sheet_grid(token, roster_id, ranges)
     except google.GoogleError as error:
         return {}, problems + ["The roster tabs couldn't be read: %s" % error]
     roster, seen = {}, set()
