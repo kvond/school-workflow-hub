@@ -2034,7 +2034,7 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     if (not complete_codes and not has_codes and len(templates) == 1
             and (not inventory(deck)[0] or inventory(deck)[0] == inventory(templates[0][2])[0])):
         best = templates[0][2]
-    if has_codes and coverage(deck, best) < 0.8 and not binding and not ownership:
+    if has_codes and coverage(deck, best) < 0.8 and not binding and not ownership and not local_candidate:
         # Look only in the actual linked lesson/source folders. A same-title
         # file elsewhere, including an obsolete lesson, is not a replacement.
         title = original_title(upload.get("name") or meta.get("name", ""))
@@ -2089,7 +2089,9 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
         result = not_ready(student_check, upload.get('name') or meta.get('name', ''), 'student copy')
         same = [t for t in templates if inventory(t[2])[0] == inventory(deck)[0]
                 and coverage(deck, t[2]) == coverage(deck, chosen[2])]
-        if (len(templates) != len(deck_ids) or len(same) != 1 or coverage(deck, chosen[2]) < 0.8):
+        if (len(templates) != len(deck_ids) or len(set(deck_ids)) != len(deck_ids)
+                or {item[0] for item in templates} != set(deck_ids) or chosen[0] not in deck_ids
+                or len(same) != 1 or coverage(deck, chosen[2]) < 0.8):
             return result
         try:
             if (any(google.drive_file(token, tid, google.FILE_FIELDS + ',version') != tmeta

@@ -123,6 +123,29 @@ class LocalReadinessTests(unittest.TestCase):
         self.decks[HELD]=ambiguous()
         self.decks[HELD]['slides'][1]['units'][-1]['text']='[[NOTES:OTHER:Q-MASTERY]]'
         self.assertEqual(self.make()['code'],'coverage_incomplete')
+    def test_unreadable_registered_teacher_cannot_be_replaced_by_same_title_sibling(self):
+        missing='FICTIONAL_UNREADABLE_REGISTERED_TEACHER'
+        sibling='FICTIONAL_SAME_TITLE_REPLACEMENT'
+        wrong=source()
+        for slide in wrong['slides']:
+            for unit in slide['units']:
+                unit['text']=unit['text'].replace('F06','OTHER')
+        def teacher(token,fid):
+            if fid==missing:
+                raise google.GoogleError('registered teacher unavailable')
+            return metadata(fid),wrong if fid==TEMPLATE else source()
+        with ExitStack() as stack:
+            self.patches(stack)
+            stack.enter_context(patch.object(completion,'lesson_decks',return_value=[TEMPLATE,missing]))
+            stack.enter_context(patch.object(completion,'_teacher_template',side_effect=teacher))
+            stack.enter_context(patch.object(completion,'original_title',return_value='Exact original'))
+            siblings=stack.enter_context(patch.object(completion,'_siblings',return_value=[
+                {'id':sibling,'name':'Exact original'}]))
+            held=completion.score_file('read',single_assignment_agenda(),'forensics','Wk 04',FORM,HELD,self.found)
+        self.assertEqual(held['code'],'deck_not_ready')
+        self.assertNotIn('_student_content_hold',held)
+        siblings.assert_not_called()
+
     def test_truncated_boundary_never_localizes(self):
         self.decks[HELD]['slides'] += [{'number':i,'units':[]} for i in range(3,201)]
         self.assertEqual(len(self.decks[HELD]['slides']),completion.MAX_SLIDES)
