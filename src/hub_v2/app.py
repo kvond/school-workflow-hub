@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from . import printable_feedback_link, agenda_edit, audit, completion, daily_feedback_packet, feedback, feedback_delivery, feedback_print_preview, google, ledger, morning, morning_entry, native_feedback, print_ready_email, recovery, review_context, routine, student_archive, tidy, work
-from . import deck_repair, lesson_summary, system_notes, weekly_packet, weekly_preflight
+from . import class_notes, deck_repair, lesson_summary, system_notes, weekly_packet, weekly_preflight
 from . import dashboard_records, saved_completion
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -146,6 +146,10 @@ def teacher_links(config):
 
 
 def api(sub, query, config):
+    if sub == 'api/classes/notes':
+        if set(query) != {'class'}:
+            raise ValueError()
+        return class_notes.read(config, _class_key(_one(query, 'class')))
     if sub == 'api/dashboard/records':
         if query:
             raise ValueError()
@@ -640,6 +644,25 @@ def retired_answers_post(environ, respond, config):
     return respond("410 Gone", {"error": "The redundant Biology answers archive has been retired."})
 
 
+def class_notes_post(environ, respond, config):
+    refused = _same_origin_json(environ, respond, config)
+    if refused:
+        return refused
+    try:
+        payload = _json_body(environ, 200000)
+        if set(payload) != {'class', 'text', 'revision'}:
+            raise ValueError()
+        actor = google.verify_teacher(environ.get('HTTP_X_GOOG_IAP_JWT_ASSERTION'), config)
+        saved = class_notes.save(config, _class_key(payload['class']), payload['text'], payload['revision'], actor=actor)
+        return respond('200 OK', saved)
+    except class_notes.Conflict as error:
+        return respond('409 Conflict', {'error': str(error)})
+    except class_notes.StoreUnavailable:
+        return respond('503 Service Unavailable', {'error': 'Class notes save is unconfirmed. Your draft is still here; reload saved notes before retrying.'})
+    except (ValueError, TypeError, KeyError):
+        return respond('400 Bad Request', {'error': 'Choose a class and use plain text, at most 30,000 characters.'})
+
+
 def system_notes_post(environ, respond, config):
     refused = _same_origin_json(environ, respond, config)
     if refused:
@@ -933,6 +956,8 @@ def _application(environ, start_response, config=None):
         return agenda_post(environ, respond, config)
     if method == 'POST' and path == '/v2/api/system/notes':
         return system_notes_post(environ, respond, config)
+    if method == 'POST' and path == '/v2/api/classes/notes':
+        return class_notes_post(environ, respond, config)
     if method == 'POST' and path in ('/v2/api/lessons/summary', '/v2/api/lessons/summary/save'):
         return lesson_summary_post(environ, respond, config)
     if method == "POST" and path == "/v2/api/agenda/move":

@@ -196,6 +196,7 @@ async function boot(hash = '#today', overrides = {}) {
       if (path === '/v2/api/dashboard/records') value = data.dashboard;
       else if (path === '/v2/api/spreadsheet-feedback/print-link') value = data.printableFeedback;
       else if (path === '/v2/api/day') value = data.day;
+      else if (path === '/v2/api/classes/notes') value = {text: 'Fictional class policy', revision: 'a'.repeat(64), updated_at: '2032-01-07T15:00:00Z'};
       else if (path === '/v2/api/weeks') value = data.weeks;
       else if (path === '/v2/api/work') value = data.work;
       else if (path === '/v2/api/ledger' || path === '/v2/api/record') value = data.marks;
@@ -270,7 +271,10 @@ test('Records aliases and Lessons execute only their own readers with the real p
   }
   app.requests.length = 0; await app.navigate('#plans');
   assert.equal(app.document.getElementById('page-plans').hidden, false);
-  assert.deepEqual([...new Set(paths(app))], ['/v2/api/day']);
+  assert.deepEqual([...new Set(paths(app))], ['/v2/api/day', '/v2/api/classes/notes']);
+  assert.ok(app.requests.every(request => request.method === 'GET'));
+  assert.match(app.document.getElementById('cards').textContent, /Class notes/);
+  assert.equal(app.document.getElementById('class-notes-biology').value, 'Fictional class policy');
   assert.match(app.document.getElementById('cards').textContent, /Fictional cell structures/);
   assert.match(app.document.getElementById('cards').textContent, /Compare two fictional cell models/);
 });

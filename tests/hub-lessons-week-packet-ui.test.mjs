@@ -41,7 +41,7 @@ function boot(reply) {
 
 test('Lessons removes packet orchestration and navigation does not call its reader', () => {
   assert.doesNotMatch(html, /id="week-packet"/);
-  const plans = source.slice(source.indexOf('async function loadPlans('), source.indexOf('function renderNextWeekNotes('));
+  const plans = source.slice(source.indexOf('async function loadPlans('), source.indexOf('function loadClassPolicyNotes('));
   assert.doesNotMatch(plans, /loadLessonPacket\(/);
   assert.match(plans, /api\/day/);
 });

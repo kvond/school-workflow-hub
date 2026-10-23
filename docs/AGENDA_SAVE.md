@@ -56,3 +56,40 @@ it verifies stale success/failure responses cannot replace the save revision,
 selected-date changes reset readiness, and typing during a save preserves the
 newer draft. Node is an explicit frontend check so the existing Python-only cloud
 validation retains its standard-library runtime contract.
+
+
+## Current v2 Lessons page (October 23)
+
+The deployed v2 UI uses `GET /v2/api/day` and `POST /v2/api/agenda`,
+implemented in `hub_v2/agenda.py` and `hub_v2/agenda_edit.py`. The earlier
+`/api/agenda-save` contract above documents the legacy dashboard.
+
+Each mapped lesson day shows **Day notes**, including an empty placeholder,
+with **Edit plan and day notes** beside the selected day's plan and in Whole
+week. The compact editor uses only that day's mapped plan/note fields. **Edit
+whole week and links** retains the larger editor. Formula and rich-link cells
+stay locked. The writer compares the exact class/week/row and original cell
+values, changes only mapped literal cells, and rereads them. Agenda edits are
+loaded back into the Hub on a fresh read. Save or cancel an open editor before
+navigating to another date or starting a different editor.
+
+**Class notes** live below each class. They persist independently of week,
+lesson and Form, in the existing private store under the configured Agenda
+and class. Only an authenticated teacher's explicit Save writes notes. A save
+uses compare-and-swap, preserves an immutable previous-version history, and
+reads back both current and history documents. A conflict or uncertain save
+retains the draft; Reload saved notes compares the current version before any
+replacement. A late read cannot erase typing. Opening Lessons is read-only.
+The API is `GET /v2/api/classes/notes?class=biology` and same-origin authenticated
+`POST /v2/api/classes/notes` with exactly `class`, `text`, and `revision`.
+
+The old top Next week notes box is removed. Existing browser-only notes remain
+under their class in **Earlier week notes in this browser**, with their original
+week labels. They are not deleted, copied to another class or silently migrated
+into saved policy notes. No changes are made to lesson summaries, grading,
+feedback, the Chrome helper, schedules or source permissions.
+
+Synthetic coverage: `tests/test_class_notes.py`,
+`tests/hub-class-notes-ui.test.mjs`, `tests/hub-agenda-notes-ui.test.mjs`, plus
+existing Agenda writer tests. Source/tests, deployment and live save/readback
+must be reported separately.
