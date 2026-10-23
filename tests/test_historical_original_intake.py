@@ -34,6 +34,9 @@ class Agenda:
             'materials': [{'label': 'Exact source', 'url': 'https://docs.google.com/presentation/d/' + TEACHERS[i] + '/edit'}]}]
             for i, week in enumerate(WEEKS)}
 
+    def week_options(self, cls):
+        return deepcopy(self.weeks)
+
     def lessons(self, cls, week):
         return deepcopy(self.rows.get(week, []))
 

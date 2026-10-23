@@ -11,6 +11,12 @@ ROW = {"last": "Avery", "first": "Ann", "section": "A4 Fictional", "matched": Tr
 FORM = {"form_id": "FICTIONAL_FORM_1234", "label": "Matter", "problem": None, "students": [ROW], "missing": [], "late": [], "excused": [], "elsewhere": [],
         "window": {"from": "2026-09-30T04:00:00Z", "at": "2026-10-14T03:59:59Z"}}
 
+def single_context_agenda(week="Wk 05", fid=FORM["form_id"], cls="biology"):
+    agenda = Mock(classes={cls: {"name": "Fictional class"}})
+    agenda.week_options.return_value = [{"label": week, "monday": "2026-09-01"}]
+    agenda.lessons.return_value = [{"topic": "Exact fictional lesson", "forms": [{"form_id": fid}]}]
+    return agenda
+
 def report():
     return {"day": "2026-10-01", "run_id": "11111111-1111-4111-8111-111111111111", "code": "finished", "roster": "unavailable", "items": [{"assignment": "Matter", "code": "read_back", "filled": 1, "raised": 1, "kept": 2, "left": 1, "reasons": {"flag": 1, "excused": 0, "check": 0, "name": 0, "missing": 0}}]}
 
@@ -33,7 +39,7 @@ class MorningTests(unittest.TestCase):
         self.assertEqual([r["kind"] for r in result], ["check", "none"])
 
     def test_missing_or_duplicate_binding_and_coverage_errors_fail_closed(self):
-        agenda = Mock(classes={"biology": {"name": "Biology"}})
+        agenda = single_context_agenda()
         found = {"lessons": [{"topic": "Matter", "forms": [FORM]}], "problems": []}
         loader = Mock(return_value=found)
         scorer = Mock(return_value=[(ROW, {"notes_score": 8, "revision_score": None})])
@@ -48,7 +54,7 @@ class MorningTests(unittest.TestCase):
         self.assertTrue(loader.call_args.kwargs["fresh"])
 
     def test_unmatched_source_files_block_scoring(self):
-        agenda = Mock(classes={"biology": {"name": "Biology"}})
+        agenda = single_context_agenda()
         found = {"lessons": [{"topic": "Matter", "forms": [FORM]}], "problems": [],
                  "other_files": [{"matched": True, "last": "Brook"}]}
         loader = Mock(return_value=found)
@@ -61,7 +67,7 @@ class MorningTests(unittest.TestCase):
         scorer.assert_not_called()
 
     def test_all_checked_source_rows_are_held_instead_of_reported_empty(self):
-        agenda = Mock(classes={"biology": {"name": "Biology"}})
+        agenda = single_context_agenda()
         found = {"lessons": [{"topic": "Matter", "forms": [FORM]}], "problems": []}
         binding = {"class_key": "biology", "form_id": FORM["form_id"], "targets": []}
         with patch.object(morning.ledger, "read", return_value={"configured": True}), \
@@ -78,7 +84,7 @@ class MorningTests(unittest.TestCase):
         found = {"lessons": [{"topic": "Matter", "forms": [form]}], "problems": []}
         with patch.object(morning.ledger, "read", return_value={"configured": True}), \
                 patch.object(morning.completion, "assignment_readiness", return_value={"status": "READY"}):
-            value = morning.make_list("t", {}, Mock(classes={"biology": {"name": "Biology"}}), "biology",
+            value = morning.make_list("t", {}, single_context_agenda(), "biology",
                 "Wk 05", form["form_id"], Mock(return_value=found), Mock(return_value=[]))
         self.assertEqual(value, {"code": "no_scores"})
 
@@ -90,7 +96,7 @@ class MorningTests(unittest.TestCase):
         with patch.object(morning.ledger, "read", return_value={"configured": True}), \
                 patch.object(morning.completion, "assignment_readiness", return_value={"status": "READY"}):
             value = morning.make_list("t", {"HUB_IC_ASSIGNMENT_MAP": json.dumps([binding])},
-                Mock(classes={"biology": {"name": "Biology"}}), "biology", "Wk 05", form["form_id"],
+                single_context_agenda(), "biology", "Wk 05", form["form_id"],
                 Mock(return_value=found), Mock(return_value=[(ROW, {"notes_score": 8}), (other, {"problem": "held"})]))
         self.assertEqual(value["code"], "ready")
         self.assertEqual([r["kind"] for r in value["list"]["rows"]], ["score", "check"])
@@ -172,7 +178,7 @@ class ClosedAssignmentRecheckTests(unittest.TestCase):
         self.form["late"] = [self.late]
         self.form["missing"] = [{**ROW, "last": "Cole"}]
         self.found = {"lessons": [{"topic": "Matter", "forms": [self.form]}], "problems": []}
-        self.agenda = Mock(classes={"biology": {"name": "Biology"}})
+        self.agenda = single_context_agenda("Wk 02")
         self.config = {"HUB_IC_ASSIGNMENT_MAP": json.dumps([{
             "class_key": "biology", "form_id": self.form["form_id"], "targets": []}])}
 

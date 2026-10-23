@@ -6,7 +6,7 @@ import json
 import unittest
 
 from hub_v2 import morning
-from test_hub_morning import FORM, ROW
+from test_hub_morning import FORM, ROW, single_context_agenda
 
 START = datetime(2026, 10, 5, 4, tzinfo=timezone.utc)
 CUTOFF = datetime(2026, 10, 19, 3, 59, 59, tzinfo=timezone.utc)
@@ -81,7 +81,7 @@ class MissingWorkDeadlineTests(unittest.TestCase):
                          ('none', None, None))
 
     def test_make_list_does_not_emit_zero_only_list_until_verified_deadline_passed(self):
-        agenda = Mock(classes={'biology': {'name': 'Fictional Biology'}})
+        agenda = single_context_agenda('Wk 06')
         found = {'lessons': [{'topic': 'Exact fictional lesson', 'forms': [self.form]}], 'problems': []}
         config = {'HUB_IC_ASSIGNMENT_MAP': json.dumps([{'class_key': 'biology',
                  'form_id': self.form['form_id'], 'targets': []}])}

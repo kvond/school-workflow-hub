@@ -56,7 +56,9 @@ class MorningRowSelectionHoldTests(unittest.TestCase):
                 patch.object(morning.ledger, 'read', return_value=self.mark if mark is None else mark), \
                 patch.object(completion, 'assignment_readiness', return_value=self.ready if ready is None else ready):
             clock.now.return_value = NOW
-            return morning.make_list('fictional-read', self.config, fixture(), 'forensics', 'Wk 04',
+            agenda = fixture()
+            agenda.week_options = lambda cls: [{'label': 'Wk 04', 'monday': '2026-09-21'}]
+            return morning.make_list('fictional-read', self.config, agenda, 'forensics', 'Wk 04',
                                      FORM, Mock(return_value=self.found), scorer)
 
     def source_patches(self, stack):

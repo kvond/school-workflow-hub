@@ -59,7 +59,9 @@ class LocalReadinessTests(unittest.TestCase):
     def make(self):
         with ExitStack() as stack:
             self.patches(stack)
-            return morning.make_list('read',self.config,single_assignment_agenda(),'forensics','Wk 04',FORM,
+            agenda=single_assignment_agenda()
+            agenda.week_options=lambda cls:[{'label':'Wk 04','monday':'2026-09-21'}]
+            return morning.make_list('read',self.config,agenda,'forensics','Wk 04',FORM,
                                      Mock(return_value=self.found),app._score_rows)
     def score(self,fid=HELD):
         with ExitStack() as stack:

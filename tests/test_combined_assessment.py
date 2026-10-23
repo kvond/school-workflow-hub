@@ -34,7 +34,9 @@ def agenda():
         {'label': 'Teacher deck', 'url': 'https://docs.google.com/presentation/d/' + T2 + '/edit'}]}
     return SimpleNamespace(spreadsheet_id=AGENDA,
         classes={'forensics': {'name': 'Fictional Forensics'}, 'biology': {'name': 'Fictional Biology'}},
-        weeks=[{'label': 'Wk 06', 'monday': '2026-09-28'}], lessons=lambda cls, week: [deepcopy(lesson)])
+        weeks=[{'label': 'Wk 06', 'monday': '2026-09-28'}],
+        week_options=lambda cls: [{'label': 'Wk 06', 'monday': '2026-09-28'}],
+        lessons=lambda cls, week: [deepcopy(lesson)])
 
 
 def event(fid, at='2026-10-01T12:00:00Z', **changes):
