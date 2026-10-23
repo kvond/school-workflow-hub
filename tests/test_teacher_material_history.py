@@ -236,6 +236,43 @@ class HistoricalTeacherMaterialTests(unittest.TestCase):
         with self.assertRaises((Held, LeaseLost)): history.import_verified('read', CONFIG, self.a, value, guard=guard)
         self.assertEqual(self.port.guarded_writes, [])
 
+    def maintenance_guard(self, value):
+        authority = dict(schema='school-source-maintenance/v1', authorization_ref='fictional-decision',
+            authorization_revision='revision-1', status='authorized', source_scope='fictional-all-preparation-sources',
+            owner='history-worker', request_id='maintenance-request', input_hash=content_hash(value),
+            operation_scope='source_repair', starts_at='2026-10-22T18:00:00Z', expires_at='2026-10-23T02:00:00Z')
+        guard = SourceOperations.acquire(self.port, source_scope=authority['source_scope'], owner=authority['owner'],
+            request_id=authority['request_id'], input_hash=authority['input_hash'], check_activity=self.activity,
+            operation_scope='source_repair', maintenance_authorization=deepcopy(authority),
+            read_maintenance_authorization=lambda ref: deepcopy(authority))
+        return guard, authority
+
+    def test_explicit_maintenance_window_retains_history_and_final_readback(self):
+        self.port.now = datetime(2026, 10, 22, 19, tzinfo=timezone.utc)
+        value = self.proposal(); guard, _ = self.maintenance_guard(value)
+        self.assertEqual(history.import_verified('read', CONFIG, self.a, value, guard=guard), value['record_key'])
+        self.assertEqual(len(self.port.guarded_writes), 2)
+        for k, doc in self.original_docs.items(): self.assertEqual(self.port.rows[k], doc)
+        self.assertEqual(self.port.rows[value['record_key']].value, value)
+        self.assertTrue(self.md['trashed'])
+
+    def test_final_maintenance_authorization_reread_blocks_change_or_expiry_after_bookend(self):
+        for change in ('revision', 'expiry'):
+            with self.subTest(change=change):
+                self.setUp(); self.port.now = datetime(2026, 10, 22, 19, tzinfo=timezone.utc)
+                value = self.proposal(); guard, authority = self.maintenance_guard(value)
+                original = history.bookend
+                def changed(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    if self.activity.call_count >= 2:
+                        if change == 'revision': authority['authorization_revision'] = 'revision-2'
+                        else: self.port.now = datetime(2026, 10, 23, 2, tzinfo=timezone.utc)
+                    return result
+                with patch.object(history, 'bookend', side_effect=changed):
+                    with self.assertRaises((Held, LeaseLost)):
+                        history.import_verified('read', CONFIG, self.a, value, guard=guard)
+                self.assertEqual(self.port.guarded_writes, [])
+
     def test_helper_frozen_inputs_prevent_writes(self):
         value = self.proposal(); guard = self.guard(value)
         self.activity.side_effect = Held('helper_inputs_frozen')

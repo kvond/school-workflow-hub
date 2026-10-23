@@ -4,13 +4,13 @@ Trusted-host preparation/publication only. This is not a new teacher-material
 classification, source repair, student exclusion policy, or HTTP writer.
 """
 from copy import deepcopy
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 from time import monotonic
 
 from . import agenda as agenda_module, google, teacher_material as tm
-from .source_operations import EASTERN, SourceOperations
+from .source_operations import SourceOperations
 from school_workflow_hub.adapters.firestore_state import configured_store
 from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bounded_json, instant, key
 from school_workflow_hub.core.runs import content_hash
@@ -164,11 +164,13 @@ def _write_guard(token, config, agenda, value, basis, port, guard):
     if doc is None:
         raise StoreUnavailable('Source preparation ownership is unavailable.')
     guard.cloud._owns(guard.claim, doc.value, now.isoformat())
-    local = now.astimezone(EASTERN)
-    cutoff = datetime.combine(local.date(), time(7), tzinfo=EASTERN)
-    if (local.weekday() >= 5 or (cutoff - local).total_seconds() <= COMMIT_READBACK_SECONDS
-            or (instant(doc.value['expires_at']) - now).total_seconds() <= COMMIT_READBACK_SECONDS):
+    if (instant(doc.value['expires_at']) - now).total_seconds() <= COMMIT_READBACK_SECONDS:
         raise tm.Unverified('Historical disposition cannot finish under the current source ownership window.')
+    # Retain this exact raw owner/fence read, then re-read the guard's original
+    # time/authorization policy. This final check cannot renew a lost lease.
+    guard.validate_write_budget(required_seconds=COMMIT_READBACK_SECONDS)
+    if monotonic() - started > FINAL_CHECK_SECONDS:
+        raise tm.Unverified('Final historical-source verification exceeded its reserved window.')
 
 
 def import_verified(token, config, agenda, value, *, guard, port=None):

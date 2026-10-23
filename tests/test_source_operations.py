@@ -1,9 +1,10 @@
 """Shared source ownership uses fictional CAS state and trusted test callbacks."""
 import unittest
+from copy import deepcopy
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 from hub_v2.source_operations import SourceOperations, Held
-from school_workflow_hub.core.cloud_state import Busy, LeaseLost, StoreUnavailable
+from school_workflow_hub.core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
 from test_cloud_state import MemoryCAS
 
 
@@ -178,3 +179,130 @@ class SourceOperationsTests(unittest.TestCase):
         with patch("hub_v2.source_operations.monotonic", side_effect=[100.0, 140.0]):
             with self.assertRaisesRegex(Held, "source_mutation_window_closed"):
                 first.before_write(required_seconds=45)
+
+
+class MaintenanceSourceOperationsTests(unittest.TestCase):
+    def setUp(self):
+        self.port = MemoryCAS()
+        self.port.now = datetime(2026, 10, 22, 19, 0, tzinfo=timezone.utc)
+        self.activity = Mock(return_value=None)
+        self.authorization = dict(schema="school-source-maintenance/v1",
+            authorization_ref="fictional-teacher-decision", authorization_revision="revision-1", status="authorized",
+            source_scope="fictional-shared-sources", owner="repair-worker", request_id="request-1",
+            input_hash="exact-reviewed-input", operation_scope="source_repair",
+            starts_at="2026-10-22T18:00:00Z", expires_at="2026-10-23T02:00:00Z")
+        self.reader = Mock(side_effect=lambda ref: deepcopy(self.authorization))
+
+    def acquire(self, **changes):
+        args = dict(source_scope="fictional-shared-sources", owner="repair-worker", request_id="request-1",
+            input_hash="exact-reviewed-input", check_activity=self.activity, operation_scope="source_repair",
+            maintenance_authorization=deepcopy(self.authorization), read_maintenance_authorization=self.reader)
+        return SourceOperations.acquire(self.port, **(args | changes))
+
+    def test_exact_fresh_authority_allows_bounded_afternoon_operation(self):
+        guard = self.acquire()
+        guard.before_write(required_seconds=170)
+        writes = deepcopy(self.port.rows)
+        guard.validate_write_budget(required_seconds=120)
+        self.assertEqual(self.port.rows, writes)  # final check cannot renew
+        self.assertEqual(guard.input_hash, "exact-reviewed-input")
+        self.assertNotEqual(guard.claim.input_hash, guard.input_hash)  # authority bound into lease
+        self.assertGreaterEqual(self.reader.call_count, 5)
+        self.assertTrue(all(c.args == ("fictional-teacher-decision",) for c in self.reader.call_args_list))
+        self.assertEqual(self.activity.call_count, 3)
+
+    def test_all_envelope_bindings_and_supported_operations_are_required(self):
+        for field, value in (("source_scope", "other-source"), ("owner", "other-owner"),
+                ("request_id", "other-request"), ("input_hash", "other-input"),
+                ("operation_scope", "student_filing"), ("schema", "unknown"),
+                ("authorization_ref", ""), ("authorization_revision", ""),
+                ("starts_at", "unknown"), ("expires_at", "2026-10-23T02:00:00")):
+            with self.subTest(field=field):
+                value = self.authorization | {field: value}
+                with self.assertRaises(Held): self.acquire(maintenance_authorization=value)
+        for changes in ({"read_maintenance_authorization": None}, {"read_maintenance_authorization": True},
+                {"maintenance_authorization": None}, {"operation_scope": "grade_entry"},
+                {"maintenance_authorization": self.authorization | {"approved": True}}):
+            with self.subTest(changes=changes), self.assertRaises(Held): self.acquire(**changes)
+        self.assertEqual(self.port.rows, {})
+
+    def test_same_eastern_weekday_and_no_later_than_22_hours(self):
+        for start, end in (("2026-10-22T18:00:00Z", "2026-10-23T02:00:01Z"),
+                ("2026-10-22T18:00:00Z", "2026-10-23T18:00:00Z"),
+                ("2026-10-22T18:00:00Z", "2026-10-22T18:00:00Z"),
+                ("2026-10-24T18:00:00Z", "2026-10-24T22:00:00Z")):
+            with self.subTest(start=start, end=end), self.assertRaises(Held):
+                self.acquire(maintenance_authorization=self.authorization | {"starts_at": start, "expires_at": end})
+        self.assertEqual(self.port.rows, {})
+
+    def test_future_expired_and_next_day_authorizations_never_roll_forward(self):
+        for now in (datetime(2026, 10, 22, 17, tzinfo=timezone.utc),
+                    datetime(2026, 10, 23, 2, tzinfo=timezone.utc),
+                    datetime(2026, 10, 23, 10, 30, tzinfo=timezone.utc)):
+            self.port.now = now
+            with self.subTest(now=now), self.assertRaisesRegex(Held, "source_maintenance_window_closed"):
+                self.acquire()
+        self.assertEqual(self.port.rows, {})
+
+    def test_revoke_change_or_unavailable_authorization_stops_before_any_next_write(self):
+        for change in ("revoked", "revision", "expiry", "owner", "unavailable", "boolean"):
+            with self.subTest(change=change):
+                self.setUp(); guard = self.acquire(); prior = deepcopy(self.port.rows)
+                if change == "revoked": self.authorization["status"] = "revoked"
+                if change == "revision": self.authorization["authorization_revision"] = "revision-2"
+                if change == "expiry": self.authorization["expires_at"] = "2026-10-23T01:00:00Z"
+                if change == "owner": self.authorization["owner"] = "another-worker"
+                if change == "unavailable": self.reader.side_effect = RuntimeError("PRIVATE reader error")
+                if change == "boolean": self.reader.side_effect = lambda ref: True
+                with self.assertRaises(Held): guard.before_write(required_seconds=30)
+                self.assertEqual(self.port.rows, prior)
+                self.assertTrue(guard.stopped)
+
+    def test_pinned_envelope_is_detached_and_claim_cannot_rebind_an_authorization(self):
+        supplied = deepcopy(self.authorization); guard = self.acquire(maintenance_authorization=supplied)
+        supplied["expires_at"] = "2026-10-23T01:00:00Z"
+        guard.before_write(required_seconds=30)
+        self.authorization["authorization_revision"] = "revision-2"
+        with self.assertRaisesRegex(Conflict, "idempotency_key_reused"):
+            self.acquire()
+        with self.assertRaises(Held): guard.before_write(required_seconds=30)
+
+    def test_activity_and_fence_remain_required(self):
+        self.activity.side_effect = Held("helper_inputs_frozen")
+        with self.assertRaisesRegex(Held, "helper_inputs_frozen"): self.acquire()
+        self.assertEqual(self.port.rows, {})
+        self.activity.side_effect = None
+        guard = self.acquire(); self.port.advance(121)
+        with self.assertRaises(LeaseLost): guard.before_write(required_seconds=30)
+
+    def test_final_read_does_not_renew_short_lease_or_ignore_new_activity(self):
+        guard = self.acquire(); self.port.advance(91)
+        with self.assertRaisesRegex(Held, "source_lease_too_short"):
+            guard.validate_write_budget(required_seconds=45)
+        self.setUp(); guard = self.acquire()
+        self.activity.side_effect = Held("helper_inputs_frozen")
+        with self.assertRaisesRegex(Held, "helper_inputs_frozen"):
+            guard.validate_write_budget(required_seconds=30)
+
+    def test_remaining_time_and_renewal_latency_reserve_the_full_budget(self):
+        self.port.now = datetime(2026, 10, 23, 1, 59, 20, tzinfo=timezone.utc)
+        guard = self.acquire()
+        with self.assertRaisesRegex(Held, "source_maintenance_window_closed"):
+            guard.before_write(required_seconds=45)
+        self.setUp(); self.port.now = datetime(2026, 10, 23, 1, 57, tzinfo=timezone.utc)
+        guard = self.acquire(); renew = guard.cloud.renew
+        def delayed(*args, **kwargs):
+            value = renew(*args, **kwargs); self.port.advance(70); return value
+        guard.cloud.renew = delayed
+        with self.assertRaisesRegex(Held, "source_maintenance_window_closed"):
+            guard.before_write(required_seconds=120)
+
+    def test_final_read_detects_authorization_changed_during_source_check(self):
+        guard = self.acquire(); guard.before_write(required_seconds=170)
+        self.authorization["authorization_revision"] = "revision-2"
+        with self.assertRaisesRegex(Held, "source_maintenance_authorization_changed"):
+            guard.validate_write_budget(required_seconds=120)
+
+    def test_input_hash_cannot_be_changed_after_acquiring_bound_authorization(self):
+        guard = self.acquire(); guard.input_hash = "unreviewed-input"
+        with self.assertRaises(LeaseLost): guard.before_write(required_seconds=30)
