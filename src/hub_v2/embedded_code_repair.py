@@ -6,6 +6,10 @@ which question was assigned, synchronize inventory or authorize assessment.
 An explicit in-place restoration can append one inventory-declared missing code
 to its exact original response box while preserving every original character.
 It cannot remove text, combine response regions, add questions or clear a hold.
+The separate exact-ID correction path may replace one whole valid but
+undeclared NOTES/DRAFT token with the sole missing ID in the original inventory.
+It requires the original paired response and separately authenticated registered
+teacher corroboration of the same original objects. It never borrows a task.
 There is deliberately no browser endpoint. ``guard`` must reread the host's
 original Form/Agenda/ownership and question-set proofs and return their unchanged digests.
 Grouped fixed text shapes may use exact original response-panel containment only
@@ -32,6 +36,7 @@ FIELDS = 'id,name,mimeType,trashed,version,modifiedTime,parents,owners,permissio
 ID = re.compile(r'[A-Za-z0-9_-]{1,200}')
 HASH = re.compile(r'[a-f0-9]{64}')
 MAX_OPERATIONS = 20
+EXACT_ID_REPLACEMENT = 'replace_exact_undeclared_inventory_code'
 
 
 class Refused(ValueError):
@@ -106,6 +111,44 @@ def _chars(element):
           'Complete original text and paragraph styles are required.')
     _need([c[0] for c in chars] == [u.hex() for u in _units(text)], 'Original text run order is inconsistent.')
     return [[c, p] for c, p in zip(chars, paragraphs)]
+
+
+def _code_style_requests(ident, element, at, insertion, remove=()):
+    """Restore original adjacent newlines after Google's range expansion.
+
+    UpdateTextStyleRequest may extend its range to adjacent newlines. Only the
+    two fields changed for a marker are restored, including clearing a field
+    that was originally inherited. A restore can itself extend across a block
+    of newlines, so differently styled adjacent blocks are refused in preview.
+    All other original style fields and the exact readback comparison remain.
+    """
+    chars = _chars(element)
+    for span in reversed(remove):
+        del chars[span['start']:span['end']]
+    _need(type(at) is int and 0 <= at <= len(chars), 'Invalid code styling position.')
+    size = len(_units(insertion))
+    fields = 'fontSize,foregroundColor'
+    result = [{'updateTextStyle': {'objectId': ident, 'textRange': {
+        'type': 'FIXED_RANGE', 'startIndex': at, 'endIndex': at + size},
+        'style': {'fontSize': {'magnitude': 6, 'unit': 'PT'},
+                  'foregroundColor': {'opaqueColor': {'rgbColor': {'red': 1, 'green': 1, 'blue': 1}}}},
+        'fields': fields}}]
+    left, right = at, at
+    while left > 0 and chars[left - 1][0][0] == '0a00':
+        left -= 1
+    while right < len(chars) and chars[right][0][0] == '0a00':
+        right += 1
+    for start, end, shift in ((left, at, 0), (at, right, size)):
+        if start == end:
+            continue
+        styles = [{k: deepcopy(ch[0][1][k]) for k in fields.split(',') if k in ch[0][1]}
+                  for ch in chars[start:end]]
+        _need(all(style == styles[0] for style in styles),
+              'Differently styled adjacent original newlines cannot be safely restored.')
+        result.append({'updateTextStyle': {'objectId': ident, 'textRange': {
+            'type': 'FIXED_RANGE', 'startIndex': start + shift, 'endIndex': end + shift},
+            'style': styles[0], 'fields': fields}})
+    return result
 
 
 def _elements(native):
@@ -195,6 +238,7 @@ def _declared_inventory(census, parsed_markers, parsed):
               'An existing code is outside the declared inventory.')
     _need(set(declared['DRAFT']) <= set(declared['NOTES']),
           'The declared inventory has a revision without its original Notes ID.')
+    return declared
 
 
 def _box(element, matrix=None):
@@ -274,18 +318,22 @@ def _scope(proof, file_id):
               'source_response_id', 'source_file_id', 'submitted_at', 'operator', 'original_proof_sha256',
               'question_set_status', 'question_set_sha256'}
     optional = {'panel_reference_sha256', 'panel_reference_proof_sha256'}
-    _need(isinstance(proof, dict) and (set(proof) == fields or set(proof) == fields | optional)
+    teacher = {'registered_teacher_sha256', 'registered_teacher_proof_sha256'}
+    _need(isinstance(proof, dict) and set(proof) in (fields, fields | optional, fields | teacher)
           and all(isinstance(v, str) and v.strip() for v in proof.values())
           and proof['source_file_id'] == file_id and HASH.fullmatch(proof['original_proof_sha256'])
           and proof['question_set_status'] in ('complete', 'incomplete') and HASH.fullmatch(proof['question_set_sha256']),
           'Exact host-verified original/Form/Agenda proof is required.')
     _need(not optional.intersection(proof) or all(HASH.fullmatch(proof[k]) for k in optional),
           'A host-verified handed-out reference proof is required.')
+    _need(not teacher.intersection(proof) or all(HASH.fullmatch(proof[k]) for k in teacher),
+          'A host-verified registered teacher/source-role proof is required.')
 
 
 def _guard(guard, proof):
     fields = ('original_proof_sha256', 'question_set_sha256', 'question_set_status',
-              'panel_reference_sha256', 'panel_reference_proof_sha256')
+              'panel_reference_sha256', 'panel_reference_proof_sha256',
+              'registered_teacher_sha256', 'registered_teacher_proof_sha256')
     return guard() == {k: proof[k] for k in fields if k in proof}
 
 
@@ -331,9 +379,121 @@ def _panel_binding(before, reference, op, elements, label):
     return options[0]
 
 
-def _plan(before, operations, reference=None):
+def _teacher(token, proof, spec, file_id):
+    """Corroborate original objects; never supply a teacher question inventory."""
+    if spec is None:
+        _need('registered_teacher_sha256' not in proof, 'The registered teacher corroboration is missing.')
+        return None
+    _need(isinstance(spec, dict) and set(spec) == {'file_id', 'revision', 'native_sha256', 'metadata_sha256'}
+          and isinstance(spec['file_id'], str) and ID.fullmatch(spec['file_id']) and spec['file_id'] != file_id
+          and isinstance(spec['revision'], str) and spec['revision']
+          and all(isinstance(spec[k], str) and HASH.fullmatch(spec[k])
+                  for k in ('native_sha256', 'metadata_sha256'))
+          and digest(spec) == proof.get('registered_teacher_sha256')
+          and proof.get('registered_teacher_proof_sha256'),
+          'The exact registered teacher role and revision need independent host proof.')
+    teacher = capture(token, spec['file_id'])
+    _need(teacher['native']['revisionId'] == spec['revision']
+          and all(teacher[k] == spec[k] for k in ('native_sha256', 'metadata_sha256')),
+          'The exact registered teacher corroboration changed or is unavailable.')
+    return teacher
+
+
+def _replacement_plan(before, operations, teacher):
+    """One exact token, with its denominator established only by the original."""
+    fields = {'marker', 'original_marker', 'page_id', 'label_object_id', 'source_object_id',
+              'remove', 'response_object_ids', 'page_response_object_ids', 'placement', 'paired_object_id'}
+    _need(len(operations) == 1 and isinstance(operations[0], dict) and set(operations[0]) == fields
+          and teacher is not None, 'Exact-ID correction needs one typed operation and registered teacher proof.')
+    op = operations[0]
+    _need(all(len(source['parsed']['slides']) == len(source['native']['slides'])
+              for source in (before, teacher)), 'Complete original and registered teacher slide coverage is required.')
+    new = completion.MARKER.fullmatch(op['marker']) if isinstance(op['marker'], str) else None
+    old = completion.MARKER.fullmatch(op['original_marker']) if isinstance(op['original_marker'], str) else None
+    _need(old is not None and new is not None and old.group(1) in ('NOTES', 'DRAFT')
+          and old.groups()[:2] == new.groups()[:2] and old.group(3) != new.group(3)
+          and all(m.group(3) == m.group(3).strip() for m in (old, new)),
+          'Only one whole valid same-category/cycle NOTES/DRAFT ID can be corrected.')
+    elements = _elements(before['native'])
+    ident, paired, page = op['label_object_id'], op['paired_object_id'], op['page_id']
+    _need(op['source_object_id'] == ident and op['response_object_ids'] == [ident]
+          and isinstance(op['page_response_object_ids'], list)
+          and len(op['page_response_object_ids']) == 2
+          and set(op['page_response_object_ids']) == {ident, paired} and ident != paired,
+          'Correction requires the exact original response and its distinct paired response.')
+    target, pair = _shape(elements, ident, page), _shape(elements, paired, page)
+    _fixed_text(target, 'original response')
+    text = _text(target)
+    _need([m.group(0) for m in completion.MARKER.finditer(text)] == [op['original_marker']]
+          and not completion.INVENTORY.search(text), 'The response needs exactly one original erroneous token.')
+    opposite = 'DRAFT' if new.group(1) == 'NOTES' else 'NOTES'
+    paired_marker = '[[%s:%s:%s]]' % (opposite, new.group(2), new.group(3))
+    _need([m.group(0) for m in completion.MARKER.finditer(_text(pair))] == [paired_marker],
+          'The same original page must retain exactly one paired opposite-category target.')
+    spans = op['remove']
+    _need(isinstance(spans, list) and len(spans) == 1 and isinstance(spans[0], dict)
+          and set(spans[0]) == {'start', 'end', 'text'}, 'One exact whole-token UTF-16 span is required.')
+    span = spans[0]
+    a, b = _boundary(text, span['start']), _boundary(text, span['end'])
+    _need(a < b and text[a:b] == span['text'] == op['original_marker'],
+          'The exact original token range changed; answer characters cannot be removed.')
+    census = completion.readiness(before['parsed'])
+    _need(census['inventory_cycle'] == new.group(2)
+          and census['missing_ids'] == ['%s %s' % (new.group(1), new.group(3))]
+          and census['extra_ids'] == ['%s %s' % (old.group(1), old.group(3))]
+          and set(census['issues']) <= {'marker_inventory_id_mismatch', 'draft_without_matching_notes'},
+          'Only the sole declared missing/undeclared original ID pair may change.')
+    codes = completion.markers(before['parsed'])
+    tuples = [(m['category'], m['code'], m['id']) for m in codes]
+    _need(tuples.count(old.groups()) == 1 and new.groups() not in tuples
+          and tuples.count((opposite, new.group(2), new.group(3))) == 1,
+          'Original, target or paired codes are duplicated, absent or already repaired.')
+    normalized_codes = [dict(m, id=new.group(3)) if (m['category'], m['code'], m['id']) == old.groups()
+                        else m for m in codes]
+    declared = _declared_inventory(census, normalized_codes, before['parsed'])
+    _need(all(old.group(3) not in ids for ids in declared.values()),
+          'The erroneous ID belongs to an original declared task.')
+    # Exact original object/page plus every other text object on this page
+    # corroborates the question. Only the two response texts may differ.
+    te = _elements(teacher['native'])
+    _need(teacher['native'].get('pageSize') == before['native'].get('pageSize'),
+          'Registered teacher/original page sizes differ.')
+    original_texts = {i for i, e in elements.items() if e[1] == page and 'shape' in e[2]}
+    teacher_texts = {i for i, e in te.items() if e[1] == page and 'shape' in e[2]}
+    context = original_texts - {ident, paired}
+    _need(original_texts == teacher_texts and context
+          and any(_text(elements[i][2]).strip() for i in context)
+          and all(_text(elements[i][2]) == _text(te[i][2]) for i in context),
+          'The registered teacher page/object question context does not match the original.')
+    for object_id, marker in ((ident, op['marker']), (paired, paired_marker)):
+        teacher_shape = _shape(te, object_id, page)
+        _need([m.group(0) for m in completion.MARKER.finditer(_text(teacher_shape))] == [marker],
+              'The exact registered teacher response object does not corroborate the original target.')
+    projected = deepcopy(before['parsed'])
+    slide = next(s for s in projected['slides'] if s['number'] == elements[ident][0])
+    units = [u for u in slide['units'] if not u.get('picture')
+             and response_binding.same_box(u.get('box'), _element_box(elements, ident), projected['size'])
+             and u['text'].strip() == _reader_text(text)]
+    _need(len(units) == 1, 'The exact original token has no unique exported-source region.')
+    units[0]['text'] = _reader_text(text[:a] + op['marker'] + text[b:])
+    ready = completion.readiness(projected)
+    _need(ready['status'] == 'READY' and ready['counts'] == census['counts'],
+          'Correction must resolve only this ID defect without changing the original denominator.')
+    edits = {ident: {'remove': deepcopy(spans), 'insert': (span['start'], op['marker'])}}
+    requests = [{'deleteText': {'objectId': ident, 'textRange': {'type': 'FIXED_RANGE',
+                 'startIndex': span['start'], 'endIndex': span['end']}}},
+                {'insertText': {'objectId': ident, 'insertionIndex': span['start'], 'text': op['marker']}}]
+    requests += _code_style_requests(ident, elements[ident][2], span['start'], op['marker'], spans)
+    return requests, edits
+
+
+def _plan(before, operations, reference=None, registered_teacher=None):
     _need(isinstance(operations, list) and 1 <= len(operations) <= MAX_OPERATIONS,
           'A bounded exact code manifest is required.')
+    if any(isinstance(op, dict) and op.get('placement') == EXACT_ID_REPLACEMENT for op in operations):
+        _need(reference is None, 'Exact-ID correction cannot mix panel-reference operations.')
+        return _replacement_plan(before, operations, registered_teacher)
+    _need(registered_teacher is None, 'Registered teacher corroboration is only for exact-ID correction.')
     native = before['native']
     elements, requests, edits, seen, pages = _elements(native), [], {}, set(), {}
     all_text = '\n'.join(_text(e[2]) for e in elements.values() if 'shape' in e[2])
@@ -406,12 +566,8 @@ def _plan(before, operations, reference=None):
             description = response_binding.PREFIX + json.dumps(binding, sort_keys=True, separators=(',', ':'))
             edits[op['label_object_id']]['description'] = description
             requests.append({'updatePageElementAltText': {'objectId': op['label_object_id'], 'description': description}})
-        requests += [{'insertText': {'objectId': op['label_object_id'], 'insertionIndex': index, 'text': insertion}},
-                     {'updateTextStyle': {'objectId': op['label_object_id'], 'textRange': {
-                         'type': 'FIXED_RANGE', 'startIndex': index, 'endIndex': index + len(_units(insertion))},
-                         'style': {'fontSize': {'magnitude': 6, 'unit': 'PT'},
-                                   'foregroundColor': {'opaqueColor': {'rgbColor': {'red': 1, 'green': 1, 'blue': 1}}}},
-                         'fields': 'fontSize,foregroundColor'}}]
+        requests.append({'insertText': {'objectId': op['label_object_id'], 'insertionIndex': index, 'text': insertion}})
+        requests += _code_style_requests(op['label_object_id'], label, index, insertion)
         source, ranges = op['source_object_id'], op['remove']
         _need(isinstance(ranges, list) and len(ranges) <= 2, 'Only bounded exact code fragments may be removed.')
         if source is None:
@@ -565,7 +721,7 @@ def _bindings(after, operations, reference=None):
 
 
 def prepare(token, file_id, proof, expected_revision, expected_native_sha256,
-            expected_metadata_sha256, operations, *, guard, panel_reference=None):
+            expected_metadata_sha256, operations, *, guard, panel_reference=None, registered_teacher=None):
     _scope(proof, file_id)
     _need(callable(guard) and _guard(guard, proof), 'Original host proof changed or is unavailable.')
     before = capture(token, file_id)
@@ -573,14 +729,17 @@ def prepare(token, file_id, proof, expected_revision, expected_native_sha256,
           and before['native_sha256'] == expected_native_sha256
           and before['metadata_sha256'] == expected_metadata_sha256, 'The original changed since it was inspected.')
     reference = _reference(token, proof, panel_reference, file_id)
-    requests, edits = _plan(before, operations, reference)
+    teacher = _teacher(token, proof, registered_teacher, file_id)
+    requests, edits = _plan(before, operations, reference, teacher)
     _preview_bindings(before, operations, edits, reference)
     _need(_guard(guard, proof), 'Original Form/Agenda ownership changed during preparation.')
     manifest = {'file_id': file_id, 'proof': deepcopy(proof), 'operations': deepcopy(operations),
                 'revision': expected_revision, 'native_sha256': expected_native_sha256,
                 'metadata_sha256': expected_metadata_sha256, 'panel_reference': deepcopy(panel_reference)}
+    if registered_teacher is not None:
+        manifest['registered_teacher'] = deepcopy(registered_teacher)
     return {'status': 'prepared', 'dry_run': True, 'plan_id': digest(manifest), 'manifest': manifest,
-            'requests': requests, 'edits': edits, 'before': before, 'reference': reference,
+            'requests': requests, 'edits': edits, 'before': before, 'reference': reference, 'teacher': teacher,
             'apply_eligible': proof['question_set_status'] == 'complete',
             'full_census_complete': False, 'grading_authorized': False}
 
@@ -590,7 +749,7 @@ def apply(token, write_token, prepared, port, *, guard, dry_run=True):
     _need(prepared['plan_id'] == digest(manifest), 'The prepared manifest changed.')
     fresh = prepare(token, manifest['file_id'], manifest['proof'], manifest['revision'],
                     manifest['native_sha256'], manifest['metadata_sha256'], manifest['operations'], guard=guard,
-                    panel_reference=manifest['panel_reference'])
+                    panel_reference=manifest['panel_reference'], registered_teacher=manifest.get('registered_teacher'))
     if dry_run:
         return fresh
     _need(manifest['proof']['question_set_status'] == 'complete',
@@ -612,6 +771,9 @@ def apply(token, write_token, prepared, port, *, guard, dry_run=True):
         if fresh['reference'] is not None:
             _need(google.drive_file(token, manifest['panel_reference']['file_id'], FIELDS)
                   == fresh['reference']['metadata'], 'The handed-out reference changed before apply.')
+        if fresh['teacher'] is not None:
+            _need(google.drive_file(token, manifest['registered_teacher']['file_id'], FIELDS)
+                  == fresh['teacher']['metadata'], 'The registered teacher corroboration changed before apply.')
         owned = port.read([gate]).documents[gate]
         _need(owned and owned.version == claimed.version and owned.value == attempt,
               'The private write fence changed before apply.')
@@ -619,7 +781,13 @@ def apply(token, write_token, prepared, port, *, guard, dry_run=True):
         after = capture(token, manifest['file_id'])
         _preserved(fresh['before'], after, fresh['edits'])
         reference = _reference(token, manifest['proof'], manifest['panel_reference'], manifest['file_id'])
+        teacher = _teacher(token, manifest['proof'], manifest.get('registered_teacher'), manifest['file_id'])
         _bindings(after, manifest['operations'], reference)
+        if teacher is not None:
+            ready = completion.readiness(after['parsed'])
+            _need(ready['status'] == 'READY'
+                  and ready['counts'] == completion.readiness(fresh['before']['parsed'])['counts'],
+                  'Saved exact-ID correction did not preserve the original complete code census.')
         _need(_guard(guard, manifest['proof']), 'Original proof changed during verification.')
         receipt = {'status': 'verified', 'plan_id': fresh['plan_id'], 'manifest': manifest,
                    'before_native_sha256': fresh['before']['native_sha256'],
