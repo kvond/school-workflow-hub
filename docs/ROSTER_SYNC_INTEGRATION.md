@@ -621,7 +621,12 @@ native request builder, exact source proof, canEdit check and complete original/
 canonical readback. Its final guard checks the new domain owner/fence and lease,
 current authority, original immutable history and exact consumed admission after
 shared activity verification. It reserves the bounded final reads plus the
-unchanged 170-second native write/readback budget. The domain lease can be
+unchanged 170-second native write/readback budget. The separate admission
+authority must also cover each entire state or native write/readback reservation
+after the final proof, including conservatively rounded elapsed read time.
+An authority with insufficient time cannot authorize or consume state; if it
+becomes too short after consumption, the pending consumed barrier remains and
+no native batch is sent. The domain lease can be
 renewed to at most 900 seconds; this never extends source capture validity,
 shared ownership, maintenance authorization or the morning cutoff.
 

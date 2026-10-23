@@ -204,3 +204,70 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception,'writer_not_editable'):self.worker.execute_recovery(aid)
         self.assertEqual(self.f.mirror.writes,0)
         self.assertEqual(self.port.rows[aid].value['state'],'authorized')
+
+    def test_ten_second_authority_cannot_authorize_state_or_native_write(self):
+        self.authority['expires_at']=(self.port.now+timedelta(seconds=10)).isoformat()
+        preview=self.worker.prepare_recovery(self.proposal);before=deepcopy(self.port.rows)
+        with self.assertRaisesRegex(Conflict,'authority_budget_unavailable'):
+            self.worker.authorize_recovery(preview)
+        self.assertEqual(self.port.rows,before);self.assertEqual(self.f.mirror.writes,0)
+
+    def test_native_budget_boundary_keeps_consumed_barrier_if_one_second_short(self):
+        for remaining in (170,171):
+            self.setUp();self.authority['expires_at']=(self.port.now+timedelta(seconds=remaining)).isoformat()
+            aid=self.authorize()
+            if remaining==170:
+                with self.assertRaisesRegex(Conflict,'uncertain_native'):self.worker.execute_recovery(aid)
+                self.assertEqual(self.f.mirror.writes,0)
+                self.assertEqual(self.port.rows[aid].value['state'],'consumed')
+                self.assertEqual(self.port.rows[self.worker.intent_key].value['state'],'pending')
+                self.assertEqual(self.port.rows[self.f.worker.intent_key],self.original_intent)
+                with self.assertRaisesRegex(Conflict,'consumed'):self.worker.execute_recovery(aid)
+            else:
+                self.assertEqual(self.worker.execute_recovery(aid)['status'],'verified_not_activated')
+                self.assertEqual(self.f.mirror.writes,1)
+
+    def test_slow_authorization_proof_reserves_state_readback_before_cas(self):
+        self.authority['expires_at']=(self.port.now+timedelta(seconds=120)).isoformat()
+        preview=self.worker.prepare_recovery(self.proposal);before=deepcopy(self.port.rows)
+        def slow(**kwargs):self.port.advance(61)
+        self.worker.before_write=slow
+        with self.assertRaisesRegex(Conflict,'authority_budget_unavailable'):
+            self.worker.authorize_recovery(preview)
+        self.assertEqual(self.port.rows,before);self.assertEqual(self.f.mirror.writes,0)
+
+    def test_slow_consumption_proof_keeps_original_pending_pointer(self):
+        self.authority['expires_at']=(self.port.now+timedelta(seconds=240)).isoformat();aid=self.authorize()
+        def slow(**kwargs):
+            if kwargs['required_seconds']==recovery.PROOF_SECONDS+recovery.STATE_SECONDS:self.port.advance(181)
+        self.worker.before_write=slow
+        with self.assertRaisesRegex(Conflict,'consumption_unconfirmed'):self.worker.execute_recovery(aid)
+        self.assertEqual(self.port.rows[aid].value['state'],'authorized')
+        self.assertEqual(self.port.rows[self.worker.sync_intent_key],self.original_marker)
+        self.assertNotIn(self.worker.intent_key,self.port.rows);self.assertEqual(self.f.mirror.writes,0)
+
+    def test_slow_final_native_read_requires_full_remaining_authority(self):
+        self.authority['expires_at']=(self.port.now+timedelta(seconds=200)).isoformat();aid=self.authorize()
+        native=[False];cap=self.f.mirror.write_capability
+        def guard(**kwargs):
+            if kwargs['required_seconds']==170+recovery.FINAL_SECONDS:native[0]=True
+        def delayed_capability():
+            if native[0]:self.port.advance(31)
+            return cap()
+        self.worker.before_write=guard;self.f.mirror.write_capability=delayed_capability
+        with self.assertRaisesRegex(Conflict,'uncertain_native'):self.worker.execute_recovery(aid)
+        self.assertEqual(self.f.mirror.writes,0);self.assertEqual(self.port.rows[aid].value['state'],'consumed')
+        self.assertEqual(self.port.rows[self.worker.intent_key].value['state'],'pending')
+
+    def test_final_elapsed_time_cannot_extend_authority_with_static_server_time(self):
+        self.authority['expires_at']=(self.port.now+timedelta(seconds=200)).isoformat();aid=self.authorize()
+        tick=[0.0];cap=self.f.mirror.write_capability;native=[False]
+        def guard(**kwargs):
+            if kwargs['required_seconds']==170+recovery.FINAL_SECONDS:native[0]=True
+        def delayed_capability():
+            if native[0]:tick[0]+=31
+            return cap()
+        self.worker.before_write=guard;self.f.mirror.write_capability=delayed_capability
+        with patch.object(recovery,'monotonic',side_effect=lambda:tick[0]):
+            with self.assertRaisesRegex(Conflict,'uncertain_native'):self.worker.execute_recovery(aid)
+        self.assertEqual(self.f.mirror.writes,0);self.assertEqual(self.port.rows[aid].value['state'],'consumed')

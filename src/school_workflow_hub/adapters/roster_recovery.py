@@ -60,6 +60,23 @@ class RecoveryBootstrap(rb.BootstrapWorker):
             fail('authority_expired_or_future')
         return value
 
+    @staticmethod
+    def _authority_window(value, now, required_seconds):
+        if (type(required_seconds) is not int or required_seconds < 0
+                or not instant(value['starts_at']) <= now
+                or now + timedelta(seconds=required_seconds) > instant(value['expires_at'])):
+            fail('authority_budget_unavailable')
+
+    def _authority_control_guard(self, expected):
+        """Bound lease-control writes separately before any new domain claim."""
+        self.before_write(required_seconds=STATE_SECONDS+FINAL_SECONDS)
+        started=monotonic()
+        current=self._authority()
+        observed=self.port.read([self.task_id])
+        elapsed=math.ceil(max(0,monotonic()-started))
+        if elapsed>FINAL_SECONDS or current!=expected:fail('authority_changed')
+        self._authority_window(current,instant(observed.read_time)+timedelta(seconds=elapsed),STATE_SECONDS)
+
     def prepare_recovery(self, proposal):
         """Read-only preview; a fresh complete pair and exact rejection are required."""
         authority=self._authority()
@@ -133,7 +150,12 @@ class RecoveryBootstrap(rb.BootstrapWorker):
             self.before_write(required_seconds=PROOF_SECONDS+STATE_SECONDS)
             started=monotonic()
             if self.prepare_recovery(preview['proposal'])!=preview:fail('final_authority_changed')
-            if monotonic()-started>PROOF_SECONDS:fail('final_proof_timed_out')
+            authority=self._authority()
+            observed=self.port.read([self.task_id])
+            elapsed=math.ceil(max(0,monotonic()-started))
+            if elapsed>PROOF_SECONDS:fail('final_proof_timed_out')
+            if authority!=preview['admission']['authority']:fail('final_authority_changed')
+            self._authority_window(authority,instant(observed.read_time)+timedelta(seconds=elapsed),STATE_SECONDS)
         # Unknown create response is not an instruction to repeat it or execute.
         self.port.commit_guarded(changes,before_write=guard)
         actual=self.port.read([aid,pid])
@@ -156,7 +178,7 @@ class RecoveryBootstrap(rb.BootstrapWorker):
         self.admission_id,self.admission=aid,deepcopy(admission_doc.value)
         self.intent_key=self.admission['new_intent_reference']
         authority=self.admission['authority'];plan=proposal['plan']
-        self.before_write(required_seconds=STATE_SECONDS)
+        self._authority_control_guard(authority)
         self.claim=self.cloud.claim(self.task_id,owner=authority['owner'],request_id=authority['request_id'],
                                     input_hash=proposal['sha256'],ttl_seconds=900)
         if self.claim.completed:fail('prior_recovery_readback_required')
@@ -186,6 +208,7 @@ class RecoveryBootstrap(rb.BootstrapWorker):
             elapsed=math.ceil(max(0,monotonic()-started))
             CloudState._owns(self.claim,now.documents[self.task_id].value,
                              (instant(now.read_time)+timedelta(seconds=elapsed)).isoformat())
+            self._authority_window(self.admission['authority'],instant(now.read_time)+timedelta(seconds=elapsed),STATE_SECONDS)
             if (elapsed>PROOF_SECONDS or (instant(now.documents[self.task_id].value['expires_at'])
                     -instant(now.read_time)).total_seconds()-elapsed<STATE_SECONDS):fail('consumption_budget_unavailable')
         changes={aid:(consumed,admission_doc.version),self.intent_key:(intent,None),
@@ -220,6 +243,7 @@ class RecoveryBootstrap(rb.BootstrapWorker):
             report.validate_proof(plan[source]['report_proof'],instant(state.read_time)+timedelta(seconds=STATE_SECONDS))
 
     def _native_guard(self, *, required_seconds):
+        self._authority_control_guard(self.admission['authority'])
         self.claim=self.cloud.renew(self.claim,ttl_seconds=900)
         self._owned(required_seconds)
 
@@ -240,7 +264,7 @@ class RecoveryBootstrap(rb.BootstrapWorker):
                 or any(not same(state.documents[r['record_id']],r)for r in refs)
                 or any(not same(state.documents[k],v)for k,v in preserved.items())):
             fail('final_admission_changed')
-        if not instant(authority['starts_at'])<=now<instant(authority['expires_at']):fail('authority_expired_or_future')
+        self._authority_window(authority,now,seconds)
         intent=state.documents[self.intent_key]
         if (intent is None or intent.value.get('state')!='pending' or intent.value.get('sha256')!=a['plan_sha256']
                 or intent.value.get('claim')!=self.consumed['consumed_claim']
