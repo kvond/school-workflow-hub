@@ -13,7 +13,8 @@ test('the four pages expose saved results, lessons, grades and record links', ()
   assert.match(page('today'), /id="today-body"/);
   assert.match(page('records'), /id="records-body"/);
   assert.match(page('work'), /id="work-display"/);
-  assert.match(page('plans'), /id="next-week-notes"/);
+  assert.doesNotMatch(page('plans'), /id="next-week-notes"/);
+  assert.match(source, /card\.append\(classNotesPanel\(cls\)\)/);
   for (const id of ['lesson-readiness', 'today-week-ahead', 'today-next-agenda', 'today-feedback', 'week-packet', 'student-records', 'system-notes', 'tidy-work'])
     assert.ok(!html.includes(`id="${id}"`), id);
 });

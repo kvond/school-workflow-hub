@@ -1561,6 +1561,7 @@ const plans = {date: todayISO(), calendarMonday: mondayOf(todayISO()), seq: 0, r
 async function refreshVisiblePlans() {
   if (location.hash.slice(1).split('/')[0] !== 'plans' || document.visibilityState === 'hidden'
       || plans.editing || plans.refreshing
+      || (typeof classNotesUnsaved === 'function' && classNotesUnsaved())
       || (typeof lessonNotesUnsaved === 'function' && lessonNotesUnsaved())) return;
   // Returning from the Agenda must not keep an indefinitely old lesson. An
   // active editor retains its original revision and draft for guarded saving.
@@ -1589,13 +1590,17 @@ function renderDays(date) {
 }
 
 async function loadPlans(date, fresh = false) {
+  if (plans.editing) {
+    $('date').value = plans.date;
+    setStatus('plans-status', 'Save or cancel the open Agenda edit before choosing another date.', true);
+    return;
+  }
   plans.date = date; $('date').value = date; renderDays(date);
   const seq = ++plans.seq;
   plans.data = null;
   $('week-label').textContent = at(date).toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric', year: 'numeric'});
   $('week-closures').textContent = '';
   $('cards').replaceChildren();
-  $('next-week-notes').replaceChildren();
   // Lessons → Week packet is declared later; guard so a partial load stays safe.
   // Lesson navigation reads the Agenda only; packet preparation belongs to its workflow.
   setStatus('plans-status', 'Reading the Agenda…');
@@ -1604,7 +1609,7 @@ async function loadPlans(date, fresh = false) {
     if (seq !== plans.seq) return;
     showAgendaLink(data.agenda);
     renderPlans(data);
-    renderNextWeekNotes(data);
+    loadClassPolicyNotes(data);
     setStatus('plans-status', '');
   } catch (error) {
     if (seq !== plans.seq) return;
@@ -1613,26 +1618,120 @@ async function loadPlans(date, fresh = false) {
   }
 }
 
-function renderNextWeekNotes(data) {
-  const box = $('next-week-notes');
-  if (!box) return;
-  const monday = addDays(data.week?.monday || mondayOf(plans.date), 7);
-  const classes = data.classes || [];
-  box.replaceChildren(el('details', {class: 'next-week-notes notes-panel'},
-    el('summary', {}, el('h2', {text: 'Next week notes · this browser'})),
-    el('p', {class: 'muted', text: `Next week · ${weekRange(monday)}. Private notes saved in this browser. One note per class.`}),
-    ...classes.map(cls => {
-      const key = `next-week-note:${cls.key}:${monday}`;
-      const textarea = el('textarea', {rows: 12, 'aria-label': `${cls.name} notes`, placeholder: `${cls.name}: what needs planning?`});
-      textarea.value = store.get(key) || '';
-      const status = el('small', {class: 'muted', text: ''});
-      textarea.addEventListener('input', () => {
-        store.set(key, textarea.value);
-        status.textContent = store.get(key) === textarea.value ? 'Saved in this browser' : 'Not saved: this browser’s storage is unavailable. Keep this page open and copy your notes.';
-      });
-      return el('details', {class: 'next-week-note'}, el('summary', {text: cls.name}), textarea, status);
-    })));
+function loadClassPolicyNotes(data) {
+  for (const cls of data.classes || []) {
+    const state = classNoteState(cls);
+    if (!classNoteDirty(state) && !state.busy) loadClassNotes(state);
+  }
 }
+
+// ---------- Persistent class notes ----------
+const classNotes = new Map();
+const classNoteDirty = state => state.loaded && state.draft !== state.saved.text;
+function classNotesUnsaved() {
+  return [...classNotes.values()].some(state => state.busy || classNoteDirty(state));
+}
+function classNoteState(cls) {
+  if (!classNotes.has(cls.key)) classNotes.set(cls.key, {cls, body: null, loaded: false,
+    loading: false, busy: false, seq: 0, saved: null, draft: '', error: '', info: '',
+    needsReload: false, comparison: null});
+  return classNotes.get(cls.key);
+}
+function legacyClassNotes(cls) {
+  const rows = [];
+  try {
+    const prefix = `hub2:next-week-note:${cls.key}:`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (!key?.startsWith(prefix) || !/^\d{4}-\d{2}-\d{2}$/.test(key.slice(prefix.length))) continue;
+      const text = localStorage.getItem(key);
+      if (text?.trim()) rows.push({date: key.slice(prefix.length), text});
+    }
+  } catch { /* No existing browser notes can be read in this browser. */ }
+  if (!rows.length) return null;
+  return el('details', {class: 'legacy-notes'}, el('summary', {text: 'Earlier week notes in this browser'}),
+    el('p', {class: 'muted', text: 'Preserved from the old notes box. Copy any notes you want to keep into Class notes above and save.'}),
+    ...rows.sort((a, b) => b.date.localeCompare(a.date)).map(row => el('div', {},
+      el('p', {class: 'label', text: `Week of ${row.date}`}), el('p', {class: 'legacy-note', text: row.text}))));
+}
+function classNotesPanel(cls) {
+  const state = classNoteState(cls);
+  state.body = el('section', {class: 'class-notes notes-panel', 'aria-label': `${cls.name} class notes`});
+  renderClassNotes(state);
+  return state.body;
+}
+function renderClassNotes(state) {
+  if (!state.body) return;
+  const id = `class-notes-${state.cls.key}`;
+  const textarea = el('textarea', {id, rows: 7, maxlength: 30000, disabled: !state.loaded || state.busy,
+    'aria-label': `${state.cls.name} class notes`, placeholder: 'Class policies, reminders, or notes to keep across weeks'});
+  textarea.value = state.draft;
+  const status = el('p', {class: 'muted', role: 'status', text: state.loading ? 'Reading saved class notes…'
+    : state.info || (classNoteDirty(state) ? 'Unsaved changes' : state.loaded ? 'Saved class notes are up to date.' : 'Saved notes have not been read yet.')});
+  const save = el('button', {type: 'button', class: 'primary',
+    disabled: !state.loaded || state.loading || state.busy || state.needsReload || Boolean(state.comparison) || !classNoteDirty(state),
+    onclick: () => saveClassNotes(state)}, state.busy ? 'Saving…' : 'Save class notes');
+  textarea.addEventListener('input', () => {
+    state.draft = textarea.value; state.info = '';
+    status.textContent = classNoteDirty(state) ? 'Unsaved changes' : 'No unsaved changes';
+    save.disabled = state.loading || state.busy || state.needsReload || Boolean(state.comparison) || !classNoteDirty(state);
+  });
+  const compare = state.comparison ? el('div', {class: 'note warn'},
+    el('p', {text: 'The saved notes changed. Your draft is still above. The saved version is:'}),
+    el('p', {class: 'saved-comparison', text: state.comparison.text || '(empty)'}),
+    el('div', {class: 'action-row'},
+      el('button', {type: 'button', disabled: state.busy || state.loading || state.needsReload,
+        onclick: () => saveClassNotes(state, true)}, 'Save draft over shown notes'),
+      el('button', {type: 'button', disabled: state.busy || state.loading, onclick: () => {
+        state.draft = state.saved.text; state.comparison = null; state.error = ''; state.info = ''; renderClassNotes(state);
+      }}, 'Use saved notes'))) : null;
+  state.body.replaceChildren(el('h3', {text: 'Class notes'}),
+    el('p', {class: 'muted', text: `Stays with ${state.cls.name} across weeks until you change it. Saved privately in the Hub.`}),
+    el('label', {for: id, class: 'field', text: `${state.cls.name} notes`}), textarea,
+    el('div', {class: 'action-row'}, save,
+      el('button', {type: 'button', disabled: state.loading || state.busy, onclick: () => loadClassNotes(state)}, 'Reload saved notes')),
+    status, ...(state.error ? [note(state.error)] : []), ...[compare, legacyClassNotes(state.cls)].filter(Boolean));
+}
+function checkedClassNotes(data) {
+  if (!data || typeof data.text !== 'string' || typeof data.revision !== 'string'
+      || !/^(?:[a-f0-9]{64})?$/.test(data.revision)) throw new Error('Saved class notes could not be verified. Your draft is still here.');
+  return data;
+}
+async function loadClassNotes(state) {
+  if (state.loading || state.busy) return;
+  const seq = ++state.seq;
+  const startingDraft = state.draft, previous = state.saved;
+  state.loading = true; state.error = ''; state.info = ''; renderClassNotes(state);
+  try {
+    const saved = checkedClassNotes(await getJSON(`api/classes/notes?class=${encodeURIComponent(state.cls.key)}`));
+    if (seq !== state.seq) return;
+    const dirty = state.loaded && (state.draft !== previous.text || state.draft !== startingDraft);
+    state.saved = saved; state.loaded = true; state.needsReload = false;
+    if (!dirty) state.draft = saved.text;
+    state.comparison = dirty && state.draft !== saved.text
+      && (saved.revision !== previous.revision || state.comparison) ? saved : null;
+    state.info = state.draft === saved.text ? 'Saved class notes read back.' : 'Your draft is preserved.';
+  } catch (error) {
+    if (seq !== state.seq) return;
+    state.error = error.message; state.needsReload = true;
+  } finally {
+    if (seq === state.seq) { state.loading = false; renderClassNotes(state); }
+  }
+}
+async function saveClassNotes(state, replaceShown = false) {
+  if (!state.loaded || state.loading || state.busy || state.needsReload
+      || (state.comparison && !replaceShown) || !classNoteDirty(state)) return;
+  const text = state.draft, revision = state.saved.revision;
+  ++state.seq; state.busy = true; state.error = ''; state.info = ''; renderClassNotes(state);
+  try {
+    const saved = checkedClassNotes(await postJSON('api/classes/notes', {class: state.cls.key, text, revision}));
+    if (saved.text !== text) throw new Error('Class notes save is unconfirmed. Reload saved notes before retrying.');
+    state.saved = saved; state.comparison = null; state.info = 'Saved and read back.';
+  } catch (error) {
+    state.error = error.message; state.needsReload = true;
+  } finally { state.busy = false; renderClassNotes(state); }
+}
+// ---------- End persistent class notes ----------
 
 function block(label, text) {
   return el('div', {class: 'block'}, el('p', {class: 'label', text: label}), el('p', {class: 'plan', text}));
@@ -1645,7 +1744,8 @@ function renderLesson(cls, lesson, weekday) {
   if (today) {
     box.append(el('div', {class: 'today'},
       el('p', {class: 'plan', text: today.plan || 'No plan written for this day yet.'}),
-      today.note ? el('p', {class: 'teacher-note'}, el('strong', {text: 'Note: '}), today.note) : null));
+      block('Day notes', today.note || 'No day notes written yet.'),
+      dayEditButton(cls, lesson, weekday)));
   } else if (weekday === 'Sat' || weekday === 'Sun') {
     box.append(note('Pick a weekday to see its plan.', 'info'));
   } else {
@@ -1659,11 +1759,12 @@ function renderLesson(cls, lesson, weekday) {
   }
   box.append(el('details', {class: 'week'}, el('summary', {text: 'Whole week'}),
     lesson.plans.map(p => el('div', {class: 'week-day'}, el('strong', {text: p.day}),
-      el('p', {class: 'plan', text: p.plan || '—'}), p.note ? el('p', {class: 'teacher-note', text: p.note}) : null))));
+      el('p', {class: 'plan', text: p.plan || '—'}),
+      block('Day notes', p.note || 'No day notes written yet.'), dayEditButton(cls, lesson, p.day)))));
   // Lessons → Notes: one private, editable summary per lesson Form.
   for (const form of (lesson.forms || []).filter(f => f.form_id)) box.append(lessonNotesPanel(cls, lesson, form));
   if (Object.keys(lesson.editable || {}).length) {
-    box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => startEdit(cls, lesson)}, 'Edit here')));
+    box.append(el('div', {class: 'action-row'}, el('button', {type: 'button', onclick: () => startEdit(cls, lesson)}, 'Edit whole week and links')));
   }
   return box;
 }
@@ -1689,17 +1790,28 @@ const LINK_LABELS = {'link:deck': 'Deck link (your Google Slides link; students 
 const fieldLabel = key => ({topic: 'Topic', todo: 'To-do', prep: 'Lab / prep'})[key] || LINK_LABELS[key]
   || `${FULL_DAY[key.split(':')[1]]} ${key.startsWith('plan:') ? 'plan' : 'note'}`;
 
-function startEdit(cls, lesson) {
-  const base = lessonValues(lesson);
+function dayEditButton(cls, lesson, day) {
+  const fields = ['plan:' + day, 'note:' + day].filter(key => key in (lesson.editable || {}));
+  if (!fields.length) return null;
+  return el('button', {type: 'button', onclick: () => startEdit(cls, lesson, fields)}, 'Edit plan and day notes');
+}
+
+function startEdit(cls, lesson, fields = null) {
+  if (plans.editing) {
+    setStatus('plans-status', 'Save or cancel the open Agenda edit first.', true);
+    return;
+  }
+  const values = lessonValues(lesson);
+  const base = fields ? Object.fromEntries(fields.filter(key => key in values).map(key => [key, values[key]])) : values;
   plans.editing = {key: `${cls.key}|${lesson.row}`, cls: cls.key, week: lesson.week, row: lesson.row,
-                   base, draft: {...base}, current: null, error: null, busy: false};
+                   base, draft: {...base}, compact: Boolean(fields), current: null, error: null, busy: false};
   renderPlans(plans.data);
 }
 
 function lessonEditor(cls, lesson) {
   const edit = plans.editing;
   const form = el('form', {class: 'lesson-edit', onsubmit: event => { event.preventDefault(); saveLesson(); }},
-    el('h3', {text: `Edit ${lesson.topic || 'this lesson'}`}));
+    el('h3', {text: edit.compact ? `Edit ${fieldLabel(Object.keys(edit.base)[0]).split(' ')[0]} plan and notes` : `Edit ${lesson.topic || 'this lesson'}`}));
   if (edit.error) form.append(note(edit.error));
   for (const key of Object.keys(edit.base)) {
     const locked = lesson.editable[key] === false;
@@ -1720,7 +1832,7 @@ function lessonEditor(cls, lesson) {
     el('button', {type: 'submit', class: 'primary', disabled: edit.busy}, edit.busy ? 'Saving…' : 'Save to Agenda'),
     el('button', {type: 'button', disabled: edit.busy, onclick: () => { plans.editing = null; renderPlans(plans.data); }}, 'Cancel'),
     link('Open this row in the Agenda ↗', lesson.edit_url, 'edit')));
-  form.append(moveSection(cls, lesson));
+  if (!edit.compact) form.append(moveSection(cls, lesson));
   return form;
 }
 
@@ -1853,6 +1965,7 @@ function renderPlans(data) {
     if (previous) card.append(previous);
     cls.lessons.forEach(lesson => card.append(plans.editing?.key === `${cls.key}|${lesson.row}`
       ? lessonEditor(cls, lesson) : renderLesson(cls, lesson, data.weekday)));
+    card.append(classNotesPanel(cls));
     return card;
   });
   $('cards').replaceChildren(...data.problems.map(p => note(p)), ...cards);
@@ -3636,6 +3749,10 @@ $('reload-work').addEventListener('click', async () => {
   catch (error) { if (seq === work.seq) setStatus('work-status', error.message, true); }
 });
 window.addEventListener('hashchange', showTab);
+window.addEventListener('beforeunload', event => {
+  if (!classNotesUnsaved() && !plans.editing) return;
+  event.preventDefault(); event.returnValue = '';
+});
 window.addEventListener('focus', refreshVisiblePlans);
 document.addEventListener('visibilitychange', refreshVisiblePlans);
 showTab();
