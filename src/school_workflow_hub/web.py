@@ -169,6 +169,10 @@ def application(environ, start_response, *, teaching_provider=None):
             if method == "GET":
                 from urllib.parse import parse_qs
                 query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
+                if set(query) == {"record_id"} and len(query["record_id"]) == 1:
+                    from .adapters import assessment_review
+                    return respond("200 OK", assessment_review.load(
+                        assertion, query["record_id"][0], os.environ))
                 if set(query) != {"file_id"} or len(query["file_id"]) != 1:
                     raise ValueError("invalid_assessment_source")
                 return respond("200 OK", assessment_save.capture(
@@ -192,7 +196,8 @@ def application(environ, start_response, *, teaching_provider=None):
             return respond("409 Conflict", {"error": "assessment_claim_expired"})
         except Conflict as error:
             code = str(error)
-            if code not in {"submission_changed_reassess", "assessment_record_conflict"}:
+            if code not in {"submission_changed_reassess", "assessment_record_conflict",
+                            "assessment_review_changed", "assessment_review_save_pending"}:
                 code = "assessment_save_conflict"
             return respond("409 Conflict", {"error": code})
         except ConnectionError as error:

@@ -10,12 +10,15 @@ uses the same strict reader the dashboard uses, so a save that the dashboard
 could not display correctly fails here first.
 """
 from datetime import datetime, timezone
+from copy import deepcopy
 import hashlib
 import io
 import json
 import re
 import uuid
 import zipfile
+from time import monotonic
+from datetime import timedelta
 import xml.etree.ElementTree as ET
 
 from .firestore_state import configured_store
@@ -23,7 +26,7 @@ from .google_sheets import SheetsReader, SheetsReadError
 from .grading_records import HEADERS, _column, _sheet_map, configured, read_records
 from .hosted_agenda import (ConnectionError, _identity_configuration, authorize,
                             service_token)
-from ..core.cloud_state import CloudState, Conflict
+from ..core.cloud_state import CloudState, Conflict, LeaseLost, bounded_json, instant
 from ..core.runs import content_hash
 from ..workflows import assessment_records
 
@@ -284,6 +287,20 @@ def _verify_readback(records, rows, superseded_ids):
         if (want is None) != (got is None) or (want is not None
                                                and abs(got - want) > 1e-9):
             raise ConnectionError("assessment_readback_failed")
+    # A score and answer count are not proof that the reviewed feedback and
+    # literal evidence were retained. Dates/prior-state fields can differ on an
+    # unchanged rerun; all teaching content must still match exactly.
+    from .assessment_review import same_cell
+    incidental = {"checked_at", "checked_date", "source_snapshot_date", "prior_score_exact",
+                  "prior_hold_reason", "prior_readiness", "ic_posting_status", "superseded_by"}
+    if any(not same_cell(k, v, saved.get(k)) for k, v in expected.items() if k not in incidental):
+        raise ConnectionError("assessment_readback_failed")
+    answers = {(a.get("stage"), a.get("question_id")): a for a in saved["answers"]}
+    if len(answers) != len(rows["answers"]) or any(
+            (a["stage"], a["question_id"]) not in answers or any(
+                not same_cell(k, v, answers[(a["stage"], a["question_id"])].get(k))
+                for k, v in a.items() if k != "assessment_date") for a in rows["answers"]):
+        raise ConnectionError("assessment_readback_failed")
     for old in superseded_ids:
         row = by_id.get(old)
         if row is None or row["status"] != "superseded" or row.get("superseded_by") != rid:
@@ -306,13 +323,18 @@ def _request_id(value):
 
 def save(assertion, payload, config):
     """Validate, re-capture, claim, append + supersede, and read back one packet."""
-    if (not isinstance(payload, dict) or set(payload) != {"request_id", "packet"}
+    if (not isinstance(payload, dict) or set(payload) not in (
+            {"request_id", "packet"}, {"request_id", "packet", "review_basis"})
             or not isinstance(payload.get("packet"), dict)):
         if isinstance(payload, dict) and set(payload) == {"request_id", "summary"}:
             return _save_summary(assertion, payload, config)
         raise ValueError("invalid_assessment_save")
     request_id = _request_id(payload["request_id"])
     packet = payload["packet"]
+    from . import assessment_review as review
+    review_basis = payload.get("review_basis")
+    if "review_basis" in payload and not isinstance(review_basis, dict):
+        raise ValueError("invalid_assessment_review")
     from . import assessment_target
     assessment_target.read_target(assertion, packet, config)
     source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
@@ -356,21 +378,42 @@ def save(assertion, payload, config):
     if existing is not None and not supersede:
         if existing.get("source_sha256") != fresh["sha256"]:
             raise Conflict("assessment_record_conflict")
+        previous = []
+        if review_basis is not None:
+            review.assert_source(packet, fresh, existing)
+            # A lost Save reply may be resolved by exact readback, never a
+            # second native batch or adopting the previous task's claim.
+            if set(review_basis) != review.BASIS_FIELDS or review.source_binding(fresh) != review_basis["source"]:
+                raise Conflict("assessment_review_changed")
+            prior = review.baseline(workbook, review_basis["record_id"], active=False)
+            if prior["submission"]["record_id"] != rid:
+                if (prior["submission"].get("status") != "superseded"
+                        or prior["submission"].get("superseded_by") != rid):
+                    raise Conflict("assessment_review_changed")
+                prior["submission"].update(status="assessed", superseded_by="")
+                previous = [review_basis["record_id"]]
+            if content_hash(prior) != review_basis["record_sha256"]:
+                raise Conflict("assessment_review_changed")
         records = read_records(assertion, config)
-        receipt = _verify_readback(records, rows, [])
-        return {"status": "already_saved", "unchanged_rerun": True, **receipt,
+        receipt = _verify_readback(records, rows, previous)
+        return {**receipt, "status": "already_saved", "unchanged_rerun": True,
                 "source": {"file_id": fresh["file"]["id"],
                            "modified_at": fresh["file"]["modified_at"],
                            "version": fresh["file"]["version"],
                            "sha256": fresh["sha256"]},
                 "readback_verified": True}
     store = CloudState(configured_store(config))
-    task = store.create_task({"workflow": "assessment-save",
-                              "class_key": packet["class_key"],
-                              "assignment_key": content_hash({
-                                  "assignment": packet["assignment_key"],
-                                  "identity": assessment_records.record_identity(packet)})[:40]})
-    claim = store.claim(task, owner="assess-" + uuid.uuid4().hex, request_id=request_id,
+    if review_basis is not None:
+        review.validate_successor(packet, review_basis, workbook, fresh)
+        review.no_pending_save(store.port, packet)
+    retained = {"schema_version": "hub-reviewed-assessment/v1", "record_id": rid,
+                "packet": deepcopy(packet), "review_basis": deepcopy(review_basis)}
+    # Check immutable result-envelope size before any workbook mutation.
+    bounded_json({"scope": review.task_scope(packet), "run_id": "run-" + "a" * 64,
+                  "name": "reviewed_packet", "payload": retained})
+    task = store.create_task(review.task_scope(packet))
+    claimer = CloudState(review.UnclaimedTaskPort(store.port, task)) if review_basis is not None else store
+    claim = claimer.claim(task, owner="assess-" + uuid.uuid4().hex, request_id=request_id,
                         input_hash=content_hash(packet), ttl_seconds=300)
     requests = []
     if existing is None:
@@ -385,15 +428,32 @@ def save(assertion, payload, config):
         requests.append(_set_cell(submissions, position, "superseded_by", rid))
     if requests and not claim.completed:
         token = service_token(service_account, WRITE_SCOPE)
+        if review_basis is not None:
+            claim = store.renew(claim, ttl_seconds=300)
+            final_source = capture(assertion, source["file_id"], config)
+            final_workbook = _workbook(reader, workbook_id)
+            review.validate_successor(packet, review_basis, final_workbook, final_source)
+            if final_workbook != workbook:
+                raise Conflict("assessment_review_changed")
+            started = monotonic()
+            final = store.port.read([claim.task_id])
+            elapsed = monotonic() - started
+            owned = final.documents[claim.task_id]
+            now = instant(final.read_time) + timedelta(seconds=max(0, elapsed))
+            if owned is None:
+                raise LeaseLost("assessment_claim_expired")
+            store._owns(claim, owned.value, now.isoformat())
+            if (instant(owned.value["expires_at"]) - now).total_seconds() < 120:
+                raise LeaseLost("assessment_claim_expired")
         _batch(workbook_id, token, requests)
     records = read_records(assertion, config)
     receipt = _verify_readback(records, rows, superseded_ids)
     if not claim.completed:
-        store.finish(claim, records={"receipt": {**receipt,
+        store.finish(claim, records={"reviewed_packet": retained,
+                                    "receipt": {**receipt,
                                                  "source_sha256": fresh["sha256"],
                                                  "saved_at": _now()}})
-    return {"status": "saved", "unchanged_rerun": claim.completed and not requests,
-            **receipt,
+    return {**receipt, "status": "saved", "unchanged_rerun": claim.completed and not requests,
             "source": {"file_id": fresh["file"]["id"],
                        "modified_at": fresh["file"]["modified_at"],
                        "version": fresh["file"]["version"], "sha256": fresh["sha256"]},

@@ -3208,6 +3208,7 @@ function renderSavedForm(form, lesson) {
     el('small', {class: 'muted', text: 'Explicitly rechecks current sources and prepares the existing Helper list. The Helper controls IC entry.'})));
   const progress = helperProgress(form);
   if (progress) box.append(progress);
+  if (form.form_id) box.append(feedbackBackup(form, ui));
   return box;
 }
 
