@@ -41,6 +41,33 @@ EXPORTABLE = NATIVE_EXPORTABLE | {PPTX}
 NUMERIC = ("content_score", "revision_score")
 
 
+class SchemaHeld(ValueError):
+    """A read-only schema hold; retained values must never be silently dropped."""
+    code = "assessment_column_missing"
+
+    def __init__(self, intake):
+        super().__init__(self.code)
+        self.intake = deepcopy(intake)
+
+
+def schema_compatibility(workbook, rows):
+    """Compare actual pending row fields with the existing native headers.
+
+    Older packets do not require newer optional rubric fields. Any field that
+    the pending packet actually carries needs its own real column, even when
+    its value is blank. This function has no storage, token or claim effects.
+    """
+    required = {"Submissions": set(rows["submission"]),
+                "Answers": {field for row in rows["answers"] for field in row}}
+    missing = {title: sorted(fields - set(workbook[title]["headers"]))
+               for title, fields in required.items()
+               if fields - set(workbook[title]["headers"])}
+    return {"outcome": "blocked" if missing else "ready",
+            "reason_code": "assessment_schema_columns_missing" if missing else "ready",
+            "missing_columns": missing,
+            "headers_sha256": content_hash({title: workbook[title]["headers"] for title in required})}
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -375,6 +402,9 @@ def save(assertion, payload, config):
         packet, result, fresh, now=_now(),
         prior_score_exact=latest_prior[1].get("content_score_exact", "") if latest_prior else "",
         prior_hold_reason=latest_prior[1].get("hold_reason", "") if latest_prior else "")
+    compatibility = schema_compatibility(workbook, rows)
+    if compatibility["outcome"] != "ready":
+        raise SchemaHeld(compatibility)
     if existing is not None and not supersede:
         if existing.get("source_sha256") != fresh["sha256"]:
             raise Conflict("assessment_record_conflict")
@@ -437,6 +467,15 @@ def save(assertion, payload, config):
             if review.source_binding(source_bookend) != review.source_binding(final_source):
                 raise Conflict("submission_changed_reassess")
             final_source = source_bookend
+        else:
+            final_workbook = _workbook(reader, workbook_id)
+        final_schema = schema_compatibility(final_workbook, rows)
+        if final_schema["outcome"] != "ready":
+            raise SchemaHeld(final_schema)
+        if any(final_workbook[title][field] != workbook[title][field]
+               for title in ("Submissions", "Answers") for field in ("headers", "sheet_id")):
+            raise Conflict("assessment_review_changed")
+        if review_basis is not None:
             review.validate_successor(packet, review_basis, final_workbook, final_source)
             if final_workbook != workbook:
                 raise Conflict("assessment_review_changed")

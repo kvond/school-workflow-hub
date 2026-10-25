@@ -159,13 +159,15 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
 
-    if path == "/api/assessment-save":
+    if path in ("/api/assessment-save", "/api/assessment-recovery"):
         from .adapters import assessment_save
         from .adapters.hosted_agenda import ConnectionError
         from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
         import re as _re
         try:
             assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if path == "/api/assessment-recovery" and method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
             if method == "GET":
                 from urllib.parse import parse_qs
                 query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
@@ -191,13 +193,21 @@ def application(environ, start_response, *, teaching_provider=None):
             if not 1 <= length <= 400000:
                 raise ValueError("invalid_assessment_save")
             payload = json.loads(environ["wsgi.input"].read(length))
+            if path == "/api/assessment-recovery":
+                from .adapters import assessment_recovery
+                return respond("200 OK", assessment_recovery.reconcile(assertion, payload, os.environ))
             return respond("200 OK", assessment_save.save(assertion, payload, os.environ))
+        except assessment_save.SchemaHeld as error:
+            return respond("409 Conflict", {"error": error.code, "intake": error.intake})
         except Busy:
             return respond("409 Conflict", {"error": "assessment_save_busy"})
         except LeaseLost:
             return respond("409 Conflict", {"error": "assessment_claim_expired"})
         except Conflict as error:
             code = str(error)
+            if path == "/api/assessment-recovery":
+                return respond("409 Conflict", {"error": code if _re.fullmatch(r"[a-z0-9_]{1,64}", code)
+                                               else "assessment_recovery_conflict"})
             if code not in {"submission_changed_reassess", "assessment_record_conflict",
                             "assessment_review_changed", "assessment_review_save_pending"}:
                 code = "assessment_save_conflict"
