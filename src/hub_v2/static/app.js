@@ -1737,6 +1737,44 @@ function block(label, text) {
   return el('div', {class: 'block'}, el('p', {class: 'label', text: label}), el('p', {class: 'plan', text}));
 }
 
+function renderPrepNotes(lesson, title = 'Prep notes') {
+  const prep = lesson.prep_notes;
+  if (!prep) return lesson.prep ? block(title, lesson.prep) : null;
+  const items = rows => (rows || []).map(item => block(item.label, item.text));
+  const resources = rows => rows?.length ? el('div', {class: 'links'},
+    rows.map(item => link(item.label + ' ↗', item.url, 'chip'))) : null;
+  const box = el('section', {class: 'lesson-prep', 'aria-label': title}, el('h4', {text: title}),
+    ...items(prep.items), resources(prep.links),
+    ...(prep.tracks || []).map(track => el('section', {class: 'prep-track', 'aria-label': track.label},
+      el('h4', {text: track.label}), ...items(track.items), resources(track.links))),
+    ...(prep.issues || []).map(issue => note(issue)));
+  if (prep.links?.length || prep.tracks?.some(track => track.links?.length)) {
+    box.append(el('p', {class: 'muted prep-source', text: 'Agenda links · availability has not been checked in this view.'}));
+  }
+  return box;
+}
+
+function renderNextPrep(cls) {
+  const future = cls.next_prep;
+  if (!future || (!future.problem && !future.lessons?.length)) return null;
+  const box = el('section', {class: 'next-prep', 'aria-label': 'Prep for next week'},
+    el('h3', {text: 'Prep for next week'}),
+    el('p', {class: 'muted prep-source', text: `${future.week ? future.week + ' · ' : ''}Week of ${future.monday}`}));
+  if (future.problem) box.append(note(future.problem));
+  if (future.closures) box.append(el('p', {class: 'prep-calendar', text: future.closures}));
+  const seen = new Set();
+  for (const lesson of future.lessons || []) {
+    if (seen.has(lesson.row)) continue;
+    seen.add(lesson.row);
+    const section = el('div', {class: 'future-lesson'}, el('h4', {text: lesson.topic || 'Untitled lesson'}));
+    if (lesson.kind !== 'lesson') section.append(note('The Agenda marks this row as unplanned or no class. Confirm prep timing before using it.'));
+    section.append(renderPrepNotes(lesson, 'BUY / PULL / PRINT · next week'));
+    if (lesson.edit_url) section.append(link('Agenda source ↗', lesson.edit_url, 'edit'));
+    box.append(section);
+  }
+  return box;
+}
+
 function renderLesson(cls, lesson, weekday) {
   const box = el('details', {class: 'lesson', open: true, id: `lesson-${cls.key}-${lesson.row}`, tabindex: '-1'},
     el('summary', {}, el('h3', {text: lesson.today ? `${FULL_DAY[weekday]} plan` : 'Lesson plan'})));
@@ -1753,7 +1791,8 @@ function renderLesson(cls, lesson, weekday) {
   }
   box.append(block('Agenda topic', lesson.topic || 'Untitled lesson'));
   if (lesson.todo) box.append(block('To-do', lesson.todo));
-  if (lesson.prep) box.append(block('Lab / prep', lesson.prep));
+  const prep = renderPrepNotes(lesson);
+  if (prep) box.append(prep);
   if (lesson.materials.length) {
     box.append(el('div', {class: 'links'}, lesson.materials.map(m => link(m.label + ' ↗', m.url, 'chip'))));
   }
@@ -1965,6 +2004,8 @@ function renderPlans(data) {
     if (previous) card.append(previous);
     cls.lessons.forEach(lesson => card.append(plans.editing?.key === `${cls.key}|${lesson.row}`
       ? lessonEditor(cls, lesson) : renderLesson(cls, lesson, data.weekday)));
+    const nextPrep = renderNextPrep(cls);
+    if (nextPrep) card.append(nextPrep);
     card.append(classNotesPanel(cls));
     return card;
   });

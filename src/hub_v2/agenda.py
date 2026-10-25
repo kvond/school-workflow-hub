@@ -11,7 +11,7 @@ import re
 from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
-from . import google
+from . import google, lesson_prep
 
 CLASSES = (("biology", "Biology"), ("forensics", "Forensics"), ("anatomy", "A&P"))
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri")
@@ -363,6 +363,18 @@ class Agenda:
         return [build_lesson(entry["cells"], entry["layout"], row, edit % row)
                 for row, label in entry["layout"]["rows"] if norm(label) == norm(week_label)]
 
+    def prep_notes(self, class_key, lesson):
+        """Display-only copy: canonical lesson dictionaries bind saved evidence.
+
+        Do not add prep metadata in build_lesson/lessons: their exact dictionaries
+        are hashed by teacher-material, historical-intake and saved-score readers.
+        """
+        entry = self.classes[class_key]
+        column = entry["layout"]["columns"].get("prep") if entry["layout"] else None
+        prep_links = links(entry["cells"].get((lesson["row"], column))) if column else []
+        display = {**lesson, "prep_links": [{"label": label, "url": url} for url, label in prep_links]}
+        return lesson_prep.project(display, biology=class_key == "biology")
+
     def day(self, day):
         week = self.week_for(day)
         weekday = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[day.weekday()]
@@ -376,11 +388,37 @@ class Agenda:
                 for lesson in item["lessons"]:
                     today = next((p for p in lesson["plans"] if p["day"] == weekday), None)
                     lesson["today"] = today
+                    lesson["prep_notes"] = self.prep_notes(key, lesson)
                 item["previous"] = self.previous_lessons(key, week)
+                item["next_prep"] = self.next_prep(key, week)
             classes.append(item)
         return {"date": day.isoformat(), "weekday": weekday, "week": week, "classes": classes,
                 "problems": self.problems + ([] if week or not self.weeks else
                                              ["%s isn't in any week listed on the Weeks tab." % day.isoformat()])}
+
+    def next_prep(self, class_key, week):
+        """Exact following calendar week; never skip a break or move a lesson.
+
+        The same already-read grid supplies both views. No extra provider call,
+        cache, source repair, duplicated tracker or readiness execution occurs.
+        """
+        monday = (date.fromisoformat(week["monday"]) + timedelta(days=7)).isoformat()
+        matches = [w for w in self.weeks if w["monday"] == monday]
+        if len(matches) != 1:
+            return {"monday": monday, "lessons": [],
+                    "problem": "Next week's Agenda date is unavailable or ambiguous; prep timing is unverified."}
+        future = matches[0]
+        if sum(norm(w["label"]) == norm(future["label"]) for w in self.weeks) != 1:
+            return {"monday": monday, "week": future["label"], "lessons": [],
+                    "problem": "Next week's Agenda label has more than one date; prep timing is unverified."}
+        lessons = self.lessons(class_key, future["label"])
+        if not lessons:
+            return {"monday": monday, "week": future["label"], "lessons": [],
+                    "problem": "No lesson row was found for next week's Agenda label; prep is unverified."}
+        return {"monday": monday, "week": future["label"], "closures": future["closures"],
+                "lessons": [{k: lesson[k] for k in ("row", "week", "topic", "dates", "edit_url")}
+                            | {"kind": lesson_kind(lesson["topic"]), "prep_notes": prep}
+                            for lesson in lessons if (prep := self.prep_notes(class_key, lesson))], "problem": None}
 
     def previous_lessons(self, class_key, week, look_back=PREVIOUS_LOOK_BACK):
         """The lessons this class last taught before `week`, so an unfinished

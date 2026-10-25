@@ -79,6 +79,7 @@ details > summary:focus-visible { outline: 2px solid var(--link); outline-offset
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
 .cards > .note { grid-column: 1 / -1; }
+@media (max-width: 650px) { .cards { grid-template-columns: minmax(0, 1fr); } }
 .card { background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--accent);
   border-radius: var(--radius); padding: 16px; }
 .card.biology { border-top-color: var(--biology); }
@@ -90,6 +91,15 @@ details > summary:focus-visible { outline: 2px solid var(--link); outline-offset
 .today { background: var(--bg); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
 .teacher-note { margin: 6px 0 0; white-space: pre-wrap; color: var(--muted); }
 .block { margin: 10px 0; }
+.lesson-prep { margin: 16px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.lesson-prep > h4, .prep-track > h4 { margin-top: 0; }
+.prep-track { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.prep-source { font-size: 12px; margin: 6px 0; overflow-wrap: anywhere; }
+.lesson-prep .chip { overflow-wrap: anywhere; max-width: 100%; }
+.next-prep { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-left: 4px solid var(--link); border-radius: 8px; }
+.next-prep .lesson-prep { margin: 8px 0; }
+.future-lesson + .future-lesson { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.prep-calendar { font-size: 13px; white-space: pre-wrap; }
 .links { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
 .chip { display: inline-block; padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
   text-decoration: none; font-size: 14px; }
