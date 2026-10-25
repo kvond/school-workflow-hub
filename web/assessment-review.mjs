@@ -35,7 +35,14 @@ const FAILURES={
  assessment_record_conflict:'An identical assessment of this exact version already exists in the workbook.',
  assessment_assignment_unknown:'That assignment is not in the workbook’s Assignments tab.',
  assessment_readback_failed:'The saved rows did not read back as expected. Check the workbook before retrying.',
+ assessment_write_uncertain:'The Save outcome is unknown; the workbook may have changed. Check its saved readback and preserve the pending attempt.',
+ assessment_state_unavailable:'The workbook may have saved, but private save history could not be confirmed. Preserve the pending attempt and check readback.',
+ assessment_save_unavailable:'The Save outcome could not be confirmed. Check the saved record before another attempt.',
  assessment_save_busy:'Another request for this student and assignment is still running. Wait, then retry.',
+ assessment_review_changed:'The saved assessment changed during review. Reload its current record before preparing a successor.',
+ assessment_review_save_pending:'An earlier Save for this exact student and lesson is unresolved. Preserve it and check its saved readback before any new Save.',
+ assessment_review_record_unavailable:'This saved assessment is held, superseded, ambiguous or incomplete; it cannot be loaded for correction.',
+ assessment_review_protected_field_changed:'The prepared packet changes source evidence, identity, checkpoint or requirements. Preserve those fields and review the correction separately.',
  grading_records_not_connected:'The private grading workbook is not connected.',
  // Server-side Drive access is the Cloud Run service identity, never a local
  // AI account: these are server permission problems, not your sign-in.
@@ -43,7 +50,7 @@ const FAILURES={
  assessment_source_unavailable:'The document could not be read from Drive right now (a server-side source problem, not your sign-in). Retry shortly.',
  assessment_source_unsupported:'This file type cannot be exported as text for assessment.',
  sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
-const explain=code=>FAILURES[code]||('The request could not be completed ('+code+'). Nothing was saved.');
+const explain=code=>FAILURES[code]||('The request could not be completed ('+code+'). Check the saved record before another Save.');
 
 function node(root,tag,text,cls){const n=root.ownerDocument.createElement(tag);if(text!==undefined)n.textContent=String(text);if(cls)n.setAttribute('class',cls);return n;}
 function labeled(root,text,control){const wrap=node(root,'label',undefined,'field');wrap.append(node(root,'span',text,'hint'),control);return wrap;}
@@ -120,7 +127,8 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   fileSelect.addEventListener('change',()=>{generation++;busy=false;generate.disabled=batch.disabled=false;displayName.value=suggestName(files.find(f=>f.file_id===fileSelect.value)?.name);studentId.value='';review.replaceChildren();recoverDraft(fileSelect.value);});
   const generate=node(form,'button','Generate feedback for this submission');generate.type='button';
   const batch=node(form,'button','Generate pending feedback for this lesson');batch.type='button';
-  const actions=node(form,'div',undefined,'action-row');actions.append(generate,batch);
+  const loadSaved=node(form,'button','Load saved assessment for review');loadSaved.type='button';
+  const actions=node(form,'div',undefined,'action-row');actions.append(loadSaved,generate,batch);
   form.append(
    node(form,'p',chosenLesson[1]+' · '+chosenSection[1]),labeled(form,'Submission',fileSelect),
    labeled(form,'Checkpoint',stage),stageWhy,
@@ -135,10 +143,10 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     identity:{student_id:studentId.value.trim(),student_id_kind:'',learner_key:'',
      display_name:name,identity_basis:''}};
   }
-  function checkReady(){
+  function checkReady(loading=false){
    if(!scope?.ready||scope.classKey!==target.classKey||scope.assignmentKey!==target.assignmentKey||scope.sectionId!==target.sectionId){state.textContent='The lesson or section changed. Check submissions again.';return false;}
    if(records?.()?.status!=='loaded'||!verifiedSectionOptions(records().data,target.classKey).some(([id])=>id===target.sectionId)||!knownAssignments(target.classKey).some(([key])=>key===target.assignmentKey)){state.textContent='Refresh the verified lesson and section before generating feedback.';return false;}
-   if(!stageRef.value.trim()){state.textContent='The checkpoint basis is empty; load the lesson’s deadline or describe the checkpoint.';return false;}
+   if(!loading&&!stageRef.value.trim()){state.textContent='The checkpoint basis is empty; load the lesson’s deadline or describe the checkpoint.';return false;}
    return true;
   }
   async function postDraft(body){
@@ -159,6 +167,48 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     else state.textContent='No stored draft for the current version. '+(providerReady?.blocked?explain(providerReady.blocked):budgetLine());
    }catch{if(requestedGeneration===generation)state.textContent='Stored-draft check unavailable.';}
   }
+  loadSaved.addEventListener('click',async()=>{
+   if(!checkReady(true))return;
+   const file=files.find(f=>f.file_id===fileSelect.value);
+   const saved=(records().data.submissions||[]).filter(row=>{
+    let sourceId=row.source_file_id;
+    if(!sourceId){try{sourceId=new URL(row.source_url).pathname.match(/\/d\/([^/]+)/)?.[1];}catch{}}
+    return sourceId===file.file_id&&row.class_key===target.classKey&&row.assignment_key===target.assignmentKey&&row.section_id===target.sectionId&&row.assessment_stage===stage.value&&row.status==='assessed'&&!row.hold_reason&&!row.superseded_by;
+   });
+   if(saved.length!==1){state.textContent='One unheld saved assessment for this exact submission and checkpoint is required. Refresh the saved records; nothing was generated.';return;}
+   const mine=++generation;busy=true;review.replaceChildren();loadSaved.disabled=true;
+   state.textContent='Loading the saved assessment and verifying its current source — no model call…';
+   try{
+    const r=await request('/api/assessment-save?'+new URLSearchParams({record_id:saved[0].record_id}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
+    const d=await r.json();
+    if(mine!==generation)return;
+    if(!r.ok)throw Error(explain(d.error));
+    if(d.schema_version!=='hub-assessment-review/v1'||d.external_writes!==0||d.live_model_calls!==0||d.review_basis?.record_id!==saved[0].record_id||d.base?.submission?.record_id!==saved[0].record_id||!Array.isArray(d.base?.answers)||!['saved_review_ready','saved_packet_required'].includes(d.status))throw Error('The saved review could not be verified.');
+    const matches=p=>p?.class_key===target.classKey&&p?.assignment_key===target.assignmentKey&&p?.section_id===target.sectionId&&p?.stage===stage.value&&p?.source?.file_id===file.file_id;
+    const open=p=>{
+     if(mine!==generation)return;
+     if(!matches(p))throw Error('The prepared assessment does not match the selected lesson, section, checkpoint and submission.');
+     if(!p.identity||typeof p.identity.display_name!=='string'||typeof p.identity.student_id!=='string'||typeof p.identity.identity_basis!=='string'||typeof p.source.sha256!=='string'||typeof p.source.version!=='string'||typeof p.source.modified_at!=='string'||typeof p.feedback!=='string'||typeof p.comparison_status!=='string'||!Array.isArray(p.responses)||p.responses.some(a=>!a||!JUDGMENTS.includes(a.judgment)||typeof a.question_id!=='string'||typeof a.category!=='string'||typeof a.response_excerpt!=='string'||typeof a.evidence_note!=='string'||typeof a.conceptual_level!=='string'||typeof a.explanation_level!=='string'||typeof a.conceptual_feedback!=='string'))throw Error('The prepared assessment packet is incomplete. Its JSON remains here for correction; nothing was saved.');
+     state.textContent='Saved assessment loaded for review — no model call. Review every listed change before Save. Prior records and feedback remain in history.';
+     renderDraft({...d,packet:p,original_packet:d.packet},file);
+    };
+    if(d.status==='saved_review_ready')open(d.packet);
+    else{
+     review.append(node(review,'p','The complete reviewed packet was not retained. Workbook completion flags cannot recreate its original judgments. Paste the prepared assessment packet to review it without generating new model judgments.','hint'));
+     const prepared=node(review,'textarea');prepared.rows=8;
+     review.append(labeled(review,'Prepared assessment packet JSON',prepared));
+     const importPacket=node(review,'button','Review prepared successor');importPacket.type='button';review.append(importPacket);
+     importPacket.addEventListener('click',()=>{
+      if(mine!==generation)return;
+      try{const parsed=JSON.parse(prepared.value);open(parsed.packet||parsed);}
+      catch(error){state.textContent=error.message||'The prepared packet is not valid JSON.';}
+     });
+     const cancel=node(review,'button','Cancel saved review');cancel.type='button';review.append(cancel);
+     cancel.addEventListener('click',()=>{generation++;busy=false;review.replaceChildren();state.textContent='Saved review cancelled. Nothing was saved or generated.';});
+    }
+   }catch(error){if(mine===generation){busy=false;state.textContent=error.message||'The saved assessment could not be loaded.';}}
+   finally{loadSaved.disabled=false;}
+  });
   generate.addEventListener('click',async()=>{
    if(!checkReady())return;
    const mine=++generation;review.replaceChildren();busy=true;
@@ -223,12 +273,14 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    busy=false;state.textContent='This draft does not match the current lesson, section and submission. Check submissions again.';return;
   }
   const draftGeneration=generation;
+  const savedReview=draft.schema_version==='hub-assessment-review/v1';
+  let saveInFlight=false,saveAttempted=false,closed=false;
   review.replaceChildren();busy=true;
   const lessonTitle=knownAssignments(packet.class_key).find(([key])=>key===packet.assignment_key)?.[1]||'Lesson needs verification';
-  review.append(node(review,'h4','Draft assessment · '+(packet.identity.display_name||'unnamed')+' · '+lessonTitle+' · '+packet.stage+' checkpoint'));
+  review.append(node(review,'h4',(savedReview?'Saved assessment review · ':'Draft assessment · ')+(packet.identity.display_name||'unnamed')+' · '+lessonTitle+' · '+packet.stage+' checkpoint'));
   review.append(node(review,'p','Source: '+(file?.name||packet.source.file_id)+' · version '+packet.source.version+' · last modified '+new Date(packet.source.modified_at).toLocaleString()+' · content hash '+packet.source.sha256.slice(0,12)+'…','hint'));
   if(draft.prompts?.version_label)review.append(node(review,'p','Instructions: live Agenda prompts, '+draft.prompts.version_label,'hint'));
-  review.append(node(review,'p','Draft scores — Content/notes: '+score(draft.scores.content_notes)+' · Revision: '+score(draft.scores.revision)+'. Scores are recomputed by the hub from your reviewed judgments when you save.'));
+  review.append(node(review,'p',savedReview?'Original saved record: '+draft.review_basis.record_id+'. No model was called. Save uses the existing arithmetic and retains the prior record as superseded history.':'Draft scores — Content/notes: '+score(draft.scores.content_notes)+' · Revision: '+score(draft.scores.revision)+'. Scores are recomputed by the hub from your reviewed judgments when you save.'));
   if(draft.usage?.input_tokens)review.append(node(review,'p','Model '+(draft.usage.model||'')+' · '+draft.usage.input_tokens+' input + '+draft.usage.output_tokens+' output tokens · about '+money(cost(draft.usage))+(draft.cached?' (already paid; recovered from the stored draft)':''),'hint'));
   const table=node(review,'table');const head=node(review,'tr');
   for(const t of ['Item','Judgment','Concept','Explanation','Evidence & note','Feedback to student'])head.append(node(review,'th',t));
@@ -254,6 +306,27 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   review.append(table);
   const feedbackBox=node(review,'textarea');feedbackBox.value=packet.feedback;feedbackBox.rows=10;
   review.append(labeled(review,'Student report (editable before saving)',feedbackBox));
+  if(savedReview){
+   const changes=node(review,'div',undefined,'assessment-changes');review.append(changes);
+   const updateChanges=()=>{
+    changes.replaceChildren(node(review,'h4','Changes to review before Save'));
+    let count=0;
+    const change=(label,old,value)=>{if(old!==value){count++;changes.append(node(review,'p',label+': '+String(old??'(not retained)')+' → '+String(value)));}};
+    change('Student report',draft.base.submission.feedback,feedbackBox.value);
+    for(const row of rows){
+     const old=draft.base.answers.find(a=>a.question_id===row.response.question_id&&a.stage===row.response.category)||{};
+     const literal=draft.original_packet?.responses?.find(a=>a.question_id===row.response.question_id&&a.category===row.response.category);
+     const label=row.response.category+' '+row.response.question_id;
+     change(label+' judgment',literal?.judgment,row.judgment.value);
+     change(label+' conceptual level',old.conceptual_level,row.conceptual.value);
+     change(label+' explanation level',old.explanation_level,row.explanation.value);
+     change(label+' feedback',old.conceptual_feedback,row.feedback.value);
+    }
+    if(!count)changes.append(node(review,'p','No reviewed judgments or feedback changed. Save will verify the existing record.'));
+   };
+   for(const row of rows)for(const control of [row.judgment,row.conceptual,row.explanation,row.feedback]){control.addEventListener('change',updateChanges);control.addEventListener('input',updateChanges);}
+   feedbackBox.addEventListener('input',updateChanges);updateChanges();
+  }
   review.append(node(review,'p','Identity: '+(packet.identity.student_id?('student number '+packet.identity.student_id):'teacher-confirmed roster match')+' · '+packet.identity.identity_basis,'hint'));
   review.append(node(review,'p',packet.comparison_status,'hint'));
   const save=node(review,'button','Save reviewed assessment to the workbook');save.type='button';
@@ -261,12 +334,13 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   const saveState=node(review,'p','','hint');saveState.setAttribute('role','status');
   const actionRow=node(review,'div',undefined,'action-row');actionRow.append(save,discard);
   review.append(actionRow,saveState);
-  discard.addEventListener('click',()=>{busy=false;review.replaceChildren();state.textContent='Draft view closed; the stored draft remains recoverable. '+budgetLine();});
+  discard.addEventListener('click',()=>{if(saveInFlight)return;closed=true;generation++;busy=false;review.replaceChildren();state.textContent='Review view closed. Saved records and stored drafts remain unchanged.';});
   save.addEventListener('click',async()=>{
+   if(saveInFlight||saveAttempted||closed)return;
    if(draftGeneration!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded'){
     saveState.textContent='The selected lesson, section or submission changed. Reopen its current draft before saving.';return;
    }
-   save.disabled=true;saveState.textContent='Re-verifying the document and saving…';
+   saveInFlight=true;saveAttempted=true;save.disabled=discard.disabled=true;saveState.textContent='Re-verifying the document and saving…';
    try{
     const responses=rows.map(({response,judgment,conceptual,explanation,feedback})=>({...response,
      judgment:judgment.value,
@@ -276,7 +350,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      conceptual_feedback:feedback.value}));
     const reviewed={...packet,responses,feedback:feedbackBox.value};
     const requestId=crypto.randomUUID().replace(/-/g,'').slice(0,32);
-    const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId,packet:reviewed})});
+    const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId,packet:reviewed,...(savedReview?{review_basis:draft.review_basis}:{})})});
     const d=await r.json();
     if(!r.ok)throw Error(explain(d.error));
     if(d.readback_verified!==true)throw Error('The save did not read back as expected.');
@@ -288,7 +362,8 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      node(review,'p',(d.superseded?.length?('Superseded earlier record(s): '+d.superseded.join(', ')+'.'):'No earlier record superseded.')+' Readback verified against the live workbook. Reopen this feedback anytime from the student’s row above; nothing was posted to Infinite Campus.','hint'));
     review.append(receipt);save.remove();discard.remove();
     busy=false;onSaved?.();
-   }catch(error){if(draftGeneration===generation){saveState.textContent=error.message||'The save failed; check the workbook state before retrying.';save.disabled=false;}}
+   }catch(error){if(draftGeneration===generation)saveState.textContent=(error.message||'The save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';}
+   finally{saveInFlight=false;discard.disabled=false;}
   });
  }
 

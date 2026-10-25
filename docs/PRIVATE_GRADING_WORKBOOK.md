@@ -76,6 +76,25 @@ Publish a reviewed workbook batch before refreshing the dashboard.
 
 ## Recovery inside the dashboard
 
+The existing assessment review offers **Load saved assessment for review** without
+a provider key or model call. Authenticated GET `/api/assessment-save?record_id=...`
+checks the original active record, exact source revision/hash and literal saved
+evidence. It uses a retained reviewed packet, or an older cached packet only when
+its complete persisted projection matches the saved assessment. Lossy workbook
+completion flags never recreate judgments. When no full packet survives, the
+same review can accept prepared packet JSON and display its proposed judgments
+and feedback changes before the ordinary Save.
+
+Save carries the original-record fingerprint and source binding. Concurrent
+corrections, changed source/access metadata, protected identity/requirements or
+evidence changes, and pending saves (including expired attempts) hold the new
+review. It uses the existing assessment-save task, workbook append/supersession
+and exact readback, retaining the full reviewed packet in immutable private
+result history. An uncertain reply permits exact saved readback, not another
+native batch or automatic claim takeover. Closing a view does not save it;
+an interrupted Save remains held for recovery. This path changes neither
+completion arithmetic nor the IC Helper and does not post any grade to IC.
+
 Page 2 and Page 3 share an accessible recovery panel for failed grading reads.
 The loader reads the endpoint's fixed diagnostic code instead of replacing every
 failure with a generic workbook-unavailable message. It distinguishes teacher

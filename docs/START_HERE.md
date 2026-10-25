@@ -525,10 +525,11 @@ a change to an already-correct grade manufactured for acceptance.
 
 **Independent work-service contract:** feedback uses the exact class/section,
 lesson, selected work and current policy through the existing assessment, review,
-save and print workflow. This operation is separate from the dashboard's saved
-results view. Earlier requests for a Generate feedback or Upload ZIP dashboard
-control are not controls in the simplified Hub. Keep any future ZIP intake in
-its own work bucket, preserving the same assessment/save/print contracts.
+save and print workflow. Student work retains the existing closed per-Form
+feedback backup panel. Opening the page does not generate or save feedback;
+the explicit Generate/reuse and Save controls retain the existing guarded
+feedback routes and source/identity holds. Keep any future ZIP intake in its
+own work bucket, preserving the same assessment/save/print contracts.
 
 ZIP intake is a requested implementation, not verified existing functionality.
 Authenticate it, limit archive/file/expanded size, reject path traversal,

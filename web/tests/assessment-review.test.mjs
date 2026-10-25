@@ -5,8 +5,9 @@ import {mountAssessmentReview} from '../assessment-review.mjs';
 
 class Element extends EventTarget{
  constructor(doc,tag){super();this.ownerDocument=doc;this.tagName=tag;this.children=[];this.attributes={};this.textContent='';this.value='';}
- append(...children){this.children.push(...children);}
+ append(...children){for(const child of children)if(child&&typeof child==='object')child.parent=this;this.children.push(...children);}
  replaceChildren(...children){this.children=[...children];}
+ remove(){if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);}
  setAttribute(key,value){this.attributes[key]=value;}
  get all(){return [this,...this.children.flatMap(child=>typeof child==='string'?[]:child.all)];}
  get allText(){return this.textContent+' '+this.children.map(child=>typeof child==='string'?child:child.allText).join(' ');}
@@ -99,4 +100,113 @@ test('a generated response for a different file or checkpoint is held',async()=>
  button(root,'Generate feedback for this submission').dispatchEvent(new Event('click'));await settle();
  assert.match(root.allText,/does not match the requested lesson, section, checkpoint and submission/);
  assert.equal(button(root,'Save reviewed assessment to the workbook'),undefined);
+});
+
+function savedReply({missing=false,...packetChanges}={}){
+ const p=draft(packetChanges).packet;
+ p.responses=[{question_id:'N1',category:'NOTES',judgment:'meaningful_attempt',response_excerpt:'Literal original evidence',evidence_note:'Original evidence note',conceptual_level:'Developing',explanation_level:'Names an idea',conceptual_feedback:'Original item feedback',optional:false}];
+ return {schema_version:'hub-assessment-review/v1',status:missing?'saved_packet_required':'saved_review_ready',external_writes:0,live_model_calls:0,
+  packet:missing?null:p,review_basis:{record_id:'asmt-saved',record_sha256:'synthetic-record-hash',source:{file_id:'fictional-a2',sha256:'synthetic-content-hash',version:'1'}},
+  base:{submission:{record_id:'asmt-saved',feedback:'Synthetic feedback'},answers:[{question_id:'N1',stage:'NOTES',response:'Literal original evidence',evidence_note:'Original evidence note',conceptual_level:'Developing',explanation_level:'Names an idea',conceptual_feedback:'Original item feedback',meaningful_complete:'TRUE'}]}};
+}
+function savedSetup({loaded=savedReply(),saveResponse,saveFetch}={}){
+ const root=new Element(document,'div'),calls=[];let savedCount=0;
+ const data=structuredClone(records);
+ data.data.submissions=[{record_id:'asmt-saved',class_key:'forensics',assignment_key:'F1',section_id:'a2',assessment_stage:'initial',status:'assessed',source_file_id:'fictional-a2'}];
+ const fetcher=async(url,options)=>{
+  calls.push({url,options});
+  if(url.startsWith('/api/assessment-save?'))return {ok:true,json:async()=>typeof loaded==='function'?loaded():loaded};
+  if(url==='/api/assessment-save'&&options?.method==='POST'){
+   if(saveFetch)return saveFetch();
+   return {ok:true,json:async()=>saveResponse||{status:'saved',record_id:'asmt-successor',readback_verified:true,answers:1,superseded:['asmt-saved'],content_score:10,content_score_exact:'10',revision_score:null}};
+  }
+  if(url.includes('draft_for='))return {ok:true,json:async()=>({status:'no_draft'})};
+  return {ok:true,json:async()=>({configured:false,dependency:'provider_not_configured'})};
+ };
+ return {root,calls,data,get savedCount(){return savedCount;},view:mountAssessmentReview(root,{fetcher,records:()=>data,onSaved:()=>savedCount++})};
+}
+async function loadExisting(h){h.view.update(scope);h.view.setFiles(files,null);await settle();button(h.root,'Load saved assessment for review').dispatchEvent(new Event('click'));await settle();}
+const saveCalls=h=>h.calls.filter(c=>c.url==='/api/assessment-save'&&c.options?.method==='POST');
+
+test('load saved assessment works with no provider and performs no model or save request',async()=>{
+ const h=savedSetup();await loadExisting(h);
+ assert.match(h.root.allText,/Saved assessment review/);assert.match(h.root.allText,/no model call/);
+ assert.match(h.root.allText,/Literal original evidence/);assert.match(h.root.allText,/Original evidence note/);
+ const loaded=h.calls.filter(c=>c.url.startsWith('/api/assessment-save?'));
+ assert.equal(loaded.length,1);assert.deepEqual(Object.fromEntries(new URL(loaded[0].url,'https://fictional.invalid').searchParams),{record_id:'asmt-saved'});
+ assert.equal(h.calls.some(c=>c.options?.method==='POST'),false);
+ assert.ok(button(h.root,'Save reviewed assessment to the workbook'));
+});
+test('review shows explicit feedback changes and Save uses existing endpoint and unchanged evidence',async()=>{
+ const h=savedSetup();await loadExisting(h);
+ const report=h.root.all.find(e=>e.tagName==='textarea');report.value='Approved clerical correction';report.dispatchEvent(new Event('input'));
+ assert.match(h.root.allText,/Synthetic feedback → Approved clerical correction/);
+ button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ const body=JSON.parse(saveCalls(h)[0].options.body);
+ assert.equal(body.review_basis.record_id,'asmt-saved');assert.equal(body.packet.feedback,report.value);
+ assert.equal(body.packet.responses[0].response_excerpt,'Literal original evidence');assert.equal(body.packet.responses[0].evidence_note,'Original evidence note');
+ assert.match(h.root.allText,/Saved and read back/);assert.match(h.root.allText,/asmt-saved/);assert.equal(h.savedCount,1);
+});
+test('missing retained packet permits explicit prepared successor review without reconstructing judgments',async()=>{
+ const h=savedSetup({loaded:savedReply({missing:true})});await loadExisting(h);
+ assert.match(h.root.allText,/cannot recreate its original judgments/);assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);
+ const prepared=h.root.all.find(e=>e.tagName==='textarea');const p=savedReply().packet;p.feedback='Prepared approved correction';prepared.value=JSON.stringify(p);
+ button(h.root,'Review prepared successor').dispatchEvent(new Event('click'));await settle();
+ assert.match(h.root.allText,/Synthetic feedback → Prepared approved correction/);
+ assert.match(h.root.allText,/not retained.*meaningful_attempt/);
+ assert.equal(saveCalls(h).length,0);
+ button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ assert.equal(JSON.parse(saveCalls(h)[0].options.body).packet.feedback,p.feedback);
+});
+test('a prepared packet for another checkpoint or source cannot produce a Save control',async()=>{
+ const h=savedSetup({loaded:savedReply({missing:true})});await loadExisting(h);
+ const prepared=h.root.all.find(e=>e.tagName==='textarea');prepared.value=JSON.stringify(savedReply({stage:'final'}).packet);
+ button(h.root,'Review prepared successor').dispatchEvent(new Event('click'));await settle();
+ assert.match(h.root.allText,/does not match the selected lesson/);assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);assert.equal(saveCalls(h).length,0);
+});
+test('malformed prepared packet preserves editable JSON and cancel controls',async()=>{
+ const h=savedSetup({loaded:savedReply({missing:true})});await loadExisting(h);
+ const prepared=h.root.all.find(e=>e.tagName==='textarea');const malformed=savedReply().packet;delete malformed.identity;
+ prepared.value=JSON.stringify(malformed);const original=prepared.value;
+ button(h.root,'Review prepared successor').dispatchEvent(new Event('click'));await settle();
+ assert.equal(h.root.all.find(e=>e.tagName==='textarea'),prepared);assert.equal(prepared.value,original);
+ assert.ok(button(h.root,'Cancel saved review'));assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);
+ assert.match(h.root.allText,/packet is incomplete/);assert.equal(saveCalls(h).length,0);
+});
+test('cancelled saved review invalidates detached prepared import and Save controls',async()=>{
+ const h=savedSetup();await loadExisting(h);
+ const save=button(h.root,'Save reviewed assessment to the workbook');button(h.root,'Discard this draft view').dispatchEvent(new Event('click'));
+ save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0);
+ const missing=savedSetup({loaded:savedReply({missing:true})});await loadExisting(missing);
+ const prepared=missing.root.all.find(e=>e.tagName==='textarea');prepared.value=JSON.stringify(savedReply().packet);
+ const oldImport=button(missing.root,'Review prepared successor');button(missing.root,'Cancel saved review').dispatchEvent(new Event('click'));
+ oldImport.dispatchEvent(new Event('click'));await settle();assert.equal(button(missing.root,'Save reviewed assessment to the workbook'),undefined);
+});
+test('late saved assessment load cannot populate a different section or changed source',async()=>{
+ let finish;const wait=new Promise(resolve=>{finish=resolve;});
+ const h=savedSetup({loaded:()=>wait});await loadExisting(h);
+ h.view.setFiles([{...files[0],source_revision:'new-source',review_reasons:['source_changed']}],null);
+ finish(savedReply());await settle();assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);assert.equal(saveCalls(h).length,0);
+});
+test('changing checkpoint invalidates detached saved review controls',async()=>{
+ const h=savedSetup();await loadExisting(h);
+ const save=button(h.root,'Save reviewed assessment to the workbook');
+ const stage=h.root.all.find(e=>e.tagName==='select'&&e.children.some(c=>c.value==='final'));
+ stage.value='final';stage.dispatchEvent(new Event('change'));
+ save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0);
+});
+test('duplicate clicks and an uncertain Save never send a new request or claim success',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;});
+ const h=savedSetup({saveFetch:()=>pending});await loadExisting(h);
+ const save=button(h.root,'Save reviewed assessment to the workbook');save.dispatchEvent(new Event('click'));save.dispatchEvent(new Event('click'));await settle();
+ assert.equal(saveCalls(h).length,1);
+ finish({ok:false,json:async()=>({error:'assessment_write_uncertain'})});await settle();
+ save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,1);assert.equal(save.disabled,true);
+ assert.match(h.root.allText,/will not send another Save/);assert.doesNotMatch(h.root.allText,/Saved and read back/);assert.equal(h.savedCount,0);
+ assert.doesNotMatch(h.root.allText,/Nothing was saved/);
+});
+test('a success-shaped response without verified readback stays unresolved',async()=>{
+ const h=savedSetup({saveResponse:{status:'saved',readback_verified:false}});await loadExisting(h);
+ button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ assert.doesNotMatch(h.root.allText,/Saved and read back/);assert.equal(h.savedCount,0);
 });

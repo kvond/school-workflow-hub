@@ -12,31 +12,34 @@ class Element {
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this._text = ''; this.children = children; }
   setAttribute(name, value) { this[name] = value; }
-  addEventListener() {}
+  addEventListener(type, handler) { this.events ||= {}; this.events[type] = handler; }
 }
 const extract = name => {
-  const start = source.indexOf(`function ${name}(`); assert.ok(start >= 0, name);
+  let start = source.indexOf(`function ${name}(`); assert.ok(start >= 0, name);
+  if (source.slice(start - 6, start) === 'async ') start -= 6;
   return source.slice(start, source.indexOf('\n}', start) + 2);
 };
-const functions = ['fileList', 'entryTime', 'savedGradeRows', 'verifiedSavedGrade', 'newlyGraded', 'renderSavedForm', 'renderWork'].map(extract).join('\n');
+const functions = ['fileList', 'entryTime', 'savedGradeRows', 'verifiedSavedGrade', 'newlyGraded', 'renderSavedForm', 'renderWork', 'feedbackBackup', 'feedbackPanel', 'teacherWritingPreview', 'openPanel', 'feedbackAction'].map(extract).join('\n');
 const prelude = source.slice(0, source.indexOf('// ---------- Hub v3'));
 const received = {matched: true, last: 'Avery', first: 'Ann', section: 'Fictional A2', files: [{id: 'FICTIONALFILE001', name: 'Original work', url: 'https://drive.google.com/open?id=FICTIONALFILE001'}]};
 const FORM = 'FICTIONALFORM001';
 const saved = {file_id: received.files[0].id, status: 'saved', saved_at: '2032-01-07T15:00:00Z', notes_score: 8, revision_score: 6};
 const walk = element => [element, ...element.children.filter(child => child instanceof Element).flatMap(walk)];
-function boot({data = {}, form = {}, rows = [received], scores = {[received.files[0].id]: saved}, section = 'all', display = 'all', marks = {}} = {}) {
+function boot({data = {}, form = {}, rows = [received], scores = {[received.files[0].id]: saved}, section = 'all', display = 'all', marks = {}, feedbackState = {}, feedbackData = {students: []}} = {}) {
   const nodes = new Map();
-  const work = {cls: 'forensics', week: 'Wk 07', section, display, scores: {[FORM]: scores}, ui: {}, marks: {[FORM]: marks}};
+  const requests = [];
+  const work = {cls: 'forensics', week: 'Wk 07', section, display, seq: 1, scores: {[FORM]: scores}, ui: {[FORM]: feedbackState}, marks: {[FORM]: marks}};
   work.data = {problems: [], lessons: [{topic: 'Fictional lesson', forms: [{form_id: FORM, label: 'Fictional assignment', students: rows, late: [], ...form}]}], ...data};
   const document = {createElement: tag => new Element(tag), getElementById: id => { if (!nodes.has(id)) nodes.set(id, new Element('div')); return nodes.get(id); }};
   const context = vm.createContext({document, Node: Element, work, URL,
     scoreFile: row => row.files[0], markDate: mark => mark.at,
     helperProgress: () => null, sendToHelper: () => { throw Error('No handoff on render'); },
+    postJSON: async (url, body) => { requests.push({method: 'POST', url, body}); return {...feedbackData.students[0].draft, saved_at: '2032-01-07T15:00:00Z'}; },
     studentWorkCoverageIncomplete: () => Boolean(work.data.problems.length || work.data.folder_note || work.data.assessment_problem || work.data.shared_form?.problem || work.data.read_timeouts?.length || work.data.lessons.some(lesson => lesson.forms.some(form => form.problem))),
-    fetch: () => { throw Error('Rendering must not request work'); }});
-  vm.runInContext(prelude + '\n' + functions + '\nglobalThis.ui = {renderWork, verifiedSavedGrade, newlyGraded};', context);
+    fetch: async url => { requests.push({method: 'GET', url}); return {ok: true, json: async () => feedbackData}; }});
+  vm.runInContext(prelude + '\n' + functions + '\nglobalThis.ui = {renderWork, verifiedSavedGrade, newlyGraded, openPanel, feedbackAction};', context);
   const before = JSON.stringify(work.data); context.ui.renderWork(); assert.equal(JSON.stringify(work.data), before);
-  return {body: nodes.get('work-body'), ui: context.ui};
+  return {body: nodes.get('work-body'), ui: context.ui, work, requests};
 }
 
 for (const [name, data] of [
@@ -106,4 +109,48 @@ for (const at of ['not-a-time', '2999-01-01T00:00:00Z']) test('invalid or future
   const {body} = boot({marks: {configured: true, entered_at: {at}}});
   assert.doesNotMatch(body.textContent, /IC entry receipt recorded/);
   assert.match(body.textContent, /No verified IC entry receipt/);
+});
+
+test('saved Student work exposes the existing closed feedback panel without fetching or generating', () => {
+  const {body, requests} = boot();
+  assert.match(body.textContent, /Student feedback · backup to the printed packet/);
+  const panel = walk(body).find(n => n.tagName === 'details' && n.className.includes('feedback-backup'));
+  assert.ok(panel); assert.equal(Boolean(panel.open), false);
+  assert.equal(walk(body).some(n => n.tagName === 'button' && /Generate feedback|Save private draft/.test(n.textContent)), false);
+  assert.deepEqual(requests, []);
+});
+
+test('an unbound Form cannot expose feedback actions', () => {
+  const {body, requests} = boot({form: {form_id: null}});
+  assert.doesNotMatch(body.textContent, /Student feedback · backup/);
+  assert.deepEqual(requests, []);
+});
+
+test('opening feedback uses the existing exact Form read; generation and Save remain explicit', async () => {
+  const h = boot(); const form = h.work.data.lessons[0].forms[0];
+  await h.ui.openPanel(form, 'feedback');
+  assert.deepEqual(h.requests, [{method: 'GET', url: `api/feedback/native?class=forensics&week=Wk%2007&form=${FORM}`}]);
+  assert.match(h.body.textContent, /No current, roster-matched submissions/);
+});
+
+const feedbackStudent = (hold = '') => ({name: 'Fictional student', section: 'Fictional A2', file_id: 'FICTIONALFILE001', hold,
+  draft: {id: 'FICTIONALDRAFT001', source_modified: '2032-01-07T14:00:00Z', report: {student_summary: 'Existing draft', question: 'Why?', aspects: [], teacher_notes: []}}});
+
+test('existing feedback holds suppress both Generate and Save without hiding saved PDF access', () => {
+  const student = feedbackStudent('Exact lesson mapping is held');student.draft.pdf_url = 'https://example.test/saved.pdf';
+  const {body, requests} = boot({feedbackState: {open: 'feedback', feedback: {students: [student]}}});
+  assert.match(body.textContent, /Exact lesson mapping is held/);
+  assert.equal(walk(body).some(n => n.tagName === 'button' && /Generate feedback|Check current work|Save private draft/.test(n.textContent)), false);
+  assert.equal(walk(body).some(n => n.tagName === 'a' && n.href === student.draft.pdf_url), true);
+  assert.deepEqual(requests, []);
+});
+
+test('existing eligible draft Save uses its exact guarded feedback route and never an IC route', async () => {
+  const student = feedbackStudent(), feedback = {students: [student]};
+  const h = boot({feedbackState: {open: 'feedback', feedback}, feedbackData: feedback});
+  assert.match(h.body.textContent, /Save private draft/);assert.deepEqual(h.requests, []);
+  await h.ui.feedbackAction(h.work.data.lessons[0].forms[0], student, 'save');
+  assert.equal(h.requests.length, 1);assert.equal(h.requests[0].url, 'api/feedback/save');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.requests[0].body)), {class: 'forensics', week: 'Wk 07', form: FORM, file: student.file_id, id: student.draft.id});
+  assert.match(h.body.textContent, /Saved privately in the Hub/);
 });
