@@ -69,6 +69,17 @@ const hash=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SH
 const freshFailure=code=>['submission_changed_reassess','assessment_source_changed_during_capture'].includes(code)
  ?'The current source changed. Refresh the fresh current-source review and review a packet bound to that source before Save.'
  :explain(code);
+const firstFailure=code=>code==='assessment_initial_identity_reconciliation_required'
+ ?'Existing records use more than one student identity key. Reconcile that identity linkage before a first import; the approved packet was preserved and nothing was saved.'
+ :code==='assessment_initial_predecessor_exists'
+ ?'An assessment already exists for this student and lesson. Use its saved-record review; the first import will not replace it.'
+ :code==='assessment_evidence_not_in_source'
+ ?'A quoted excerpt does not match the current source. Preserve the approved packet and have the teacher review its current-source evidence before importing or saving again.'
+ :['assessment_manifest_missing','assessment_manifest_unparsed','assessment_manifest_not_in_source','invalid_assessment_manifest'].includes(code)
+ ?'The packet’s requirements could not be verified against the current source. Preserve the approved packet and manually review its manifest and item lists before importing or saving again.'
+ :code==='assessment_not_ready'
+ ?'At least one item still needs review. Have the teacher resolve every judgment in the complete approved packet before importing or saving again.'
+ :freshFailure(code);
 const timestamp=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)&&Number.isFinite(Date.parse(value));
 function preserveSaveEvidence(root,body,response){
  const evidence={schema:'hub-assessment-save-evidence/v1',request:JSON.parse(body),...(response?{response:copy(response)}:{})};
@@ -111,7 +122,7 @@ export function suggestName(fileName){
 export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  const request=fetcher||((url,options)=>fetch(url,options));
  container.append(node(container,'h3','Assessment drafting & review'));
- container.append(node(container,'p','Generate reads the student’s current document and drafts judgments with quoted evidence using the live Agenda instructions (about $0.11 per new assessment). A saved draft is reused when the source version, lesson, section and checkpoint match; moving from Notes to Drafts may require a separate assessment. You review and can change any judgment, level or feedback; Save re-verifies the document and recomputes every score from your reviewed judgments. Saved feedback reopens from each student’s row above.','hint'));
+ container.append(node(container,'p','Review fresh current-source assessment imports a complete teacher-reviewed packet without a model call, including a first assessment. Generate reads the student’s current document and drafts judgments with quoted evidence using the live Agenda instructions (about $0.11 per new assessment). A saved draft is reused when the source version, lesson, section and checkpoint match; moving from Notes to Drafts may require a separate assessment. You review and can change any judgment, level or feedback; Save re-verifies the document and recomputes every score from your reviewed judgments. Saved feedback reopens from each student’s row above.','hint'));
  const state=node(container,'p','','hint');state.setAttribute('role','status');
  const form=node(container,'div',undefined,'assessment-form');
  const review=node(container,'div');review.setAttribute('aria-live','polite');
@@ -219,8 +230,12 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     if(!sourceId){try{sourceId=new URL(row.source_url).pathname.match(/\/d\/([^/]+)/)?.[1];}catch{}}
     return sourceId===file?.file_id&&row.class_key===target.classKey&&row.assignment_key===target.assignmentKey&&row.section_id===target.sectionId&&row.assessment_stage===stage.value&&row.status==='assessed'&&!row.hold_reason&&!row.superseded_by;
    });
-   if(saved.length!==1){state.textContent='One active saved assessment for this exact submission and checkpoint is required. Refresh the saved records; nothing was generated.';return;}
+   if(saved.length>1){state.textContent='One active saved assessment for this exact submission and checkpoint is required. Refresh the saved records; nothing was generated.';return;}
    const mine=++generation,selectedStage=stage.value;busy=true;review.replaceChildren();loadFresh.disabled=true;
+   if(!saved.length){
+    renderFirstImport(file,target,selectedStage,mine,()=>fileSelect.value===file.file_id&&stage.value===selectedStage);
+    loadFresh.disabled=false;return;
+   }
    state.textContent='Verifying the saved record and current source for a fresh reviewed packet — no model call…';
    try{
     const r=await request('/api/assessment-save?'+new URLSearchParams({record_id:saved[0].record_id,mode:'fresh_current_review'}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
@@ -423,18 +438,81 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   }catch(error){if(current()){busy=false;form.inert=false;result.textContent=error.message||'Pending-operation readback is unavailable. Preserve its history.';}}
  }
 
+ function renderFirstImport(file,target,selectedStage,mine,selected){
+  state.textContent='Import a complete first assessment already reviewed by the teacher — no model call.';
+  review.append(node(review,'h4','Review a first assessment'),node(review,'p','Paste the whole teacher-reviewed current assessment packet. The server will verify its source, identity, lesson, section and checkpoint, and check that no earlier assessment would be replaced. Nothing is generated or saved by this check.','hint'));
+  const prepared=node(review,'textarea');prepared.rows=10;review.append(labeled(review,'Teacher-reviewed current assessment JSON',prepared));
+  const open=node(review,'button','Review imported current assessment');open.type='button';
+  const cancel=node(review,'button','Cancel first assessment review');cancel.type='button';review.append(open,cancel);
+  let opening=false,closed=false;
+  const current=()=>!closed&&mine===generation&&selected()&&scope?.ready&&scope.classKey===target.classKey&&scope.assignmentKey===target.assignmentKey&&scope.sectionId===target.sectionId&&records?.()?.status==='loaded';
+  cancel.addEventListener('click',()=>{closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='First assessment review cancelled. Nothing was saved or generated.';});
+  open.addEventListener('click',async()=>{
+   if(opening||!current())return;opening=true;open.disabled=true;
+   try{
+    const importedText=prepared.value;
+    if(importedText.length>400000)throw Error('The prepared packet exceeds the bounded review size. Nothing was saved.');
+    const imported=JSON.parse(importedText),packet=exactKeys(imported,['packet'])?imported.packet:imported;
+    completeFreshPacket(packet);
+    if(packet.class_key!==target.classKey||packet.assignment_key!==target.assignmentKey||packet.section_id!==target.sectionId||packet.section_name!==target.sectionName||packet.stage!==selectedStage||packet.source.file_id!==file.file_id)
+     throw Error('The current packet does not match the selected lesson, section, checkpoint and submission.');
+    if(!packet.stage_reference.trim()||!packet.identity.display_name.trim()||!packet.identity.student_id_kind.trim()||!packet.identity.identity_basis.trim()||!(packet.identity.student_id.trim()||packet.identity.learner_key.trim()))
+     throw Error('The first packet needs its explicit confirmed identity and checkpoint basis. Nothing was inferred.');
+    const immutable=copy(packet),packetHash=await hash(immutable);
+    if(!current())return;
+    if(prepared.value!==importedText)throw Error('The packet changed during verification. Review its current JSON again.');
+    state.textContent='Verifying the first reviewed packet and current source — no model call…';
+    const r=await request('/api/assessment-review',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({packet:immutable})});
+    const d=await r.json();if(!current())return;
+    if(!r.ok)throw Error(firstFailure(d.error));
+    const basis=d.review_basis,fresh=basis?.source;
+    const validScore=value=>object(value)&&Number.isFinite(value.out_of)&&value.out_of>0&&((value.value===null&&value.exact_value===null)||(Number.isFinite(value.value)&&typeof value.exact_value==='string'&&value.exact_value.length>0));
+    if(d.schema_version!=='hub-assessment-review/v1'||d.status!=='first_packet_ready'||typeof d.record_id!=='string'||!d.record_id||d.external_writes!==0||d.live_model_calls!==0||
+     !exactKeys(basis,['mode','source','packet_sha256','target_sha256','absence_sha256'])||basis.mode!=='first_current_review'||
+     ['packet_sha256','target_sha256','absence_sha256'].some(key=>!/^[a-f0-9]{64}$/.test(basis[key]))||basis.packet_sha256!==packetHash||
+     !object(fresh)||['file_id','sha256','version','modified_at'].some(key=>fresh[key]!==immutable.source[key])||
+     !object(d.scores)||!validScore(d.scores.content_notes)||!validScore(d.scores.revision)||await hash(d.packet)!==packetHash)
+     throw Error('The first assessment review could not be verified. Nothing was saved.');
+    if(!current())return;
+    if(prepared.value!==importedText)throw Error('The packet changed during verification. Review its current JSON again.');
+    renderFreshReview(d,immutable,packetHash,file,mine);
+   }catch(error){if(current())state.textContent=error.message||'The prepared packet is not valid JSON.';}
+   finally{opening=false;open.disabled=false;}
+  });
+ }
+
  function renderFreshReview(loaded,packet,packetHash,file,mine){
   if(mine!==generation||!scope?.ready||packet.class_key!==scope.classKey||packet.assignment_key!==scope.assignmentKey||packet.section_id!==scope.sectionId||!files.some(current=>current.file_id===file.file_id))return;
   let closed=false,attempted=false,inFlight=false,attemptBody=null,responseEvidence=null;
+  const first=loaded.status==='first_packet_ready'&&loaded.review_basis.mode==='first_current_review';
   const basis={...copy(loaded.review_basis),packet_sha256:packetHash};
+  const firstSavedProof=d=>d.readback_verified===true&&['saved','already_saved'].includes(d.status)&&d.record_id===loaded.record_id&&
+   object(d.source)&&['file_id','sha256','version','modified_at'].every(key=>d.source[key]===packet.source[key])&&
+   Array.isArray(d.superseded)&&d.superseded.length===0&&d.answers===packet.responses.length;
   review.replaceChildren();busy=true;form.inert=true;
   const meaningful=packet.responses.filter(response=>response.judgment==='meaningful_attempt').length;
-  state.textContent='Fresh current-source assessment ready for confirmation — no model call. The complete packet stays unchanged through Save.';
-  review.append(node(review,'h4','Fresh current-source assessment · '+packet.identity.display_name+' · '+packet.stage+' checkpoint'),
-   node(review,'p','Original saved record: '+basis.record_id+'. Earlier assessments and uncertain Save history remain preserved.','hint'),
+  state.textContent=(first?'First assessment':'Fresh current-source assessment')+' ready for confirmation — no model call. The complete packet stays unchanged through Save.';
+  review.append(node(review,'h4',(first?'First assessment':'Fresh current-source assessment')+' · '+packet.identity.display_name+' · '+packet.stage+' checkpoint'));
+  if(!first)review.append(node(review,'p','Original saved record: '+basis.record_id+'. Earlier assessments and uncertain Save history remain preserved.','hint'));
+  review.append(
    node(review,'p','Verified current source version '+packet.source.version+' · hash '+packet.source.sha256),
    node(review,'p','Explicit judgments: '+meaningful+' meaningful; '+(packet.responses.length-meaningful)+' not meaningful; '+packet.responses.length+' total. These counts report the imported judgments, not a new assessment.'),
    node(review,'p','Reviewed packet hash: '+packetHash,'hint'));
+  if(first){
+   review.append(node(review,'p','Identity: '+(packet.identity.student_id||'(no native student number)')+' · kind '+packet.identity.student_id_kind+' · learner key '+(packet.identity.learner_key||'(none)')+' · '+packet.identity.identity_basis),
+    node(review,'p','Checkpoint basis: '+packet.stage_reference),node(review,'p','Manifest: '+packet.manifest.inventory_line+' · '+packet.manifest.version_label));
+   const counts=[];
+   for(const [category,field]of [['NOTES','notes_ids'],['BANK','bank_ids'],['DRAFT','draft_ids']]){
+    const ids=packet.manifest[field],completed=packet.responses.filter(response=>response.category===category&&!response.optional&&ids.includes(response.question_id)&&response.judgment==='meaningful_attempt').length;
+    counts.push(completed+'/'+ids.length+' '+category);
+    review.append(node(review,'p',category+' required IDs: '+(ids.join(', ')||'(none)')));
+   }
+   review.append(node(review,'p','Optional IDs: '+(packet.manifest.optional_ids.join(', ')||'(none)')),
+    node(review,'p','Imported required judgments: '+counts.join(' · ')),
+    node(review,'p','Server-computed scores — Content/notes: '+score(loaded.scores.content_notes)+' · Revision: '+score(loaded.scores.revision)+'. The existing scoring policy is unchanged.'));
+   const literal=node(review,'details');literal.append(node(review,'summary','Complete teacher-reviewed packet JSON'));
+   const area=node(review,'textarea');area.readOnly=true;area.rows=10;area.value=JSON.stringify(packet,null,2);literal.append(area);review.append(literal);
+  }
   const table=node(review,'table'),heading=node(review,'tr');
   for(const title of ['Item','Explicit judgment','Concept','Explanation','Quoted current evidence & note','Feedback to student'])heading.append(node(review,'th',title));table.append(heading);
   for(const response of packet.responses){
@@ -446,10 +524,28 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   const approval=node(review,'input');approval.type='checkbox';approval.checked=false;
   review.append(labeled(review,'I confirm that the teacher has already reviewed this whole current-source packet, including every judgment and quoted excerpt.',approval));
   const save=node(review,'button','Save reviewed assessment to the workbook');save.type='button';save.disabled=true;
-  const cancel=node(review,'button','Cancel fresh current-source review');cancel.type='button';
+  const cancel=node(review,'button',first?'Cancel first assessment review':'Cancel fresh current-source review');cancel.type='button';
   const result=node(review,'p','','hint');result.setAttribute('role','status');review.append(save,cancel,result);
+  const check=first?node(review,'button','Check saved assessment readback'):null;
+  if(check){
+   check.type='button';check.hidden=true;review.append(check);
+   check.addEventListener('click',async()=>{
+    if(closed||inFlight||!attempted||mine!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded')return;
+    inFlight=true;check.disabled=cancel.disabled=true;result.textContent='Checking the exact saved assessment — readback only…';
+    try{
+     const r=await request('/api/assessment-review',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'first_readback',packet:copy(packet),review_basis:copy(basis)})});
+     const d=await r.json();if(closed||mine!==generation)return;
+     if(!r.ok)throw Error(firstFailure(d.error));
+     if(!firstSavedProof(d)||d.schema_version!=='hub-assessment-save/v1'||d.status!=='already_saved'||
+      Object.entries(basis.source).some(([key,value])=>d.source[key]!==value)||d.external_writes!==0||d.live_model_calls!==0)throw Error('The exact saved assessment could not be verified. Preserve this attempt and check readback again.');
+     result.textContent='Saved and read back ✓ · Record '+d.record_id+'. First assessment verified by readback only; no new Save was sent. Nothing was posted to Infinite Campus.';
+     save.remove();cancel.remove();check.remove();approval.disabled=true;busy=false;form.inert=false;closed=true;onSaved?.();
+    }catch(error){if(!closed&&mine===generation)result.textContent=(error.message||'The saved readback reply was unavailable.')+' This view will not send another Save.';}
+    finally{inFlight=false;check.disabled=false;cancel.disabled=first&&attempted;}
+   });
+  }
   approval.addEventListener('change',()=>{save.disabled=!approval.checked||attempted||closed;});
-  cancel.addEventListener('click',()=>{if(inFlight)return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='Fresh review cancelled. Saved records remain unchanged.';});
+  cancel.addEventListener('click',()=>{if(inFlight||(first&&attempted))return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='Fresh review cancelled. Saved records remain unchanged.';});
   save.addEventListener('click',async()=>{
    if(closed||attempted||inFlight||!approval.checked)return;
    if(mine!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded'){
@@ -461,13 +557,13 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     attemptBody=JSON.stringify(envelope);
     const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:attemptBody});
     responseEvidence=Number.isInteger(r.status)?{http_status:r.status}:null;
-    const d=await r.json();if(typeof d.error==='string')responseEvidence={...responseEvidence,error_code:d.error};if(!r.ok)throw Error(freshFailure(d.error));
-    if(d.readback_verified!==true)throw Error('The save did not read back as expected.');
+    const d=await r.json();if(typeof d.error==='string')responseEvidence={...responseEvidence,error_code:d.error};if(!r.ok)throw Error(first?firstFailure(d.error):freshFailure(d.error));
+    if(d.readback_verified!==true||(first&&!firstSavedProof(d)))throw Error('The save did not read back as expected.');
     if(mine!==generation){onSaved?.();return;}
-    result.textContent='Saved and read back ✓ · Record '+d.record_id+'. '+(d.superseded?.includes(basis.record_id)?'Prior record retained as superseded history. ':'Saved record verified; prior history preserved. ')+'Nothing was posted to Infinite Campus.';
-    save.remove();cancel.remove();approval.disabled=true;busy=false;form.inert=false;onSaved?.();
-   }catch(error){if(mine===generation){result.textContent=(error.message||'The Save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';if(attemptBody)preserveSaveEvidence(review,attemptBody,responseEvidence);}}
-   finally{inFlight=false;cancel.disabled=false;}
+    result.textContent='Saved and read back ✓ · Record '+d.record_id+'. '+(first?'First assessment saved; no earlier assessment replaced. ':d.superseded?.includes(basis.record_id)?'Prior record retained as superseded history. ':'Saved record verified; prior history preserved. ')+'Nothing was posted to Infinite Campus.';
+    save.remove();cancel.remove();check?.remove();approval.disabled=true;busy=false;form.inert=false;if(first)closed=true;onSaved?.();
+   }catch(error){if(mine===generation){result.textContent=(error.message||'The Save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.'+(first?' Cancel stays unavailable while this Save is unresolved; keep its evidence and check readback.':'');if(attemptBody)preserveSaveEvidence(review,attemptBody,responseEvidence);if(check)check.hidden=false;}}
+   finally{inFlight=false;cancel.disabled=first&&attempted;}
   });
  }
 

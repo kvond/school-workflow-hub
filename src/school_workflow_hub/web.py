@@ -159,13 +159,15 @@ def application(environ, start_response, *, teaching_provider=None):
         except Exception:
             return respond('503 Service Unavailable', {'error': 'agenda_save_unavailable'})
 
-    if path in ("/api/assessment-save", "/api/assessment-recovery"):
+    if path in ("/api/assessment-save", "/api/assessment-recovery", "/api/assessment-review"):
         from .adapters import assessment_save
         from .adapters.hosted_agenda import ConnectionError
         from .core.cloud_state import Busy, Conflict, LeaseLost, StoreUnavailable
         import re as _re
         try:
             assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
+            if path == "/api/assessment-review" and method != "POST":
+                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
             if path == "/api/assessment-recovery" and method == "GET":
                 from urllib.parse import parse_qs
                 from .adapters import assessment_legacy_recovery
@@ -201,6 +203,12 @@ def application(environ, start_response, *, teaching_provider=None):
             if not 1 <= length <= 400000:
                 raise ValueError("invalid_assessment_save")
             payload = json.loads(environ["wsgi.input"].read(length))
+            if path == "/api/assessment-review":
+                from .adapters import assessment_initial_review
+                if isinstance(payload, dict) and payload.get("mode") == "first_readback":
+                    return respond("200 OK", assessment_initial_review.readback(assertion,
+                        {k: v for k, v in payload.items() if k != "mode"}, os.environ))
+                return respond("200 OK", assessment_initial_review.prepare(assertion, payload, os.environ))
             if path == "/api/assessment-recovery":
                 if isinstance(payload, dict) and payload.get("mode") == "legacy_ui_prewrite":
                     from .adapters import assessment_legacy_recovery
@@ -220,7 +228,9 @@ def application(environ, start_response, *, teaching_provider=None):
                 return respond("409 Conflict", {"error": code if _re.fullmatch(r"[a-z0-9_]{1,64}", code)
                                                else "assessment_recovery_conflict"})
             if code not in {"submission_changed_reassess", "assessment_record_conflict",
-                            "assessment_review_changed", "assessment_review_save_pending"}:
+                            "assessment_review_changed", "assessment_review_save_pending",
+                            "assessment_initial_review_changed", "assessment_initial_predecessor_exists",
+                            "assessment_initial_identity_reconciliation_required"}:
                 code = "assessment_save_conflict"
             return respond("409 Conflict", {"error": code})
         except ConnectionError as error:

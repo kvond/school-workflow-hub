@@ -471,3 +471,190 @@ test('future fresh and ordinary Save failures expose the exact immutable envelop
  const h=freshSetup({saveFetch:async()=>({ok:false,status:409,json:async()=>({error:'assessment_column_missing'})})});await openFresh(h);await importFresh(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
  assert.deepEqual(JSON.parse(labelControl(h.root,'Save attempt evidence JSON').value).response,{http_status:409,error_code:'assessment_column_missing'});
 });
+
+function firstFixture(){
+ const packet=structuredClone(freshFixture().packet);
+ packet.stage='final';packet.stage_reference='Teacher-confirmed final checkpoint';
+ packet.manifest={inventory_line:'[[MARKER-INVENTORY:FIRST25]]',version_label:'Fictional complete current version',notes_ids:Array.from({length:14},(_,i)=>'N'+(i+1)),bank_ids:Array.from({length:8},(_,i)=>'Term '+(i+1)),draft_ids:['D1','D2','D3'],optional_ids:[]};
+ packet.responses=[...packet.manifest.notes_ids.map((id,i)=>[id,'NOTES',i<13]),...packet.manifest.bank_ids.map(id=>[id,'BANK',true]),...packet.manifest.draft_ids.map(id=>[id,'DRAFT',true])].map(([id,category,meaningful],i)=>({
+  question_id:id,category,judgment:meaningful?'meaningful_attempt':'blank',response_excerpt:meaningful?'Explicit fictional current response '+(i+1):'',evidence_note:'Teacher-reviewed evidence '+(i+1),
+  conceptual_level:meaningful?'Proficient':'Evidence unavailable',explanation_level:'',critical_aspect:category==='BANK'?'':'Fictional aspect '+(i+1),rubric_version:'critical-aspect-4/v1',
+  conceptual_feedback:'Teacher-reviewed item feedback '+(i+1),prompt:'Fictional printed prompt '+(i+1),prompt_basis:'Literal current source label',slide_number:String(i+1),optional:false}));
+ packet.feedback='Complete teacher-reviewed first report with explicit findings.';
+ packet.comparison_status='First assessment; no prior work or growth inferred.';
+ const scores={content_notes:{completed:21,required:22,status:'proposed',out_of:10,value:105/11,exact_value:'105/11'},revision:{completed:3,required:3,status:'proposed',out_of:10,value:10,exact_value:'10'}};
+ const reply={schema_version:'hub-assessment-review/v1',status:'first_packet_ready',record_id:'asmt-first-fictional',packet:structuredClone(packet),scores,counts:{NOTES:{completed:13,required:14,due:true},BANK:{completed:8,required:8,due:true},DRAFT:{completed:3,required:3,due:true}},external_writes:0,live_model_calls:0,
+  review_basis:{mode:'first_current_review',source:{file_id:packet.source.file_id,sha256:packet.source.sha256,version:packet.source.version,modified_at:packet.source.modified_at,raw_sha256:'d'.repeat(64),metadata_sha256:'e'.repeat(64)},packet_sha256:contentHash(packet),target_sha256:'a'.repeat(64),absence_sha256:'b'.repeat(64)}};
+ return {packet,reply};
+}
+function firstSavedReply(fixture){
+ return {status:'saved',record_id:fixture.reply.record_id,readback_verified:true,superseded:[],answers:fixture.packet.responses.length,
+  source:Object.fromEntries(['file_id','sha256','version','modified_at'].map(key=>[key,fixture.packet.source[key]]))};
+}
+function firstReadbackReply(fixture){
+ return {...firstSavedReply(fixture),schema_version:'hub-assessment-save/v1',status:'already_saved',source:structuredClone(fixture.reply.review_basis.source),external_writes:0,live_model_calls:0};
+}
+function firstSetup({prepareFetch,prepareReply,saveFetch,saveReply,readbackFetch,readbackReply,submissions}={}){
+ const fixture=firstFixture(),root=new Element(document,'div'),calls=[];let savedCount=0;
+ const data=structuredClone(records);data.data.submissions=submissions??[{class_key:'forensics',assignment_key:'F1',section_id:'a2',section_name:'A2 Forensics',status:'roster_matched',source_file_id:'fictional-a2',student_id:'12345'}];
+ const fetcher=async(url,options)=>{
+  calls.push({url,options});
+  if(url==='/api/assessment-review'){
+   if(JSON.parse(options.body).mode==='first_readback')return readbackFetch?readbackFetch(options,fixture):{ok:true,json:async()=>typeof readbackReply==='function'?readbackReply(fixture):readbackReply||firstReadbackReply(fixture)};
+   return prepareFetch?prepareFetch(options,fixture):{ok:true,json:async()=>prepareReply?prepareReply(fixture):fixture.reply};
+  }
+  if(url==='/api/assessment-save'&&options?.method==='POST')return saveFetch?saveFetch(options,fixture):{ok:true,json:async()=>typeof saveReply==='function'?saveReply(fixture):saveReply||firstSavedReply(fixture)};
+  if(url.includes('draft_for='))return {ok:true,json:async()=>({status:'no_draft'})};
+  return {ok:true,json:async()=>({configured:false,dependency:'provider_not_configured'})};
+ };
+ return {root,calls,data,fixture,get savedCount(){return savedCount;},view:mountAssessmentReview(root,{fetcher,records:()=>data,onSaved:()=>savedCount++})};
+}
+const firstPreparations=h=>h.calls.filter(call=>call.url==='/api/assessment-review'&&!JSON.parse(call.options.body).mode);
+const firstReadbacks=h=>h.calls.filter(call=>call.url==='/api/assessment-review'&&JSON.parse(call.options.body).mode==='first_readback');
+async function openFirst(h){
+ h.view.update({...scope,stage:'final'});h.view.setFiles([{...files[0],stage:'assessed',source_revision:'34'}],null);await settle();
+ button(h.root,'Review fresh current-source assessment').dispatchEvent(new Event('click'));await settle();
+}
+async function importFirst(h,packet=h.fixture.packet){
+ const area=labelControl(h.root,'Teacher-reviewed current assessment JSON');area.value=JSON.stringify(packet);
+ button(h.root,'Review imported current assessment').dispatchEvent(new Event('click'));await settleHash();return area;
+}
+
+test('first complete teacher packet opens without a baseline or provider, displays explicit counts and server scores, and saves the exact confirmed packet',async()=>{
+ const h=firstSetup();await openFirst(h);assert.match(h.root.allText,/Review a first assessment/);assert.equal(firstPreparations(h).length,0);
+ const area=await importFirst(h,{packet:h.fixture.packet});
+ assert.equal(firstPreparations(h).length,1);assert.deepEqual(JSON.parse(firstPreparations(h)[0].options.body),{packet:h.fixture.packet});
+ assert.deepEqual(Object.fromEntries(Object.entries(firstPreparations(h)[0].options).filter(([key])=>key!=='body')),{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'}});
+ assert.match(h.root.allText,/13\/14 NOTES · 8\/8 BANK · 3\/3 DRAFT/);assert.match(h.root.allText,/9\.55 \/ 10 \(exact 105\/11\)/);assert.match(h.root.allText,/Revision: 10 \/ 10 \(exact 10\)/);
+ assert.match(h.root.allText,/Identity: 12345 · kind IC number/);assert.match(h.root.allText,/Verified fictional IC identity/);assert.match(h.root.allText,/Checkpoint basis: Teacher-confirmed final checkpoint/);
+ assert.match(h.root.allText,/NOTES required IDs: N1, N2/);assert.match(h.root.allText,/BANK required IDs: Term 1/);assert.match(h.root.allText,/DRAFT required IDs: D1, D2, D3/);
+ for(const item of h.fixture.packet.responses)assert.match(h.root.allText,new RegExp(item.conceptual_feedback));
+ assert.doesNotMatch(h.root.allText,/Original saved record:|undefined/);
+ const literal=h.root.all.find(e=>e.tagName==='textarea'&&e.readOnly);assert.deepEqual(JSON.parse(literal.value),h.fixture.packet);
+ const save=button(h.root,'Save reviewed assessment to the workbook');assert.equal(save.disabled,true);save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0);
+ area.value='changed detached input';literal.value='changed read-only view';h.fixture.packet.feedback='changed fixture after review';approveFresh(h);
+ save.dispatchEvent(new Event('click'));await settle();const sent=JSON.parse(saveCalls(h)[0].options.body);
+ assert.deepEqual(sent.packet,h.fixture.reply.packet);assert.equal(sent.packet.responses.length,25);assert.deepEqual(sent.review_basis,h.fixture.reply.review_basis);assert.equal(contentHash(sent.packet),sent.review_basis.packet_sha256);
+ assert.match(h.root.allText,/First assessment saved; no earlier assessment replaced/);assert.equal(h.savedCount,1);
+ assert.equal(h.calls.some(call=>call.url.startsWith('/api/assessment-save?')),false);assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+});
+
+test('first import rejects incomplete or wrong selected packets before verification and keeps the editable JSON',async()=>{
+ const changes=[p=>{p.class_key='biology';},p=>{p.assignment_key='OTHER';},p=>{p.section_id='a3';},p=>{p.section_name='Wrong section';},p=>{p.stage='initial';},p=>{p.source.file_id='different-file';},p=>{delete p.manifest;},p=>{delete p.responses[0].judgment;},p=>{p.responses.push({...p.responses[0]});},p=>{p.identity.student_id='';p.identity.learner_key='';},p=>{p.stage_reference='';}];
+ for(const change of changes){const h=firstSetup();await openFirst(h);const packet=structuredClone(h.fixture.packet);change(packet);const area=await importFirst(h,packet);assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),area);assert.equal(firstPreparations(h).length,0);assert.equal(saveCalls(h).length,0);assert.ok(button(h.root,'Cancel first assessment review'));}
+ const h=firstSetup();await openFirst(h);const area=labelControl(h.root,'Teacher-reviewed current assessment JSON');area.value='{';button(h.root,'Review imported current assessment').dispatchEvent(new Event('click'));await settleHash();assert.equal(area.value,'{');assert.equal(firstPreparations(h).length,0);
+});
+
+test('first import refuses changed server packets, scope proofs, current source, counters and invalid scores',async()=>{
+ const changes=[d=>{d.packet.feedback+=' changed';},d=>{d.review_basis.mode='fresh_current_review';},d=>{delete d.review_basis.absence_sha256;},d=>{d.review_basis.target_sha256='invalid';},d=>{d.review_basis.packet_sha256='f'.repeat(64);},
+  d=>{d.review_basis.source.file_id='different-file';},d=>{d.review_basis.source.version='35';},d=>{d.review_basis.source.modified_at='2026-10-25T14:00:00Z';},d=>{d.review_basis.source.sha256='f'.repeat(64);},d=>{d.external_writes=1;},d=>{d.live_model_calls=1;},d=>{d.scores.revision.value='10';},d=>{delete d.scores;}];
+ for(const change of changes){const h=firstSetup({prepareReply:fixture=>{const reply=structuredClone(fixture.reply);change(reply);return reply;}});await openFirst(h);const area=await importFirst(h);assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),area);assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);assert.equal(saveCalls(h).length,0);}
+});
+
+test('first review trusts the validated server arithmetic rather than applying a browser score formula',async()=>{
+ const h=firstSetup({prepareReply:fixture=>({...fixture.reply,scores:{...fixture.reply.scores,content_notes:{...fixture.reply.scores.content_notes,value:9.125,exact_value:'73/8'}}})});
+ await openFirst(h);await importFirst(h);assert.match(h.root.allText,/9\.13 \/ 10 \(exact 73\/8\)/);assert.equal(saveCalls(h).length,0);
+});
+
+test('cancelled or changed-context first import and Save controls cannot dispatch, including late initializer replies',async()=>{
+ const cancelled=firstSetup();await openFirst(cancelled);const area=labelControl(cancelled.root,'Teacher-reviewed current assessment JSON');area.value=JSON.stringify(cancelled.fixture.packet);const detached=button(cancelled.root,'Review imported current assessment');
+ button(cancelled.root,'Cancel first assessment review').dispatchEvent(new Event('click'));detached.dispatchEvent(new Event('click'));await settleHash();assert.equal(firstPreparations(cancelled).length,0);
+ for(const update of [h=>button(h.root,'Cancel first assessment review').dispatchEvent(new Event('click')),h=>h.view.update({...scope,sectionId:'a3',stage:'final'}),h=>h.view.setFiles([{...files[0],source_revision:'35'}],null),h=>{const stage=h.root.all.find(e=>e.tagName==='select'&&e.children.some(o=>o.value==='final'));stage.value='initial';stage.dispatchEvent(new Event('change'));}]){
+  const h=firstSetup();await openFirst(h);await importFirst(h);approveFresh(h);const save=button(h.root,'Save reviewed assessment to the workbook');update(h);save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0);
+ }
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),late=firstSetup({prepareFetch:()=>pending});await openFirst(late);await importFirst(late);late.view.update({...scope,sectionId:'a3',stage:'final'});finish({ok:true,json:async()=>late.fixture.reply});await settleHash();assert.equal(button(late.root,'Save reviewed assessment to the workbook'),undefined);assert.equal(saveCalls(late).length,0);
+});
+
+test('first preparation cannot review edited JSON during a pending check and duplicate clicks make one read-only initializer request',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=firstSetup({prepareFetch:()=>pending});await openFirst(h);
+ const area=labelControl(h.root,'Teacher-reviewed current assessment JSON');area.value=JSON.stringify(h.fixture.packet);const open=button(h.root,'Review imported current assessment');open.dispatchEvent(new Event('click'));open.dispatchEvent(new Event('click'));await settleHash();assert.equal(firstPreparations(h).length,1);
+ area.value=JSON.stringify({...h.fixture.packet,feedback:'Changed while pending'});finish({ok:true,json:async()=>h.fixture.reply});await settleHash();assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);assert.equal(saveCalls(h).length,0);assert.match(h.root.allText,/packet changed during verification/);
+});
+
+test('first double Save and lost reply retain one immutable attempt and never claim unverified or superseding success',async()=>{
+ let reject;const pending=new Promise((_,fail)=>{reject=fail;}),h=firstSetup({saveFetch:()=>pending});await openFirst(h);await importFirst(h);approveFresh(h);
+ const save=button(h.root,'Save reviewed assessment to the workbook');save.dispatchEvent(new Event('click'));save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,1);
+ const sent=saveCalls(h)[0].options.body;reject(Error('synthetic lost reply'));await settle();save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,0);assert.match(h.root.allText,/will not send another Save/);assert.doesNotMatch(h.root.allText,/Saved and read back/);
+ assert.deepEqual(JSON.parse(labelControl(h.root,'Save attempt evidence JSON').value).request,JSON.parse(sent));assert.ok(button(h.root,'Download Save attempt evidence'));
+ for(const change of [d=>{d.readback_verified=false;},d=>{d.record_id='different-record';},d=>{d.superseded=['unexpected-prior'];},d=>{delete d.record_id;}]){const bad=firstSetup({saveReply:fixture=>{const d=firstSavedReply(fixture);change(d);return d;}});await openFirst(bad);await importFirst(bad);approveFresh(bad);button(bad.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();assert.equal(bad.savedCount,0);assert.doesNotMatch(bad.root.allText,/Saved and read back/);assert.equal(button(bad.root,'Check saved assessment readback').hidden,false);assert.ok(labelControl(bad.root,'Save attempt evidence JSON'));}
+});
+
+test('a first preparation hold remains local and ambiguous existing assessments never become a first import',async()=>{
+ const h=firstSetup({prepareFetch:async()=>({ok:false,json:async()=>({error:'assessment_review_save_pending'})})});await openFirst(h);await importFirst(h);assert.match(h.root.allText,/earlier Save/);assert.equal(saveCalls(h).length,0);assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);assert.ok(button(h.root,'Cancel first assessment review'));
+ const baseline={record_id:'asmt-one',source_file_id:'fictional-a2',class_key:'forensics',assignment_key:'F1',section_id:'a2',assessment_stage:'final',status:'assessed'};
+ const ambiguous=firstSetup({submissions:[baseline,{...baseline,record_id:'asmt-two'}]});await openFirst(ambiguous);assert.equal(labelControl(ambiguous.root,'Teacher-reviewed current assessment JSON'),undefined);assert.equal(firstPreparations(ambiguous).length,0);assert.match(ambiguous.root.allText,/One active saved assessment/);
+});
+
+test('first lost Save acknowledgement permits only an explicit exact-packet readback without another Save or model call',async()=>{
+ const h=firstSetup({saveFetch:async()=>{throw Error('synthetic lost acknowledgement');}});await openFirst(h);await importFirst(h);
+ const check=button(h.root,'Check saved assessment readback');assert.equal(check.hidden,true);assert.equal(firstReadbacks(h).length,0);approveFresh(h);
+ button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,0);assert.equal(check.hidden,false);assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,0);
+ const sent=JSON.parse(saveCalls(h)[0].options.body);check.dispatchEvent(new Event('click'));await settle();assert.deepEqual(JSON.parse(firstReadbacks(h)[0].options.body),{mode:'first_readback',packet:sent.packet,review_basis:sent.review_basis});
+ assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,1);assert.match(h.root.allText,/First assessment verified by readback only; no new Save was sent/);assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);
+ assert.ok(labelControl(h.root,'Save attempt evidence JSON'));assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+});
+
+test('first readback rejects missing or partial proof and serializes read-only checks after an unverified Save',async()=>{
+ for(const change of [d=>{d.readback_verified=false;},d=>{d.status='saved';},d=>{d.record_id='different-record';},d=>{d.external_writes=1;},d=>{delete d.live_model_calls;},d=>{d.live_model_calls=1;}]){
+  const h=firstSetup({saveReply:fixture=>({...firstSavedReply(fixture),readback_verified:false}),readbackReply:fixture=>{const d=firstReadbackReply(fixture);change(d);return d;}});await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+  button(h.root,'Check saved assessment readback').dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,1);assert.equal(firstReadbacks(h).length,1);assert.equal(h.savedCount,0);assert.doesNotMatch(h.root.allText,/Saved and read back/);assert.equal(button(h.root,'Save reviewed assessment to the workbook').disabled,true);
+ }
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=firstSetup({saveFetch:async()=>{throw Error('lost');},readbackFetch:()=>pending});await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ const check=button(h.root,'Check saved assessment readback');check.dispatchEvent(new Event('click'));check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,1);assert.equal(button(h.root,'Cancel first assessment review').disabled,true);
+ finish({ok:false,json:async()=>({error:'assessment_readback_failed'})});await settle();assert.equal(h.savedCount,0);assert.equal(saveCalls(h).length,1);assert.equal(check.disabled,false);assert.match(h.root.allText,/will not send another Save/);
+});
+
+test('an uncertain first Save cannot discard its exact evidence or readback control through Cancel',async()=>{
+ for(const mode of ['lost','unverified']){
+  let checks=0;
+  const h=firstSetup({...(mode==='lost'?{saveFetch:async()=>{throw Error('lost');}}:{saveReply:fixture=>({...firstSavedReply(fixture),readback_verified:false})}),
+   readbackFetch:async()=>++checks===1?{ok:false,json:async()=>({error:'assessment_readback_failed'})}:{ok:true,json:async()=>firstReadbackReply(h.fixture)}});
+  await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+  const cancel=button(h.root,'Cancel first assessment review'),check=button(h.root,'Check saved assessment readback'),evidence=labelControl(h.root,'Save attempt evidence JSON');
+  assert.equal(cancel.disabled,true);assert.equal(check.hidden,false);assert.ok(evidence);assert.ok(button(h.root,'Download Save attempt evidence'));
+  cancel.dispatchEvent(new Event('click'));await settle();
+  assert.equal(labelControl(h.root,'Save attempt evidence JSON'),evidence);assert.equal(button(h.root,'Check saved assessment readback'),check);
+  assert.doesNotMatch(h.root.allText,/Fresh review cancelled|Saved records remain unchanged/);assert.equal(saveCalls(h).length,1);
+  check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,1);assert.equal(h.savedCount,0);assert.equal(cancel.disabled,true);assert.equal(check.disabled,false);
+  cancel.dispatchEvent(new Event('click'));await settle();assert.equal(labelControl(h.root,'Save attempt evidence JSON'),evidence);assert.equal(button(h.root,'Check saved assessment readback'),check);
+  check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,2);assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,1);assert.match(h.root.allText,/First assessment verified by readback only/);
+  assert.equal(button(h.root,'Cancel first assessment review'),undefined);assert.deepEqual(JSON.parse(evidence.value).request,JSON.parse(saveCalls(h)[0].options.body));
+  assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+ }
+});
+
+test('stale first readback controls cannot send checks or claim late success',async()=>{
+ const h=firstSetup({saveFetch:async()=>{throw Error('lost');}});await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ const check=button(h.root,'Check saved assessment readback');h.view.update({...scope,sectionId:'a3',stage:'final'});check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,0);assert.equal(h.savedCount,0);
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),late=firstSetup({saveFetch:async()=>{throw Error('lost');},readbackFetch:()=>pending});await openFirst(late);await importFirst(late);approveFresh(late);button(late.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ button(late.root,'Check saved assessment readback').dispatchEvent(new Event('click'));await settle();late.view.update({...scope,sectionId:'a3',stage:'final'});finish({ok:true,json:async()=>firstReadbackReply(late.fixture)});await settle();assert.equal(late.savedCount,0);assert.doesNotMatch(late.root.allText,/Saved and read back/);assert.equal(saveCalls(late).length,1);
+});
+
+test('first Save and explicit readback require exact source, answer coverage and no supersession; readback also requires its known schema and metadata proof',async()=>{
+ const changes=[d=>{d.source.file_id='different-file';},d=>{d.source.sha256='f'.repeat(64);},d=>{d.source.version='35';},d=>{d.source.modified_at='2026-10-25T14:00:00Z';},d=>{delete d.source;},
+  d=>{delete d.source.modified_at;},d=>{d.superseded=['unexpected-prior'];},d=>{delete d.superseded;},d=>{d.answers=24;},d=>{d.answers='25';},d=>{delete d.answers;},d=>{d.status='assessed';}];
+ for(const boundary of ['save','readback'])for(const change of [...changes,...(boundary==='readback'?[d=>{delete d.schema_version;},d=>{d.schema_version='unknown/v1';},d=>{d.source.metadata_sha256='f'.repeat(64);},d=>{delete d.source.raw_sha256;}]:[])]){
+  const changed=fixture=>{const d=boundary==='save'?firstSavedReply(fixture):firstReadbackReply(fixture);change(d);return d;};
+  const h=firstSetup(boundary==='save'?{saveReply:changed}:{saveFetch:async()=>{throw Error('lost reply');},readbackReply:changed});await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+  if(boundary==='readback'){button(h.root,'Check saved assessment readback').dispatchEvent(new Event('click'));await settle();}
+  assert.equal(h.savedCount,0);assert.doesNotMatch(h.root.allText,/Saved and read back/);assert.equal(saveCalls(h).length,1);assert.equal(button(h.root,'Save reviewed assessment to the workbook').disabled,true);assert.equal(button(h.root,'Check saved assessment readback').hidden,false);assert.ok(labelControl(h.root,'Save attempt evidence JSON'));
+ }
+});
+
+test('first packet evidence, manifest and unresolved-judgment errors direct teacher review without suggesting generation at any boundary',async()=>{
+ for(const code of ['assessment_evidence_not_in_source','assessment_manifest_missing','assessment_manifest_unparsed','assessment_manifest_not_in_source','invalid_assessment_manifest','assessment_not_ready']){
+  for(const boundary of ['prepare','save','readback']){
+   const failed=async()=>({ok:false,json:async()=>({error:code})});
+   const h=firstSetup(boundary==='prepare'?{prepareFetch:failed}:boundary==='save'?{saveFetch:failed}:{saveFetch:async()=>{throw Error('lost reply');},readbackFetch:failed});
+   await openFirst(h);await importFirst(h);
+   if(boundary!=='prepare'){approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();}
+   if(boundary==='readback'){button(h.root,'Check saved assessment readback').dispatchEvent(new Event('click'));await settle();}
+   const message=h.root.all.filter(e=>e.attributes?.role==='status').at(-1).textContent;
+   assert.match(message,/approved packet|complete approved packet/);assert.match(message,/review|resolve/i);assert.doesNotMatch(message,/generat|draft|rerat/i);
+   assert.equal(saveCalls(h).length,boundary==='prepare'?0:1);assert.equal(firstReadbacks(h).length,boundary==='readback'?1:0);assert.equal(h.savedCount,0);
+   assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+  }
+ }
+ const existing=freshSetup({saveFetch:async()=>({ok:false,json:async()=>({error:'assessment_evidence_not_in_source'})})});await openFresh(existing);await importFresh(existing);approveFresh(existing);button(existing.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ assert.match(existing.root.all.filter(e=>e.attributes?.role==='status').at(-1).textContent,/Generate a fresh draft/);
+});
