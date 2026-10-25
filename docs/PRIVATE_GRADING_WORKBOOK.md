@@ -119,6 +119,55 @@ prove that the complete imported packet was saved.
 This creates a new current-source reviewed record; it does not claim to have
 reconstructed missing historical judgments or revise the grading policy.
 
+### First assessment from an already reviewed packet
+
+When there is no saved assessment for the selected student/lesson, **Review
+fresh current-source assessment** accepts a complete teacher-approved packet
+through the authenticated, same-origin POST `/api/assessment-review`. This is a
+read-only initializer: no provider call, draft cache, claim, workbook write or
+invented baseline. It preserves every imported response, judgment, evidence
+note, level and feedback string. Approved aggregate counts alone are not an
+assessment packet and do not reconstruct missing item decisions or a report.
+
+The `first_current_review` basis binds the exact packet hash, fresh Drive/text/
+access proof, explicit identity, assignment, section and checkpoint, plus the
+observed absence of an assessment predecessor. Identity-only `roster_matched`
+rows remain preserved; they are not a historical assessment. A prior assessment
+for another file or checkpoint of this student/lesson, ambiguous identity or
+unsupported native-ID/learner-key bridge holds the first import rather than
+silently superseding history. The first mode requires one unambiguous task
+identity; contexts exposing both native-ID and historical learner-key task
+identities remain held for separate canonical identity reconciliation. It never
+drops a supplied key to bypass another task's pending or expired fence.
+Existing saved-record successor modes keep their
+separate review basis and history checks.
+
+The first review shows the complete imported packet, identity and basis,
+checkpoint reference, requirement lists and deterministic completion scores.
+The operator explicitly confirms the already reviewed packet before the normal
+Save. The server revalidates its current source and exact manifest, current
+assignment/section mapping, native schema and predecessor absence before
+claiming, then bookends the final workbook read with source captures and checks
+the exact owner/fence/budget immediately before native dispatch. The immutable
+request envelope is retained and read back before claim. Pending attempts,
+including expired ones, cannot be adopted by this mode.
+
+A native Slides/Docs revision ID is not a Drive metadata version. The complete
+packet must use actual source fields from the existing authenticated
+`GET /api/assessment-save?file_id=...` capture, bound to the reviewed original;
+the importer does not fill missing identities, versions, quotes or judgments.
+Existing IC mappings remain separate verified configuration; no first-record
+import invents a destination or posts grades to IC.
+
+After a lost or unverified first Save reply, **Check saved assessment readback**
+uses the same read-only preparation route with `mode=first_readback`, the exact
+packet and its first-review basis. It verifies the whole packet's completed or
+matching pending input proof plus the exact saved native projection. It never
+calls Save, finishes an expired run, sends another native batch, or clears a
+partial-write hold. Missing, changed or partial native evidence remains held.
+Cancelling import/review does not save; changing the selected source, identity,
+lesson, section or checkpoint invalidates detached controls.
+
 ### Known pre-write Save failure
 
 Save checks every actual Submissions/Answers field against the native headers

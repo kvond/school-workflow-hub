@@ -364,6 +364,9 @@ def save(assertion, payload, config):
         raise ValueError("invalid_assessment_review")
     from . import assessment_target
     assessment_target.read_target(assertion, packet, config)
+    from . import assessment_initial_review as initial
+    first_review = isinstance(review_basis, dict) and review_basis.get("mode") == initial.MODE
+    initial_context = initial.registry_context(assertion, packet, config) if first_review else None
     source = packet.get("source") if isinstance(packet.get("source"), dict) else {}
     fresh = capture(assertion, source.get("file_id", ""), config)
     if fresh["sha256"] != source.get("sha256"):
@@ -396,7 +399,8 @@ def save(assertion, payload, config):
         raise ValueError("assessment_target_conflict")
     existing = next((row for _, row in matches if row.get("record_id") == rid), None)
     supersede = [(position, row) for position, row in matches
-                 if row.get("record_id") != rid and row.get("status") != "superseded"]
+                 if row.get("record_id") != rid and row.get("status") != "superseded"
+                 and not (review_basis is not None and review.is_identity_only(row, workbook))]
     latest_prior = max(supersede, key=lambda m: m[1].get("checked_at", ""), default=None)
     rows = assessment_records.build_rows(
         packet, result, fresh, now=_now(),
@@ -409,6 +413,8 @@ def save(assertion, payload, config):
         if existing.get("source_sha256") != fresh["sha256"]:
             raise Conflict("assessment_record_conflict")
         previous = []
+        if first_review:
+            return initial.readback(assertion, {"packet": packet, "review_basis": review_basis}, config)
         if review_basis is not None:
             # A lost Save reply may be resolved by exact readback, never a
             # second native batch or adopting the previous task's claim.
@@ -435,7 +441,10 @@ def save(assertion, payload, config):
                 "readback_verified": True}
     store = CloudState(configured_store(config))
     if review_basis is not None:
-        review.validate_successor(packet, review_basis, workbook, fresh)
+        if first_review:
+            initial.validate(packet, review_basis, workbook, fresh, initial_context)
+        else:
+            review.validate_successor(packet, review_basis, workbook, fresh)
         review.no_pending_save(store.port, packet)
     retained = {"schema_version": "hub-reviewed-assessment/v1", "record_id": rid,
                 "packet": deepcopy(packet), "review_basis": deepcopy(review_basis)}
@@ -464,6 +473,7 @@ def save(assertion, payload, config):
         if review_basis is not None:
             claim = store.renew(claim, ttl_seconds=300)
             final_source = capture(assertion, source["file_id"], config)
+            final_context = initial.registry_context(assertion, packet, config) if first_review else None
             final_workbook = _workbook(reader, workbook_id)
             source_bookend = capture(assertion, source["file_id"], config)
             if review.source_binding(source_bookend) != review.source_binding(final_source):
@@ -478,7 +488,10 @@ def save(assertion, payload, config):
                for title in ("Submissions", "Answers") for field in ("headers", "sheet_id")):
             raise Conflict("assessment_review_changed")
         if review_basis is not None:
-            review.validate_successor(packet, review_basis, final_workbook, final_source)
+            if first_review:
+                initial.validate(packet, review_basis, final_workbook, final_source, final_context)
+            else:
+                review.validate_successor(packet, review_basis, final_workbook, final_source)
             if final_workbook != workbook:
                 raise Conflict("assessment_review_changed")
             started = monotonic()
@@ -494,7 +507,9 @@ def save(assertion, payload, config):
         _batch(workbook_id, token, requests)
     records = read_records(assertion, config)
     receipt = _verify_readback(records, rows, superseded_ids)
-    if review_basis is not None:
+    if first_review:
+        initial.readback(assertion, {"packet": packet, "review_basis": review_basis}, config)
+    elif review_basis is not None:
         review.verify_history(review_basis, _workbook(reader, workbook_id), rid)
     if not claim.completed:
         store.finish(claim, records={"reviewed_packet": retained,

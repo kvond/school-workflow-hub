@@ -167,7 +167,7 @@ def validate_successor(packet, basis, workbook, capture):
     basis_fields(basis)
     original = baseline(workbook, basis["record_id"])
     active = [row for _, row in saving._matching_rows(workbook["Submissions"], packet)
-              if row.get("status") != "superseded"]
+              if row.get("status") != "superseded" and not is_identity_only(row, workbook)]
     if len(active) != 1 or active[0].get("record_id") != basis["record_id"]:
         raise Conflict("assessment_review_changed")
     validate_review_binding(packet, basis, original, capture)
@@ -197,6 +197,12 @@ def validate_successor(packet, basis, workbook, capture):
             if not same_cell(field, value, old[pair].get(field)):
                 raise ValueError("assessment_review_protected_field_changed")
     return original
+
+
+def is_identity_only(row, workbook):
+    from .assessment_initial_review import identity_only
+    answers = [a for _, a in workbook["Answers"]["rows"] if a.get("record_id") == row.get("record_id")]
+    return identity_only(row, answers)
 
 
 def verify_history(basis, workbook, successor_id):
