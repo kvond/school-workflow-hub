@@ -119,6 +119,53 @@ prove that the complete imported packet was saved.
 This creates a new current-source reviewed record; it does not claim to have
 reconstructed missing historical judgments or revise the grading policy.
 
+### Known pre-write Save failure
+
+Save checks every actual Submissions/Answers field against the native headers
+before creating a claim. It checks again immediately before dispatch. Modern
+packets carrying `critical_aspect` and `rubric_version` require both real
+columns; older packets remain compatible with the original 18-column layout.
+This check does not repair or rewrite a workbook.
+
+A historical attempt may already have reserved its run before encountering
+`assessment_column_missing`. The authenticated, same-origin POST
+`/api/assessment-recovery` closes only an explicitly attested pre-write failure.
+Send the exact original `{request_id, packet, review_basis}` plus
+`failure_receipt` with these fields:
+
+```json
+{
+  "schema": "hub-assessment-prewrite-failure/v1",
+  "run_id": "<exact original run ID>",
+  "fence": 2,
+  "http_status": 400,
+  "error_code": "assessment_column_missing",
+  "evidence_ref": "<private reference to the observed original reply>",
+  "prewrite_failure_attested": true
+}
+```
+
+The fence above is illustrative: use the actual run's fence. Only the exact
+coded 400 legacy or 409 schema-hold reply qualifies. The receipt attributes
+this as operator-attested historical evidence, not server-observed proof.
+The current native headers must pass a complete dry build. The deterministic
+new record must be absent from both Submissions and Answers on repeated reads;
+the original record, source/access metadata, task/run versions, owner, fence,
+full packet hash and expired server-time lease must remain exact. Completed,
+partial, changed or unknown writes stay held.
+
+Reconciliation makes no grade write or Save call. Its atomic private update
+retains all original run fields and the null original receipt, adds a
+reconciliation pointer, preserves the fence/owner/expiry/last result, and clears
+only the verified failed active-run pointer. A lost reply is read back without
+another mutation. Replaying the same closure after a later Save returns only
+the immutable historical receipt and cannot clear the newer run.
+
+After verified reconciliation, reopen the normal fresh current-source review,
+import the already approved packet and use one new Save request. Do not reuse
+the failed request or delete state manually. These code and synthetic checks
+are not evidence that a live attempt was reconciled.
+
 Page 2 and Page 3 share an accessible recovery panel for failed grading reads.
 The loader reads the endpoint's fixed diagnostic code instead of replacing every
 failure with a generic workbook-unavailable message. It distinguishes teacher
