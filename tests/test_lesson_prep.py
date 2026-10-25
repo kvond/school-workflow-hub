@@ -1,6 +1,8 @@
 """Prep is a pure projection of fictional Agenda evidence, never lab release."""
 from copy import deepcopy
 from datetime import date
+import hashlib
+import json
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -30,6 +32,23 @@ def source():
 
 
 class PrepTests(TestCase):
+    def test_display_fields_do_not_invalidate_existing_canonical_lesson_hashes(self):
+        # Golden dictionaries hashed from base780498d on this fictional fixture.
+        # Existing source receipts and saved scores use these canonical lessons.
+        hashes = {"biology": "8b278b2f623dc782feb3da0a3a42553d748b53ebf653cdc4ce5072cfa4e64e84",
+                  "forensics": "60dfac86bcee5f43322c7bdc75afadd8e65e167708c6080c9c33dea89f67e699",
+                  "anatomy": "8c7b0a97761f125740be14cc64936e122484a55af544d33c11cc55f4db935486"}
+        s = source()
+        for cls, expected in hashes.items():
+            before = s.lessons(cls, "Wk 09")
+            actual = hashlib.sha256(json.dumps(before, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            self.assertEqual(actual, expected)
+            s.day(date(2026, 10, 19))
+            s.day(date(2026, 10, 26))
+            self.assertEqual(s.lessons(cls, "Wk 09"), before)
+            self.assertNotIn("prep_notes", before[0])
+            self.assertNotIn("prep_links", before[0])
+
     def test_all_subjects_keep_source_notes_and_explicit_categories(self):
         for cls in source().day(date(2026, 10, 19))["classes"]:
             with self.subTest(cls=cls["key"]):
@@ -69,7 +88,7 @@ class PrepTests(TestCase):
         entry["cells"][3, 3] = cell("PRINT: Student CER", userEnteredValue={
             "formulaValue": '=HYPERLINK("%s","PRINT: Student CER")' % PRINT})
         entry["cells"][3, 4] = cell("PRINT: Student CER", hyperlink=PRINT)
-        prep = s.lessons("biology", "Wk 09")[0]["prep_notes"]
+        prep = s.day(date(2026, 10, 26))["classes"][0]["lessons"][0]["prep_notes"]
         self.assertEqual(prep["links"], [{"label": "PRINT: Student CER", "url": PRINT}])
         self.assertEqual(prep["link_status"], "not_checked")
 

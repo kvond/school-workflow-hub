@@ -283,7 +283,6 @@ def build_lesson(cells, layout, row, edit_url):
     return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
             "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
-            "prep_links": [{"label": label, "url": url} for url, label in links(cell("prep"))],
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
             "links": link_fields,
             # Each Turn-in Form's name, as its link label shows it (the page can rename it).
@@ -361,11 +360,20 @@ class Agenda:
             return []
         edit = "https://docs.google.com/spreadsheets/d/%s/edit#gid=%s&range=A%%d" % (
             self.spreadsheet_id, entry.get("sheet_id", 0))
-        lessons = [build_lesson(entry["cells"], entry["layout"], row, edit % row)
-                   for row, label in entry["layout"]["rows"] if norm(label) == norm(week_label)]
-        for lesson in lessons:
-            lesson["prep_notes"] = lesson_prep.project(lesson, biology=class_key == "biology")
-        return lessons
+        return [build_lesson(entry["cells"], entry["layout"], row, edit % row)
+                for row, label in entry["layout"]["rows"] if norm(label) == norm(week_label)]
+
+    def prep_notes(self, class_key, lesson):
+        """Display-only copy: canonical lesson dictionaries bind saved evidence.
+
+        Do not add prep metadata in build_lesson/lessons: their exact dictionaries
+        are hashed by teacher-material, historical-intake and saved-score readers.
+        """
+        entry = self.classes[class_key]
+        column = entry["layout"]["columns"].get("prep") if entry["layout"] else None
+        prep_links = links(entry["cells"].get((lesson["row"], column))) if column else []
+        display = {**lesson, "prep_links": [{"label": label, "url": url} for url, label in prep_links]}
+        return lesson_prep.project(display, biology=class_key == "biology")
 
     def day(self, day):
         week = self.week_for(day)
@@ -380,6 +388,7 @@ class Agenda:
                 for lesson in item["lessons"]:
                     today = next((p for p in lesson["plans"] if p["day"] == weekday), None)
                     lesson["today"] = today
+                    lesson["prep_notes"] = self.prep_notes(key, lesson)
                 item["previous"] = self.previous_lessons(key, week)
                 item["next_prep"] = self.next_prep(key, week)
             classes.append(item)
@@ -404,9 +413,9 @@ class Agenda:
             return {"monday": monday, "week": future["label"], "lessons": [],
                     "problem": "No lesson row was found for next week's Agenda label; prep is unverified."}
         return {"monday": monday, "week": future["label"], "closures": future["closures"],
-                "lessons": [{k: lesson[k] for k in ("row", "week", "topic", "dates", "edit_url", "prep_notes")}
-                            | {"kind": lesson_kind(lesson["topic"])}
-                            for lesson in lessons if lesson["prep_notes"]], "problem": None}
+                "lessons": [{k: lesson[k] for k in ("row", "week", "topic", "dates", "edit_url")}
+                            | {"kind": lesson_kind(lesson["topic"]), "prep_notes": prep}
+                            for lesson in lessons if (prep := self.prep_notes(class_key, lesson))], "problem": None}
 
     def previous_lessons(self, class_key, week, look_back=PREVIOUS_LOOK_BACK):
         """The lessons this class last taught before `week`, so an unfinished
