@@ -95,6 +95,30 @@ native batch or automatic claim takeover. Closing a view does not save it;
 an interrupted Save remains held for recovery. This path changes neither
 completion arithmetic nor the IC Helper and does not post any grade to IC.
 
+**Review fresh current-source assessment** accepts a complete packet that the
+teacher has already reviewed, including every explicit item judgment, literal
+current-source quote, level and feedback field. It makes no model call and needs
+neither a cached draft nor the lost historical packet. Select the existing
+student/lesson/checkpoint, open this action and import the current packet JSON
+(bare or wrapped as `{packet: ...}`). Review the full packet and its completion
+and incomplete counts, then explicitly confirm teacher approval before Save.
+The import does not fill fields or infer judgments from historical flags.
+
+Authenticated GET `/api/assessment-save?record_id=...&mode=fresh_current_review`
+returns the old record's fingerprint and a separate fresh source binding, with
+no write or claim. Save carries both in `review_basis`, plus the exact imported
+packet hash. The existing save handler validates the current source, distributed
+manifest, exact student/lesson/section/checkpoint and IC mapping, then retains
+the normal claim/fence, final revalidation, supersession and readback contract.
+Final source captures bookend the workbook read; readback verifies the original
+history fingerprint as well as the newly saved evidence and feedback. An
+uncertain Save permits readback-only recovery and preserves its pending attempt.
+An already-saved response also requires the exact whole-packet input hash in
+the completed or matching pending save; matching worksheet rows alone do not
+prove that the complete imported packet was saved.
+This creates a new current-source reviewed record; it does not claim to have
+reconstructed missing historical judgments or revise the grading policy.
+
 Page 2 and Page 3 share an accessible recovery panel for failed grading reads.
 The loader reads the endpoint's fixed diagnostic code instead of replacing every
 failure with a generic workbook-unavailable message. It distinguishes teacher

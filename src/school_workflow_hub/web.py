@@ -168,11 +168,13 @@ def application(environ, start_response, *, teaching_provider=None):
             assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
             if method == "GET":
                 from urllib.parse import parse_qs
-                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=1)
-                if set(query) == {"record_id"} and len(query["record_id"]) == 1:
+                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
+                if (set(query) in ({"record_id"}, {"record_id", "mode"})
+                        and all(len(value) == 1 for value in query.values())):
                     from .adapters import assessment_review
+                    options = {"mode": query["mode"][0]} if "mode" in query else {}
                     return respond("200 OK", assessment_review.load(
-                        assertion, query["record_id"][0], os.environ))
+                        assertion, query["record_id"][0], os.environ, **options))
                 if set(query) != {"file_id"} or len(query["file_id"]) != 1:
                     raise ValueError("invalid_assessment_source")
                 return respond("200 OK", assessment_save.capture(
