@@ -380,11 +380,9 @@ def save(assertion, payload, config):
             raise Conflict("assessment_record_conflict")
         previous = []
         if review_basis is not None:
-            review.assert_source(packet, fresh, existing)
             # A lost Save reply may be resolved by exact readback, never a
             # second native batch or adopting the previous task's claim.
-            if set(review_basis) != review.BASIS_FIELDS or review.source_binding(fresh) != review_basis["source"]:
-                raise Conflict("assessment_review_changed")
+            review.basis_fields(review_basis)
             prior = review.baseline(workbook, review_basis["record_id"], active=False)
             if prior["submission"]["record_id"] != rid:
                 if (prior["submission"].get("status") != "superseded"
@@ -392,10 +390,13 @@ def save(assertion, payload, config):
                     raise Conflict("assessment_review_changed")
                 prior["submission"].update(status="assessed", superseded_by="")
                 previous = [review_basis["record_id"]]
-            if content_hash(prior) != review_basis["record_sha256"]:
-                raise Conflict("assessment_review_changed")
+            review.validate_review_binding(packet, review_basis, prior, fresh)
+            if review_basis.get("mode") == review.FRESH_MODE:
+                review.assert_replay_packet(configured_store(config), packet)
         records = read_records(assertion, config)
         receipt = _verify_readback(records, rows, previous)
+        if review_basis is not None:
+            review.verify_history(review_basis, _workbook(reader, workbook_id), rid)
         return {**receipt, "status": "already_saved", "unchanged_rerun": True,
                 "source": {"file_id": fresh["file"]["id"],
                            "modified_at": fresh["file"]["modified_at"],
@@ -432,6 +433,10 @@ def save(assertion, payload, config):
             claim = store.renew(claim, ttl_seconds=300)
             final_source = capture(assertion, source["file_id"], config)
             final_workbook = _workbook(reader, workbook_id)
+            source_bookend = capture(assertion, source["file_id"], config)
+            if review.source_binding(source_bookend) != review.source_binding(final_source):
+                raise Conflict("submission_changed_reassess")
+            final_source = source_bookend
             review.validate_successor(packet, review_basis, final_workbook, final_source)
             if final_workbook != workbook:
                 raise Conflict("assessment_review_changed")
@@ -448,6 +453,8 @@ def save(assertion, payload, config):
         _batch(workbook_id, token, requests)
     records = read_records(assertion, config)
     receipt = _verify_readback(records, rows, superseded_ids)
+    if review_basis is not None:
+        review.verify_history(review_basis, _workbook(reader, workbook_id), rid)
     if not claim.completed:
         store.finish(claim, records={"reviewed_packet": retained,
                                     "receipt": {**receipt,

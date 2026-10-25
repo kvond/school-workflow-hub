@@ -1,6 +1,7 @@
 // Synthetic transport only: no model, Drive or school writes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {mountAssessmentReview} from '../assessment-review.mjs';
 
 class Element extends EventTarget{
@@ -209,4 +210,123 @@ test('a success-shaped response without verified readback stays unresolved',asyn
  const h=savedSetup({saveResponse:{status:'saved',readback_verified:false}});await loadExisting(h);
  button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
  assert.doesNotMatch(h.root.allText,/Saved and read back/);assert.equal(h.savedCount,0);
+});
+
+const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,canonical(value[key])])):value;
+const contentHash=value=>createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+function freshFixture(){
+ const packet={schema_version:'hub-assessment-packet/v1',class_key:'forensics',section_id:'a2',section_name:'A2 Forensics',assignment_key:'F1',stage:'initial',stage_reference:'Teacher-reviewed current checkpoint',
+  identity:{student_id:'12345',student_id_kind:'IC number',learner_key:'',display_name:'Alex Fictional',identity_basis:'Verified fictional IC identity'},
+  source:{file_id:'fictional-a2',url:'https://docs.google.com/presentation/d/fictional-a2/edit',version:'34',modified_at:'2026-10-25T12:00:00Z',sha256:'c'.repeat(64)},
+  manifest:{inventory_line:'[[MARKER-INVENTORY:C01]]',version_label:'Current source',notes_ids:Array.from({length:29},(_,i)=>'N'+(i+1)),bank_ids:[],draft_ids:[],optional_ids:[]},
+  responses:Array.from({length:29},(_,i)=>({question_id:'N'+(i+1),category:'NOTES',judgment:i<8?'meaningful_attempt':'blank',response_excerpt:i<8?'Current literal evidence '+(i+1):'',evidence_note:'Reviewed current evidence note '+(i+1),
+   conceptual_level:i<8?'Developing':'Evidence unavailable',explanation_level:'',conceptual_feedback:'Reviewed item feedback '+(i+1),prompt:'Current prompt '+(i+1),prompt_basis:'Current labeled source',slide_number:String(i+1),optional:false})),
+  feedback:'Teacher-reviewed current report with explicit partial completion',comparison_status:'Fresh current assessment; no invented growth',ic_assignment_id:'Verified existing destination'};
+ const base={submission:{record_id:'asmt-old',class_key:'forensics',assignment_key:'F1',section_id:'a2',assessment_stage:'initial',source_file_id:'fictional-a2',source_revision:'9',source_sha256:'a'.repeat(64),status:'assessed'},answers:[{record_id:'asmt-old',question_id:'old-item',stage:'NOTES'}]};
+ const reply={schema_version:'hub-assessment-review/v1',status:'fresh_packet_required',packet:null,external_writes:0,live_model_calls:0,base,
+  review_basis:{mode:'fresh_current_review',record_id:'asmt-old',record_sha256:'b'.repeat(64),source:{file_id:'fictional-a2',sha256:packet.source.sha256,version:'34',modified_at:packet.source.modified_at,raw_sha256:'d'.repeat(64),metadata_sha256:'e'.repeat(64)}}};
+ return {packet,reply};
+}
+function freshSetup({loadReply,saveFetch}={}){
+ const fixture=freshFixture(),root=new Element(document,'div'),calls=[];let savedCount=0;
+ const data=structuredClone(records);data.data.submissions=[{...fixture.reply.base.submission}];
+ const fetcher=async(url,options)=>{
+  calls.push({url,options});
+  if(url.includes('mode=fresh_current_review'))return typeof loadReply==='function'?loadReply():{ok:true,json:async()=>loadReply||fixture.reply};
+  if(url.startsWith('/api/assessment-save?'))return {ok:false,json:async()=>({error:'submission_changed_reassess'})};
+  if(url==='/api/assessment-save'&&options?.method==='POST')return saveFetch?saveFetch():{ok:true,json:async()=>({record_id:'asmt-fresh',readback_verified:true,superseded:['asmt-old']})};
+  if(url.includes('draft_for='))return {ok:true,json:async()=>({status:'no_draft'})};
+  return {ok:true,json:async()=>({configured:false,dependency:'provider_not_configured'})};
+ };
+ return {root,calls,data,fixture,get savedCount(){return savedCount;},view:mountAssessmentReview(root,{fetcher,records:()=>data,onSaved:()=>savedCount++})};
+}
+async function openFresh(h){
+ h.view.update(scope);h.view.setFiles([{...files[0],source_revision:'34'}],null);await settle();
+ button(h.root,'Review fresh current-source assessment').dispatchEvent(new Event('click'));await settle();
+}
+async function importFresh(h,input=h.fixture.packet){
+ const textarea=h.root.all.find(e=>e.tagName==='textarea');textarea.value=JSON.stringify(input);
+ button(h.root,'Review imported current assessment').dispatchEvent(new Event('click'));
+ for(let n=0;n<20;n++)await new Promise(resolve=>setTimeout(resolve,0));
+ return textarea;
+}
+const approveFresh=h=>{const checkbox=h.root.all.find(e=>e.tagName==='input'&&e.type==='checkbox');checkbox.checked=true;checkbox.dispatchEvent(new Event('change'));return checkbox;};
+
+test('fresh 29-item current assessment opens despite old revision with no provider or stored draft, and preserves 8 meaningful plus 21 incomplete judgments',async()=>{
+ const h=freshSetup();await openFresh(h);
+ const loads=h.calls.filter(call=>call.url.startsWith('/api/assessment-save?'));
+ assert.equal(loads.length,1);assert.deepEqual(Object.fromEntries(new URL(loads[0].url,'https://fictional.invalid').searchParams),{record_id:'asmt-old',mode:'fresh_current_review'});
+ const textarea=await importFresh(h);
+ assert.match(h.root.allText,/8 meaningful; 21 not meaningful; 29 total/);assert.match(h.root.allText,/Original saved record: asmt-old/);assert.match(h.root.allText,/current source version 34/);
+ assert.match(h.root.allText,/Current literal evidence 8/);assert.match(h.root.allText,/Reviewed item feedback 29/);assert.match(h.root.allText,/Teacher-reviewed current report/);
+ assert.equal(h.root.all.filter(e=>e.tagName==='textarea').length,0);assert.equal(h.root.children.find(e=>e.attributes?.class==='assessment-form').inert,true);
+ const save=button(h.root,'Save reviewed assessment to the workbook');assert.equal(save.disabled,true);save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0);
+ textarea.value='tampered detached editor';h.fixture.packet.responses[0].judgment='blank';
+ approveFresh(h);save.dispatchEvent(new Event('click'));await settle();
+ const body=JSON.parse(saveCalls(h)[0].options.body);
+ assert.equal(body.packet.responses[0].judgment,'meaningful_attempt');assert.equal(body.packet.responses.filter(response=>response.judgment==='blank').length,21);
+ assert.deepEqual(body.review_basis,{...h.fixture.reply.review_basis,packet_sha256:contentHash(body.packet)});
+ assert.equal(body.packet.responses.length,29);assert.equal('original_packet' in body.review_basis,false);assert.equal('approved_changes' in body.review_basis,false);
+ assert.match(h.root.allText,/Saved and read back/);assert.equal(h.savedCount,1);assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+});
+
+test('fresh import accepts only a bare complete packet or exact packet wrapper',async()=>{
+ const h=freshSetup();await openFresh(h);await importFresh(h,{packet:h.fixture.packet});assert.ok(button(h.root,'Save reviewed assessment to the workbook'));
+ const bad=freshSetup();await openFresh(bad);const textarea=await importFresh(bad,{packet:bad.fixture.packet,packet_sha256:'f'.repeat(64)});
+ assert.equal(bad.root.all.find(e=>e.tagName==='textarea'),textarea);assert.equal(button(bad.root,'Save reviewed assessment to the workbook'),undefined);assert.equal(saveCalls(bad).length,0);
+});
+
+test('fresh import rejects malformed, wrong scope, incomplete packets and every changed current source binding without losing editable JSON',async()=>{
+ const mutations=[packet=>{packet.class_key='biology';},packet=>{packet.assignment_key='OTHER';},packet=>{packet.section_id='a3';},packet=>{packet.section_name='Unverified section';},packet=>{packet.stage='final';},
+  packet=>{packet.source.file_id='other-file';},packet=>{packet.source.version='35';},packet=>{packet.source.sha256='f'.repeat(64);},packet=>{packet.source.modified_at='2026-10-25T13:00:00Z';},
+  packet=>{delete packet.manifest;},packet=>{delete packet.identity;},packet=>{delete packet.responses[0].judgment;},packet=>{packet.responses[0].judgment='assumed_complete';},
+  packet=>{packet.responses.push({...packet.responses[0]});}];
+ for(const mutate of mutations){
+  const h=freshSetup();await openFresh(h);const packet=structuredClone(h.fixture.packet);mutate(packet);const textarea=await importFresh(h,packet);
+  assert.equal(h.root.all.find(e=>e.tagName==='textarea'),textarea);assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);assert.ok(button(h.root,'Cancel fresh current-source review'));assert.equal(saveCalls(h).length,0);
+ }
+ const malformed=freshSetup();await openFresh(malformed);const textarea=malformed.root.all.find(e=>e.tagName==='textarea');textarea.value='{';
+ button(malformed.root,'Review imported current assessment').dispatchEvent(new Event('click'));await settle();assert.equal(textarea.value,'{');assert.equal(button(malformed.root,'Save reviewed assessment to the workbook'),undefined);
+});
+
+test('fresh review uses imported judgment counts rather than a hardcoded count rule',async()=>{
+ const h=freshSetup();await openFresh(h);const packet=structuredClone(h.fixture.packet);packet.responses[8].judgment='meaningful_attempt';packet.responses[8].response_excerpt='Explicit additionally reviewed current evidence';
+ await importFresh(h,packet);assert.match(h.root.allText,/9 meaningful; 20 not meaningful; 29 total/);assert.equal(saveCalls(h).length,0);
+});
+
+test('cancelled and stale fresh reviews cannot import or save through detached controls',async()=>{
+ const cancelled=freshSetup();await openFresh(cancelled);const textarea=cancelled.root.all.find(e=>e.tagName==='textarea');textarea.value=JSON.stringify(cancelled.fixture.packet);
+ const oldImport=button(cancelled.root,'Review imported current assessment');button(cancelled.root,'Cancel fresh current-source review').dispatchEvent(new Event('click'));
+ oldImport.dispatchEvent(new Event('click'));await settle();assert.equal(button(cancelled.root,'Save reviewed assessment to the workbook'),undefined);
+ for(const change of ['cancel','section','source','checkpoint']){
+  const h=freshSetup();await openFresh(h);await importFresh(h);const save=button(h.root,'Save reviewed assessment to the workbook');approveFresh(h);
+  if(change==='cancel')button(h.root,'Cancel fresh current-source review').dispatchEvent(new Event('click'));
+  else if(change==='section'){h.view.update({...scope,sectionId:'a3'});h.view.setFiles(files,null);}
+  else if(change==='source')h.view.setFiles([{...files[0],source_revision:'35'}],null);
+  else{const stage=h.root.all.find(e=>e.tagName==='select'&&e.children.some(c=>c.value==='final'));stage.value='final';stage.dispatchEvent(new Event('change'));}
+  save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0,change);
+ }
+});
+
+test('late fresh source reply cannot populate a changed section',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=freshSetup({loadReply:()=>pending});await openFresh(h);
+ h.view.update({...scope,sectionId:'a3'});h.view.setFiles(files,null);finish({ok:true,json:async()=>h.fixture.reply});await settle();
+ assert.equal(button(h.root,'Review imported current assessment'),undefined);assert.equal(saveCalls(h).length,0);
+});
+
+test('fresh double Save and uncertain or unverified readback remain one attempt without claiming success',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=freshSetup({saveFetch:()=>pending});await openFresh(h);await importFresh(h);approveFresh(h);
+ const save=button(h.root,'Save reviewed assessment to the workbook');save.dispatchEvent(new Event('click'));save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,1);
+ finish({ok:false,json:async()=>({error:'assessment_write_uncertain'})});await settle();save.dispatchEvent(new Event('click'));await settle();
+ assert.equal(saveCalls(h).length,1);assert.equal(save.disabled,true);assert.equal(h.savedCount,0);assert.match(h.root.allText,/will not send another Save/);assert.doesNotMatch(h.root.allText,/Saved and read back/);
+ const unverified=freshSetup({saveFetch:async()=>({ok:true,json:async()=>({record_id:'asmt-fresh',readback_verified:false})})});await openFresh(unverified);await importFresh(unverified);approveFresh(unverified);
+ button(unverified.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();assert.equal(unverified.savedCount,0);assert.doesNotMatch(unverified.root.allText,/Saved and read back/);
+});
+
+test('fresh source-change failure directs a refreshed fresh review without generating',async()=>{
+ const h=freshSetup({saveFetch:async()=>({ok:false,json:async()=>({error:'submission_changed_reassess'})})});await openFresh(h);await importFresh(h);approveFresh(h);
+ button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ const message=h.root.all.filter(e=>e.attributes?.role==='status').at(-1).textContent;
+ assert.match(message,/Refresh the fresh current-source review/);assert.doesNotMatch(message,/Generate|draft/i);assert.equal(h.savedCount,0);
+ assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
 });
