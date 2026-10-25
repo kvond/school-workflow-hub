@@ -127,7 +127,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  const form=node(container,'div',undefined,'assessment-form');
  const review=node(container,'div');review.setAttribute('aria-live','polite');
  container.append(state,form,review);
- let scope=null,files=[],deadline=null,generation=0,providerReady=null,busy=false,spent=0,unresolvedCount=0;
+ let scope=null,files=[],deadline=null,generation=0,providerReady=null,busy=false,spent=0,unresolvedCount=0,firstImportActive=false;
  const recoveryAttempts=new Set();
  const signature=list=>JSON.stringify(list.map(f=>[f.file_id,f.stage,f.section_id,f.class_key,f.assignment_key,f.version||f.source_revision||f.modified_at||'',f.review_reasons||[],f.hold_reason||'']));
  const budgetLine=()=>money(spent)+' estimated this session of the '+money(BUDGET)+' total approved budget.';
@@ -142,6 +142,13 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  function knownAssignments(classKey){
   const data=records?.()?.data;
   return (data?.assignments||[]).filter(a=>a.class_key===classKey).map(a=>[a.assignment_key,a.assignment_title]);
+ }
+ function verifiedFirstSelection(value){
+  const current=records?.();
+  if(current?.status!=='loaded'||!['initial','final'].includes(value?.stage))return false;
+  const lessons=(current.data?.assignments||[]).filter(a=>a.class_key===value.classKey&&a.assignment_key===value.assignmentKey);
+  const sections=(current.data?.sections||[]).filter(s=>s.class_key===value.classKey&&s.section_id===value.sectionId);
+  return lessons.length===1&&!lessons[0].discovery_only&&sections.length===1&&sections[0].section_name===value.sectionName&&Boolean(value.sectionName);
  }
  function suggestedStage(){
   if(!deadline?.due_date)return {stage:'initial',why:'No verified final deadline yet, so only the NOTES-only initial checkpoint applies; BANK and DRAFT are not due early.'};
@@ -438,15 +445,18 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   }catch(error){if(current()){busy=false;form.inert=false;result.textContent=error.message||'Pending-operation readback is unavailable. Preserve its history.';}}
  }
 
- function renderFirstImport(file,target,selectedStage,mine,selected){
+ function renderFirstImport(file,target,selectedStage,mine,selected,independent=false){
   state.textContent='Import a complete first assessment already reviewed by the teacher — no model call.';
   review.append(node(review,'h4','Review a first assessment'),node(review,'p','Paste the whole teacher-reviewed current assessment packet. The server will verify its source, identity, lesson, section and checkpoint, and check that no earlier assessment would be replaced. Nothing is generated or saved by this check.','hint'));
   const prepared=node(review,'textarea');prepared.rows=10;review.append(labeled(review,'Teacher-reviewed current assessment JSON',prepared));
   const open=node(review,'button','Review imported current assessment');open.type='button';
   const cancel=node(review,'button','Cancel first assessment review');cancel.type='button';review.append(open,cancel);
   let opening=false,closed=false;
-  const current=()=>!closed&&mine===generation&&selected()&&scope?.ready&&scope.classKey===target.classKey&&scope.assignmentKey===target.assignmentKey&&scope.sectionId===target.sectionId&&records?.()?.status==='loaded';
-  cancel.addEventListener('click',()=>{closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='First assessment review cancelled. Nothing was saved or generated.';});
+  const importSelection={...target,stage:selectedStage};
+  const currentSelection=()=>mine===generation&&selected()&&scope?.classKey===target.classKey&&scope.assignmentKey===target.assignmentKey&&scope.sectionId===target.sectionId&&records?.()?.status==='loaded'&&
+   (independent?scope.stage===selectedStage&&verifiedFirstSelection(importSelection):scope.ready);
+  const current=()=>!closed&&currentSelection();
+  cancel.addEventListener('click',()=>{if(closed)return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='First assessment review cancelled. Nothing was saved or generated.';});
   open.addEventListener('click',async()=>{
    if(opening||!current())return;opening=true;open.disabled=true;
    try{
@@ -454,7 +464,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     if(importedText.length>400000)throw Error('The prepared packet exceeds the bounded review size. Nothing was saved.');
     const imported=JSON.parse(importedText),packet=exactKeys(imported,['packet'])?imported.packet:imported;
     completeFreshPacket(packet);
-    if(packet.class_key!==target.classKey||packet.assignment_key!==target.assignmentKey||packet.section_id!==target.sectionId||packet.section_name!==target.sectionName||packet.stage!==selectedStage||packet.source.file_id!==file.file_id)
+    if(packet.class_key!==target.classKey||packet.assignment_key!==target.assignmentKey||packet.section_id!==target.sectionId||packet.section_name!==target.sectionName||packet.stage!==selectedStage||(file&&packet.source.file_id!==file.file_id))
      throw Error('The current packet does not match the selected lesson, section, checkpoint and submission.');
     if(!packet.stage_reference.trim()||!packet.identity.display_name.trim()||!packet.identity.student_id_kind.trim()||!packet.identity.identity_basis.trim()||!(packet.identity.student_id.trim()||packet.identity.learner_key.trim()))
      throw Error('The first packet needs its explicit confirmed identity and checkpoint basis. Nothing was inferred.');
@@ -475,14 +485,17 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      throw Error('The first assessment review could not be verified. Nothing was saved.');
     if(!current())return;
     if(prepared.value!==importedText)throw Error('The packet changed during verification. Review its current JSON again.');
-    renderFreshReview(d,immutable,packetHash,file,mine);
+    const reviewedFile=file||{file_id:immutable.source.file_id,name:'Source in the verified approved packet'};
+    renderFreshReview(d,immutable,packetHash,reviewedFile,mine,independent?currentSelection:null);
+    closed=true;
    }catch(error){if(current())state.textContent=error.message||'The prepared packet is not valid JSON.';}
    finally{opening=false;open.disabled=false;}
   });
  }
 
- function renderFreshReview(loaded,packet,packetHash,file,mine){
-  if(mine!==generation||!scope?.ready||packet.class_key!==scope.classKey||packet.assignment_key!==scope.assignmentKey||packet.section_id!==scope.sectionId||!files.some(current=>current.file_id===file.file_id))return;
+ function renderFreshReview(loaded,packet,packetHash,file,mine,firstImportCurrent=null){
+  const sourceReady=()=>firstImportCurrent?firstImportCurrent():scope?.ready&&files.some(current=>current.file_id===file.file_id);
+  if(mine!==generation||!sourceReady()||packet.class_key!==scope.classKey||packet.assignment_key!==scope.assignmentKey||packet.section_id!==scope.sectionId)return;
   let closed=false,attempted=false,inFlight=false,attemptBody=null,responseEvidence=null;
   const first=loaded.status==='first_packet_ready'&&loaded.review_basis.mode==='first_current_review';
   const basis={...copy(loaded.review_basis),packet_sha256:packetHash};
@@ -530,7 +543,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   if(check){
    check.type='button';check.hidden=true;review.append(check);
    check.addEventListener('click',async()=>{
-    if(closed||inFlight||!attempted||mine!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded')return;
+    if(closed||inFlight||!attempted||mine!==generation||!sourceReady()||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded')return;
     inFlight=true;check.disabled=cancel.disabled=true;result.textContent='Checking the exact saved assessment — readback only…';
     try{
      const r=await request('/api/assessment-review',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'first_readback',packet:copy(packet),review_basis:copy(basis)})});
@@ -548,7 +561,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   cancel.addEventListener('click',()=>{if(inFlight||(first&&attempted))return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='Fresh review cancelled. Saved records remain unchanged.';});
   save.addEventListener('click',async()=>{
    if(closed||attempted||inFlight||!approval.checked)return;
-   if(mine!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded'){
+   if(mine!==generation||!sourceReady()||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded'){
     result.textContent='The selected lesson, section or submission changed. Refresh the fresh current-source review before Save.';return;
    }
    attempted=true;inFlight=true;save.disabled=cancel.disabled=approval.disabled=true;result.textContent='Re-verifying the complete reviewed packet and saving…';
@@ -672,13 +685,23 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
 
  providerStatus().then(()=>{if(scope?.ready)renderForm();});
  return {
+  openFirstImport(next){
+   if(busy||!verifiedFirstSelection(next))return false;
+   // This is an explicit reviewed-packet entry, not a verified inventory row.
+   // The server establishes source/identity/absence proof before any Save.
+   scope={...next,ready:false};files=[];deadline=null;unresolvedCount=0;firstImportActive=true;
+   const mine=++generation,target={classKey:next.classKey,assignmentKey:next.assignmentKey,sectionId:next.sectionId,sectionName:next.sectionName},stage=next.stage;
+   busy=true;form.inert=false;form.replaceChildren();review.replaceChildren();
+   renderFirstImport(null,target,stage,mine,()=>scope?.stage===stage,true);
+   return true;
+  },
   update(next){
-   const changed=!scope||scope.assignmentKey!==next.assignmentKey||scope.sectionId!==next.sectionId||scope.classKey!==next.classKey||scope.stage!==next.stage||scope.ready!==next.ready;
+   const changed=!scope||scope.assignmentKey!==next.assignmentKey||scope.sectionId!==next.sectionId||scope.classKey!==next.classKey||scope.stage!==next.stage||scope.ready!==next.ready||(firstImportActive&&!next.ready);
    scope=next;
    if(changed){files=[];unresolvedCount=0;deadline=null;}
    if(changed){
     // A different lesson or class invalidates any pending draft view.
-    generation++;busy=false;review.replaceChildren();renderForm();
+    firstImportActive=false;generation++;busy=false;review.replaceChildren();renderForm();
    }
   },
   setFiles(list,nextDeadline){

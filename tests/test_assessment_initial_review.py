@@ -347,6 +347,36 @@ class InitialReviewTests(unittest.TestCase):
         self.assertTrue(self.save(self.payload())['readback_verified'])
         self.assertEqual(len(self.f.book['Submissions']['rows']), 1)
 
+    def test_no_saved_source_row_http_first_import_save_and_readback_keep_all_server_guards(self):
+        self.f.book['Submissions']['rows'] = []
+        self.assertEqual(self.f.book['Answers']['rows'], [])
+        before = deepcopy(self.packet)
+        reply = self.http('/api/assessment-review', {'packet': self.packet})
+        self.assertTrue(reply['status'].startswith('200'))
+        prepared = reply['body']
+        self.assertEqual(prepared['status'], 'first_packet_ready')
+        self.assertEqual(prepared['packet'], before)
+        self.assertEqual((prepared['external_writes'], prepared['live_model_calls']), (0, 0))
+        self.assertEqual(self.f.port.rows, {}); self.assertEqual(self.f.batches, 0)
+        payload = {'request_id': 'fictional-first-without-source-row', 'packet': prepared['packet'],
+                   'review_basis': prepared['review_basis']}
+        saved = self.http('/api/assessment-save', payload)
+        self.assertTrue(saved['status'].startswith('200'))
+        self.assertTrue(saved['body']['readback_verified'])
+        self.assertEqual(saved['body']['superseded'], [])
+        self.assertEqual((saved['body']['content_score_exact'], saved['body']['revision_score_exact']), ('105/11', '10'))
+        self.assertEqual(len(self.f.book['Submissions']['rows']), 1)
+        self.assertEqual(len(self.f.book['Answers']['rows']), 25)
+        task = key('task', review.task_scope(self.packet))
+        run = key('run', {'task': task, 'request': payload['request_id']})
+        self.assertEqual(attempts.read(self.f.port, task, run)['request']['packet'], before)
+        readback = self.http('/api/assessment-review', {'mode': 'first_readback',
+            'packet': payload['packet'], 'review_basis': payload['review_basis']})
+        self.assertTrue(readback['status'].startswith('200'))
+        self.assertTrue(readback['body']['readback_verified'])
+        self.assertEqual(readback['body']['status'], 'already_saved')
+        self.assertEqual(self.f.batches, 1); self.assertEqual(self.packet, before)
+
     def test_source_four_keys_and_optional_capture_hashes_cannot_change_after_prepare(self):
         original = deepcopy(self.f.capture)
         for field, value in (('version', '35'), ('modified_at', '2026-09-19T14:00:00Z'),

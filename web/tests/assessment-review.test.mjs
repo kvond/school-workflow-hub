@@ -2,7 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {runInNewContext} from 'node:vm';
 import {mountAssessmentReview} from '../assessment-review.mjs';
+import {verifiedSectionOptions} from '../grading-records.mjs';
 
 class Element extends EventTarget{
  constructor(doc,tag){super();this.ownerDocument=doc;this.tagName=tag;this.children=[];this.attributes={};this.textContent='';this.value='';}
@@ -657,4 +660,181 @@ test('first packet evidence, manifest and unresolved-judgment errors direct teac
  }
  const existing=freshSetup({saveFetch:async()=>({ok:false,json:async()=>({error:'assessment_evidence_not_in_source'})})});await openFresh(existing);await importFresh(existing);approveFresh(existing);button(existing.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
  assert.match(existing.root.all.filter(e=>e.attributes?.role==='status').at(-1).textContent,/Generate a fresh draft/);
+});
+
+const pageSource=readFileSync(new URL('../pages.mjs',import.meta.url),'utf8');
+function pageSlice(start,end){
+ const first=pageSource.indexOf(start),last=pageSource.indexOf(end,first);
+ assert.ok(first>=0&&last>first,'the real page entry seam must remain identifiable');
+ return pageSource.slice(first,last);
+}
+function firstPageSetup(options={}){
+ const h=firstSetup({...options,submissions:[]}),queue=new Element(document,'section'),processStatus=new Element(document,'p');
+ const inventoryCalls=[],fileUpdates=[],actualSetFiles=h.view.setFiles;
+ h.view.setFiles=(...args)=>{fileUpdates.push(structuredClone(args));return actualSetFiles(...args);};
+ const context={document,queue,processStatus,scope:{classKey:scope.classKey,assignmentKey:scope.assignmentKey,stage:'final'},sectionId:scope.sectionId,
+  recordState:h.data,assessmentReview:h.view,verifiedSectionOptions,URLSearchParams,
+  displayedRecords:()=>h.data.status==='loaded'?h.data.data:null,
+  fetch:async(url,request)=>{
+   inventoryCalls.push({url,request});
+   return options.inventoryFetch?options.inventoryFetch(url,request):{ok:false,json:async()=>({error:'lesson_has_no_recorded_submissions'})};
+  }};
+ const selected=pageSource.match(/^function selectedLesson\(\).*$/m)?.[0]+'\n'+pageSource.match(/^function selectedSection\(\).*$/m)?.[0];
+ const processRow=pageSource.match(/^const processRow=.*$/m)?.[0];
+ assert.ok(processRow?.includes("btn('Process work',()=>processWork())"));
+ assert.ok(processRow?.includes("btn('Review approved first assessment',()=>reviewApprovedFirst())"));
+ const entry=runInNewContext([
+  pageSlice('function el(','function link('),selected,
+  pageSlice('const LESSON_INTAKE={','let processGeneration=0;'),
+  pageSlice('let processGeneration=0;','const reports='),processRow,
+  '({resetProcess,processWork,reviewApprovedFirst,processRow});',
+ ].join('\n'),context,{filename:'actual-pages-first-import-entry.mjs'});
+ h.view.update({...scope,stage:'final',ready:false});
+ return {...h,context,entry,queue,processStatus,inventoryCalls,fileUpdates,
+  get savedCount(){return h.savedCount;}};
+}
+async function pageOpenFirst(h,{process=true}={}){
+ await settle();
+ if(process){button(h.queue,'Process work').dispatchEvent(new Event('click'));await settle();}
+ button(h.queue,'Review approved first assessment').dispatchEvent(new Event('click'));await settle();
+}
+function assertNoFirstDiscovery(h){
+ assert.equal(h.calls.some(call=>call.url.includes('draft_for=')),false,'first import must not look up a draft cache');
+ assert.equal(h.calls.some(call=>call.url.startsWith('/api/assessment-save?')),false,'first import must not invent a saved baseline');
+ assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false,'first import must not call a model');
+ assert.equal(button(h.root,'Generate feedback for this submission'),undefined);
+ assert.equal(button(h.root,'Generate pending feedback for this lesson'),undefined);
+ assert.ok(h.fileUpdates.every(([list])=>list.length===0),'the page must not manufacture an inventory row');
+ assert.deepEqual(h.data.data.submissions,[],'the loaded record projection stays empty until an actual refresh');
+}
+
+test('the normal page buttons recover from empty-record inventory failure into the real first import and exact Save',async()=>{
+ const h=firstPageSetup();await settle();
+ assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),undefined);
+ button(h.queue,'Process work').dispatchEvent(new Event('click'));await settle();
+ assert.equal(h.inventoryCalls.length,1);
+ assert.deepEqual(Object.fromEntries(new URL(h.inventoryCalls[0].url,'https://synthetic.invalid').searchParams),{class_key:'forensics',assignment:'F1',section_id:'a2'});
+ assert.match(h.processStatus.textContent,/submission source is not verified/);
+ assert.equal(h.fileUpdates.length,0);assertNoFirstDiscovery(h);
+ button(h.queue,'Review approved first assessment').dispatchEvent(new Event('click'));await settle();
+ assert.match(h.processStatus.textContent,/complete approved packet below/);
+ assert.ok(labelControl(h.root,'Teacher-reviewed current assessment JSON'));
+ assert.equal(firstPreparations(h).length,0);assert.equal(saveCalls(h).length,0);assertNoFirstDiscovery(h);
+ await importFirst(h);
+ assert.deepEqual(JSON.parse(firstPreparations(h)[0].options.body),{packet:h.fixture.packet});
+ assert.match(h.root.allText,/13\/14 NOTES · 8\/8 BANK · 3\/3 DRAFT/);
+ assert.match(h.root.allText,/9\.55 \/ 10 \(exact 105\/11\)/);assertNoFirstDiscovery(h);
+ const save=button(h.root,'Save reviewed assessment to the workbook');save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(h).length,0);
+ approveFresh(h);save.dispatchEvent(new Event('click'));await settle();
+ assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,1);
+ assert.deepEqual(JSON.parse(saveCalls(h)[0].options.body).packet,h.fixture.packet);
+ assert.deepEqual(JSON.parse(saveCalls(h)[0].options.body).review_basis,h.fixture.reply.review_basis);
+ assert.match(h.root.allText,/First assessment saved; no earlier assessment replaced/);assertNoFirstDiscovery(h);
+});
+
+test('an empty successful inventory is also independent of the normal first-import page entry',async()=>{
+ const h=firstPageSetup({inventoryFetch:async()=>({ok:true,json:async()=>({schema_version:'hub-submission-inventory/v1',class_key:'forensics',assignment_key:'F1',section_id:'a2',files:[],external_writes:0})})});
+ await pageOpenFirst(h);assert.equal(h.inventoryCalls.length,1);assert.deepEqual(h.fileUpdates.map(([list])=>list),[[]]);
+ assert.ok(labelControl(h.root,'Teacher-reviewed current assessment JSON'));await importFirst(h);assertNoFirstDiscovery(h);
+});
+
+test('a late Process work inventory cannot replace an independently opened first import or create virtual files',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=firstPageSetup({inventoryFetch:()=>pending});await settle();
+ button(h.queue,'Process work').dispatchEvent(new Event('click'));await settle();assert.equal(h.inventoryCalls.length,1);
+ button(h.queue,'Review approved first assessment').dispatchEvent(new Event('click'));await settle();
+ const area=labelControl(h.root,'Teacher-reviewed current assessment JSON');assert.ok(area);
+ finish({ok:true,json:async()=>({schema_version:'hub-submission-inventory/v1',class_key:'forensics',assignment_key:'F1',section_id:'a2',files:[files[0]],external_writes:0})});await settle();
+ assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),area);assert.equal(h.fileUpdates.length,0);
+ assert.match(h.processStatus.textContent,/complete approved packet below/);assertNoFirstDiscovery(h);
+});
+
+test('the normal first-import entry holds unknown discovery or ambiguous registry targets and unloaded records',async()=>{
+ const invalid=[
+  h=>{h.context.scope.classKey='biology';},
+  h=>{h.context.scope.assignmentKey='UNKNOWN';},
+  h=>{h.data.data.assignments[0].discovery_only=true;},
+  h=>{h.data.data.assignments.push({...h.data.data.assignments[0]});},
+  h=>{h.context.sectionId='unknown-section';},
+  h=>{h.data.data.sections=[];},
+  h=>{h.data.data.sections.push({...h.data.data.sections[0]});},
+  h=>{h.data.data.sections.push({...h.data.data.sections[0],section_name:'Ambiguous section name'});},
+  h=>{h.context.scope.stage='all';},
+  h=>{h.data.status='loading';},
+  h=>{h.data.status='sign_in_required';},
+ ];
+ for(const change of invalid){
+  const h=firstPageSetup();change(h);await pageOpenFirst(h,{process:false});
+  assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),undefined);
+  assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined);
+  assert.equal(firstPreparations(h).length,0);assert.equal(saveCalls(h).length,0);assertNoFirstDiscovery(h);
+ }
+});
+
+test('the public first-import entry verifies the exact section label and explicit checkpoint without inventory',async()=>{
+ for(const change of [next=>{next.sectionName='Wrong current section';},next=>{next.stage='all';},next=>{delete next.sectionName;}]){
+  const h=firstSetup({submissions:[]}),next={...scope,stage:'final',ready:false};h.view.update(next);change(next);await settle();
+  assert.equal(h.view.openFirstImport(next),false);assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),undefined);assertNoFirstDiscovery({...h,fileUpdates:[]});
+ }
+ const h=firstSetup({submissions:[]});h.view.update({...scope,stage:'final',ready:false});await settle();
+ assert.equal(h.view.openFirstImport({...scope,sectionName:'A2 Forensics',stage:'final'}),true);
+ assert.ok(labelControl(h.root,'Teacher-reviewed current assessment JSON'));assertNoFirstDiscovery({...h,fileUpdates:[]});
+});
+
+const resetFirstChanges=[
+ ['class',h=>{h.context.scope.classKey='biology';}],
+ ['section',h=>{h.context.sectionId='a3';}],
+ ['lesson',h=>{h.context.scope.assignmentKey='OTHER';}],
+ ['checkpoint',h=>{h.context.scope.stage='initial';}],
+ ['auth',h=>{h.data.status='sign_in_required';}],
+ ['same ready-false reset',()=>{}],
+];
+test('class section lesson checkpoint auth and same-ready-false page resets invalidate detached first-import controls',async()=>{
+ for(const [name,change]of resetFirstChanges){
+  const h=firstPageSetup();await pageOpenFirst(h,{process:false});
+  const area=labelControl(h.root,'Teacher-reviewed current assessment JSON');area.value=JSON.stringify(h.fixture.packet);
+  const open=button(h.root,'Review imported current assessment');change(h);h.entry.resetProcess();open.dispatchEvent(new Event('click'));await settleHash();
+  assert.equal(labelControl(h.root,'Teacher-reviewed current assessment JSON'),undefined,name);assert.equal(firstPreparations(h).length,0,name);
+  const approved=firstPageSetup();await pageOpenFirst(approved,{process:false});await importFirst(approved);approveFresh(approved);
+  const save=button(approved.root,'Save reviewed assessment to the workbook');change(approved);approved.entry.resetProcess();save.dispatchEvent(new Event('click'));await settle();
+  assert.equal(button(approved.root,'Save reviewed assessment to the workbook'),undefined,name);assert.equal(saveCalls(approved).length,0,name);assert.equal(approved.savedCount,0,name);
+ }
+});
+
+test('late no-row initializer replies cannot populate a changed or reset page scope',async()=>{
+ for(const [name,change]of resetFirstChanges){
+  let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=firstPageSetup({prepareFetch:()=>pending});
+  await pageOpenFirst(h,{process:false});await importFirst(h);assert.equal(firstPreparations(h).length,1,name);
+  change(h);h.entry.resetProcess();finish({ok:true,json:async()=>h.fixture.reply});await settleHash();
+  assert.equal(button(h.root,'Save reviewed assessment to the workbook'),undefined,name);assert.equal(saveCalls(h).length,0,name);assert.equal(h.savedCount,0,name);
+ }
+});
+
+test('first-import controls recheck the loaded registry before import and Save even without a page reset',async()=>{
+ const invalid=[h=>{h.data.status='sign_in_required';},h=>{h.data.data.assignments=[];},h=>{h.data.data.sections=[];},
+  h=>{h.data.data.sections.push({...h.data.data.sections[0],section_name:'Conflicting new section'});}];
+ for(const change of invalid){
+  const h=firstPageSetup();await pageOpenFirst(h,{process:false});const area=labelControl(h.root,'Teacher-reviewed current assessment JSON');area.value=JSON.stringify(h.fixture.packet);
+  const open=button(h.root,'Review imported current assessment');change(h);open.dispatchEvent(new Event('click'));await settleHash();assert.equal(firstPreparations(h).length,0);
+  const approved=firstPageSetup();await pageOpenFirst(approved,{process:false});await importFirst(approved);approveFresh(approved);const save=button(approved.root,'Save reviewed assessment to the workbook');
+  change(approved);save.dispatchEvent(new Event('click'));await settle();assert.equal(saveCalls(approved).length,0);assert.equal(approved.savedCount,0);
+ }
+});
+
+test('retired import Cancel controls cannot discard approved or uncertain first Save evidence in either entry path',async()=>{
+ for(const entry of ['normal page without rows','existing file entry']){
+  const options={saveFetch:async()=>{throw Error('Synthetic lost Save acknowledgement');}},h=entry==='existing file entry'?firstSetup(options):firstPageSetup(options);
+  if(entry==='existing file entry')await openFirst(h);else await pageOpenFirst(h,{process:false});
+  const retiredCancel=button(h.root,'Cancel first assessment review');await importFirst(h);
+  const save=button(h.root,'Save reviewed assessment to the workbook');retiredCancel.dispatchEvent(new Event('click'));await settle();
+  assert.equal(button(h.root,'Save reviewed assessment to the workbook'),save,entry);approveFresh(h);save.dispatchEvent(new Event('click'));await settle();
+  const evidence=labelControl(h.root,'Save attempt evidence JSON'),check=button(h.root,'Check saved assessment readback'),cancel=button(h.root,'Cancel first assessment review');
+  const sent=JSON.parse(saveCalls(h)[0].options.body);assert.deepEqual(JSON.parse(evidence.value).request,sent);assert.equal(cancel.disabled,true,entry);
+  retiredCancel.dispatchEvent(new Event('click'));cancel.dispatchEvent(new Event('click'));save.dispatchEvent(new Event('click'));await settle();
+  assert.equal(labelControl(h.root,'Save attempt evidence JSON'),evidence,entry);assert.equal(button(h.root,'Check saved assessment readback'),check,entry);assert.equal(check.hidden,false,entry);
+  assert.equal(saveCalls(h).length,1,entry);assert.equal(h.savedCount,0,entry);
+  check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,1,entry);
+  assert.deepEqual(JSON.parse(firstReadbacks(h)[0].options.body),{mode:'first_readback',packet:sent.packet,review_basis:sent.review_basis});
+  assert.equal(saveCalls(h).length,1,entry);assert.equal(h.savedCount,1,entry);assert.equal(labelControl(h.root,'Save attempt evidence JSON'),evidence,entry);
+  if(entry==='normal page without rows')assertNoFirstDiscovery(h);
+ }
 });

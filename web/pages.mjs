@@ -150,7 +150,7 @@ mountIcGradeSheet(queue,{
 // lesson's turn-in sources are resolved from where its recorded work actually
 // lives, so no date is needed. The review workspace opens below.
 const processStatus=el('p','','hint');processStatus.setAttribute('role','status');
-const processRow=el('div',undefined,'action-row');processRow.append(btn('Process work',()=>processWork()));queue.append(processRow,processStatus);
+const processRow=el('div',undefined,'action-row');processRow.append(btn('Process work',()=>processWork()),btn('Review approved first assessment',()=>reviewApprovedFirst()));queue.append(processRow,processStatus);
 const reviewBox=el('div',undefined,'assessment-review');queue.append(reviewBox);
 assessmentReview=mountAssessmentReview(reviewBox,{records:()=>recordState,onSaved:()=>retrieveRecords()});
 const LESSON_INTAKE={
@@ -166,7 +166,15 @@ const LESSON_INTAKE={
  invalid_submission_scope:'The lesson selection was not valid. Reload the page and choose the lesson again.',
  sign_in_required:'Your dashboard sign-in expired. Reload the page and sign in again.'};
 let processGeneration=0;
-function resetProcess(){processGeneration++;assessmentReview?.update({classKey:scope.classKey,assignmentKey:scope.assignmentKey,sectionId,ready:false});if(processStatus)processStatus.textContent='';}
+function resetProcess(){processGeneration++;assessmentReview?.update({classKey:scope.classKey,assignmentKey:scope.assignmentKey,sectionId,stage:scope.stage,ready:false});if(processStatus)processStatus.textContent='';}
+function reviewApprovedFirst(){
+ const lesson=selectedLesson(),section=selectedSection();
+ if(!lesson||lesson.discovery_only||!section){processStatus.textContent='Choose a verified registry lesson and section before reviewing an approved first assessment.';return;}
+ if(!['initial','final'].includes(scope.stage)){processStatus.textContent='Choose Notes or Drafts explicitly before importing its approved first assessment.';return;}
+ processGeneration++;
+ const opened=assessmentReview.openFirstImport({classKey:scope.classKey,assignmentKey:scope.assignmentKey,sectionId,sectionName:section[1],stage:scope.stage});
+ processStatus.textContent=opened?'Review the complete approved packet below. Its exact source, student and saved-record absence will be verified before Save.': 'The approved first-assessment review could not open. Resolve the current review or refresh the verified lesson and section.';
+}
 async function processWork(){
  if(!scope.assignmentKey||scope.assignmentKey==='all'){processStatus.textContent='Choose a specific lesson name first, then Process work.';return;}
  const lesson=selectedLesson(),section=selectedSection();

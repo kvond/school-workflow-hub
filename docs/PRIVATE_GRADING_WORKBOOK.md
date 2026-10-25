@@ -129,6 +129,18 @@ invented baseline. It preserves every imported response, judgment, evidence
 note, level and feedback string. Approved aggregate counts alone are not an
 assessment packet and do not reconstruct missing item decisions or a report.
 
+If the lesson has no saved source row and **Process work** cannot establish its
+inventory, use **Review approved first assessment** beside it on Submissions &
+feedback. Select the verified registry lesson, section and explicitly Notes or
+Drafts first. Paste the complete already approved packet for the exact student
+and source. This separate entry does not invent an inventory row, mark discovery
+verified, enable Generate or read a provider draft. The existing authenticated
+initializer freshly verifies the packet's exact source and identity, registry,
+predecessor absence, pending operations and required schema before showing
+immutable confirmation and the normal Save. A changed selection or private-record
+authentication reset invalidates this entry, including while inventory remains
+unavailable. A refused or ambiguous first import does not become a successor.
+
 The `first_current_review` basis binds the exact packet hash, fresh Drive/text/
 access proof, explicit identity, assignment, section and checkpoint, plus the
 observed absence of an assessment predecessor. Identity-only `roster_matched`
