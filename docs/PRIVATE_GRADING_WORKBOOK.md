@@ -128,9 +128,59 @@ columns; older packets remain compatible with the original 18-column layout.
 This check does not repair or rewrite a workbook.
 
 A historical attempt may already have reserved its run before encountering
-`assessment_column_missing`. The authenticated, same-origin POST
-`/api/assessment-recovery` closes only an explicitly attested pre-write failure.
-Send the exact original `{request_id, packet, review_basis}` plus
+`assessment_column_missing`. In the normal authenticated assessment screen,
+**Prepare fresh current-source assessment** now opens **Resolve this pending
+assessment Save** when that selected student's exact operation is unresolved.
+It does not block other submissions or offer Generate as a recovery action.
+
+The panel first GETs `/api/assessment-recovery?record_id=...`. This read-only
+lookup derives the exact task/run from the selected saved identity and pins a
+stateless challenge to both raw document versions, current source, current
+baseline, complete native workbook and headers. It does not fabricate a lost
+request UUID, original review basis, original baseline fingerprint or HTTP status.
+
+For a legacy attempt whose complete reviewed packet survives, paste that exact
+packet, enter the private failure-evidence reference and the first both-table
+absence timestamp, and confirm the historical observations. The run start is
+read from private server state. **Reconcile this verified pre-write failure**
+requires the full packet hash to equal the pending run's input hash. The server
+derives the attempted assessment ID from that packet and verifies its absence
+in both Submissions and Answers. It revalidates the current target, identity,
+manifest, source, complete required schema and unchanged current baseline.
+
+The missing-report-columns UI observation, historical absence/no-write check
+and unchanged-baseline observation are explicitly operator-attested. Fresh
+server readback is separate proof. A newly constructed current identity/baseline
+guard is never described as the unavailable original review basis. Where an
+exact retained original basis does exist, it is an additional mandatory check;
+stale or malformed retained evidence cannot downgrade to the legacy exception.
+Unknown failures, incomplete packets, native record presence, partial writes,
+ambiguous identities, active leases and changed proofs remain held.
+
+The successful response must have `grade_writes=0` and verified readback of an
+immutable receipt. Its hash is appended to the preserved old run; original
+owner, fence, expiry, null receipt, unknown fields and prior results survive.
+Only this failed active-run pointer is cleared, with a linked recovery history.
+After a lost reply, **Check recovery readback** GETs the exact original run; it
+never repeats the POST or Save. Later operations cannot be cleared by replaying
+the old recovery. A cancellation makes no recovery or assessment write.
+
+After recovery, separately reopen fresh current-source review, import the same
+already approved packet, confirm it and make one new normal Save. That Save
+must reopen/read back its assessment and history before being called complete.
+Recovery, deployment and a candidate row count are not student-record completion
+or IC acceptance. Native IC Save/reload/readback remains a separate stage.
+
+Future validated Saves retain an immutable exact request envelope in the
+existing private CAS store before claim/native dispatch. It includes the request
+ID, packet, optional review basis, deterministic assessment ID and fresh source
+binding. Failed/uncertain retention stops the attempt before claim. The UI also
+offers private copy/download of its retained attempt after a failure, without
+putting student data into browser storage. Existing cached readback and ordinary
+versus reviewed-source validation rules are unchanged.
+
+The earlier original-request POST mode remains available when all original
+evidence actually survives. Send the exact `{request_id, packet, review_basis}` plus
 `failure_receipt` with these fields:
 
 ```json

@@ -443,6 +443,8 @@ def save(assertion, payload, config):
     bounded_json({"scope": review.task_scope(packet), "run_id": "run-" + "a" * 64,
                   "name": "reviewed_packet", "payload": retained})
     task = store.create_task(review.task_scope(packet))
+    from . import assessment_attempts
+    assessment_attempts.record(store.port, task, payload, review.source_binding(fresh))
     claimer = CloudState(review.UnclaimedTaskPort(store.port, task)) if review_basis is not None else store
     claim = claimer.claim(task, owner="assess-" + uuid.uuid4().hex, request_id=request_id,
                         input_hash=content_hash(packet), ttl_seconds=300)
