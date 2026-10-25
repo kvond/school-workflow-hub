@@ -13,6 +13,16 @@ checklist refresh, packet generation or email delivery.
 - **Lessons** keeps the existing date/week navigation, Agenda plans, material
   links and guarded editor. Teacher notes keep their current storage and save
   rules. Checklist, folder, packet and diagnostic work belongs outside this view.
+  **Prep notes** stays beneath each lesson and reads its canonical Agenda prep
+  text/rich links plus explicitly labeled prep materials. BUY/PULL/PRINT and
+  Biology Demo/Independent Lab labels are grouped only when present; unstructured
+  text stays visible. A single **Prep for next week** section per class uses the
+  exact following calendar week's rows and shows their week/date/source links
+  and closures. It never skips breaks or shifts dates. Missing/ambiguous rows,
+  unsupported link addresses and absent/unverified Independent Form mappings
+  stay explicit. Link presence does not establish accessibility or lab release.
+  These projections share the existing Agenda read; no new service, tracker,
+  readiness job, model call or school write is started.
 - **Student work** shows original work links and saved completion results with
   their verified saved time. A changed or unverified source cannot inherit
   a saved score, and a new file modification is not a new grading event. Missing

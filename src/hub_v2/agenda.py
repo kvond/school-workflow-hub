@@ -11,7 +11,7 @@ import re
 from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
-from . import google
+from . import google, lesson_prep
 
 CLASSES = (("biology", "Biology"), ("forensics", "Forensics"), ("anatomy", "A&P"))
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri")
@@ -283,6 +283,7 @@ def build_lesson(cells, layout, row, edit_url):
     return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
             "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
+            "prep_links": [{"label": label, "url": url} for url, label in links(cell("prep"))],
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
             "links": link_fields,
             # Each Turn-in Form's name, as its link label shows it (the page can rename it).
@@ -360,8 +361,11 @@ class Agenda:
             return []
         edit = "https://docs.google.com/spreadsheets/d/%s/edit#gid=%s&range=A%%d" % (
             self.spreadsheet_id, entry.get("sheet_id", 0))
-        return [build_lesson(entry["cells"], entry["layout"], row, edit % row)
-                for row, label in entry["layout"]["rows"] if norm(label) == norm(week_label)]
+        lessons = [build_lesson(entry["cells"], entry["layout"], row, edit % row)
+                   for row, label in entry["layout"]["rows"] if norm(label) == norm(week_label)]
+        for lesson in lessons:
+            lesson["prep_notes"] = lesson_prep.project(lesson, biology=class_key == "biology")
+        return lessons
 
     def day(self, day):
         week = self.week_for(day)
@@ -377,10 +381,32 @@ class Agenda:
                     today = next((p for p in lesson["plans"] if p["day"] == weekday), None)
                     lesson["today"] = today
                 item["previous"] = self.previous_lessons(key, week)
+                item["next_prep"] = self.next_prep(key, week)
             classes.append(item)
         return {"date": day.isoformat(), "weekday": weekday, "week": week, "classes": classes,
                 "problems": self.problems + ([] if week or not self.weeks else
                                              ["%s isn't in any week listed on the Weeks tab." % day.isoformat()])}
+
+    def next_prep(self, class_key, week):
+        """Exact following calendar week; never skip a break or move a lesson.
+
+        The same already-read grid supplies both views. No extra provider call,
+        cache, source repair, duplicated tracker or readiness execution occurs.
+        """
+        monday = (date.fromisoformat(week["monday"]) + timedelta(days=7)).isoformat()
+        matches = [w for w in self.weeks if w["monday"] == monday]
+        if len(matches) != 1:
+            return {"monday": monday, "lessons": [],
+                    "problem": "Next week's Agenda date is unavailable or ambiguous; prep timing is unverified."}
+        future = matches[0]
+        lessons = self.lessons(class_key, future["label"])
+        if not lessons:
+            return {"monday": monday, "week": future["label"], "lessons": [],
+                    "problem": "No lesson row was found for next week's Agenda label; prep is unverified."}
+        return {"monday": monday, "week": future["label"], "closures": future["closures"],
+                "lessons": [{k: lesson[k] for k in ("row", "week", "topic", "dates", "edit_url", "prep_notes")}
+                            | {"kind": lesson_kind(lesson["topic"])}
+                            for lesson in lessons if lesson["prep_notes"]], "problem": None}
 
     def previous_lessons(self, class_key, week, look_back=PREVIOUS_LOOK_BACK):
         """The lessons this class last taught before `week`, so an unfinished
