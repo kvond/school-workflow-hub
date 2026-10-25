@@ -82,6 +82,16 @@ class PrepTests(TestCase):
         result = lesson_prep.project({"prep": "Demonstration planning stays unchanged"}, biology=True)
         self.assertEqual(result["tracks"], [])
 
+    def test_science_independent_variable_is_not_a_lab_track_or_material_role(self):
+        result = lesson_prep.project({"prep": "Independent variable: water temperature", "materials": [
+            {"label": "Independent variable worksheet", "url": PRINT}]}, biology=True)
+        self.assertEqual(result["tracks"], [])
+        self.assertEqual(result["links"], [])
+        self.assertEqual(result["issues"], [])
+        self.assertEqual(result["items"][0]["text"], "Independent variable: water temperature")
+        result = lesson_prep.project({"prep": "Independent: PRINT: worksheet"}, biology=True)
+        self.assertEqual(result["tracks"][0]["label"], "Independent Lab")
+
     def test_rich_formula_links_are_preserved_and_deduplicated(self):
         s = source()
         entry = s.classes["biology"]
@@ -154,6 +164,16 @@ class PrepTests(TestCase):
             entry["cells"][r, 2] = cell("Second lesson %s" % r)
             entry["cells"][r, 3] = cell("PRINT: sheet")
         self.assertEqual([l["row"] for l in s.day(date(2026, 10, 19))["classes"][0]["next_prep"]["lessons"]], [6, 7])
+
+    def test_repeated_week_label_cannot_falsely_date_one_row_twice(self):
+        s = source()
+        s.weeks.append({"label": "Week 09", "monday": "2026-11-16", "closures": ""})
+        # norm distinguishes Week/Wk in existing lookup, so use the exact label
+        # used by the canonical parser/row matcher for this ambiguity.
+        s.weeks[-1]["label"] = "Wk 09"
+        result = s.day(date(2026, 10, 19))["classes"][0]["next_prep"]
+        self.assertIn("more than one date", result["problem"])
+        self.assertEqual(result["lessons"], [])
 
     def test_projection_adds_no_provider_calls_mutations_or_false_prep_outside_week(self):
         s = source()

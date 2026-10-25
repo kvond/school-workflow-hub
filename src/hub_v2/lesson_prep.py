@@ -7,9 +7,9 @@ import re
 from urllib.parse import urlsplit
 
 TAG = re.compile(r"^(BUY|PULL|PRINT|SETUP|SAFETY|SCIENCE BACKGROUND|BACKGROUND)\s*[:—–-]\s*(.*)$", re.I)
-TRACK = re.compile(r"^(DEMO|INDEPENDENT(?:\s+LAB)?)\b\s*[:—–-]?\s*(.*)$", re.I)
+TRACK = re.compile(r"^(DEMO\b|INDEPENDENT\s+LAB\b|INDEPENDENT(?=\s*(?:[:—–-]|$)))\s*[:—–-]?\s*(.*)$", re.I)
 SPLIT = re.compile(r"\n|\s+[•|]\s+|;\s*(?=(?:BUY|PULL|PRINT|SETUP|SAFETY|BACKGROUND|SCIENCE BACKGROUND|DEMO|INDEPENDENT)\b)", re.I)
-RESOURCE = re.compile(r"^(?:BUY|PULL|PRINT|SETUP|SAFETY|BACKGROUND|SCIENCE BACKGROUND|DEMO|INDEPENDENT(?:\s+LAB)?|TEACHER PREP)\b", re.I)
+RESOURCE = re.compile(r"^(?:BUY|PULL|PRINT|SETUP|SAFETY|BACKGROUND|SCIENCE BACKGROUND|DEMO|INDEPENDENT\s+LAB|INDEPENDENT(?=\s*(?:[:—–-]|$))|TEACHER PREP)\b", re.I)
 
 
 def safe_url(value):

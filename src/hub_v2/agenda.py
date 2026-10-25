@@ -408,6 +408,9 @@ class Agenda:
             return {"monday": monday, "lessons": [],
                     "problem": "Next week's Agenda date is unavailable or ambiguous; prep timing is unverified."}
         future = matches[0]
+        if sum(norm(w["label"]) == norm(future["label"]) for w in self.weeks) != 1:
+            return {"monday": monday, "week": future["label"], "lessons": [],
+                    "problem": "Next week's Agenda label has more than one date; prep timing is unverified."}
         lessons = self.lessons(class_key, future["label"])
         if not lessons:
             return {"monday": monday, "week": future["label"], "lessons": [],
