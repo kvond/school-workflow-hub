@@ -604,9 +604,28 @@ test('first readback rejects missing or partial proof and serializes read-only c
  finish({ok:false,json:async()=>({error:'assessment_readback_failed'})});await settle();assert.equal(h.savedCount,0);assert.equal(saveCalls(h).length,1);assert.equal(check.disabled,false);assert.match(h.root.allText,/will not send another Save/);
 });
 
-test('cancelled or stale first readback controls cannot send checks or claim late success',async()=>{
+test('an uncertain first Save cannot discard its exact evidence or readback control through Cancel',async()=>{
+ for(const mode of ['lost','unverified']){
+  let checks=0;
+  const h=firstSetup({...(mode==='lost'?{saveFetch:async()=>{throw Error('lost');}}:{saveReply:fixture=>({...firstSavedReply(fixture),readback_verified:false})}),
+   readbackFetch:async()=>++checks===1?{ok:false,json:async()=>({error:'assessment_readback_failed'})}:{ok:true,json:async()=>firstReadbackReply(h.fixture)}});
+  await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+  const cancel=button(h.root,'Cancel first assessment review'),check=button(h.root,'Check saved assessment readback'),evidence=labelControl(h.root,'Save attempt evidence JSON');
+  assert.equal(cancel.disabled,true);assert.equal(check.hidden,false);assert.ok(evidence);assert.ok(button(h.root,'Download Save attempt evidence'));
+  cancel.dispatchEvent(new Event('click'));await settle();
+  assert.equal(labelControl(h.root,'Save attempt evidence JSON'),evidence);assert.equal(button(h.root,'Check saved assessment readback'),check);
+  assert.doesNotMatch(h.root.allText,/Fresh review cancelled|Saved records remain unchanged/);assert.equal(saveCalls(h).length,1);
+  check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,1);assert.equal(h.savedCount,0);assert.equal(cancel.disabled,true);assert.equal(check.disabled,false);
+  cancel.dispatchEvent(new Event('click'));await settle();assert.equal(labelControl(h.root,'Save attempt evidence JSON'),evidence);assert.equal(button(h.root,'Check saved assessment readback'),check);
+  check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,2);assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,1);assert.match(h.root.allText,/First assessment verified by readback only/);
+  assert.equal(button(h.root,'Cancel first assessment review'),undefined);assert.deepEqual(JSON.parse(evidence.value).request,JSON.parse(saveCalls(h)[0].options.body));
+  assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+ }
+});
+
+test('stale first readback controls cannot send checks or claim late success',async()=>{
  const h=firstSetup({saveFetch:async()=>{throw Error('lost');}});await openFirst(h);await importFirst(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
- const check=button(h.root,'Check saved assessment readback');button(h.root,'Cancel first assessment review').dispatchEvent(new Event('click'));check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,0);assert.equal(h.savedCount,0);
+ const check=button(h.root,'Check saved assessment readback');h.view.update({...scope,sectionId:'a3',stage:'final'});check.dispatchEvent(new Event('click'));await settle();assert.equal(firstReadbacks(h).length,0);assert.equal(h.savedCount,0);
  let finish;const pending=new Promise(resolve=>{finish=resolve;}),late=firstSetup({saveFetch:async()=>{throw Error('lost');},readbackFetch:()=>pending});await openFirst(late);await importFirst(late);approveFresh(late);button(late.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
  button(late.root,'Check saved assessment readback').dispatchEvent(new Event('click'));await settle();late.view.update({...scope,sectionId:'a3',stage:'final'});finish({ok:true,json:async()=>firstReadbackReply(late.fixture)});await settle();assert.equal(late.savedCount,0);assert.doesNotMatch(late.root.allText,/Saved and read back/);assert.equal(saveCalls(late).length,1);
 });

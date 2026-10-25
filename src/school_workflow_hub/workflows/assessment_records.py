@@ -321,6 +321,8 @@ def _compact_marker_census(source_text, inventory):
                 or qid in ids or len(ids) >= 200):
             raise ValueError("assessment_manifest_unparsed")
         ids.append(qid)
+    if not any(observed.values()):
+        raise ValueError("assessment_manifest_missing")
     return observed
 
 

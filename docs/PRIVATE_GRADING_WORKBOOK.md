@@ -178,6 +178,9 @@ packet and its first-review basis. It verifies the whole packet's completed or
 matching pending input proof plus the exact saved native projection. It never
 calls Save, finishes an expired run, sends another native batch, or clears a
 partial-write hold. Missing, changed or partial native evidence remains held.
+Cancel is available before Save. After a first Save is sent, it stays disabled
+while the result is unresolved, preserving the exact attempt evidence and its
+readback control even after a failed readback. Cancel cannot undo a native Save.
 Cancelling import/review does not save; changing the selected source, identity,
 lesson, section or checkpoint invalidates detached controls.
 

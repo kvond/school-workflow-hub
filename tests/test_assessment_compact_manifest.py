@@ -2,9 +2,12 @@
 from copy import deepcopy
 import hashlib
 import unittest
+from unittest.mock import patch
 
+from school_workflow_hub.adapters import assessment_provider as provider
 from school_workflow_hub.workflows import assessment_records as records
 from tests import test_assessment_records as fixtures
+from tests import test_assessment_provider as provider_fixtures
 
 
 NOTES_IDS = (
@@ -241,6 +244,19 @@ class CompactManifestTests(unittest.TestCase):
                 item = _synthetic_packet(candidate)
                 self.assertIs(records.validate_packet(item, candidate), item)
                 self.assertEqual(item["manifest"]["bank_ids"], [])
+
+    def test_markerless_zero_count_header_remains_held_before_any_provider_or_state_use(self):
+        source = ('[[MARKER-INVENTORY:C05]] NOTES=0 DRAFT=0 OPTIONAL=0 BANK_TERMS=0 '
+                  'NOTES_IDS=- DRAFT_IDS=- OPTIONAL_IDS=-')
+        with self.assertRaisesRegex(ValueError, 'assessment_manifest_missing'):
+            records.derive_manifest(source)
+        with provider_fixtures.drafting('{}') as draft, \
+             patch.object(provider.assessment_save, 'capture', return_value=dict(fixtures.CAPTURE, text=source)), \
+             patch.object(provider, '_teacher_prompts') as prompts:
+            with self.assertRaisesRegex(ValueError, 'assessment_manifest_missing'):
+                provider.draft(None, provider_fixtures.request(), provider_fixtures.CONFIG)
+        prompts.assert_not_called()
+        self.assertEqual(draft.calls, 0); self.assertEqual(draft.port.rows, {})
 
     def test_client_supplied_census_cannot_bypass_a_broken_compact_header(self):
         source = _with_header(COMPACT_HEADER.replace("NOTES=14", "NOTES=15", 1))

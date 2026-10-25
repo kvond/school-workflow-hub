@@ -541,11 +541,11 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      result.textContent='Saved and read back ✓ · Record '+d.record_id+'. First assessment verified by readback only; no new Save was sent. Nothing was posted to Infinite Campus.';
      save.remove();cancel.remove();check.remove();approval.disabled=true;busy=false;form.inert=false;closed=true;onSaved?.();
     }catch(error){if(!closed&&mine===generation)result.textContent=(error.message||'The saved readback reply was unavailable.')+' This view will not send another Save.';}
-    finally{inFlight=false;check.disabled=cancel.disabled=false;}
+    finally{inFlight=false;check.disabled=false;cancel.disabled=first&&attempted;}
    });
   }
   approval.addEventListener('change',()=>{save.disabled=!approval.checked||attempted||closed;});
-  cancel.addEventListener('click',()=>{if(inFlight)return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='Fresh review cancelled. Saved records remain unchanged.';});
+  cancel.addEventListener('click',()=>{if(inFlight||(first&&attempted))return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='Fresh review cancelled. Saved records remain unchanged.';});
   save.addEventListener('click',async()=>{
    if(closed||attempted||inFlight||!approval.checked)return;
    if(mine!==generation||!scope?.ready||scope.classKey!==packet.class_key||scope.assignmentKey!==packet.assignment_key||scope.sectionId!==packet.section_id||records?.()?.status!=='loaded'){
@@ -562,8 +562,8 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
     if(mine!==generation){onSaved?.();return;}
     result.textContent='Saved and read back ✓ · Record '+d.record_id+'. '+(first?'First assessment saved; no earlier assessment replaced. ':d.superseded?.includes(basis.record_id)?'Prior record retained as superseded history. ':'Saved record verified; prior history preserved. ')+'Nothing was posted to Infinite Campus.';
     save.remove();cancel.remove();check?.remove();approval.disabled=true;busy=false;form.inert=false;if(first)closed=true;onSaved?.();
-   }catch(error){if(mine===generation){result.textContent=(error.message||'The Save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';if(attemptBody)preserveSaveEvidence(review,attemptBody,responseEvidence);if(check)check.hidden=false;}}
-   finally{inFlight=false;cancel.disabled=false;}
+   }catch(error){if(mine===generation){result.textContent=(error.message||'The Save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.'+(first?' Cancel stays unavailable while this Save is unresolved; keep its evidence and check readback.':'');if(attemptBody)preserveSaveEvidence(review,attemptBody,responseEvidence);if(check)check.hidden=false;}}
+   finally{inFlight=false;cancel.disabled=first&&attempted;}
   });
  }
 
