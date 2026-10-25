@@ -166,8 +166,16 @@ def application(environ, start_response, *, teaching_provider=None):
         import re as _re
         try:
             assertion = environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION")
-            if path == "/api/assessment-recovery" and method != "POST":
-                return respond("405 Method Not Allowed", {"error": "method_not_allowed"})
+            if path == "/api/assessment-recovery" and method == "GET":
+                from urllib.parse import parse_qs
+                from .adapters import assessment_legacy_recovery
+                query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
+                if (set(query) not in ({"record_id"}, {"record_id", "run_id"})
+                        or any(len(value) != 1 for value in query.values())):
+                    raise ValueError("invalid_assessment_legacy_recovery")
+                return respond("200 OK", assessment_legacy_recovery.inspect(assertion,
+                    query["record_id"][0], os.environ,
+                    **({"run_id": query["run_id"][0]} if "run_id" in query else {})))
             if method == "GET":
                 from urllib.parse import parse_qs
                 query = parse_qs(environ.get("QUERY_STRING", ""), max_num_fields=2)
@@ -194,6 +202,9 @@ def application(environ, start_response, *, teaching_provider=None):
                 raise ValueError("invalid_assessment_save")
             payload = json.loads(environ["wsgi.input"].read(length))
             if path == "/api/assessment-recovery":
+                if isinstance(payload, dict) and payload.get("mode") == "legacy_ui_prewrite":
+                    from .adapters import assessment_legacy_recovery
+                    return respond("200 OK", assessment_legacy_recovery.reconcile(assertion, payload, os.environ))
                 from .adapters import assessment_recovery
                 return respond("200 OK", assessment_recovery.reconcile(assertion, payload, os.environ))
             return respond("200 OK", assessment_save.save(assertion, payload, os.environ))

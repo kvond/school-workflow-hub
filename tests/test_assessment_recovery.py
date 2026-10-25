@@ -261,9 +261,10 @@ class PrewriteRecoveryTests(unittest.TestCase):
         self.assertTrue(response['body']['readback_verified'])
         self.assertEqual(self.f.batches, 0)
 
-    def test_http_get_wrong_origin_and_missing_auth_preserve_original_pending_run(self):
+    def test_http_missing_query_wrong_origin_and_missing_auth_preserve_original_pending_run(self):
         state = deepcopy(self.f.port.rows)
-        self.assertEqual(self.http(method='GET')['status'], '405 Method Not Allowed')
+        self.assertEqual(self.http(method='GET')['status'], '400 Bad Request')
+        self.assertEqual(self.http(method='DELETE')['status'], '405 Method Not Allowed')
         self.assertEqual(self.http(origin='https://untrusted.example')['status'], '403 Forbidden')
         with patch.object(google, 'verify_teacher', side_effect=google.SignInRequired):
             missing = self.http(assertion=None)

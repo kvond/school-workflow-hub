@@ -320,7 +320,9 @@ class FreshReviewTests(unittest.TestCase):
         self.assertEqual(self.f.batches, 0)
 
     def test_writer_racing_after_preflight_then_expiring_is_never_adopted(self):
+        from school_workflow_hub.adapters import assessment_attempts
         payload = self.payload(); check = review.no_pending_save; preserved = {}
+        original_book = deepcopy(self.f.book)
         def race(port, item):
             result = check(port, item)
             cloud = CloudState(port); task = cloud.create_task(review.task_scope(item))
@@ -329,7 +331,16 @@ class FreshReviewTests(unittest.TestCase):
             return result
         with patch.object(review, "no_pending_save", side_effect=race), self.assertRaises(Conflict):
             self.save(payload)
-        self.assertEqual(self.f.port.rows, preserved)
+        task = key('task', review.task_scope(payload['packet']))
+        run = key('run', {'task': task, 'request': payload['request_id']})
+        attempt_id = key('assessmentattempt', {'task': task, 'run': run})
+        self.assertEqual(set(self.f.port.rows), set(preserved) | {attempt_id})
+        self.assertEqual({ident: self.f.port.rows[ident] for ident in preserved}, preserved)
+        retained = assessment_attempts.read(self.f.port, task, run)
+        self.assertEqual(retained['request'], payload)
+        self.assertEqual(retained['captured_source'], review.source_binding(self.f.capture))
+        self.assertNotIn(run, self.f.port.rows)
+        self.assertEqual(self.f.book, original_book)
         self.assertEqual(self.f.batches, 0)
 
     def test_claim_cas_contention_cannot_retry_into_expired_foreign_run(self):

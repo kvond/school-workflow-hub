@@ -330,3 +330,144 @@ test('fresh source-change failure directs a refreshed fresh review without gener
  assert.match(message,/Refresh the fresh current-source review/);assert.doesNotMatch(message,/Generate|draft/i);assert.equal(h.savedCount,0);
  assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
 });
+
+function legacyFixture(){
+ const fresh=freshFixture(),runId='run_'+'1'.repeat(64);
+ const challenge={schema:'hub-assessment-legacy-challenge/v1',record_id:'asmt-old',task_id:'task_'+'2'.repeat(64),run_id:runId,fence:4,input_hash:contentHash(fresh.packet),
+  task_version:'opaque-task-version',run_version:'opaque-run-version',task_sha256:'3'.repeat(64),run_sha256:'4'.repeat(64),current_baseline_sha256:'5'.repeat(64),
+  current_source:{file_id:'fictional-a2',version:'35',sha256:'6'.repeat(64),modified_at:'2026-10-25T14:00:00Z',raw_sha256:'7'.repeat(64),metadata_sha256:'8'.repeat(64)},workbook_sha256:'9'.repeat(64),headers_sha256:'a'.repeat(64)};
+ const pending={schema:'hub-assessment-legacy-recovery/v1',status:'legacy_pending_review',challenge,run:{started_at:'2026-10-25T12:01:00Z',expires_at:'2026-10-25T12:06:00Z'},retained_attempt:null};
+ const complete={status:'already_reconciled',grade_writes:0,readback_verified:true,receipt:{record_id:'legacy-recovery-fictional',run_id:runId}};
+ return {...fresh,challenge,pending,complete};
+}
+function legacySetup({lookup,post,provider=true}={}){
+ const fixture=legacyFixture(),root=new Element(document,'div'),calls=[];let lookupCount=0,savedCount=0;
+ const data=structuredClone(records);data.data.submissions=[{...fixture.reply.base.submission}];
+ const fetcher=async(url,options)=>{
+  calls.push({url,options});
+  if(url.includes('mode=fresh_current_review'))return {ok:false,json:async()=>({error:'assessment_review_save_pending'})};
+  if(url.startsWith('/api/assessment-recovery?')){lookupCount++;return lookup?lookup(lookupCount,fixture):{ok:true,json:async()=>fixture.pending};}
+  if(url==='/api/assessment-recovery'&&options?.method==='POST')return post?post(fixture):{ok:true,json:async()=>fixture.complete};
+  if(url==='/api/assessment-run'&&options?.method==='POST')return {ok:true,json:async()=>({status:'already_assessed',checked_at:'2026-10-25T12:00:00Z'})};
+  if(url.includes('draft_for='))return {ok:true,json:async()=>({status:'no_draft'})};
+  return {ok:true,json:async()=>({configured:provider,model:'synthetic-no-model',dependency:'provider_not_configured'})};
+ };
+ return {root,calls,data,fixture,get savedCount(){return savedCount;},view:mountAssessmentReview(root,{fetcher,records:()=>data,onSaved:()=>savedCount++})};
+}
+const recoveryCalls=h=>h.calls.filter(call=>call.url==='/api/assessment-recovery'&&call.options?.method==='POST');
+const labelControl=(root,text)=>root.all.find(element=>element.tagName==='label'&&element.children[0]?.textContent===text)?.children[1];
+function fillLegacy(h){
+ labelControl(h.root,'Surviving reviewed assessment packet JSON').value=JSON.stringify(h.fixture.packet);
+ labelControl(h.root,'Private failure evidence reference').value='private-fictional-failure-evidence';
+ labelControl(h.root,'First both-table absence observation at (timestamp with timezone)').value='2026-10-25T12:02:00Z';
+ const approval=h.root.all.find(element=>element.tagName==='input'&&element.type==='checkbox');approval.checked=true;
+ return approval;
+}
+const settleHash=async()=>{for(let n=0;n<20;n++)await new Promise(resolve=>setTimeout(resolve,0));};
+async function submitLegacy(h){button(h.root,'Reconcile this verified pre-write failure').dispatchEvent(new Event('click'));await settleHash();}
+
+test('pending fresh loader opens normal selected-item recovery with current proof and explicit historical attestation',async()=>{
+ const h=legacySetup({provider:false});await openFresh(h);
+ const lookups=h.calls.filter(call=>call.url.startsWith('/api/assessment-recovery?'));
+ assert.equal(lookups.length,1);assert.deepEqual(Object.fromEntries(new URL(lookups[0].url,'https://fictional.invalid').searchParams),{record_id:'asmt-old'});
+ assert.match(h.root.allText,/Resolve this pending assessment Save/);assert.match(h.root.allText,/not proof of the original baseline/);assert.match(h.root.allText,/your attestation/);
+ assert.match(h.root.allText,/fence 4/);assert.match(h.root.allText,/source version 35/);
+ const started=labelControl(h.root,'Attempt started at (server record)');assert.equal(started.readOnly,true);assert.equal(started.value,h.fixture.pending.run.started_at);
+ fillLegacy(h);await submitLegacy(h);
+ const payload=JSON.parse(recoveryCalls(h)[0].options.body);
+ assert.deepEqual(payload,{mode:'legacy_ui_prewrite',record_id:'asmt-old',packet:h.fixture.packet,challenge:h.fixture.challenge,
+  historical_evidence:{schema:'hub-assessment-legacy-ui-evidence/v1',observation:'missing_report_columns_ui',evidence_ref:'private-fictional-failure-evidence',attempt_started_at:h.fixture.pending.run.started_at,first_absence_at:'2026-10-25T12:02:00Z',baseline_unchanged_attested:true,no_native_write_attested:true}});
+ assert.equal('request_id' in payload,false);assert.equal('review_basis' in payload,false);assert.equal('http_status' in payload.historical_evidence,false);
+ assert.match(h.root.allText,/Receipt legacy-recovery-fictional/);assert.match(h.root.allText,/separate new Save/);assert.equal(h.savedCount,0);
+ assert.equal(h.calls.some(call=>call.url==='/api/assessment-save'&&call.options?.method==='POST'),false);
+ assert.equal(h.calls.some(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST'),false);
+ assert.equal(h.calls.filter(call=>call.url.includes('mode=fresh_current_review')).length,1,'no automatic fresh load');
+});
+
+test('legacy recovery validates the surviving packet and historical observations before sending any mutation',async()=>{
+ const changes=[h=>h.root.all.find(element=>element.tagName==='input'&&element.type==='checkbox').checked=false,
+  h=>labelControl(h.root,'Private failure evidence reference').value='',h=>labelControl(h.root,'First both-table absence observation at (timestamp with timezone)').value='2026-10-25T12:00:00Z',
+  h=>labelControl(h.root,'First both-table absence observation at (timestamp with timezone)').value='2026-10-25 12:02',
+  h=>labelControl(h.root,'Surviving reviewed assessment packet JSON').value='{',
+  h=>{const packet=structuredClone(h.fixture.packet);packet.section_id='a3';labelControl(h.root,'Surviving reviewed assessment packet JSON').value=JSON.stringify(packet);},
+  h=>{const packet=structuredClone(h.fixture.packet);packet.feedback+=' edited';labelControl(h.root,'Surviving reviewed assessment packet JSON').value=JSON.stringify(packet);}];
+ for(const change of changes){const h=legacySetup();await openFresh(h);fillLegacy(h);change(h);await submitLegacy(h);assert.equal(recoveryCalls(h).length,0);assert.ok(button(h.root,'Cancel pending Save review'));assert.equal(button(h.root,'Reconcile this verified pre-write failure').disabled,false);}
+});
+
+test('retained attempt prefills only its surviving packet and still requires explicit historical evidence',async()=>{
+ const h=legacySetup({lookup:async(_,fixture)=>({ok:true,json:async()=>({...fixture.pending,retained_attempt:{request_id:'retained-request',packet:fixture.packet,review_basis:{mode:'fresh_current_review'}}})})});await openFresh(h);
+ assert.deepEqual(JSON.parse(labelControl(h.root,'Surviving reviewed assessment packet JSON').value),h.fixture.packet);
+ await submitLegacy(h);assert.equal(recoveryCalls(h).length,0);assert.equal(labelControl(h.root,'Private failure evidence reference').value,'');
+});
+
+test('cancelled and changed-scope recovery controls and late operation lookups cannot dispatch',async()=>{
+ const cancelled=legacySetup();await openFresh(cancelled);fillLegacy(cancelled);const detached=button(cancelled.root,'Reconcile this verified pre-write failure');
+ button(cancelled.root,'Cancel pending Save review').dispatchEvent(new Event('click'));detached.dispatchEvent(new Event('click'));await settleHash();assert.equal(recoveryCalls(cancelled).length,0);
+ for(const update of [h=>h.view.update({...scope,sectionId:'a3'}),h=>h.view.update({...scope,stage:'final'}),h=>h.view.setFiles([{...files[0],source_revision:'36'}],null)]){
+  const h=legacySetup();await openFresh(h);fillLegacy(h);const submit=button(h.root,'Reconcile this verified pre-write failure');update(h);submit.dispatchEvent(new Event('click'));await settleHash();assert.equal(recoveryCalls(h).length,0);
+ }
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),late=legacySetup({lookup:()=>pending});await openFresh(late);late.view.update({...scope,sectionId:'a3'});finish({ok:true,json:async()=>late.fixture.pending});await settle();
+ assert.equal(button(late.root,'Reconcile this verified pre-write failure'),undefined);assert.equal(recoveryCalls(late).length,0);
+});
+
+test('legacy double clicks and lost reply allow only a read-only check for the same recovered run',async()=>{
+ let finish;const pending=new Promise(resolve=>{finish=resolve;}),h=legacySetup({post:()=>pending,lookup:async(n,fixture)=>({ok:true,json:async()=>n===1?fixture.pending:fixture.complete})});await openFresh(h);fillLegacy(h);
+ const submit=button(h.root,'Reconcile this verified pre-write failure');submit.dispatchEvent(new Event('click'));submit.dispatchEvent(new Event('click'));await settleHash();assert.equal(recoveryCalls(h).length,1);
+ finish({ok:false,json:async()=>({error:'assessment_state_unavailable'})});await settle();submit.dispatchEvent(new Event('click'));await settleHash();assert.equal(recoveryCalls(h).length,1);assert.equal(submit.disabled,true);
+ const check=button(h.root,'Check recovery readback');assert.equal(check.hidden,false);check.dispatchEvent(new Event('click'));await settle();
+ assert.match(h.root.allText,/Recovery read back/);assert.equal(recoveryCalls(h).length,1);assert.equal(h.savedCount,0);
+ const reads=h.calls.filter(call=>call.url.startsWith('/api/assessment-recovery?'));assert.equal(reads.length,2);
+ assert.deepEqual(Object.fromEntries(new URL(reads[1].url,'https://fictional.invalid').searchParams),{record_id:'asmt-old',run_id:h.fixture.challenge.run_id});
+});
+
+test('lost recovery acknowledgement checks the exact historical run even after a newer run is active',async()=>{
+ const h=legacySetup({post:async()=>{throw Error('synthetic lost reply');},lookup:async(n,fixture)=>({ok:true,json:async()=>n===1?fixture.pending:{...fixture.complete,newer_run_active:true}})});await openFresh(h);fillLegacy(h);await submitLegacy(h);
+ button(h.root,'Check recovery readback').dispatchEvent(new Event('click'));await settle();
+ const last=h.calls.filter(call=>call.url.startsWith('/api/assessment-recovery?')).at(-1);
+ assert.equal(new URL(last.url,'https://fictional.invalid').searchParams.get('run_id'),h.fixture.challenge.run_id);assert.match(h.root.allText,/Recovery read back ✓/);assert.equal(recoveryCalls(h).length,1);
+});
+
+test('closing and reopening an uncertain recovery remains readback-only for the same run',async()=>{
+ const h=legacySetup({post:async()=>{throw Error('synthetic lost reply');}});await openFresh(h);fillLegacy(h);await submitLegacy(h);
+ button(h.root,'Cancel pending Save review').dispatchEvent(new Event('click'));
+ button(h.root,'Review fresh current-source assessment').dispatchEvent(new Event('click'));await settle();
+ const submit=button(h.root,'Reconcile this verified pre-write failure');assert.equal(submit.disabled,true);submit.dispatchEvent(new Event('click'));await settleHash();assert.equal(recoveryCalls(h).length,1);assert.equal(button(h.root,'Check recovery readback').hidden,false);
+});
+
+test('unverified, different-run and still-pending recovery replies never claim closure or retry POST',async()=>{
+ const replies=[fixture=>({...fixture.complete,readback_verified:false}),fixture=>({...fixture.complete,grade_writes:1}),
+  fixture=>({...fixture.complete,status:'unknown'}),
+  fixture=>({...fixture.complete,receipt:{record_id:'other-recovery',run_id:'run_'+'f'.repeat(64)}}),fixture=>fixture.pending];
+ for(const reply of replies){const h=legacySetup({post:async fixture=>({ok:true,json:async()=>reply(fixture)}),lookup:async(n,fixture)=>({ok:true,json:async()=>n===1?fixture.pending:reply(fixture)})});await openFresh(h);fillLegacy(h);await submitLegacy(h);
+  const check=button(h.root,'Check recovery readback');check.dispatchEvent(new Event('click'));await settle();assert.doesNotMatch(h.root.allText,/Recovery read back ✓/);assert.equal(recoveryCalls(h).length,1);assert.equal(h.savedCount,0);
+ }
+});
+
+test('initial recovery lookup rejects malformed success-shaped replies without a closed status and exact run',async()=>{
+ for(const change of [reply=>reply.status='unknown',reply=>delete reply.receipt.run_id]){
+  const h=legacySetup({lookup:async(_,fixture)=>{const reply=structuredClone(fixture.complete);change(reply);return {ok:true,json:async()=>reply};}});await openFresh(h);
+  assert.doesNotMatch(h.root.allText,/Recovery read back ✓/);assert.equal(button(h.root,'Reconcile this verified pre-write failure'),undefined);assert.equal(recoveryCalls(h).length,0);
+ }
+});
+
+test('one held recovery leaves another submission and the ordinary batch controls usable',async()=>{
+ const h=legacySetup();await openFresh(h);assert.notEqual(button(h.root,'Generate pending feedback for this lesson').disabled,true);
+ const submission=h.root.all.find(element=>element.tagName==='select'&&element.children.some(option=>option.value==='fictional-a2'));
+ h.view.setFiles([files[0],{...files[1],file_id:'fictional-other-a2',section_id:'a2'}],null);await settle();
+ const chosen=h.root.all.find(element=>element.tagName==='select'&&element.children.some(option=>option.value==='fictional-other-a2'));
+ chosen.value='fictional-other-a2';chosen.dispatchEvent(new Event('change'));await settle();button(h.root,'Generate feedback for this submission').dispatchEvent(new Event('click'));await settle();
+ const generated=h.calls.filter(call=>call.url==='/api/assessment-run'&&call.options?.method==='POST');assert.equal(generated.length,1);assert.equal(JSON.parse(generated[0].options.body).file_id,'fictional-other-a2');assert.equal(recoveryCalls(h).length,0);assert.ok(submission);
+});
+
+test('future fresh and ordinary Save failures expose the exact immutable envelope without inventing missing HTTP evidence',async()=>{
+ for(const fresh of [false,true]){
+  let reject;const pending=new Promise((_,no)=>{reject=no;}),h=fresh?freshSetup({saveFetch:()=>pending}):savedSetup({saveFetch:()=>pending});
+  if(fresh){await openFresh(h);await importFresh(h);approveFresh(h);}else await loadExisting(h);
+  button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+  const sent=saveCalls(h)[0].options.body;reject(Error('synthetic lost transport reply'));await settle();
+  const area=labelControl(h.root,'Save attempt evidence JSON'),evidence=JSON.parse(area.value);assert.equal(area.readOnly,true);assert.deepEqual(evidence.request,JSON.parse(sent));assert.equal('response' in evidence,false);
+  assert.ok(button(h.root,'Copy Save attempt evidence'));assert.ok(button(h.root,'Download Save attempt evidence'));assert.equal(saveCalls(h).length,1);assert.equal(h.savedCount,0);
+ }
+ const h=freshSetup({saveFetch:async()=>({ok:false,status:409,json:async()=>({error:'assessment_column_missing'})})});await openFresh(h);await importFresh(h);approveFresh(h);button(h.root,'Save reviewed assessment to the workbook').dispatchEvent(new Event('click'));await settle();
+ assert.deepEqual(JSON.parse(labelControl(h.root,'Save attempt evidence JSON').value).response,{http_status:409,error_code:'assessment_column_missing'});
+});

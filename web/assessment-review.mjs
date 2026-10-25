@@ -69,6 +69,20 @@ const hash=async value=>Array.from(new Uint8Array(await crypto.subtle.digest('SH
 const freshFailure=code=>['submission_changed_reassess','assessment_source_changed_during_capture'].includes(code)
  ?'The current source changed. Refresh the fresh current-source review and review a packet bound to that source before Save.'
  :explain(code);
+const timestamp=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)&&Number.isFinite(Date.parse(value));
+function preserveSaveEvidence(root,body,response){
+ const evidence={schema:'hub-assessment-save-evidence/v1',request:JSON.parse(body),...(response?{response:copy(response)}:{})};
+ const text=JSON.stringify(evidence,null,2),details=node(root,'details');
+ details.append(node(root,'summary','Preserve this Save attempt'));
+ details.append(node(root,'p','This is the exact request sent by this view. Keep it in your private records for readback or recovery; it does not prove that the workbook changed.','hint'));
+ const area=node(root,'textarea');area.readOnly=true;area.rows=8;area.value=text;
+ details.append(labeled(root,'Save attempt evidence JSON',area));
+ const status=node(root,'p','','hint'),copyButton=node(root,'button','Copy Save attempt evidence'),download=node(root,'button','Download Save attempt evidence');
+ copyButton.type=download.type='button';
+ copyButton.addEventListener('click',async()=>{try{if(!globalThis.navigator?.clipboard?.writeText)throw Error();await globalThis.navigator.clipboard.writeText(text);status.textContent='Save attempt evidence copied.';}catch{area.focus?.();area.select?.();status.textContent='Copy the evidence JSON into your private records.';}});
+ download.addEventListener('click',()=>{const url=URL.createObjectURL(new Blob([text],{type:'application/json'})),link=node(root,'a');link.href=url;link.download='assessment-save-attempt.json';link.click();URL.revokeObjectURL(url);});
+ details.append(copyButton,download,status);root.append(details);
+}
 function completeFreshPacket(packet){
  const fields=['schema_version','class_key','section_id','section_name','assignment_key','stage','stage_reference','identity','source','manifest','responses','feedback','comparison_status','ic_assignment_id'];
  const responseFields=['question_id','category','judgment','response_excerpt','evidence_note','conceptual_level','explanation_level','conceptual_feedback','prompt','prompt_basis','slide_number','optional'];
@@ -103,6 +117,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
  const review=node(container,'div');review.setAttribute('aria-live','polite');
  container.append(state,form,review);
  let scope=null,files=[],deadline=null,generation=0,providerReady=null,busy=false,spent=0,unresolvedCount=0;
+ const recoveryAttempts=new Set();
  const signature=list=>JSON.stringify(list.map(f=>[f.file_id,f.stage,f.section_id,f.class_key,f.assignment_key,f.version||f.source_revision||f.modified_at||'',f.review_reasons||[],f.hold_reason||'']));
  const budgetLine=()=>money(spent)+' estimated this session of the '+money(BUDGET)+' total approved budget.';
 
@@ -210,7 +225,13 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    try{
     const r=await request('/api/assessment-save?'+new URLSearchParams({record_id:saved[0].record_id,mode:'fresh_current_review'}),{cache:'no-store',credentials:'same-origin',redirect:'error'});
     const d=await r.json();if(mine!==generation)return;
-    if(!r.ok)throw Error(freshFailure(d.error));
+    if(!r.ok){
+     if(d.error==='assessment_review_save_pending'){
+      await renderLegacyRecovery(saved[0],file,target,selectedStage,mine,()=>fileSelect.value===file.file_id&&stage.value===selectedStage);
+      return;
+     }
+     throw Error(freshFailure(d.error));
+    }
     const basis=d.review_basis,fresh=basis?.source;
     if(d.schema_version!=='hub-assessment-review/v1'||d.status!=='fresh_packet_required'||d.packet!==null||d.external_writes!==0||d.live_model_calls!==0||
      !exactKeys(basis,['mode','record_id','record_sha256','source'])||basis.mode!=='fresh_current_review'||basis.record_id!==saved[0].record_id||!/^[a-f0-9]{64}$/.test(basis.record_sha256)||
@@ -341,9 +362,70 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   recoverDraft(fileSelect.value);
  }
 
+ async function renderLegacyRecovery(saved,file,target,selectedStage,mine,selected){
+  let closed=false,attempted=false,inFlight=false,challenge=null;
+  const current=()=>!closed&&mine===generation&&selected()&&scope?.ready&&scope.classKey===target.classKey&&scope.assignmentKey===target.assignmentKey&&scope.sectionId===target.sectionId&&records?.()?.status==='loaded'&&files.some(item=>item.file_id===file.file_id);
+  const result=node(review,'p','','hint');result.setAttribute('role','status');
+  review.replaceChildren(node(review,'h4','Resolve this pending assessment Save'),result);
+  const cancel=node(review,'button','Cancel pending Save review');cancel.type='button';review.append(cancel);
+  cancel.addEventListener('click',()=>{if(inFlight)return;closed=true;generation++;busy=false;form.inert=false;review.replaceChildren();state.textContent='Pending Save review closed. Its history remains preserved.';});
+  const verified=d=>['reconciled','already_reconciled'].includes(d?.status)&&d.readback_verified===true&&d.grade_writes===0&&typeof d.receipt?.record_id==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(d.receipt.record_id)&&/^run_[a-f0-9]{64}$/.test(d.receipt.run_id)&&(!challenge||d.receipt.run_id===challenge.run_id);
+  const complete=d=>{result.textContent='Recovery read back ✓ · Receipt '+d.receipt.record_id+'. No grades were written. Load a fresh current-source review, review its packet, and make a separate new Save. Nothing is generated or saved automatically.';busy=false;form.inert=false;};
+  const read=async()=>{const r=await request('/api/assessment-recovery?'+new URLSearchParams({record_id:saved.record_id,...(challenge?{run_id:challenge.run_id}:{})}),{cache:'no-store',credentials:'same-origin',redirect:'error'});const d=await r.json();if(!r.ok)throw Error(explain(d.error));return d;};
+  result.textContent='Checking this selected submission’s pending operation — no model call or grade write…';
+  try{
+   const d=await read();if(!current())return;
+   if(verified(d)){complete(d);return;}
+   const c=d.challenge;
+   if(d.schema!=='hub-assessment-legacy-recovery/v1'||d.status!=='legacy_pending_review'||!object(c)||c.schema!=='hub-assessment-legacy-challenge/v1'||c.record_id!==saved.record_id||
+    ['task_id','run_id'].some(key=>typeof c[key]!=='string'||!c[key]||c[key].length>200)||!Number.isInteger(c.fence)||c.fence<1||
+    ['input_hash','task_sha256','run_sha256','current_baseline_sha256','workbook_sha256','headers_sha256'].some(key=>!/^[a-f0-9]{64}$/.test(c[key]))||
+    !Object.hasOwn(c,'task_version')||!Object.hasOwn(c,'run_version')||!object(c.current_source)||c.current_source.file_id!==file.file_id||
+    typeof c.current_source.version!=='string'||!/^[a-f0-9]{64}$/.test(c.current_source.sha256)||!timestamp(d.run?.started_at)||!timestamp(d.run?.expires_at))throw Error('This pending operation could not be verified. Its history remains held.');
+   challenge=copy(c);busy=false;form.inert=false;
+   result.textContent='This one assessment remains held until its historical evidence and current server checks agree. Other submissions can still be processed.';
+   review.append(node(review,'p',file.name+' · '+target.sectionName+' · '+selectedStage+' checkpoint'),
+    node(review,'p','Pending run '+c.run_id+' · fence '+c.fence+' · expires '+d.run.expires_at,'hint'),
+    node(review,'p','Current server proof: source version '+c.current_source.version+' · hash '+c.current_source.sha256+' · current baseline '+c.current_baseline_sha256+'. This is a fresh check, not proof of the original baseline.','hint'),
+    node(review,'p','Provide the surviving reviewed packet and the private evidence of the missing-report-columns message. Historical observations below are your attestation; the server independently rechecks both workbook tables and the current baseline.','hint'));
+   const prepared=node(review,'textarea');prepared.rows=10;
+   if(object(d.retained_attempt)&&object(d.retained_attempt.packet))prepared.value=JSON.stringify(d.retained_attempt.packet,null,2);
+   const evidence=input(review,'','private evidence reference'),absence=input(review,'','2026-10-25T12:00:00Z'),started=input(review,d.run.started_at);started.readOnly=true;
+   review.append(labeled(review,'Surviving reviewed assessment packet JSON',prepared),labeled(review,'Private failure evidence reference',evidence),
+    labeled(review,'Attempt started at (server record)',started),labeled(review,'First both-table absence observation at (timestamp with timezone)',absence));
+   const approval=node(review,'input');approval.type='checkbox';approval.checked=false;
+   review.append(labeled(review,'I observed the missing-report-columns message, checked that the attempted record was absent from both Submissions and Answers at the time above, verified the prior baseline was unchanged, and attest that this attempt made no native workbook write.',approval));
+   const submit=node(review,'button','Reconcile this verified pre-write failure');submit.type='button';
+   const check=node(review,'button','Check recovery readback');check.type='button';check.hidden=true;review.append(submit,check);
+   const disable=()=>{submit.disabled=true;prepared.readOnly=evidence.readOnly=absence.readOnly=true;approval.disabled=true;};
+   if(recoveryAttempts.has(challenge.run_id)){attempted=true;disable();check.hidden=false;result.textContent='This view already sent a recovery request for this exact operation. Check its readback; this view will not send another recovery request.';}
+   check.addEventListener('click',async()=>{if(!current()||inFlight||!attempted)return;inFlight=true;check.disabled=true;try{const reply=await read();if(!current())return;if(verified(reply)){complete(reply);check.hidden=true;}else result.textContent='Recovery is still unresolved for this exact operation. Preserve the attempt; this view will not send another recovery request.';}catch(error){if(current())result.textContent=(error.message||'Recovery readback is unavailable.')+' Preserve this attempt; this view will not send another recovery request.';}finally{inFlight=false;check.disabled=false;}});
+   submit.addEventListener('click',async()=>{
+    if(!current()||attempted||inFlight)return;inFlight=true;submit.disabled=true;
+    try{
+     if(!approval.checked)throw Error('Confirm every historical observation before requesting recovery.');
+     if(!evidence.value.trim()||evidence.value.length>400||/[\x00-\x1f\x7f]/.test(evidence.value))throw Error('Provide the private failure evidence reference.');
+     if(!timestamp(absence.value)||Date.parse(absence.value)<Date.parse(d.run.started_at))throw Error('Provide the first both-table absence timestamp, including its timezone, at or after this attempt started.');
+     if(prepared.value.length>400000)throw Error('The surviving packet exceeds the bounded review size.');
+     const importedText=prepared.value,evidenceRef=evidence.value.trim(),firstAbsence=absence.value;
+     const imported=JSON.parse(importedText),packet=exactKeys(imported,['packet'])?imported.packet:imported;completeFreshPacket(packet);
+     if(packet.class_key!==target.classKey||packet.assignment_key!==target.assignmentKey||packet.section_id!==target.sectionId||packet.section_name!==target.sectionName||packet.stage!==selectedStage||packet.source.file_id!==file.file_id)throw Error('The surviving packet does not match the selected lesson, section, checkpoint and submission.');
+     const immutable=copy(packet);if(await hash(immutable)!==challenge.input_hash)throw Error('The surviving packet does not match this exact pending operation. Preserve the original packet; nothing was reconciled.');
+     if(!current())return;
+     if(!approval.checked||prepared.value!==importedText||evidence.value.trim()!==evidenceRef||absence.value!==firstAbsence)throw Error('The packet or historical observations changed. Review and confirm them before requesting recovery.');
+     const payload={mode:'legacy_ui_prewrite',record_id:saved.record_id,packet:immutable,challenge:copy(challenge),historical_evidence:{schema:'hub-assessment-legacy-ui-evidence/v1',observation:'missing_report_columns_ui',evidence_ref:evidenceRef,attempt_started_at:d.run.started_at,first_absence_at:firstAbsence,baseline_unchanged_attested:true,no_native_write_attested:true}};
+     attempted=true;recoveryAttempts.add(challenge.run_id);disable();cancel.disabled=true;result.textContent='Rechecking this exact failure and recording its recovery — no grade write…';
+     const r=await request('/api/assessment-recovery',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),reply=await r.json();
+     if(!current())return;if(!r.ok)throw Error(explain(reply.error));if(!verified(reply))throw Error('Recovery did not return verified readback for this exact operation.');complete(reply);
+    }catch(error){if(current()){result.textContent=error.message||'The recovery reply was unavailable.';if(attempted){result.textContent+=' Preserve this attempt and check recovery readback; this view will not send another recovery request.';check.hidden=false;}}}
+    finally{inFlight=false;cancel.disabled=false;if(!attempted)submit.disabled=false;}
+   });
+  }catch(error){if(current()){busy=false;form.inert=false;result.textContent=error.message||'Pending-operation readback is unavailable. Preserve its history.';}}
+ }
+
  function renderFreshReview(loaded,packet,packetHash,file,mine){
   if(mine!==generation||!scope?.ready||packet.class_key!==scope.classKey||packet.assignment_key!==scope.assignmentKey||packet.section_id!==scope.sectionId||!files.some(current=>current.file_id===file.file_id))return;
-  let closed=false,attempted=false,inFlight=false;
+  let closed=false,attempted=false,inFlight=false,attemptBody=null,responseEvidence=null;
   const basis={...copy(loaded.review_basis),packet_sha256:packetHash};
   review.replaceChildren();busy=true;form.inert=true;
   const meaningful=packet.responses.filter(response=>response.judgment==='meaningful_attempt').length;
@@ -375,14 +457,16 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
    }
    attempted=true;inFlight=true;save.disabled=cancel.disabled=approval.disabled=true;result.textContent='Re-verifying the complete reviewed packet and saving…';
    try{
-    const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},
-     body:JSON.stringify({request_id:crypto.randomUUID().replace(/-/g,'').slice(0,32),packet,review_basis:basis})});
-    const d=await r.json();if(!r.ok)throw Error(freshFailure(d.error));
+    const requestId=crypto.randomUUID().replace(/-/g,'').slice(0,32),envelope={request_id:requestId,packet:copy(packet),review_basis:copy(basis)};
+    attemptBody=JSON.stringify(envelope);
+    const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:attemptBody});
+    responseEvidence=Number.isInteger(r.status)?{http_status:r.status}:null;
+    const d=await r.json();if(typeof d.error==='string')responseEvidence={...responseEvidence,error_code:d.error};if(!r.ok)throw Error(freshFailure(d.error));
     if(d.readback_verified!==true)throw Error('The save did not read back as expected.');
     if(mine!==generation){onSaved?.();return;}
     result.textContent='Saved and read back ✓ · Record '+d.record_id+'. '+(d.superseded?.includes(basis.record_id)?'Prior record retained as superseded history. ':'Saved record verified; prior history preserved. ')+'Nothing was posted to Infinite Campus.';
     save.remove();cancel.remove();approval.disabled=true;busy=false;form.inert=false;onSaved?.();
-   }catch(error){if(mine===generation)result.textContent=(error.message||'The Save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';}
+   }catch(error){if(mine===generation){result.textContent=(error.message||'The Save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';if(attemptBody)preserveSaveEvidence(review,attemptBody,responseEvidence);}}
    finally{inFlight=false;cancel.disabled=false;}
   });
  }
@@ -394,7 +478,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
   }
   const draftGeneration=generation;
   const savedReview=draft.schema_version==='hub-assessment-review/v1';
-  let saveInFlight=false,saveAttempted=false,closed=false;
+  let saveInFlight=false,saveAttempted=false,closed=false,attemptBody=null,responseEvidence=null;
   review.replaceChildren();busy=true;
   const lessonTitle=knownAssignments(packet.class_key).find(([key])=>key===packet.assignment_key)?.[1]||'Lesson needs verification';
   review.append(node(review,'h4',(savedReview?'Saved assessment review · ':'Draft assessment · ')+(packet.identity.display_name||'unnamed')+' · '+lessonTitle+' · '+packet.stage+' checkpoint'));
@@ -470,8 +554,11 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      conceptual_feedback:feedback.value}));
     const reviewed={...packet,responses,feedback:feedbackBox.value};
     const requestId=crypto.randomUUID().replace(/-/g,'').slice(0,32);
-    const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId,packet:reviewed,...(savedReview?{review_basis:draft.review_basis}:{})})});
+    const envelope={request_id:requestId,packet:copy(reviewed),...(savedReview?{review_basis:copy(draft.review_basis)}:{})};attemptBody=JSON.stringify(envelope);
+    const r=await request('/api/assessment-save',{method:'POST',cache:'no-store',credentials:'same-origin',redirect:'error',headers:{'Content-Type':'application/json'},body:attemptBody});
+    responseEvidence=Number.isInteger(r.status)?{http_status:r.status}:null;
     const d=await r.json();
+    if(typeof d.error==='string')responseEvidence={...responseEvidence,error_code:d.error};
     if(!r.ok)throw Error(explain(d.error));
     if(d.readback_verified!==true)throw Error('The save did not read back as expected.');
     if(draftGeneration!==generation){onSaved?.();return;}
@@ -482,7 +569,7 @@ export function mountAssessmentReview(container,{fetcher,records,onSaved}={}){
      node(review,'p',(d.superseded?.length?('Superseded earlier record(s): '+d.superseded.join(', ')+'.'):'No earlier record superseded.')+' Readback verified against the live workbook. Reopen this feedback anytime from the student’s row above; nothing was posted to Infinite Campus.','hint'));
     review.append(receipt);save.remove();discard.remove();
     busy=false;onSaved?.();
-   }catch(error){if(draftGeneration===generation)saveState.textContent=(error.message||'The save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';}
+   }catch(error){if(draftGeneration===generation){saveState.textContent=(error.message||'The save reply was unavailable.')+' Check the saved record before reopening review; this view will not send another Save.';if(attemptBody)preserveSaveEvidence(review,attemptBody,responseEvidence);}}
    finally{saveInFlight=false;discard.disabled=false;}
   });
  }

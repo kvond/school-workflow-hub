@@ -266,7 +266,9 @@ class ReviewTests(unittest.TestCase):
             review.load("signed", result["record_id"], CONFIG)
 
     def test_writer_claimed_and_expired_between_preflight_and_claim_is_never_adopted(self):
+        from school_workflow_hub.adapters import assessment_attempts
         payload = self.successor(); original_check = review.no_pending_save
+        original_book = deepcopy(self.book)
         preserved = {}
         def race(port, item):
             result = original_check(port, item)
@@ -276,7 +278,16 @@ class ReviewTests(unittest.TestCase):
             return result
         with patch.object(review, "no_pending_save", side_effect=race), self.assertRaisesRegex(Conflict, "review_save_pending"):
             saving.save("signed", payload, CONFIG)
-        self.assertEqual(self.port.rows, preserved)
+        task = key('task', review.task_scope(payload['packet']))
+        run = key('run', {'task': task, 'request': payload['request_id']})
+        attempt_id = key('assessmentattempt', {'task': task, 'run': run})
+        self.assertEqual(set(self.port.rows), set(preserved) | {attempt_id})
+        self.assertEqual({ident: self.port.rows[ident] for ident in preserved}, preserved)
+        retained = assessment_attempts.read(self.port, task, run)
+        self.assertEqual(retained['request'], payload)
+        self.assertEqual(retained['captured_source'], review.source_binding(self.capture))
+        self.assertNotIn(run, self.port.rows)
+        self.assertEqual(self.book, original_book)
         self.assertEqual(self.batches, 0)
 
     def test_claim_cas_contention_does_not_retry_into_an_expired_foreign_run(self):
