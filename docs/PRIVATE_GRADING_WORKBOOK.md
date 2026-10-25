@@ -159,6 +159,19 @@ the importer does not fill missing identities, versions, quotes or judgments.
 Existing IC mappings remain separate verified configuration; no first-record
 import invents a destination or posts grades to IC.
 
+For an older one-line inventory without `VERSION` or `BANK_IDS`, the server
+recomputes requirements from the captured source. Only the omitted BANK list
+may come from native tags: every declared count and NOTES/DRAFT/OPTIONAL ID set
+must agree with unique, correctly formed markers from the header's exact cycle.
+Duplicate markers within a category, another cycle, contradictory/duplicate
+header fields, additional inventories or malformed tags remain held. A question
+ID shared by NOTES and DRAFT remains two distinct items. Declared list order is
+preserved; inferred BANK order is its native marker order. A documented imported
+`marker_census` packet is verified against these authoritative requirements
+without changing its approved responses, excerpts, evidence notes or feedback.
+This does not modify the source deck or relax first-assessment absence,
+identity, pending-run, schema or final Save checks.
+
 After a lost or unverified first Save reply, **Check saved assessment readback**
 uses the same read-only preparation route with `mode=first_readback`, the exact
 packet and its first-review basis. It verifies the whole packet's completed or

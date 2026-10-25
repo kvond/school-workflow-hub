@@ -58,6 +58,42 @@ def first_case():
     return packet, capture
 
 
+def compact_first_case():
+    # Real template structure only; identities, writing, feedback and captures
+    # remain fictional. No missing item decision is inferred from these counts.
+    from tests.test_assessment_compact_manifest import compact_source, NOTES_IDS, BANK_IDS, DRAFT_IDS
+    packet, capture = first_case()
+    redirected = 'Fictional redirected disk explanation in the CA2-IDEA field.'
+    text = compact_source().replace('Fictional response NOTES WHATIF.', '').replace(
+        'Fictional response NOTES CA1-ACT-DISK.', 'See the CA2-IDEA field.').replace(
+        'Fictional response NOTES CA2-IDEA.', 'Fictional response NOTES CA2-IDEA.\n' + redirected)
+    capture.update(text=text, sha256=hashlib.sha256(text.encode()).hexdigest())
+    capture['raw_sha256'] = capture['sha256']
+    capture['metadata_sha256'] = content_hash({'fictional_metadata': '10'})
+    capture['file']['version'] = '10'
+    packet['source'].update(sha256=capture['sha256'], version='10')
+    packet['manifest'] = records.census_manifest(text)
+    packet['manifest']['reconciliation_note'] = (
+        'Compact inventory omits VERSION and BANK_IDS; requirements were reviewed '
+        'against the declared counts and complete native marker census.')
+    packet['responses'] = []
+    for category, ids in (('NOTES', NOTES_IDS), ('BANK', BANK_IDS), ('DRAFT', DRAFT_IDS)):
+        for qid in ids:
+            blank = category == 'NOTES' and qid == 'WHATIF'
+            excerpt = '' if blank else 'Fictional response %s %s.' % (category, qid)
+            note = ''
+            if category == 'NOTES' and qid == 'CA1-ACT-DISK':
+                excerpt = redirected
+                note = 'Teacher approved this redirected response in the CA2-IDEA field.'
+            response = packet_fixtures.response(qid, category,
+                'blank' if blank else 'meaningful_attempt', excerpt,
+                conceptual='Evidence unavailable' if blank else 'Developing', explanation='')
+            response.update(evidence_note=note, critical_aspect='', rubric_version='critical-aspect-4/v1')
+            packet['responses'].append(response)
+    records.validate_packet(packet, text)
+    return packet, capture
+
+
 class InitialReviewTests(unittest.TestCase):
     def setUp(self):
         self.f = fixtures.ReviewTests('runTest'); self.f.setUp()
@@ -218,6 +254,71 @@ class InitialReviewTests(unittest.TestCase):
         self.assertEqual(retained['responses'], self.packet['responses'])
         self.assertEqual(self.f.book['Submissions']['rows'][0][1], self.intake)
         self.assertEqual(self.f.batches, 1)
+
+    def use_compact_case(self):
+        self.packet, self.f.capture = compact_first_case()
+        self.f.packet = deepcopy(self.packet)
+
+    def test_compact_omission_import_http_save_repeat_and_readback_preserve_complete_approved_packet(self):
+        self.use_compact_case()
+        before = deepcopy(self.packet)
+        result = self.http('/api/assessment-review', {'packet': self.packet})
+        self.assertTrue(result['status'].startswith('200'))
+        prepared = result['body']
+        self.assertEqual(prepared['status'], 'first_packet_ready')
+        self.assertEqual(prepared['packet'], before)
+        self.assertEqual(prepared['scores']['content_notes']['exact_value'], '105/11')
+        self.assertEqual(prepared['scores']['revision']['exact_value'], '10')
+        self.assertEqual((prepared['external_writes'], prepared['live_model_calls']), (0, 0))
+        self.assertEqual(self.f.batches, 0); self.assertEqual(self.f.port.rows, {})
+        payload = {'request_id': 'fictional-compact-first-review', 'packet': prepared['packet'],
+                   'review_basis': prepared['review_basis']}
+        saved = self.save(payload)
+        self.assertTrue(saved['readback_verified']); self.assertEqual(saved['superseded'], [])
+        self.assertEqual((saved['content_score_exact'], saved['revision_score_exact']), ('105/11', '10'))
+        self.assertEqual(self.f.book['Submissions']['rows'][0][1], self.intake)
+        self.assertEqual(len(self.f.book['Answers']['rows']), 25)
+        for response in before['responses']:
+            answer = next(a for _, a in self.f.book['Answers']['rows'] if
+                          (a['stage'], a['question_id']) == (response['category'], response['question_id']))
+            self.assertEqual(answer['response'], response['response_excerpt'])
+            self.assertEqual(answer['evidence_note'], response['evidence_note'])
+            self.assertEqual(answer['conceptual_feedback'], response['conceptual_feedback'])
+        task = key('task', review.task_scope(self.packet))
+        run = key('run', {'task': task, 'request': payload['request_id']})
+        self.assertEqual(attempts.read(self.f.port, task, run)['request']['packet'], before)
+        self.assertEqual(self.save(payload)['status'], 'already_saved')
+        self.assertTrue(self.readback(payload)['readback_verified'])
+        self.assertEqual(self.f.batches, 1)
+        self.assertEqual(self.packet, before)
+
+    def test_compact_header_conflicts_cannot_be_hidden_by_a_matching_client_census(self):
+        self.use_compact_case()
+        self.f.capture['text'] = self.f.capture['text'].replace('BANK_TERMS=8', 'BANK_TERMS=7', 1)
+        digest = hashlib.sha256(self.f.capture['text'].encode()).hexdigest()
+        self.f.capture.update(sha256=digest, raw_sha256=digest)
+        self.packet['source']['sha256'] = digest
+        with self.assertRaisesRegex(ValueError, 'assessment_manifest_unparsed'):
+            self.prepare()
+        self.assertEqual(self.f.batches, 0); self.assertEqual(self.f.port.rows, {})
+
+    def test_compact_first_save_still_holds_new_predecessor_and_changed_source(self):
+        self.use_compact_case(); payload = self.payload()
+        self.add_assessment()
+        self.assert_save_preflight_held(payload)
+        self.f.book = deepcopy(self.original)
+        self.f.capture['file']['version'] = '11'
+        self.assert_save_preflight_held(payload)
+
+    def test_compact_first_review_preserves_an_expired_pending_save(self):
+        self.use_compact_case()
+        task = CloudState(self.f.port).create_task(review.task_scope(self.packet))
+        claim = CloudState(self.f.port).claim(task, owner='fictional-old-owner',
+            request_id='fictional-old-compact-save', input_hash=content_hash(self.packet), ttl_seconds=300)
+        self.f.port.advance(301)
+        self.assert_prepare_held()
+        self.assertEqual(self.f.port.rows[task].value['active_run'], claim.run_id)
+        self.assertIsNone(self.f.port.rows[claim.run_id].value['receipt'])
 
     def test_explicit_initial_checkpoint_keeps_bank_and_revision_deferred_without_inference(self):
         packet = deepcopy(self.packet); packet['stage'] = 'initial'

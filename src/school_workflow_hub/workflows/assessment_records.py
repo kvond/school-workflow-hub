@@ -139,8 +139,13 @@ def validate_packet(packet, source_text):
         # recomputed from this capture and must match exactly, and the
         # documented reconciliation note travels with the record.
         _text(manifest.get("reconciliation_note", ""), 400, required=True)
-        observed = census_manifest(source_text)
-        if any(set(manifest[key]) != set(observed[key]) for key in
+        # A supplied census cannot bypass a distributed header's contradictory
+        # requirements. Headerless historical decks retain their existing
+        # documented census rule; compact headers require strict native proof.
+        observed = derive_manifest(source_text)
+        literal = census_manifest(source_text)
+        if any(set(manifest[key]) != set(observed[key])
+               or set(manifest[key]) != set(literal[key]) for key in
                ("notes_ids", "bank_ids", "draft_ids", "optional_ids")):
             raise ValueError("assessment_manifest_not_in_source")
     # The inventory line and version label bind the packet to the distributed
@@ -297,37 +302,74 @@ def census_manifest(source_text):
             "draft_ids": seen["DRAFT"], "optional_ids": seen["OPTIONAL"]}
 
 
+def _compact_marker_census(source_text, inventory):
+    """Unique native tags from the one declared cycle; never client counts."""
+    if len(re.findall(r"\[\[MARKER-INVENTORY:", source_text)) != 1:
+        raise ValueError("assessment_manifest_unparsed")
+    cycle = inventory.group(0)[len("[[MARKER-INVENTORY:"):-2]
+    observed = {name: [] for name in MANIFEST_SECTIONS.values()}
+    categories = {"NOTES": "notes_ids", "DRAFT": "draft_ids",
+                  "OPTIONAL": "optional_ids", "BANK": "bank_ids"}
+    for start in re.finditer(r"\[\[(?:NOTES|DRAFT|OPTIONAL|BANK)\b", source_text):
+        marker = _MARKER.match(source_text, start.start())
+        if marker is None:
+            raise ValueError("assessment_manifest_unparsed")
+        category, qid = marker.groups()
+        marker_cycle = marker.group(0).split(":", 2)[1]
+        ids = observed[categories[category]]
+        if (marker_cycle != cycle or not _question_id(qid, category=category)
+                or qid in ids or len(ids) >= 200):
+            raise ValueError("assessment_manifest_unparsed")
+        ids.append(qid)
+    return observed
+
+
 def _legacy_compact_manifest(source_text, inventory, lines):
     """Read the older one-line manifest only when the deck's marker census agrees.
 
     Early distributed decks put counts and *_IDS fields on the same line and
     carried no VERSION label. They remain safe to assess when every declared
     count/id exactly matches the literal marker fields in that same capture.
+    Some compact headers omit BANK_IDS: only that list may be recovered from
+    unique same-cycle native BANK tags, checked against explicit BANK_TERMS.
     This is a compatibility path, not permission to guess a broken header.
     """
     header = next((line for line in lines if line.startswith(inventory.group(0))), "")
     if not header:
         raise ValueError("assessment_manifest_unparsed")
-    counts = dict(re.findall(r"\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=(\d+)\b", header))
-    if set(counts) != {"NOTES", "DRAFT", "OPTIONAL", "BANK_TERMS"}:
+    tail = header[len(inventory.group(0)):].strip()
+    matches = list(re.finditer(r"\b([A-Z_]+)=(.*?)(?=\s+[A-Z_]+=|$)", tail))
+    if not matches or matches[0].start() != 0:
         raise ValueError("assessment_manifest_unparsed")
-
-    fields = {}
-    names = tuple(MANIFEST_SECTIONS)
-    pattern = r"\b(" + "|".join(names) + r")=(.*?)(?=\s+(?:" + "|".join(names) + r")=|$)"
-    for name, body in re.findall(pattern, header):
-        values = [part.strip() for part in body.split(",") if part.strip() and part.strip() != "-"]
-        fields[MANIFEST_SECTIONS[name]] = values
-    sections = {name: list(fields.get(name, [])) for name in MANIFEST_SECTIONS.values()}
-    expected = {"notes_ids": int(counts["NOTES"]), "draft_ids": int(counts["DRAFT"]),
-                "optional_ids": int(counts["OPTIONAL"]), "bank_ids": int(counts["BANK_TERMS"])}
+    pairs = [match.groups() for match in matches]
+    fields = dict(pairs)
+    count_names = {"NOTES", "DRAFT", "OPTIONAL", "BANK_TERMS"}
+    required_names = count_names | {"NOTES_IDS", "DRAFT_IDS", "OPTIONAL_IDS"}
+    if (len(fields) != len(pairs) or not required_names <= set(fields)
+            or set(fields) - required_names - {"BANK_IDS", "CHECKPOINTS"}
+            or ("CHECKPOINTS" in fields and (not fields["CHECKPOINTS"].strip()
+                                             or len(fields["CHECKPOINTS"]) > 400))
+            or any(not re.fullmatch(r"[0-9]{1,3}", fields[name].strip())
+                   or int(fields[name]) > 200 for name in count_names)):
+        raise ValueError("assessment_manifest_unparsed")
+    # Legacy descriptive CHECKPOINTS text never supplies an assessment stage;
+    # that remains the separate explicitly reviewed packet field.
+    observed = _compact_marker_census(source_text, inventory)
+    sections = {}
+    for name, key in MANIFEST_SECTIONS.items():
+        if name not in fields:  # BANK_IDS is the sole permitted omission.
+            sections[key] = list(observed[key])
+        else:
+            body = fields[name].strip()
+            sections[key] = [] if body in ("", "-") else [part.strip() for part in body.split(",")]
+    expected = {"notes_ids": int(fields["NOTES"]), "draft_ids": int(fields["DRAFT"]),
+                "optional_ids": int(fields["OPTIONAL"]), "bank_ids": int(fields["BANK_TERMS"])}
     for key, want in expected.items():
         ids = sections[key]
         if (len(ids) != want or len(set(ids)) != len(ids)
                 or any(not _question_id(qid, category="BANK" if key == "bank_ids" else None) for qid in ids)):
             raise ValueError("assessment_manifest_unparsed")
 
-    observed = census_manifest(source_text)
     if any(set(sections[key]) != set(observed[key]) for key in
            ("notes_ids", "bank_ids", "draft_ids", "optional_ids")):
         raise ValueError("assessment_manifest_unparsed")
@@ -336,7 +378,9 @@ def _legacy_compact_manifest(source_text, inventory, lines):
             "inventory_basis": "marker_census",
             "reconciliation_note": (
                 "Legacy compact manifest had no VERSION line; its declared counts and IDs "
-                "were verified exactly against this deck's observed marker fields."),
+                "were verified exactly against unique same-cycle native marker fields."
+                + (" BANK_IDS was absent; BANK IDs were taken in native marker order "
+                   "and checked against BANK_TERMS." if "BANK_IDS" not in fields else "")),
             "notes_ids": sections["notes_ids"], "bank_ids": sections["bank_ids"],
             "draft_ids": sections["draft_ids"], "optional_ids": sections["optional_ids"]}
 
