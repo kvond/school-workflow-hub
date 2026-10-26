@@ -64,6 +64,26 @@
    if(message.action==='recovery')return call('morning/recovery',p);
    if(message.action==='report')return call('morning/reports',p);
    if(message.action==='list'&&scope(p))return call('morning/list?'+new URLSearchParams(p));
+   if(message.action==='observe'&&scope(p?.scope)){
+    // Private, attributed observations only. This response grants no IC action
+    // and cannot complete a v1 comparison or clear an uncertainty block.
+    const list=E.validateList(p.list,p.phase==='result'?Date.parse(p.list?.sent_at):Date.now());
+    const target=M.target(p.target,C.IC_ORIGIN);
+    if(p.schema!=='hub-morning-student-observations/v1'||!['prepared','result'].includes(p.phase)
+      ||!E.UUID.test(p.run_id||'')||!/^[a-f0-9]{64}$/.test(p.revision||'')
+      ||list.form_id!==p.scope.form||list.class_key!==p.scope.class||list.week!==p.scope.week
+      ||p.basis?.schema!=='hub-morning-observation-basis/v1'||p.basis.revision!==p.revision
+      ||!Array.isArray(p.basis.rows)||p.basis.rows.length!==list.rows.length)throw Error('receipt_unconfirmed');
+    const saved=await call('morning/entry',{...p,list,target});
+    if(saved?.recorded!==true||saved.run_id!==p.run_id||saved.list_id!==list.list_id
+      ||saved.revision!==p.revision||saved.phase!==p.phase
+      ||!saved.target||Object.keys(saved.target).length!==Object.keys(target).length
+      ||Object.keys(target).some(key=>saved.target[key]!==target[key])
+      ||typeof saved.event_id!=='string'||!saved.event_id||saved.event_id.length>200
+      ||!Number.isInteger(saved.row_count)||saved.row_count<1||saved.row_count>300
+      ||!/^[a-f0-9]{64}$/.test(saved.payload_sha256||''))throw Error('receipt_unconfirmed');
+    return saved;
+   }
    if(message.action==='record'&&scope(p?.scope)){
     const list=E.validateList(p.list),ts=M.targets(list,p.targets,C.IC_ORIGIN);
     const results=p.results.map(E.validateResult);

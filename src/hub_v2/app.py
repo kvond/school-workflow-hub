@@ -829,6 +829,30 @@ def morning_entry_post(environ, respond, config):
         return refused
     try:
         payload = _json_body(environ, 250000)
+        if payload.get("schema") == "hub-morning-student-observations/v1":
+            from . import student_observations
+            actor = google.verify_teacher(environ.get("HTTP_X_GOOG_IAP_JWT_ASSERTION"), config)
+            token = google.service_token(config)
+            current = None
+            if payload.get("phase") == "prepared":
+                selected = payload.get("scope") or {}
+                if (not isinstance(selected, dict) or set(selected) != {"class", "week", "form"}
+                        or selected.get("class") not in dict(agenda_module.CLASSES)
+                        or not isinstance(selected.get("week"), str) or not 1 <= len(selected["week"]) <= 100
+                        or not isinstance(selected.get("form"), str)
+                        or not re.fullmatch(r"[A-Za-z0-9_-]{10,100}", selected["form"])):
+                    raise ValueError()
+                agenda = load_agenda(token, config, fresh=True)
+                with combined_assessment.source_request():
+                    current = morning.make_list(token, config, agenda, selected.get("class"),
+                        selected.get("week"), selected.get("form"), lesson_work, _score_rows)
+            try:
+                saved = student_observations.record(token, google.service_token(config, write=True),
+                    config, payload, actor, current=current)
+            except student_observations.Refused:
+                return respond("409 Conflict", {"error": "Student observations are not confirmed; grade entry is not retried.",
+                                                 "code": "observation_unconfirmed"})
+            return respond("200 OK", saved)
         selected = morning_entry.scope(payload)
         token = google.service_token(config)
         agenda = load_agenda(token, config, fresh=True)
