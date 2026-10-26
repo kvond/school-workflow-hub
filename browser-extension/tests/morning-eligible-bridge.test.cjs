@@ -11,7 +11,10 @@ function bridge(change=()=>{},ports={}){
  let listener;const calls=[];const window={};window.top=window;
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../morning-hub.js'),'utf8'),{HubIcEntry:E,HubMorning:M,HubPostingConfig:C,window,location:{origin:C.HUB_ORIGIN},URLSearchParams,AbortController,setTimeout:ports.timers?.setTimeout||setTimeout,clearTimeout:ports.timers?.clearTimeout||clearTimeout,setInterval:ports.timers?.setInterval||setInterval,clearInterval:ports.timers?.clearInterval||clearInterval,chrome:{runtime:{id:'extension',sendMessage:async()=>({ok:true}),onMessage:{addListener:f=>listener=f}}},fetch:async(url,options)=>{
   const p=options.body?JSON.parse(options.body):null;calls.push({url,p});
-  const value=p?.list?{recorded:true,receipt:{schema:'hub-morning-entry-ack/v1',run_id:p.run_id,scope:p.scope,list_id:p.list.list_id,source_revision:p.revision,target_count:p.targets.length,certain:true,counts:p.results[0].counts,source_check_rows:10,whole_assignment_recorded:false,receipt_sha256:'b'.repeat(64)}}:{recorded:true};
+  const value=p?.schema==='hub-morning-student-observations/v1'
+   ?{recorded:true,event_id:'studentobservation_fixture',phase:p.phase,row_count:1,payload_sha256:'b'.repeat(64),
+     run_id:p.run_id,list_id:p.list.list_id,revision:p.revision,target:{...p.target}}
+   :p?.list?{recorded:true,receipt:{schema:'hub-morning-entry-ack/v1',run_id:p.run_id,scope:p.scope,list_id:p.list.list_id,source_revision:p.revision,target_count:p.targets.length,certain:true,counts:p.results[0].counts,source_check_rows:10,whole_assignment_recorded:false,receipt_sha256:'b'.repeat(64)}}:{recorded:true};
   change(value);
   const response={ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>value};
   return ports.response?ports.response(url,options,response):response;
@@ -34,6 +37,38 @@ test('incomplete or uncertain destination results never reach the endpoint',asyn
 });
 test('a page or foreign extension cannot create a comparison receipt',async()=>{
  const b=bridge();assert.equal(await b.invoke(fixture(),{id:'extension',tab:{id:1}}),undefined);assert.equal(await b.invoke(fixture(),{id:'foreign'}),undefined);assert.equal(b.calls.length,0);
+});
+
+function observationFixture(phase='prepared'){
+ const p=fixture();return {schema:'hub-morning-student-observations/v1',phase,run_id:p.run_id,
+  scope:p.scope,revision:p.revision,list:p.list,target:p.targets[0],observation:null,
+  basis:{schema:'hub-morning-observation-basis/v1',revision:p.revision,
+   rows:p.list.rows.map((r,row_index)=>({row_index,identity:{first:r.first,last:r.last,section:r.section,match_basis:'email'},sources:[]}))}};
+}
+test('student observation uses the existing authenticated receipt route without whole-assignment promotion',async()=>{
+ const b=bridge(),p=observationFixture();const reply=await b.invoke(p,{id:'extension'},'observe');
+ assert.equal(reply.ok,true);assert.equal(reply.data.phase,'prepared');
+ assert.equal(b.calls.length,1);assert.equal(b.calls[0].url,'/v2/api/morning/entry');
+ assert.deepEqual(b.calls[0].p,p);assert.equal(reply.data.receipt,undefined);
+});
+test('wrong observation acknowledgement stays unconfirmed without retry',async()=>{
+ for(const change of [r=>r.run_id='33333333-3333-4333-8333-333333333333',r=>r.list_id=r.run_id,
+  r=>r.target.assignment_id='999',r=>r.phase='result',r=>r.revision='c'.repeat(64),
+  r=>r.row_count=0,r=>r.payload_sha256='unknown',r=>r.recorded=false]){
+  const b=bridge(change),reply=await b.invoke(observationFixture(),{id:'extension'},'observe');
+  assert.equal(reply.ok,false);assert.equal(b.calls.length,1);
+ }
+});
+test('a result observation can preserve an expired prepared list without authorizing another IC operation',async()=>{
+ const p=observationFixture('result');p.list.sent_at=new Date(Date.now()-4*3600000).toISOString();
+ const b=bridge();assert.equal((await b.invoke(p,{id:'extension'},'observe')).ok,true);
+ p.phase='prepared';assert.equal((await b.invoke(p,{id:'extension'},'observe')).ok,false);
+ assert.equal(b.calls.length,1);
+});
+test('student observation bridge refuses a web-page sender or a different extension',async()=>{
+ const b=bridge();for(const sender of [{id:'foreign'},{id:'extension',tab:{id:7}}])
+  assert.equal(await b.invoke(observationFixture(),sender,'observe'),undefined);
+ assert.equal(b.calls.length,0);
 });
 
 const {virtualClock}=require('./virtual-deadline-clock.cjs');

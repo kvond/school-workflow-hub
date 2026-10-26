@@ -2015,6 +2015,14 @@ def score_file(token, agenda, class_key, week_label, form_id, file_id, work_resu
     try:
         meta = google.drive_file(token, file_id, google.FILE_FIELDS + ",version")
         out["file_updated"] = meta.get("modifiedTime", "")
+        # Receipt evidence from this same read, not another assessment or a new
+        # eligibility requirement. Unknown metadata stays unknown.
+        out["source_observation"] = {
+            "file_id": file_id, "version": str(meta["version"]) if meta.get("version") else None,
+            "modified_at": meta.get("modifiedTime") or None,
+            **{key: upload.get(key) or None for key in
+               ("source_form_id", "source_response_id", "source_submitted_at")},
+        }
         deck = _read(token, file_id, meta)
     except (google.GoogleError, Unreadable) as error:
         return {**out, "code": "deck_not_ready", "label": "Cannot read lesson",

@@ -44,7 +44,7 @@
  async function hub(tab,action,payload){
   let current;try{current=await chrome.tabs.get(tab);}catch{throw failure('hub_unavailable','hub_tab_closed');}
   try{if(new URL(current.url).origin!==C.HUB_ORIGIN)throw Error();}catch{throw failure('signed_out','hub_origin_changed');}
-  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}),['record','list'].includes(action)?210000:100000);}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
+  let r;try{r=await deadline(chrome.tabs.sendMessage(tab,{type:'morning_hub',action,payload},{frameId:0}).catch(e=>{throw failure('hub_unavailable',bridgeCause(e));}),['record','list','observe'].includes(action)?210000:100000);}catch(e){throw e.cause?e:failure('hub_unavailable',e.message==='panel_unusable'?'hub_bridge_timeout':bridgeCause(e));}
   if(!r?.ok){
    const error=failure(safe.has(r?.code)?r.code:'hub_unavailable',r?.cause||'hub_bridge_unavailable',r?.status);
    if(action==='record'&&typeof r?.server_code==='string'&&Object.hasOwn(receiptServerText,r.server_code))error.server_code=r.server_code;
@@ -56,6 +56,20 @@
   try{const reply=await hub(tab,'report',state.report);if(reply?.recorded!==true)throw failure('receipt_unconfirmed','hub_report_not_acknowledged');state.report_pending=false;}catch(e){state.report_pending=true;failed=M.preflight('summary_publish',e);}
   await write(state);
   return failed;
+ }
+ async function observe(tab,payload,summary){
+  // Details stay in transient messages and the existing private ledger. A
+  // logging failure neither changes the grade plan nor grants a retry.
+  try{
+   const saved=await hub(tab,'observe',payload);
+   if(saved?.recorded!==true||saved.run_id!==payload.run_id||saved.list_id!==payload.list.list_id
+     ||saved.phase!==payload.phase)throw Error('receipt_unconfirmed');
+   return true;
+  }catch{
+   const detail=' · Student observation receipt unconfirmed';
+   if(!summary.assignment.endsWith(detail))summary.assignment=summary.assignment.slice(0,200-detail.length)+detail;
+   return false;
+  }
  }
  async function authorize(message,sender){
   const s=await read(),t=M.clock();
@@ -588,6 +602,12 @@
       // A completed earlier column does not complete the assignment. Persist
       // the next column's in-progress state before its read-only preflight.
       summary.code='running';await write(s);
+      const observationRequest=initial.observation_basis?.schema==='hub-morning-observation-basis/v1'
+       ?{schema:'hub-morning-student-observations/v1',phase:'prepared',run_id:s.report.run_id,
+         scope,revision:initial.revision,list,target:binding,basis:initial.observation_basis,observation:null}:null;
+      // Optional publication can take time. Keep the original fresh-source
+      // check after it, as the last source check before navigating/entering IC.
+      if(observationRequest)await observe(source,observationRequest,summary);
       // Re-read source and exact mapping before each section/column.
       let fresh=await hub(source,'list',scope);
       // One read-only retry belongs only to this item's untouched first column.
@@ -614,6 +634,8 @@
       let response;
       try{response=await deadline(chrome.tabs.sendMessage(destination,{type:'morning_execute',run_id:active.run_id,nonce:active.nonce,list,target:binding},{frameId:0}),120000);}catch{response=null;}
       active=null;s.inflight=false;
+      if(observationRequest)await observe(source,{...observationRequest,phase:'result',
+        observation:response?.ok?response.data?.observations||null:null},summary);
       if(!response?.ok){summary.code=response?.not_started&&safe.has(response.code)?response.code:'save_unconfirmed';if(response?.not_started)s.blocked=false;await write(s);throw Error(safe.has(summary.code)?summary.code:'panel_unusable');}
       const result=E.validateResult(response.data.result);
       if(result.list_id!==list.list_id||result.form_id!==list.form_id||result.section!==binding.section||result.column!==binding.column)throw Error('panel_unusable');

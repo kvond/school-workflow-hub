@@ -323,6 +323,50 @@ pending locally for later delivery. Receipt delivery may retry; score entry
 never retries automatically. The browser can only report its observations;
 the server does not independently verify an IC write.
 
+Mapped morning entry and the popup's existing full-catalog manual pass can also
+publish student-level observations to the **same Scores entered ledger**. The
+additive `hub-morning-student-observations/v1` mode uses the existing authenticated
+`/v2/api/morning/entry` route. Existing v1 comparison receipts, all-column completion
+requirements and uncertainty locks are unchanged. The older trusted-click list
+review and Page 2 companion retain their existing receipt formats.
+
+The current list response supplies `observation_basis` separately from the unchanged
+`hub-ic-list/v1` rows. It retains the actual source file versions and original Form
+events from the same existing reads, including all represented combined-lesson
+components. No new assessment, model call, student-summary walk or IC read is
+performed to collect these details. Unknown source fields remain unknown. The
+normal Helper matches names one to one within a section; a list index is not an
+official IC student number, and this receipt does not fabricate one.
+
+One private prepared batch retains the source/list/destination binding before
+the existing write-capable request; a result batch appends per-student observations
+as `Morning student observation` rows. Planned action, actual fill attempts,
+Save confirmation, reloaded observations and fixed skip reasons are distinct.
+A no-change comparison checks the already-saved panel without clicking Save or
+reloading. An interrupted or lost result records unknown effects, never inferred
+success or skipped students. A prepared batch alone does not establish whether
+IC was touched or what was saved.
+
+Logging failure adds an explicit student-receipt note to the existing summary;
+it does not change score planning, create a new grade-entry gate, clear a block
+or authorize another attempt. Student details travel only in transient messages
+and existing private server storage, never persistent extension storage. A fixed
+CAS event identity prevents concurrent ledger appends. An uncertain append permits
+exact readback of the reserved rows only; it is not adopted or replayed. Ledger
+history remains append-only and bounded at the existing 20,000-row limit.
+
+These records describe what the Helper observed at the recorded time. Later manual
+IC changes are unknown until another authorized fresh comparison. Aggregate-only
+historical receipts cannot be expanded into individual saved scores or source
+versions. No student observation creates an `Entered in IC` stamp. The existing
+complete comparison path remains the sole source of that assignment-level stamp.
+
+Release requires both the matching backend and reviewed extension files in the
+installed school profile. A backend deployment alone does not update an unpacked
+extension. Installation/reload and any version-dependent recovery grants require
+their separate release checks; this logging patch changes neither those grants
+nor the automatic-entry opt-in. Synthetic checks are not live acceptance.
+
 **Private binding prerequisite.** The legacy source supports explicit
 `IC_RESOURCE`/score-group/term/task/code references, but v2 currently has no
 verified Form-to-route mapping. The runtime must supply `HUB_IC_ASSIGNMENT_MAP`

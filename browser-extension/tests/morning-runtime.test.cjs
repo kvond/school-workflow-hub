@@ -46,7 +46,12 @@ function background(options={}){
    if(m.action==='report'&&options.reportReplies?.length){const reply=options.reportReplies.shift();if(reply instanceof Error)throw reply;return reply;}
    if(m.action==='catalog')return {ok:true,data:{assignments:options.catalogAssignments||[{class:'biology',week:'Wk 05',form:f.list.form_id,assignment:'Matter'}]}};
    if(m.action==='list'&&options.listReply)return {ok:true,data:options.listReply(m)};
-   if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:options.sourceRevision||'fictional-revision',list:f.list,targets:options.noMapping?[]:targets}};
+   if(m.action==='list')return {ok:true,data:options.listByForm?.[m.payload.form]||{code:'ready',revision:options.sourceRevision||(options.studentObservations?'a'.repeat(64):'fictional-revision'),list:f.list,targets:options.noMapping?[]:targets,
+    ...(options.studentObservations?{observation_basis:{schema:'hub-morning-observation-basis/v1',revision:'a'.repeat(64),rows:f.list.rows.map((r,row_index)=>({row_index,identity:{first:r.first,last:r.last,section:r.section,match_basis:'email'},sources:[]}))}}:{})}};
+   if(m.action==='observe'){
+    if(options.observationFailure)throw Error('observation receipt unavailable');
+    return {ok:true,data:{recorded:true,run_id:m.payload.run_id,list_id:m.payload.list.list_id,phase:m.payload.phase}};
+   }
    if(m.action==='recovery'){
     if(options.recoveryFail)throw Error('unavailable');
     const data={recorded:true,record:{...m.payload,by:'teacher@example.test',at:'2026-10-01T12:00:00Z',...(options.wrongReceipt?{run_id:uuid()}:{})}};
@@ -80,6 +85,37 @@ test('school-year skip rules apply only to the named 2026-27 exceptions',()=>{
  assert.equal(M.skipByYear(reasoning,Date.parse('2026-10-07T16:00:00Z')),'established_skip');
  assert.equal(M.skipByYear(ordinary,Date.parse('2026-10-07T16:00:00Z')),'');
  assert.equal(M.skipByYear(weekOne,Date.parse('2027-09-01T16:00:00Z')),'');
+});
+test('student observation batches do not persist names or change the existing grade pass',async()=>{
+ const h=background({studentObservations:true});await h.alarm();
+ const observations=h.messages.filter(m=>m.type==='morning_hub'&&m.action==='observe');
+ assert.deepEqual(observations.map(m=>m.payload.phase),['prepared','result']);
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.report.code,'finished');
+ assert.ok(!JSON.stringify(h.writes).includes('Avery'));assert.ok(!JSON.stringify(h.writes).includes('observation_basis'));
+ assert.equal(h.state.morning_state.blocked,false);
+});
+test('observation publication failure adds a reporting note without changing scores or permitting a retry',async()=>{
+ const h=background({studentObservations:true,observationFailure:true});await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.report.code,'finished');
+ assert.match(h.state.morning_state.report.items[0].assignment,/Student observation receipt unconfirmed/);
+ assert.equal(h.state.morning_state.blocked,false);assert.ok(!JSON.stringify(h.writes).includes('Avery'));
+});
+test('lost IC reply logs unknown detail and preserves the existing uncertainty block',async()=>{
+ const h=background({studentObservations:true,lostResponse:true});await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,1);assert.equal(h.state.morning_state.blocked,true);
+ const result=h.messages.find(m=>m.type==='morning_hub'&&m.action==='observe'&&m.payload.phase==='result');
+ assert.equal(result.payload.observation,null);assert.ok(!JSON.stringify(h.writes).includes('Avery'));
+ assert.equal(h.state.morning_state.report.items[0].code,'save_unconfirmed');
+});
+test('source changes during optional observation publication still stop the existing final preflight before IC',async()=>{
+ const options={studentObservations:true,hubReply:m=>{
+  if(m.action==='observe'&&m.payload.phase==='prepared')options.sourceRevision='b'.repeat(64);
+ }};
+ const h=background(options);await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,0);
+ assert.equal(h.state.morning_state.report.code,'source_changed');
+ assert.equal(h.state.morning_state.blocked,false);
+ assert.equal(h.messages.filter(m=>m.action==='observe').length,1);
 });
 test('morning run records the two intentional school-year skips and still processes mapped assignments',async()=>{
  const h=background({catalogAssignments:[

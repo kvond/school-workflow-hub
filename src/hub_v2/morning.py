@@ -143,6 +143,43 @@ def person(row):
     return (work.norm(row.get("last", "")), work.norm(row.get("first", "")), row["section"])
 
 
+def observation_rows(values, scored):
+    """Retain actual input captures separately from the unchanged Helper list.
+
+    This evidence authorizes no score or school action. An IC number is not
+    available in this path; a row index identifies only this exact Hub list.
+    """
+    indexed = {}
+    for row, score in scored:
+        indexed.setdefault(person(row), []).append((row, score))
+    result = []
+    for index, value in enumerate(values):
+        matched = indexed.get(person(value), [])
+        sources = []
+        for row, score in matched:
+            captures = ([score["source_observation"]] if score.get("source_observation") else [])
+            captures += (score.get("aggregate_provenance") or {}).get("sources", [])
+            for capture in captures:
+                source = capture.get("source") or capture
+                fid = source.get("file_id")
+                if not fid:
+                    continue
+                upload = next((item for item in row.get("files", []) if item.get("id") == fid), {})
+                evidence = {"file_id": fid,
+                    "version": str(source["version"]) if source.get("version") else None,
+                    "modified_at": source.get("modified_at") or None,
+                    **{key: source.get(key) or upload.get(key) or None for key in
+                       ("source_form_id", "source_response_id", "source_submitted_at")}}
+                if evidence not in sources:
+                    sources.append(evidence)
+        match_basis = (matched[0][0].get("matched_by") if len(matched) == 1 else None)
+        result.append({"row_index": index,
+            "identity": {"first": value["first"], "last": value["last"], "section": value["section"],
+                         "match_basis": str(match_basis or "unique_hub_row")[:100]},
+            "sources": sources})
+    return result
+
+
 def closed_recheck(form, mark, now=None):
     """A prior final entry permits current submitted-work rechecks, not new zeros."""
     if mark.get("configured") is not True or mark.get("problem"):
@@ -386,6 +423,8 @@ def _make_list(token, config, agenda, cls, week, fid, load_work, score_rows):
         basis.append(current["resolution_basis"])
     revision = hashlib.sha256(json.dumps(basis, sort_keys=True, default=str).encode()).hexdigest()
     return {"code": "ready", "list": value, "revision": revision, "targets": targets,
+            "observation_basis": {"schema": "hub-morning-observation-basis/v1", "revision": revision,
+                                  "rows": observation_rows(values, scored)},
             **({"partial_components": True} if partial else {})}
 
 
