@@ -28,14 +28,13 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
 
 ## Deterministic checks
 
-- **Lesson names.** The weekly folder's name is the lesson's name; the Agenda
-  topic can be shorthand. A lesson is named by its linked weekly folder
-  ("Cycle 06 — Cellular Respiration & Fermentation (Unit 1)" → "Cellular
-  Respiration & Fermentation"), joined with the weekly folder of any linked deck
-  kept elsewhere ("History of Forensics + Crime Scene to Courtroom (Mock
-  Trial)"). Only "Week/Wk/Cycle/Unit NN …" folders count; a folder named only by
-  its week ("Week 07") or a general folder leaves the Agenda topic. The Agenda
-  topic is kept as `agenda_topic`.
+- **Lesson names.** The current nonblank Agenda topic is the report title,
+  including its cycle label and punctuation. Retained reference decks or older
+  folder names cannot override it. Only a blank Agenda topic falls back to the
+  deduplicated names of linked "Week/Wk/Cycle/Unit NN …" folders; bare week
+  numbers and general folders supply no name. `agenda_topic` preserves the
+  original Agenda value. This display choice does not merge lessons or change
+  Form/source identities, source evidence, readiness checks or grading.
 - **Calendar.** The Weeks tab's closures cell for the week decides which
   Friday is A or B and which dates are closed (In-Service, Schools Closed,
   OFF). A4 Biology and A2/A3 Forensics meet Mon, Wed and A Fridays; B3 A&P

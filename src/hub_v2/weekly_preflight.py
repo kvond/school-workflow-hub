@@ -63,7 +63,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/9"
+RULES = "weekly-preflight-rules/10"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -2097,8 +2097,7 @@ def _resolve_sources(ctx, lesson):
 
 # ---------- lesson names ----------
 
-# The weekly folder's name is the lesson's name; the Agenda topic may be the
-# teacher's shorthand ("Fermentation" for "Cellular Respiration & Fermentation").
+# Weekly folder names provide display context only when the Agenda title is blank.
 WEEKLY_PREFIX = re.compile(r"^\s*(?:(?:▶\s*)?LIVE\s*[—–-]\s*)?(?:(?:Cycle|Week|Wk|Unit)\s*0*\d+[a-z]?\b[\s—–\-:·|]*)+",
                            re.I)
 UNIT_SUFFIX = re.compile(r"\s*\((?:Unit|Cycle|Week|Wk)\s*\d+[a-z]?\)\s*$", re.I)
@@ -2113,22 +2112,29 @@ def folder_lesson_name(name):
 
 
 def lesson_name(folder_names, agenda_topic):
-    """The lesson's name from its weekly folders, in order and without repeats
-    ("History of Forensics + Crime Scene to Courtroom (Mock Trial)"), or the
-    Agenda topic when no folder names a lesson."""
+    """Use the current Agenda title; folder names are only a blank-title fallback.
+
+    Retained references may live in folders named for an earlier lesson. Their
+    names are source context, never authority to rename the current lesson.
+    This display label does not determine lesson, Form or source identity.
+    """
+    topic = str(agenda_topic or "").strip()
+    if topic:
+        return topic
     names = []
     for name in folder_names:
         name = folder_lesson_name(name)
         if name and norm(name) not in {norm(n) for n in names}:
             names.append(name)
-    return " + ".join(names) if names else str(agenda_topic or "").strip()
+    return " + ".join(names)
 
 
 def _name_lesson(ctx, lesson):
-    """Name the lesson by its linked lesson folder, then by the weekly folder of
-    each linked deck kept elsewhere (a two-lesson week); keep the Agenda topic
-    as agenda_topic. Only weekly folders ("Week/Wk/Cycle/Unit NN …") name a
-    lesson, so a general folder ("03 BIOLOGY (Public)") never renames it."""
+    """Keep the current Agenda topic and its exact source context separately.
+
+    Only a blank Agenda topic falls back to linked weekly-folder names, including
+    a linked deck's weekly folder. A general folder never supplies a title.
+    """
     folders = [n for n in lesson["sources"] if "folder" in n["roles"] and n.get("accessible") and not n.get("trashed")]
     seen = {n["id"] for n in folders}
     names = [n.get("name", "") for n in folders if WEEKLY_PREFIX.match(str(n.get("name") or ""))]

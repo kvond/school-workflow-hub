@@ -649,21 +649,33 @@ class LessonNameTests(unittest.TestCase):
                          'Crime Scene to Courtroom (Mock Trial)')
         self.assertEqual(wp.folder_lesson_name('Week 07'), '')
 
-    def test_agenda_shorthand_gives_way_to_the_folder_name(self):
+    def test_explicit_agenda_topic_wins_over_retained_folder_names(self):
         self.assertEqual(wp.lesson_name(['Cycle 06 — Cellular Respiration & Fermentation (Unit 1)'], 'Fermentation'),
-                         'Cellular Respiration & Fermentation')
+                         'Fermentation')
         self.assertEqual(wp.lesson_name(['Week 08 - History of Forensics', 'Week 08 - History of Forensics',
                                          'Week 08b - Crime Scene to Courtroom (Mock Trial)'], 'Unit 1 Review'),
-                         'History of Forensics + Crime Scene to Courtroom (Mock Trial)')
+                         'Unit 1 Review')
         self.assertEqual(wp.lesson_name(['Week 07'], 'Body Tissues (cont.)'), 'Body Tissues (cont.)')
         self.assertEqual(wp.lesson_name([], 'Body Tissues (cont.)'), 'Body Tissues (cont.)')
 
-    def test_a_deck_kept_in_another_weekly_folder_joins_the_name_and_shorthand_is_kept(self):
+    def test_blank_agenda_topic_retains_deduplicated_folder_fallback(self):
+        folders = ['Week 08 - History of Forensics', 'Week 08 - History of Forensics',
+                   'Week 08b - Crime Scene to Courtroom (Mock Trial)']
+        for topic in ('', '  ', None):
+            with self.subTest(topic=topic):
+                self.assertEqual(wp.lesson_name(folders, topic),
+                                 'History of Forensics + Crime Scene to Courtroom (Mock Trial)')
+        self.assertEqual(wp.lesson_name(['Week 07'], ''), '')
+        self.assertEqual(wp.lesson_name([], ''), '')
+
+    def test_retained_reference_folders_cannot_rename_an_explicit_agenda_lesson(self):
         class Ctx:
             def file(self, ident):
                 return {'FICTIONALCOURTFOLDER0001': {'name': 'Week 08b - Crime Scene to Courtroom (Mock Trial)'},
                         'FICTIONALGENERALFOLDER01': {'name': '03 FORENSICS (Public)'}}.get(ident, {'error': 'x'})
-        lesson = {'topic': 'Unit 1 Review', 'exceptions': [{'lesson': 'Unit 1 Review'}], 'supply_rows': [],
+        lesson = {'topic': 'Evidence Documentation', 'exceptions': [{'lesson': 'Evidence Documentation'}],
+                  'supply_rows': [{'lesson': 'Evidence Documentation', 'item': 'Paper'}],
+                  'lesson_id': 'fictional-lesson', 'refs': {'forms': ['FICTIONALFORM00000000001']},
                   'sources': [
                       {'id': 'FICTIONALHISTFOLDER0001', 'roles': ['folder'], 'accessible': True, 'trashed': False,
                        'name': 'Week 08 - History of Forensics'},
@@ -671,10 +683,14 @@ class LessonNameTests(unittest.TestCase):
                        'parents': ['FICTIONALHISTFOLDER0001', 'FICTIONALGENERALFOLDER01']},
                       {'id': 'FICTIONALCOURTDECK00001', 'roles': ['second_deck'], 'accessible': True,
                        'parents': ['FICTIONALCOURTFOLDER0001']}]}
+        before = deepcopy(lesson)
         wp._name_lesson(Ctx(), lesson)
-        self.assertEqual(lesson['topic'], 'History of Forensics + Crime Scene to Courtroom (Mock Trial)')
-        self.assertEqual(lesson['agenda_topic'], 'Unit 1 Review')
+        self.assertEqual(lesson['topic'], 'Evidence Documentation')
+        self.assertEqual(lesson['agenda_topic'], 'Evidence Documentation')
         self.assertEqual(lesson['exceptions'][0]['lesson'], lesson['topic'])
+        self.assertEqual(lesson['supply_rows'][0]['lesson'], lesson['topic'])
+        for field in ('lesson_id', 'refs', 'sources'):
+            self.assertEqual(lesson[field], before[field])
 
     def test_soft_line_breaks_split_a_resource_list(self):
         runs = [{'textRun': {'content': 'Activity and resource links\nWorld Lab — Yeast Balloons\u000b'}},
@@ -1410,6 +1426,29 @@ class InventoryContextTests(Base):
 
 
 class PreflightRunTests(Base):
+    def test_changed_agenda_titles_read_back_without_merging_same_week_lessons(self):
+        self.src.files[FOR_FOLDER]['name'] = 'Week 08 - Earlier retained lesson'
+        before = self.run_check()
+        titles = {5: 'Evidence Documentation', 6: 'Evidence Documentation Lab'}
+        tab_name = self.agenda().classes['forensics']['tab']
+        for row, title in titles.items():
+            self.grids[tab_name][row, 3] = cell(title)
+        result = self.run_check()
+        saved = wp.status(self.config, SHEET, '2026-10-19', 1, port=self.port)
+        for row, title in titles.items():
+            with self.subTest(row=row):
+                old = self.lesson(before, 'forensics', row)
+                current = self.lesson(result, 'forensics', row)
+                self.assertEqual((current['topic'], current['agenda_topic']), (title, title))
+                self.assertEqual(self.lesson(saved, 'forensics', row)['topic'], title)
+                self.assertEqual(current['lesson_id'], old['lesson_id'])
+                self.assertEqual(current['sources'], old['sources'])
+                self.assertEqual(current['exceptions'], old['exceptions'])
+                self.assertTrue(all(e['lesson'] == title for e in self.exceptions(result, 'forensics', row)))
+        self.assertNotEqual(self.lesson(result, 'forensics', 5)['lesson_id'],
+                            self.lesson(result, 'forensics', 6)['lesson_id'])
+        self.assertEqual((result['external_writes'], result['model_calls'], self.writes), (0, 0, []))
+
     def test_calendar_conflicts_needs_content_and_prep_deadlines(self):
         result = self.run_check()
         bio = {(e['kind'], e['date']) for e in self.exceptions(result, 'biology', 5)}
