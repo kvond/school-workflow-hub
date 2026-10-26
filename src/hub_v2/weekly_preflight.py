@@ -2097,8 +2097,7 @@ def _resolve_sources(ctx, lesson):
 
 # ---------- lesson names ----------
 
-# The weekly folder's name is the lesson's name; the Agenda topic may be the
-# teacher's shorthand ("Fermentation" for "Cellular Respiration & Fermentation").
+# Weekly folder names provide display context only when the Agenda title is blank.
 WEEKLY_PREFIX = re.compile(r"^\s*(?:(?:▶\s*)?LIVE\s*[—–-]\s*)?(?:(?:Cycle|Week|Wk|Unit)\s*0*\d+[a-z]?\b[\s—–\-:·|]*)+",
                            re.I)
 UNIT_SUFFIX = re.compile(r"\s*\((?:Unit|Cycle|Week|Wk)\s*\d+[a-z]?\)\s*$", re.I)
