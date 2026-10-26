@@ -344,7 +344,8 @@ as `Morning student observation` rows. Planned action, actual fill attempts,
 Save confirmation, reloaded observations and fixed skip reasons are distinct.
 A no-change comparison checks the already-saved panel without clicking Save or
 reloading. An interrupted or lost result records unknown effects, never inferred
-success or skipped students. A prepared batch alone proves no IC action.
+success or skipped students. A prepared batch alone does not establish whether
+IC was touched or what was saved.
 
 Logging failure adds an explicit student-receipt note to the existing summary;
 it does not change score planning, create a new grade-entry gate, clear a block

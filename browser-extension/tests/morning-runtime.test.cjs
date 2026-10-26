@@ -107,6 +107,16 @@ test('lost IC reply logs unknown detail and preserves the existing uncertainty b
  assert.equal(result.payload.observation,null);assert.ok(!JSON.stringify(h.writes).includes('Avery'));
  assert.equal(h.state.morning_state.report.items[0].code,'save_unconfirmed');
 });
+test('source changes during optional observation publication still stop the existing final preflight before IC',async()=>{
+ const options={studentObservations:true,hubReply:m=>{
+  if(m.action==='observe'&&m.payload.phase==='prepared')options.sourceRevision='b'.repeat(64);
+ }};
+ const h=background(options);await h.alarm();
+ assert.equal(h.calls.filter(c=>c==='execute').length,0);
+ assert.equal(h.state.morning_state.report.code,'source_changed');
+ assert.equal(h.state.morning_state.blocked,false);
+ assert.equal(h.messages.filter(m=>m.action==='observe').length,1);
+});
 test('morning run records the two intentional school-year skips and still processes mapped assignments',async()=>{
  const h=background({catalogAssignments:[
   {class:'biology',week:'Wk 01',form:'SYNTHETIC_FORM',assignment:'https://docs.google.com/forms/d/SYNTHETIC/viewform'},

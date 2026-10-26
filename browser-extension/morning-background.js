@@ -602,6 +602,12 @@
       // A completed earlier column does not complete the assignment. Persist
       // the next column's in-progress state before its read-only preflight.
       summary.code='running';await write(s);
+      const observationRequest=initial.observation_basis?.schema==='hub-morning-observation-basis/v1'
+       ?{schema:'hub-morning-student-observations/v1',phase:'prepared',run_id:s.report.run_id,
+         scope,revision:initial.revision,list,target:binding,basis:initial.observation_basis,observation:null}:null;
+      // Optional publication can take time. Keep the original fresh-source
+      // check after it, as the last source check before navigating/entering IC.
+      if(observationRequest)await observe(source,observationRequest,summary);
       // Re-read source and exact mapping before each section/column.
       let fresh=await hub(source,'list',scope);
       // One read-only retry belongs only to this item's untouched first column.
@@ -621,10 +627,6 @@
        }
        throw Error('source_changed');
       }
-      const observationRequest=initial.observation_basis?.schema==='hub-morning-observation-basis/v1'
-       ?{schema:'hub-morning-student-observations/v1',phase:'prepared',run_id:s.report.run_id,
-         scope,revision:initial.revision,list,target:binding,basis:initial.observation_basis,observation:null}:null;
-      if(observationRequest)await observe(source,observationRequest,summary);
       await usable(destination,binding.url);
       active={run_id:s.report.run_id,nonce:crypto.randomUUID(),tab:destination,url:binding.url,manualNow};
       // Mark potentially uncertain BEFORE sending a write-capable request.
