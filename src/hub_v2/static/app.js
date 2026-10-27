@@ -3210,6 +3210,22 @@ async function loadSavedScores(form, seq = work.seq) {
   }
   renderWork();
 }
+function renderRoutedLessonHistory(form) {
+  const history = (form.elsewhere || []).filter(item => item.original_submission
+    && (work.section === 'all' || !work.section || item.section === work.section));
+  if (!history.length) return null;
+  return el('details', {class: 'routed-lesson-history'},
+    el('summary', {text: `Other lesson submissions · ${history.length}`}),
+    el('p', {class: 'muted', text: 'Original submissions retained for their verified lesson; no completion or IC entry is claimed here.'}),
+    history.map(item => {
+      const original = item.original_submission, context = item.lesson_context || {};
+      const stamp = original.event === true && Number.isFinite(Date.parse(original.submitted_at))
+        ? when(original.submitted_at) + ' ET' : 'Original turn-in time unavailable';
+      return el('div', {}, el('p', {text: [item.who, item.section, context.week, context.label || item.to, stamp].filter(Boolean).join(' · ')}),
+        fileList(original.files || []));
+    }));
+}
+
 function renderSavedForm(form, lesson) {
   const box = el('section', {class: 'form-work saved-grades'},
     el('h3', {text: form.label || lesson.topic || 'Assignment'}));
@@ -3241,6 +3257,7 @@ function renderSavedForm(form, lesson) {
     })))));
   else box.append(el('p', {class: 'muted', text: work.display === 'new'
     ? 'No verified grades saved today are available for this assignment.' : 'No submitted work with a saved grade is available in this view.'}));
+  box.append(renderRoutedLessonHistory(form));
   if (ui.error) box.append(note(ui.error));
   if (ui.helper) box.append(note(ui.helper, 'info'));
   if (ui.saved) box.append(note(ui.saved, 'info'));

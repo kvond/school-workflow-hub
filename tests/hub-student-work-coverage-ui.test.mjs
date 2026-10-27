@@ -19,7 +19,7 @@ const extract = name => {
   if (source.slice(start - 6, start) === 'async ') start -= 6;
   return source.slice(start, source.indexOf('\n}', start) + 2);
 };
-const functions = ['fileList', 'entryTime', 'savedGradeRows', 'verifiedSavedGrade', 'newlyGraded', 'renderSavedForm', 'renderWork', 'feedbackBackup', 'feedbackPanel', 'teacherWritingPreview', 'openPanel', 'feedbackAction'].map(extract).join('\n');
+const functions = ['fileList', 'entryTime', 'savedGradeRows', 'verifiedSavedGrade', 'newlyGraded', 'renderRoutedLessonHistory', 'renderSavedForm', 'renderWork', 'feedbackBackup', 'feedbackPanel', 'teacherWritingPreview', 'openPanel', 'feedbackAction'].map(extract).join('\n');
 const prelude = source.slice(0, source.indexOf('// ---------- Hub v3'));
 const received = {matched: true, last: 'Avery', first: 'Ann', section: 'Fictional A2', files: [{id: 'FICTIONALFILE001', name: 'Original work', url: 'https://drive.google.com/open?id=FICTIONALFILE001'}]};
 const FORM = 'FICTIONALFORM001';

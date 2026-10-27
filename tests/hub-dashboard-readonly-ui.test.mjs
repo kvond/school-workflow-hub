@@ -271,3 +271,139 @@ test('a response for a different class cannot supply the selected class’s week
   assert.deepEqual(h.calls, []); assert.notEqual(h.work.week, 'Wrong Week');
   assert.match(h.nodes.get('work-status').textContent, /weeks could not be verified/);
 });
+
+function routedHistoryBoot() {
+  const calls = [];
+  const literal = '<img src=x onerror="unexpected()">';
+  const currentFile = {id: 'FICTIONAL_CURRENT_LESSON', name: 'Current lesson source',
+    url: 'https://docs.google.com/presentation/d/FICTIONAL_CURRENT_LESSON/edit'};
+  const oldFile = {id: 'FICTIONAL_OTHER_LESSON', name: 'Original other-lesson source ' + literal,
+    mime: 'application/vnd.google-apps.presentation',
+    url: 'https://docs.google.com/presentation/d/FICTIONAL_OTHER_LESSON/edit',
+    source_form_id: 'FICTIONALFORM001', source_response_id: 'FICTIONAL_ORIGINAL_RESPONSE',
+    source_submitted_at: '2032-01-06T15:10:00Z', modifiedTime: '2032-01-09T16:20:00Z'};
+  const secondOldFile = {...oldFile, id: 'FICTIONAL_OTHER_ATTACHMENT', name: 'Second original attachment ' + literal,
+    url: 'https://docs.google.com/presentation/d/FICTIONAL_OTHER_ATTACHMENT/edit'};
+  const routed = {who: 'Brook, Bea ' + literal, section: 'Fictional section',
+    to: 'Fallback destination must not replace original lesson context',
+    lesson_context: {week: 'Wk 06', label: 'Other verified lesson ' + literal, form_id: 'FICTIONALFORM001'},
+    original_submission: {source: 'form', event: true, key: 'FICTIONAL_ORIGINAL_RESPONSE',
+      email: 'fictional.student@example.test', submitted_at: oldFile.source_submitted_at,
+      files: [oldFile, secondOldFile], typed: []}};
+  const selected = {form_id: 'FICTIONALFORM001', label: 'Current verified lesson',
+    students: [{...row, files: [currentFile]}], late: [], elsewhere: [routed,
+      {who: 'Unproven legacy entry', to: 'Not an original submission',
+       url: 'https://example.invalid/legacy-without-original'}]};
+  const work = {seq: 1, cls: 'forensics', week: 'Wk 07', section: 'all', display: 'all', data: {},
+    scores: {[selected.form_id]: {[currentFile.id]: {...saved, file_id: currentFile.id},
+      [oldFile.id]: {...saved, file_id: oldFile.id, notes_score: 1, revision_score: 2}}}, ui: {}, marks: {}};
+  const noAction = name => (...args) => { calls.push({name, args}); throw Error(name + ' must not run on history display'); };
+  const h = boot(['fileList', 'entryTime', 'savedGradeRows', 'verifiedSavedGrade', 'newlyGraded',
+    'renderRoutedLessonHistory', 'renderSavedForm'], {work, scoreFile: item => item.files[0],
+    helperProgress: () => null, feedbackBackup: () => null, markDate: mark => mark.at,
+    sendToHelper: noAction('Helper preparation'), fetch: noAction('fetch'), postJSON: noAction('POST'),
+    callModel: noAction('model'), window: {postMessage: noAction('bridge')},
+    chrome: {runtime: {sendMessage: noAction('extension')}}});
+  class SafeElement extends Element {
+    set innerHTML(_value) { throw Error('History must render literal text, never HTML'); }
+    addEventListener(type, handler) { this.events ||= {}; (this.events[type] ||= []).push(handler); }
+  }
+  h.context.document.createElement = tag => new SafeElement(tag);
+  return {...h, calls, selected, currentFile, oldFile, secondOldFile, routed, literal, work};
+}
+
+test('routed lesson history preserves literal original links and turn-in time without actions or grades', () => {
+  const h = routedHistoryBoot(), before = JSON.stringify(h.selected);
+  const panel = h.ui.renderRoutedLessonHistory(h.selected);
+  assert.equal(panel.tagName, 'details');
+  assert.ok(panel.open === undefined || panel.open === false);
+  assert.match(panel.textContent, /Other verified lesson/);
+  assert.match(panel.textContent, /Wk 06/);
+  assert.ok(panel.textContent.includes(h.literal));
+  assert.ok(panel.textContent.includes(h.oldFile.name));
+  assert.ok(panel.textContent.includes('Brook, Bea'));
+  assert.ok(panel.textContent.includes('Jan 6') || panel.textContent.includes('2032-01-06'));
+  assert.doesNotMatch(panel.textContent, /Jan 9|2032-01-09|Unproven legacy entry|Fallback destination must not replace/);
+  const nodes = walk(panel), links = nodes.filter(node => node.tagName === 'a');
+  assert.ok(links.some(node => node.href === h.oldFile.url));
+  assert.ok(links.some(node => node.href === h.secondOldFile.url));
+  assert.ok(panel.textContent.includes(h.secondOldFile.name));
+  assert.equal(nodes.filter(node => ['img', 'script', 'iframe', 'svg', 'button'].includes(node.tagName)).length, 0);
+  assert.equal(nodes.filter(node => node.tagName === 'td' && ['0', '1', '2', '8', '6', '10'].includes(node.textContent)).length, 0);
+  assert.doesNotMatch(panel.textContent, /Notes \/10|Revision \/10|completion (?:score|verified)|Saved in Hub|Entered in IC|Prepare current list/);
+  panel.open = true;
+  for (const handler of panel.events?.toggle || []) handler({target: panel});
+  assert.deepEqual(h.calls, []);
+  assert.equal(JSON.stringify(h.selected), before);
+  assert.equal(h.routed.original_submission.files[0].source_response_id, 'FICTIONAL_ORIGINAL_RESPONSE');
+});
+
+test('active saved-grade view includes routed history without borrowing its cached scores or adding controls', () => {
+  const h = routedHistoryBoot(), before = JSON.stringify(h.work);
+  const rendered = h.ui.renderSavedForm(h.selected, {topic: 'Current lesson'});
+  const nodes = walk(rendered), panels = nodes.filter(node => node.tagName === 'details');
+  assert.ok(panels.some(panel => walk(panel).some(node => node.href === h.oldFile.url)));
+  const gradeCells = nodes.filter(node => node.tagName === 'td').map(node => node.textContent);
+  assert.ok(gradeCells.includes('8')); assert.ok(gradeCells.includes('6'));
+  assert.ok(!gradeCells.includes('1')); assert.ok(!gradeCells.includes('2')); assert.ok(!gradeCells.includes('0'));
+  assert.equal(nodes.filter(node => node.tagName === 'button' && node.textContent.includes('Prepare current list')).length, 1);
+  for (const panel of panels) {
+    assert.equal(walk(panel).filter(node => node.tagName === 'button').length, 0);
+    panel.open = true;
+    for (const handler of panel.events?.toggle || []) handler({target: panel});
+  }
+  assert.deepEqual(h.calls, []);
+  assert.equal(JSON.stringify(h.work), before);
+});
+
+test('legacy elsewhere notices without a retained original do not become routed lesson history', () => {
+  const h = routedHistoryBoot();
+  assert.equal(h.ui.renderRoutedLessonHistory({elsewhere: [{who: 'Legacy name', to: 'Unverified destination'}]}), null);
+  assert.equal(h.ui.renderRoutedLessonHistory({}), null);
+  assert.deepEqual(h.calls, []);
+});
+
+test('routed history filters section names, files and counts while All preserves literal section labels', () => {
+  const h = routedHistoryBoot();
+  h.routed.section = 'A2 Fictional';
+  const other = JSON.parse(JSON.stringify(h.routed));
+  other.who = 'CrossSection, Casey ' + h.literal;
+  other.section = 'A3 Fictional';
+  other.lesson_context.label = 'Different A3 lesson ' + h.literal;
+  other.original_submission.files = [{...h.oldFile, id: 'FICTIONAL_A3_SOURCE', name: 'Only A3 original ' + h.literal,
+    url: 'https://docs.google.com/presentation/d/FICTIONAL_A3_SOURCE/edit'}];
+  h.selected.elsewhere.push(other);
+  const before = JSON.stringify(h.selected);
+  h.work.section = 'A2 Fictional';
+  const selected = h.ui.renderRoutedLessonHistory(h.selected);
+  assert.equal(walk(selected).find(node => node.tagName === 'summary').textContent, 'Other lesson submissions · 1');
+  assert.match(selected.textContent, /Brook, Bea/);
+  assert.doesNotMatch(selected.textContent, /CrossSection|A3 Fictional|Only A3 original|Different A3 lesson/);
+  assert.deepEqual(walk(selected).filter(node => node.tagName === 'a').map(node => node.href),
+    [h.oldFile.url, h.secondOldFile.url]);
+  h.work.section = 'all';
+  const all = h.ui.renderRoutedLessonHistory(h.selected);
+  assert.equal(walk(all).find(node => node.tagName === 'summary').textContent, 'Other lesson submissions · 2');
+  assert.match(all.textContent, /A2 Fictional/);
+  assert.match(all.textContent, /A3 Fictional/);
+  assert.ok(all.textContent.includes(other.who));
+  assert.ok(walk(all).some(node => node.href === other.original_submission.files[0].url));
+  h.work.section = 'A4 Fictional';
+  assert.equal(h.ui.renderRoutedLessonHistory(h.selected), null);
+  assert.equal(JSON.stringify(h.selected), before);
+  assert.deepEqual(h.calls, []);
+});
+
+test('folder creation timestamps cannot become original turn-in evidence in routed history', () => {
+  const h = routedHistoryBoot();
+  h.routed.original_submission.source = 'folder';
+  h.routed.original_submission.event = false;
+  h.routed.original_submission.submitted_at = '2032-01-10T15:10:00Z';
+  const before = JSON.stringify(h.selected);
+  const panel = h.ui.renderRoutedLessonHistory(h.selected);
+  assert.match(panel.textContent, /Original turn-in time unavailable/);
+  assert.doesNotMatch(panel.textContent, /Jan 10|2032-01-10|Jan 6|2032-01-06/);
+  assert.ok(walk(panel).some(node => node.href === h.oldFile.url));
+  assert.equal(JSON.stringify(h.selected), before);
+  assert.deepEqual(h.calls, []);
+});
