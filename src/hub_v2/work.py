@@ -192,6 +192,9 @@ def group(found, students, domains=(), prefix="s.", lesson_week=None, with_missi
                                   "email": s['email'], "matched_by": identify(s, students, domains, prefix)[1],
                                   "late": s["late"]}
                                  for s in sorted(items[1:], key=lambda s: s["submitted_at"], reverse=True)]})
+        problem = next((s['_lesson_selection_problem'] for s in items if s.get('_lesson_selection_problem')), None)
+        if problem:
+            rows[-1]['selection_problem'] = problem
     rows.sort(key=lambda r: (not r["matched"], r["section"], roster.plain(r["last"]),
                              roster.plain(r["first"]), r["email"], r["files"][0]["name"] if r["files"] else ""))
     if not with_missing:
@@ -554,6 +557,7 @@ def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
         if not form.get("form_id"):
             continue
         form.pop("_teacher_source_verified", None)
+        form.pop('_teacher_source_resolution', None)
         form["grade_policy"] = assignment_policy(config, agenda, class_key, week_label, form["form_id"])
         try:
             binding = form_teacher_sources(config, agenda, class_key, week_label, form["form_id"])
@@ -570,8 +574,30 @@ def _bind_form_teachers(token, config, agenda, class_key, week_label, forms):
             form["signature"] = set(form["teacher_signature"])
             if not form.get("problem"):
                 form["_teacher_source_verified"] = True
-        except (ValueError, TypeError, KeyError, StopIteration) as error:
+                form['_teacher_source_resolution'] = deepcopy(source)
+        except (completion.Unreadable, ValueError, TypeError, KeyError, StopIteration) as error:
             form["problem"] = str(error) or "The exact Form's teacher sources could not be verified."
+
+
+def _teacher_ids(form):
+    return ((form.get('teacher_source_binding') or {}).get('teacher_ids')
+            or (form.get('teacher_source_direct') or {}).get('source_ids') or [])
+
+
+def _direct_routing_source(token, config, agenda, cls, week, fid):
+    """Reuse ordinary exact Agenda teacher ownership for routing, never grading."""
+    from . import completion
+    ownership = completion.form_source_ownership(config, agenda, cls, week, fid)
+    lesson = completion.form_source_scope(agenda, cls, week, fid, ownership=ownership)
+    resolved = completion.lesson_sources(token, lesson, metadata_fields=google.FILE_FIELDS + ',version')
+    decks = resolved.get('decks', [])
+    if resolved.get('problem') or len(decks) != 1:
+        raise completion.Unreadable('The other lesson needs one exact readable Agenda teacher source.')
+    meta = decks[0].get('metadata') or {}
+    if (meta.get('id') != decks[0]['id'] or meta.get('mimeType') not in (completion.SLIDES, google.PPTX)
+            or meta.get('trashed') is not False or not meta.get('version') or not meta.get('modifiedTime')):
+        raise completion.Unreadable('The exact other-lesson teacher metadata is unavailable.')
+    return {'source_ids': [decks[0]['id']], 'ownership': ownership}, resolved
 
 
 def accepted_form_routes(config, agenda, class_key, week_label, forms):
@@ -764,7 +790,7 @@ def wrong_form_moves(entries, held=None):
             # Every attachment must agree; conflicting or partial claims stay put.
             claims = [[j for j, other in enumerate(entries)
                        if not other.get('form', {}).get('_combined_scope')
-                       and other.get("teacher_source_verified") and other.get("teacher_source_binding")
+                       and other.get("teacher_source_verified") and _teacher_ids(other)
                        and any(len(known) >= 16 and known in deck_stem(file.get("name", ""))
                                for known in other.get("teacher_signature", ()))]
                       for file in submission.get("files", [])]
@@ -773,6 +799,12 @@ def wrong_form_moves(entries, held=None):
                     target = claims[0][0]
                     if target != i and (entry["current"] or entries[target]["current"]):
                         moves.append((i, submission, target))
+                elif any(entries[j].get('routing_context_only') for claim in claims for j in claim):
+                    # A known other lesson is not a replacement merely because
+                    # its event shares this Form. Mixed/tied claims stay local.
+                    submission['_lesson_selection_problem'] = (
+                        'This upload has conflicting or mixed lesson-source matches. '
+                        'Its original files are retained; no replacement was selected.')
                 continue
             if not words or confirms(submission, entry):
                 continue
@@ -804,7 +836,7 @@ def recent_submissions(token, form_id):
     return deepcopy(found)
 
 
-def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None):
+def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None, current_forms=()):
     """[{week, label, topic, form_id, found}] for the Forms of the lessons up to
     NEARBY_LESSONS teaching weeks before and after this one."""
     layout = agenda.classes[class_key]["layout"] or {"rows": []}
@@ -814,6 +846,7 @@ def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None):
     if here is None:
         return []
     out = []
+    already_read = set(skip)
     for label in labels[max(0, here - NEARBY_LESSONS):here] + labels[here + 1:here + 1 + NEARBY_LESSONS]:
         for lesson in agenda.lessons(class_key, label):
             paired = [{"form_id": form["form_id"], "label": form["label"], "name": "", "signature": set()}
@@ -826,18 +859,54 @@ def nearby_forms(token, agenda, class_key, week_label, skip, *, config=None):
                 _bind_form_teachers(token, config, agenda, class_key, label, paired)
             pair_decks(paired, [deck_stem(name) for name in names], names)
             for form in lesson["forms"]:
-                if not form["form_id"] or form["form_id"] in skip:
+                fid = form['form_id']
+                if not fid:
                     continue
-                try:
-                    found = recent_submissions(token, form["form_id"])
-                except google.GoogleError:
+                matched = next((f for f in paired if f['form_id'] == fid), {})
+                context_only = fid in already_read
+                if context_only:
+                    from . import completion
+                    current = [f for f in current_forms if f.get('form_id') == fid]
+                    existing = [f for l in agenda.lessons(class_key, label) for f in l['forms']
+                                if f.get('form_id') == fid]
+                    if (len(current) == 1 and current[0].get('_teacher_source_verified')
+                            and not matched.get('teacher_source_binding') and not matched.get('problem')):
+                        try:
+                            direct, resolved = _direct_routing_source(token, config, agenda, class_key, label, fid)
+                            matched.update(teacher_source_direct=direct, _teacher_source_resolution=resolved,
+                                _teacher_source_verified=True,
+                                teacher_signature={deck_stem(d['title']) for d in resolved['decks']})
+                        except (completion.Unreadable, google.GoogleError, ValueError, TypeError, KeyError):
+                            pass
+                    teachers = _teacher_ids(matched)
+                    current_teachers = _teacher_ids(current[0]) if len(current) == 1 else []
+                    year = _school_year(agenda, week_label)
+                    if (len(current) != 1 or len(existing) != 1 or not year or _school_year(agenda, label) != year
+                            or current[0].get('_combined_scope') or current[0].get('problem') or matched.get('problem')
+                            or not current[0].get('_teacher_source_verified') or not matched.get('_teacher_source_verified')
+                            or not teachers or not current_teachers
+                            or set(teachers) & set(current_teachers)
+                            or not any(len(stem) >= 16 for stem in matched.get('teacher_signature', ()))):
+                        continue
+                    # Resolve the existing lesson context, not another response
+                    # collection or output Form. Reuse the current raw events.
+                    found = []
+                elif fid in skip:
                     continue
-                skip = skip | {form["form_id"]}
+                else:
+                    try:
+                        found = recent_submissions(token, fid)
+                    except google.GoogleError:
+                        continue
+                skip = skip | {fid}
                 out.append({"week": label, "label": form["label"],
                             "class_key": class_key, "school_year": _school_year(agenda, label),
-                            "problem": next((f.get("problem") for f in paired if f["form_id"] == form["form_id"]), None),
+                            "problem": matched.get('problem'),
                             "topic": lesson["topic"] if len(lesson["forms"]) == 1 else "",
-                            "form_id": form["form_id"], "found": found,
+                            "form_id": fid, "found": found,
+                            **({'routing_context_only': True} if context_only else {}),
+                            'teacher_source_direct': matched.get('teacher_source_direct'),
+                            'teacher_source_resolution': matched.get('_teacher_source_resolution'),
                             "teacher_signature": next((f.get("teacher_signature", set()) for f in paired
                                                        if f["form_id"] == form["form_id"]), set()),
                             "teacher_source_binding": next((f.get("teacher_source_binding") for f in paired
@@ -1342,12 +1411,12 @@ def _calendar_only(lesson):
 
 
 def lesson_work(token, config, agenda, class_key, week_label, *, review_only=False, roster_snapshot=None):
+    from . import completion
     if roster_snapshot is not None:
         if not review_only or not isinstance(roster_snapshot, tuple) or len(roster_snapshot) != 2:
             raise ValueError('review roster snapshot')
         # Discovery may orient its local rows. Never mutate the shared overview
         # snapshot or lend this hook to the normal grading path.
-        from copy import deepcopy
         by_class, problems = deepcopy(roster_snapshot)
     else:
         by_class, problems = roster.load(token, config)
@@ -1578,9 +1647,11 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                             "found": form["found"], "base": base, "words": words,
                             "teacher_signature": form.get("teacher_signature", set()),
                             "teacher_source_binding": form.get("teacher_source_binding"),
+                            'teacher_source_resolution': form.get('_teacher_source_resolution'),
                             "teacher_source_verified": bool(form.get("_teacher_source_verified"))})
         index += len(lesson["forms"])
-    for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]}, config=config):
+    for near in nearby_forms(token, agenda, class_key, week_label, {f["form_id"] for f in forms if f["form_id"]},
+                             config=config, current_forms=forms):
         material_problem = teacher_material.classify_entries(token, config, agenda, class_key,
             [{**near, 'current':False}])
         if material_problem:
@@ -1591,11 +1662,38 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                         "base": base, "words": words,
                         "teacher_signature": near.get("teacher_signature", set()),
                         "teacher_source_binding": near.get("teacher_source_binding"),
+                        'teacher_source_direct': near.get('teacher_source_direct'),
+                        'teacher_source_resolution': near.get('teacher_source_resolution'),
                         "teacher_source_verified": bool(near.get("teacher_source_verified")),
                         "form_id": near["form_id"], "class_key": near["class_key"],
-                        "school_year": near["school_year"], "problem": near.get("problem")})
+                        "school_year": near["school_year"], "problem": near.get("problem"),
+                        **({'routing_context_only': True} if near.get('routing_context_only') else {})})
     held_imports = []
-    for i, submission, j in wrong_form_moves(entries, held_imports):
+    moves = wrong_form_moves(entries, held_imports)
+    routing_contexts = {index for i, _, j in moves if entries[j].get('routing_context_only') for index in (i, j)}
+    changed_contexts = set()
+    for index in routing_contexts:
+        entry = entries[index]
+        try:
+            fid = entry.get('form', {}).get('form_id') or entry.get('form_id')
+            if entry.get('teacher_source_direct'):
+                direct, fresh = _direct_routing_source(token, config, agenda, class_key, entry['week'], fid)
+                if direct != entry['teacher_source_direct']:
+                    changed_contexts.add(index)
+            else:
+                lesson = completion.form_source_scope(agenda, class_key, entry['week'], fid,
+                    binding=entry.get('teacher_source_binding'))
+                fresh = completion.scoped_lesson_sources(token, lesson, binding=entry.get('teacher_source_binding'))
+            if fresh.get('problem') or fresh != entry.get('teacher_source_resolution'):
+                changed_contexts.add(index)
+        except (completion.Unreadable, google.GoogleError, ValueError, TypeError, KeyError):
+            changed_contexts.add(index)
+    for i, submission, j in moves:
+        if entries[j].get('routing_context_only') and ({i, j} & changed_contexts):
+            submission['_lesson_selection_problem'] = (
+                'The exact lesson sources changed or could not be verified during selection. '
+                'Original submissions are retained; no replacement was selected.')
+            continue
         source, target = entries[i], entries[j]
         if submission not in source["found"]:
             continue
@@ -1612,7 +1710,10 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                 {"submission": submission, "to": "%s · %s" % (target["week"], target["label"]),
                  "accepted_intake": accepted, "source_form_id": source["form"]["form_id"],
                  "assignment_form_id": target.get("form", {}).get("form_id") or target.get("form_id"),
-                 "matched_other_lesson": _nearby_match_context(agenda, class_key, week_label, entries, j, submission)})
+                 "matched_other_lesson": _nearby_match_context(agenda, class_key, week_label, entries, j, submission),
+                 **({'lesson_context': {**{k: deepcopy(target[k]) for k in ('class_key', 'school_year', 'week', 'form_id', 'label')},
+                                        'teacher_ids': deepcopy(_teacher_ids(target))},
+                     'routing_context_only': True} if target.get('routing_context_only') else {})})
         if target["current"]:
             via = source["label"] if source["current"] else "%s · %s" % (source["week"], source["label"])
             target["found"].append(dict(submission, files=[dict(f, via=via, accepted_intake=accepted,
@@ -1664,6 +1765,9 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
                                   "accepted_intake": bool(m.get("accepted_intake")),
                                   "source_form_id": m.get("source_form_id"),
                                   "assignment_form_id": m.get("assignment_form_id"),
+                                  **({'original_submission': deepcopy(m['submission']),
+                                      'lesson_context': deepcopy(m['lesson_context'])}
+                                     if m.get('routing_context_only') else {}),
                                   **({"matched_other_lesson": m["matched_other_lesson"],
                                       "matched_source_files": [{k: f.get(k) for k in ("id", "name", "url")} for f in m["submission"]["files"]]}
                                      if m.get("matched_other_lesson") else {})})
@@ -1703,7 +1807,6 @@ def lesson_work(token, config, agenda, class_key, week_label, *, review_only=Fal
     folder_reviews = shared_folder_reviews(forms, roots, parents)
     # Read-only grading context is separate from discovery/filing eligibility.
     # It also covers an empty Form, where no score_file call could block zeros.
-    from . import completion
     if not review_only:
         for lesson in result:
             for form in lesson["forms"]:
