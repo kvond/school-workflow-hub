@@ -1,4 +1,5 @@
 """Explicit Agenda dates and week identities; all input is fictional."""
+from copy import deepcopy
 from datetime import date, datetime, timezone
 from unittest import TestCase
 from unittest.mock import patch
@@ -35,6 +36,63 @@ def calendar_fixture():
 
 
 class CalendarAlignmentTests(TestCase):
+    def test_marking_period_prefix_preserves_exact_lesson_and_form_context(self):
+        source = calendar_fixture()
+        original = source.lessons("biology", "Wk 07")
+        cells = source.classes["biology"]["cells"]
+        cells[(2, 1)] = cell("MP2                           Wk 07")
+        before = deepcopy(cells)
+        source.classes["biology"]["layout"], _ = agenda.parse_class_tab(cells)
+        result = source.day(date(2026, 10, 14))
+        lessons = result["classes"][0]["lessons"]
+        self.assertIsNone(result["classes"][0]["problem"])
+        self.assertEqual([l["row"] for l in lessons], [2, 3])
+        self.assertEqual([l["week"] for l in lessons], ["Wk 07", "Wk 07"])
+        self.assertEqual([l["forms"] for l in lessons], [l["forms"] for l in original])
+        self.assertEqual(source.lessons("biology", "Wk 07"), original)
+        self.assertEqual(source.week_options("biology")[0]["forms"], 2)
+        self.assertEqual(source.week_options("biology")[0]["monday"], "2026-10-12")
+        self.assertEqual(cells, before)
+
+    def test_prefixed_short_week_keeps_its_own_next_prep_and_calendar(self):
+        source = calendar_fixture()
+        entry = source.classes["biology"]
+        entry["cells"][(1, 6)] = cell("Lab / prep")
+        entry["cells"][(6, 1)] = cell("MP3\nWk 16b")
+        entry["cells"][(6, 6)] = cell("PULL: paper models")
+        entry["layout"], _ = agenda.parse_class_tab(entry["cells"])
+        result = source.day(date(2026, 12, 16))["classes"][0]["next_prep"]
+        self.assertIsNone(result["problem"])
+        self.assertEqual(result["week"], "Wk 16b")
+        self.assertEqual(result["monday"], "2026-12-21")
+        self.assertEqual([l["row"] for l in result["lessons"]], [6])
+        self.assertEqual(source.lessons("biology", "Wk 16")[0]["row"], 5)
+        self.assertEqual(work.week_monday(source, "Wk 16b"), date(2026, 12, 21))
+        self.assertIsNone(source.week_for(date(2026, 12, 23)))
+
+    def test_only_explicit_complete_marking_period_labels_are_normalized(self):
+        for shown, expected in (
+            ("MP1 Wk 07", "Wk 07"), ("mp4\tWk07", "Wk07"),
+            (" MP2 Week 10 ", "Week 10"), ("Wk 07", "Wk 07"),
+            ("Wk 16b", "Wk 16b"), ("MP2Wk 07", "MP2Wk 07"),
+            ("MP5 Wk 07", "MP5 Wk 07"), ("MP0 Wk 07", "MP0 Wk 07"),
+            ("MP2 Wk 07 / Wk 08", "MP2 Wk 07 / Wk 08"),
+            ("MP2 Wk 07 — next Wk 08", "MP2 Wk 07 — next Wk 08"),
+            ("MP2 MP3 Wk 07", "MP2 MP3 Wk 07"),
+            ("next MP2 Wk 07", "next MP2 Wk 07"),
+            ("MP2 Wk 070", "MP2 Wk 070"),
+        ):
+            with self.subTest(shown=shown):
+                self.assertEqual(agenda.class_week_label(shown), expected)
+
+    def test_ambiguous_prefixed_class_row_does_not_join_calendar_week(self):
+        source = calendar_fixture()
+        entry = source.classes["biology"]
+        entry["cells"][(2, 1)] = cell("MP2 Wk 07 / Wk 08")
+        entry["layout"], _ = agenda.parse_class_tab(entry["cells"])
+        self.assertEqual([l["row"] for l in source.lessons("biology", "Wk 07")], [3])
+        self.assertEqual(source.week_options("biology")[0]["monday"], None)
+
     def test_source_checks_do_not_jump_ahead_on_sunday_evening(self):
         # Cloud UTC has reached Monday; school time is still Sunday evening.
         with patch.object(ledger, "datetime", wraps=datetime) as clock:

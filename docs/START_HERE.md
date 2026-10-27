@@ -73,6 +73,11 @@ new evidence. Never backfill a grade by relabeling an old cache entry.
 Agenda week dates still come from the explicit Weeks Monday and takeover cells.
 Descriptive suffixes do not change week identity; break handoffs are not teaching
 weeks, and Wk16b stays distinct. Preserve separate same-week lessons and Forms.
+Class week cells may prefix one complete week label with `MP1` through `MP4`
+and whitespace (for example, `MP2   Wk 10`). The reader removes only that
+explicit display prefix; the dated Weeks row still determines the week and
+calendar. Source cells stay unchanged. Arbitrary prose, multiple week labels
+and unsupported prefixes do not supply a guessed week identity.
 The dated plan and Agenda topic are separate teacher-controlled fields. Returning
 to Lessons rereads the selected date while preserving any active editor's basis
 and unsaved draft. Explicit material links retain precedence over old hidden
