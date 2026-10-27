@@ -175,7 +175,7 @@ function fixtures() {
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-async function boot(hash = '#today', overrides = {}) {
+async function boot(hash = '', overrides = {}) {
   const document = documentFromHTML(markup), data = {...fixtures(), ...overrides};
   const requests = [], posts = [], errors = [], handlers = new Map(), storage = new Map();
   const location = {hash, origin: ORIGIN, href: ORIGIN + '/v2/' + hash};
@@ -247,7 +247,7 @@ async function boot(hash = '#today', overrides = {}) {
 const paths = app => app.requests.map(request => new URL(request.url, ORIGIN + '/v2/').pathname);
 
 test('complete application boots Today and reads run records without starting work', async () => {
-  const app = await boot();
+  const app = await boot('#today');
   assert.equal(app.document.getElementById('page-today').hidden, false);
   assert.ok(paths(app).length > 0);
   assert.deepEqual([...new Set(paths(app))], ['/v2/api/dashboard/records']);
@@ -258,6 +258,18 @@ test('complete application boots Today and reads run records without starting wo
     && node.getAttribute('href')?.includes('FICTIONALOUTPUT001')));
   assert.ok(app.posts.some(({message, origin}) => message.type === 'status' && origin === ORIGIN),
     'the preserved Helper bridge announces its status request');
+});
+
+test('ordinary landing and repeated lesson navigation read only teaching data', async () => {
+  const app = await boot();
+  assert.equal(app.context.location.hash, '#plans');
+  assert.equal(app.document.getElementById('page-plans').hidden, false);
+  assert.equal(app.document.getElementById('page-today').hidden, true);
+  assert.ok(paths(app).includes('/v2/api/day'));
+  for (const hash of ['#unknown', '#plans', '#plans']) await app.navigate(hash);
+  assert.ok(paths(app).every(path => ['/v2/api/day', '/v2/api/classes/notes'].includes(path)));
+  assert.ok(app.requests.every(request => request.method === 'GET'));
+  assert.ok(app.posts.some(({message}) => message.type === 'status'), 'Helper status bridge remains intact');
 });
 
 test('Records aliases and Lessons execute only their own readers with the real page DOM', async () => {

@@ -18,6 +18,7 @@ function boot(reader = async () => ({topic: 'Updated lesson'})) {
     addEventListener: (name, handler) => { handlers[name] = handler; }};
   const location = {hash: '#plans'};
   const context = vm.createContext({plans, document, location, work: {seq: 0},
+    dashboard: {todaySeq: 0, recordsSeq: 0},
     window: {addEventListener: (name, handler) => { handlers[name] = handler; }},
     $: id => { if (!pages.has(id)) pages.set(id, {}); return pages.get(id); },
     loadLessonReadiness() {}, loadToday() {}, openWork() {}, loadRoutine() {}, loadSystemNotes() {}, loadLessonAccess() {},

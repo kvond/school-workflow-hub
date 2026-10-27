@@ -219,6 +219,7 @@ function navigationBoot(reader) {
   const calls = [], work = {seq: 0, cls: 'biology', week: 'Biology Week', weeksFor: 'biology', section: 'all'};
   const location = {hash: '#work/biology/Biology%20Week'};
   const h = boot(['fillSelect', 'loadWeeks', 'openWork', 'showTab'], {work, location,
+    dashboard: {todaySeq: 0, recordsSeq: 0},
     showAgendaLink() {}, loadToday: () => calls.push('today'), loadRecords() {}, refreshVisiblePlans() {},
     loadWork: async () => { calls.push({class: work.cls, week: work.week}); location.hash = '#work/' + work.cls + '/' + work.week; },
     fetch: async url => ({ok: true, json: async () => reader(url)})});
@@ -248,6 +249,49 @@ test('leaving Student work immediately invalidates pending week discovery and ca
   await pending;
   assert.equal(h.location.hash, '#today'); assert.deepEqual(h.calls, ['today']);
   assert.notEqual(h.work.week, 'Anatomy Only Week');
+});
+
+test('returning to Lessons cancels old work discovery across repeated navigation', async () => {
+  let finish;
+  const old = new Promise(resolve => { finish = resolve; });
+  const h = navigationBoot(() => old), pending = h.ui.openWork(['anatomy']);
+  await new Promise(resolve => setImmediate(resolve));
+  h.location.hash = '#plans'; h.ui.showTab(); h.ui.showTab();
+  finish({class_key: 'anatomy', weeks: [{label: 'Old Week', forms: 1}], current: 'Old Week', sections: []});
+  await pending;
+  assert.equal(h.location.hash, '#plans'); assert.deepEqual(h.calls, []);
+  assert.notEqual(h.work.week, 'Old Week');
+});
+
+test('leaving Today for Lessons prevents a late run-history response from rendering', async () => {
+  let finish;
+  const location = {hash: '#today'}, dashboard = {todaySeq: 0, recordsSeq: 0};
+  const h = boot(['loadToday', 'showTab'], {location, dashboard, work: {seq: 0},
+    refreshVisiblePlans() {}, openWork() {}, loadRecords() {},
+    renderDashboardRuns() { throw Error('A stale response must not render'); },
+    fetch: async () => ({ok: true, json: () => new Promise(resolve => { finish = resolve; })})});
+  const pending = h.ui.loadToday(); await new Promise(resolve => setImmediate(resolve));
+  location.hash = '#plans'; h.ui.showTab();
+  finish({schema_version: 'hub-dashboard-records/v1', runs: []}); await pending;
+  assert.equal(h.nodes.get('page-plans').hidden, false);
+  assert.equal(h.nodes.get('today-body').children.length, 0);
+});
+
+test('leaving Records cancels both late directory and printable-link rendering', async () => {
+  const replies = new Map(), location = {hash: '#records'}, dashboard = {todaySeq: 0, recordsSeq: 0};
+  const h = boot(['loadRecordsPrintableFeedback', 'loadRecords', 'showTab'], {
+    location, dashboard, work: {seq: 0}, refreshVisiblePlans() {}, loadToday() {}, openWork() {},
+    recordURL() { throw Error('A stale directory must not render'); },
+    renderRecordsPrintableFeedback() { throw Error('A stale printable link must not render'); },
+    fetch: async url => ({ok: true, json: () => new Promise(resolve => { replies.set(url, resolve); })})});
+  const pending = h.ui.loadRecords(); await new Promise(resolve => setImmediate(resolve));
+  const before = h.nodes.get('records-body').textContent;
+  location.hash = '#plans'; h.ui.showTab();
+  replies.get('api/dashboard/records')({schema_version: 'hub-dashboard-records/v1', records: []});
+  replies.get('api/spreadsheet-feedback/print-link')({status: 'unpublished'});
+  await pending; await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.nodes.get('page-plans').hidden, false);
+  assert.equal(h.nodes.get('records-body').textContent, before);
 });
 
 test('a newly selected class clears old students, saved values and Helper controls before its weeks arrive', async () => {

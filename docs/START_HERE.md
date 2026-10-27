@@ -1,13 +1,19 @@
 # School Workflow Hub — start here
 
-## Dashboard architecture: views, work services and records
+## Teaching landing, recovery views, work services and records
 
-The Hub has four pages: **Today**, **Lessons**, **Student work** and **Records**.
-The dashboard reads existing results and links to their canonical records.
+Normal `/v2/` navigation exposes **Lessons**, with daily date/week navigation
+and the existing **Open Agenda** link. Empty or unknown fragments open Lessons;
+ordinary landing reads teaching data without loading dashboard run records.
+Explicit **Today**, **Student work** and **Records** bookmarks remain available
+for ongoing recovery, outside normal teaching navigation. The legacy
+`/#feedback` interface, backend routes, shared state and Helper safeguards are
+preserved. This UI migration does not retire the student-work backend or tasks.
+Recovery views read existing results and link to their canonical records.
 Opening a page does not start grading, lesson readiness checks, model authoring,
 checklist refresh, packet generation or email delivery.
 
-- **Today** shows recorded attempts, actual outcomes, output links and unfinished
+- **Today** (`/v2/#today`, recovery) shows recorded attempts, actual outcomes, output links and unfinished
   scope. Missing, failed or unconfigured reads stay explicit; configuration and
   a page refresh do not establish that a run completed.
 - **Lessons** keeps the existing date/week navigation, Agenda plans, material
@@ -23,13 +29,13 @@ checklist refresh, packet generation or email delivery.
   stay explicit. Link presence does not establish accessibility or lab release.
   These projections share the existing Agenda read; no new service, tracker,
   readiness job, model call or school write is started.
-- **Student work** shows original work links and saved completion results with
+- **Student work** (`/v2/#work`, recovery) shows original work links and saved completion results with
   their verified saved time. A changed or unverified source cannot inherit
   a saved score, and a new file modification is not a new grading event. Missing
   saved results remain unavailable rather than being replaced by zeros. The
   explicit Helper handoff still prepares its current list through the existing
   guarded path; simply viewing the page does not prepare or enter grades.
-- **Records** is a directory of the existing Agenda, WorkIndex, feedback checklist,
+- **Records** (`/v2/#records`, recovery) is a directory of the existing Agenda, WorkIndex, feedback checklist,
   teacher reports and operational Slack, plus the operations and model-trial
   spreadsheets. Old `#data`, `#routine` and `#system` bookmarks open Records.
 
