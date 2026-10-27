@@ -115,6 +115,18 @@ def find_tab(tabs, name):
     return matches[0] if len(matches) == 1 else None
 
 
+def class_week_label(value):
+    """Strip only an explicit marking-period prefix from a complete week label.
+
+    The dated Weeks table still supplies identity and dates. Keep arbitrary
+    prose, multiple week references and unsupported prefixes unchanged rather
+    than guessing a lesson's week from a substring. Source cells are untouched.
+    """
+    shown = value.strip()
+    match = re.fullmatch(r"MP[1-4]\s+((?:Wk|Week)\s*\d{1,2}[a-z]?)", shown, re.I)
+    return match.group(1) if match else shown
+
+
 def parse_weeks(cells):
     for r in range(1, 8):
         header = {c: norm(text(cells.get((r, c)))) for c in range(1, 12)}
@@ -191,7 +203,7 @@ def parse_class_tab(cells):
         match = re.fullmatch(r"(mon|tue|wed|thu|fri)[a-z]*(plan|note)", h)
         if match:
             plans.setdefault(match.group(1).title(), {})[match.group(2)] = c
-    rows = [(r, text(cells.get((r, columns["week"]))).strip())
+    rows = [(r, class_week_label(text(cells.get((r, columns["week"])))))
             for r in range(header_row + 1, LAST_ROW + 1)]
     return {"columns": columns, "plans": {d: plans[d] for d in DAYS if "plan" in plans.get(d, {})},
             "rows": [(r, label) for r, label in rows if label]}, None
@@ -280,7 +292,7 @@ def build_lesson(cells, layout, row, edit_url):
     link_fields = {key: url for key, url in current.items()
                    if cols.get({"deck": "teacher_url", "deck2": "second_deck", "activity": "extra_url",
                                 "turnin": "turnin_url", "turnin2": "turnin2"}[key])}
-    return {"row": row, "week": text(cell("week")).strip(), "topic": text(cell("topic")).strip(),
+    return {"row": row, "week": class_week_label(text(cell("week"))), "topic": text(cell("topic")).strip(),
             "dates": text(cell("dates")).strip(), "plans": plans, "editable": editable,
             "todo": text(cell("todo")).strip(), "prep": text(cell("prep")).strip(),
             "materials": materials, "forms": lesson_forms(cell("turnin"), cell("turnin_url"), cell("turnin2")),
