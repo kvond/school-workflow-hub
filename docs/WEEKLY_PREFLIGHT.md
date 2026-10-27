@@ -181,6 +181,14 @@ Code: `src/hub_v2/weekly_preflight.py`, `weekly_packet.py`, `deck_repair.py`;
   packet and in the Week ahead **Print list**, not a decision; with no URL it
   stays a decision. Key/answer files are TEACHER ONLY. Word files print from the
   lesson folder.
+  An explicit deck TO PRINT line saying `Nothing to print.` is retained as
+  teacher prep, with its original text, deck and slide, instead of becoming a
+  missing handout. The same applies when that complete sentence is followed by
+  `The [activities] need [supplies].`, limited to counters, cups, beans and floor
+  space. Other wording, conditions, additional instructions, unrecognized
+  supplies and attached URLs stay on the normal print-check path. Separate
+  handout lines, inaccessible files and ambiguous matches are still checked.
+  This note establishes neither supply availability nor lesson readiness.
 - **Supply list.** BUY, PULL, on order and deck blocks, merged by name with
   every source kept. Statuses are buy, pull, on order (not verified in hand)
   and stock unknown; nothing is marked in hand or bought.

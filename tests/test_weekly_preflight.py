@@ -1425,6 +1425,82 @@ class InventoryContextTests(Base):
         self.assertNotIn('needs_embedded_codes', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
 
 
+class NoPrintNoteTests(Base):
+    NOTE = 'Nothing to print. The sorting rounds and Habitat Game need cups, beans and floor space.'
+
+    def reference(self, *lines):
+        slides = deepcopy(BIO_SLIDES)
+        slides[3] = [('reference', 'TEACHER REFERENCE\nTO PRINT:\n' + '\n'.join(lines))]
+        self.src.decks[BIO_DECK] = slides
+
+    def test_only_complete_unconditional_notes_and_bounded_supplies_are_recognized(self):
+        for line in ('Nothing to print', 'Nothing to print.', self.NOTE,
+                     'Nothing to print. The tabletop rounds need counters and cups.'):
+            with self.subTest(line=line):
+                self.assertTrue(wp._no_print_note(line))
+        for line in ('Nothing to print if the projector works.', 'Nothing to print unless students need paper.',
+                     'Nothing to print, except the exit ticket.', 'Nothing to print. Print the exit ticket.',
+                     'Nothing to print. The activity needs cups.', 'Nothing to print. The rounds need worksheets.',
+                     'Nothing to print. The rounds need cups and one handout.',
+                     'Nothing to print. The rounds need cups, but print the exit ticket.',
+                     'Nothing to print. The rounds need cups if available.',
+                     'Nothing to print. The rounds if online need cups.',
+                     'Nothing to print. The rounds while online need cups.',
+                     'Nothing to print. The rounds need cups. Print the exit ticket.',
+                     'Nothing to print. The rounds need cups and cups or worksheets.'):
+            with self.subTest(line=line):
+                self.assertFalse(wp._no_print_note(line))
+
+    def test_note_and_source_context_read_back_without_hiding_real_print_items(self):
+        self.reference(self.NOTE, 'CER worksheet (1 per student)', 'Lab safety card (1 per group)')
+        original = deepcopy(self.src.decks[BIO_DECK])
+        result = self.run_check()
+        lesson = self.lesson(result, 'biology', 5)
+        note = {'text': self.NOTE, 'slide': 4, 'deck': self.src.files[BIO_DECK]['name'],
+                'deck_id': BIO_DECK, 'source_url': deck_url(BIO_DECK) + '#slide=id.0009_p4'}
+        self.assertEqual(lesson['teacher_prep'], [note])
+        items = {p['text']: p for p in result['print_items'] if p['class_key'] == 'biology' and p['row'] == 5}
+        self.assertEqual(set(items), {'CER worksheet (1 per student)', 'Lab safety card (1 per group)'})
+        self.assertEqual(items['CER worksheet (1 per student)']['file']['id'], HANDOUT)
+        missing = [e for e in self.exceptions(result, 'biology', 5) if e['kind'] == 'print_item_no_file']
+        self.assertEqual(len(missing), 1)
+        self.assertIn('Lab safety card', missing[0]['reason'])
+        self.assertTrue(missing[0]['blocking'])
+        self.assertIn('needs_embedded_codes', {e['kind'] for e in self.exceptions(result, 'biology', 5)})
+        self.assertNotIn(lesson['status'], ('ready', 'repaired_and_verified'))
+        self.assertFalse(any(s['item'] in ('cups', 'beans', 'floor space') for s in result['supplies']))
+        saved = wp.status(self.config, SHEET, '2026-10-19', 1, port=self.port)
+        self.assertEqual(self.lesson(saved, 'biology', 5)['teacher_prep'], [note])
+        packet, _ = weekly_packet._render(saved, 'fictional-digest', '2026-10-19T12:00:00Z', {}, {})
+        printed = ' '.join(' '.join(p.extract_text() for p in PdfReader(io.BytesIO(packet)).pages).split())
+        self.assertIn(self.NOTE + ' (slide 4)', printed)
+        outline = wp.deck_summary(wp.outline_native(native(BIO_DECK, original, '1')))
+        self.assertIn({'text': self.NOTE, 'slide': 4}, outline['blocks']['print'])
+        self.assertEqual(self.src.decks[BIO_DECK], original)
+        self.assertEqual((result['external_writes'], result['model_calls'], self.writes), (0, 0, []))
+
+    def test_note_does_not_clear_ambiguous_handouts_or_missing_access(self):
+        self.reference(self.NOTE, 'CER worksheet (1 per student)')
+        self.src.add('FICTIONALDUPLICATEPRINT01', self.src.files[HANDOUT]['name'], 'application/pdf', [BIO_FOLDER])
+        del self.src.files[BIO_FORM]
+        result = self.run_check()
+        kinds = {e['kind'] for e in self.exceptions(result, 'biology', 5)}
+        self.assertTrue({'print_item_ambiguous', 'source_inaccessible'} <= kinds)
+        self.assertEqual(self.lesson(result, 'biology', 5)['teacher_prep'][0]['text'], self.NOTE)
+
+    def test_conditions_contradictions_and_attached_links_keep_normal_print_path(self):
+        lines = ['Nothing to print unless students need paper.', 'Nothing to print. Print the exit ticket.',
+                 'Nothing to print. The rounds need cups and a worksheet.']
+        self.reference(*lines, 'Nothing to print.', 'https://print.example.org/instructions')
+        result = self.run_check()
+        items = {p['text']: p for p in result['print_items'] if p['class_key'] == 'biology' and p['row'] == 5}
+        self.assertEqual(set(items), set(lines + ['Nothing to print.']))
+        self.assertEqual(items['Nothing to print.']['web']['url'], 'https://print.example.org/instructions')
+        self.assertEqual(self.lesson(result, 'biology', 5)['teacher_prep'], [])
+        self.assertTrue(any('Print the exit ticket' in e['reason'] for e in self.exceptions(result, 'biology', 5)
+                            if e['kind'] == 'print_item_no_file'))
+
+
 class PreflightRunTests(Base):
     def test_changed_agenda_titles_read_back_without_merging_same_week_lessons(self):
         self.src.files[FOR_FOLDER]['name'] = 'Week 08 - Earlier retained lesson'
