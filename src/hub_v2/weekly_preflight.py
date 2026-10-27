@@ -63,7 +63,7 @@ from school_workflow_hub.core.cloud_state import Conflict, StoreUnavailable, bou
 from school_workflow_hub.core.runs import content_hash
 
 SCHEMA = "hub-weekly-preflight/v1"
-RULES = "weekly-preflight-rules/10"
+RULES = "weekly-preflight-rules/11"
 MAX_WEEKS = 4
 BUDGET_SECONDS = 200
 LETTER = {"biology": "A", "forensics": "A", "anatomy": "B"}
@@ -953,6 +953,24 @@ def _heading(line):
     if len(letters) >= 4 and letters.isupper():
         return "", ""
     return None
+
+
+def _no_print_note(value):
+    """A complete no-print statement, optionally explaining physical supplies.
+
+    This deliberately small grammar is not a prose classifier. Unrecognized
+    supplies, conditions or additional instructions keep the normal print check.
+    """
+    shown = " ".join(value.split())
+    if re.fullmatch(r"Nothing to print\.?", shown, re.I):
+        return True
+    match = re.fullmatch(r"Nothing to print\. The ([A-Za-z][A-Za-z0-9 '&()-]{0,119}) need (.+?)\.?", shown, re.I)
+    if not match or re.search(r"\b(?:if|unless|except|but|when|while|until|after|before|provided|assuming|once|only"
+                              r"|however|otherwise|print|copies)\b",
+                              match.group(1), re.I):
+        return False
+    supplies = re.split(r",\s*(?:and\s+)?|\s+and\s+", match.group(2).lower())
+    return bool(supplies) and all(item in {"counters", "cups", "beans", "floor space"} for item in supplies)
 
 
 DAY_DATE_HEADING = re.compile(
@@ -2300,11 +2318,17 @@ def _content(ctx, lesson, counts):
     for node, outline in summaries:
         blocks = outline.get("blocks") or {}
         teacher = outline.get("teacher_only_slides") or []
+        pages = outline.get("page_ids") or {}
         for line in blocks.get("print", []):
+            if _no_print_note(line["text"]) and not line.get("url"):
+                page = pages.get(str(line["slide"]))
+                lesson["teacher_prep"].append({
+                    "text": line["text"], "slide": line["slide"], "deck": node["name"], "deck_id": node["id"],
+                    "source_url": node["url"] + ("#slide=id." + page if page and node["url"].endswith("/edit") else "")})
+                continue
             lesson["print_lines"].append({"text": line["text"], "source": "deck “%s” slide %d" % (node["name"], line["slide"]),
                                           "slide": line["slide"], "deck_id": node["id"], "url": line.get("url")})
         lesson.setdefault("deck_links", {})[node["id"]] = outline.get("web_links") or []
-        pages = outline.get("page_ids") or {}
         day_dates = student_day_date_check(outline.get("student_day_headings") or [], lesson)
         node["outline"]["student_day_date_check"] = day_dates
         for finding in day_dates["findings"]:
