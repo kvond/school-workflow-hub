@@ -3775,13 +3775,18 @@ function loadRoutine() {
 function showTab() {
   const [tab, ...rest] = location.hash.slice(1).split('/');
   const current = ['data', 'routine', 'system'].includes(tab) ? 'records'
-    : ['today', 'plans', 'work', 'records'].includes(tab) ? tab : 'today';
+    : ['today', 'plans', 'work', 'records'].includes(tab) ? tab : 'plans';
+  // Normal entry opens teaching plans. Explicit operational bookmarks remain
+  // usable during recovery, without adding them to the teaching navigation.
+  if (current === 'plans' && tab !== 'plans') history.replaceState(null, '', '#plans');
   for (const name of ['today', 'plans', 'work', 'records']) $('page-' + name).hidden = name !== current;
   document.querySelectorAll('.tabs a').forEach(a => {
     if (a.dataset.tab === current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   // Invalidate pending work discovery as soon as navigation leaves this page.
   if (current !== 'work') work.seq += 1;
+  if (current !== 'today') dashboard.todaySeq += 1;
+  if (current !== 'records') dashboard.recordsSeq += 1;
   if (current === 'today') loadToday();
   else if (current === 'work') openWork(rest.map(part => decodeURIComponent(part)));
   else if (current === 'records') loadRecords();
