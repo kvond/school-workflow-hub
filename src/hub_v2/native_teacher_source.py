@@ -7,7 +7,7 @@ Submitted copies use this bounded model only after a proven export-size limit.
 import copy
 import math
 
-from . import response_binding
+from . import response_binding, explicit_response_binding
 
 
 class Unreadable(ValueError):
@@ -181,7 +181,7 @@ def _table_units(element, matrix, depth):
 
 
 def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_bytes=5_000_000,
-         max_deck_bytes=60_000_000, source_role="teacher"):
+         max_deck_bytes=60_000_000, source_role="teacher", explicit_authoring=False):
     """Retain every slide/text/style/box, with a separate submitted-source role."""
     import json
     if source_role not in ("teacher", "student"):
@@ -199,7 +199,7 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
     size = (_dimension(size.get("width", {})), _dimension(size.get("height", {})))
     seen, slides = set(), []
 
-    def walk(elements, units, parent=(1, 0, 0, 1, 0, 0), depth=0):
+    def walk(elements, units, parent=(1, 0, 0, 1, 0, 0), depth=0, explicit=False):
         if not isinstance(elements, list) or depth > 20:
             raise Unreadable("The native teacher source has unusable groups.")
         for element in elements:
@@ -210,8 +210,12 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
             seen.add(key)
             if not isinstance(element.get("description", ""), str):
                 raise Unreadable("The native teacher source has unreadable activity metadata.")
-            if element.get("description") and response_binding.description(element["description"]) is not None:
+            binding = response_binding.description(element.get("description", ""))
+            new_binding = explicit_response_binding.decode(element.get("description", ""))
+            if binding is not None and new_binding is None:
                 raise Unreadable("This native teacher activity needs its original export to verify response evidence.")
+            if new_binding is not None and ("shape" not in element or depth):
+                raise Unreadable("An explicit text response requires a direct text-shape label; tables and groups remain unsupported.")
             if "table" in element:
                 matrix = _compose(parent, _transform(element.get("transform")))
                 cells = _table_units(element, matrix, depth)
@@ -222,7 +226,7 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
                 continue
             if "elementGroup" in element:
                 matrix = _compose(parent, _transform(element.get("transform")))
-                walk(_mapping(element["elementGroup"]).get("children"), units, matrix, depth + 1)
+                walk(_mapping(element["elementGroup"]).get("children"), units, matrix, depth + 1, explicit)
                 continue
             if not any(kind in element for kind in ("shape", "image")):
                 continue
@@ -254,6 +258,10 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
                     "native_style": copy.deepcopy(shape if "shape" in element else element["image"]),
                     "native_transform": copy.deepcopy(element["transform"]),
                     "native_absolute_transform": matrix}
+            if new_binding is not None:
+                unit["binding"] = new_binding
+            if explicit and "shape" in element:
+                unit["explicit_surface"] = explicit_response_binding.native_surface(element, direct=depth == 0)
             if "image" in element:
                 unit["picture"] = {"sha256": None, "appearance": {"native": copy.deepcopy(element["image"])}}
             units.append(unit)
@@ -263,8 +271,13 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
         if len(json.dumps(page).encode()) > max_slide_bytes:
             raise Unreadable("One native teacher slide is too large to read.")
         units = []
-        walk(page.get("pageElements", []), units)
-        slides.append({"number": number, "units": units})
+        explicit = explicit_authoring or any(explicit_response_binding.KIND in str(e.get("description", ""))
+                       for e in page.get("pageElements", []) if isinstance(e, dict))
+        walk(page.get("pageElements", []), units, explicit=explicit)
+        parsed_page = {"number": number, "units": units}
+        if explicit and any("shape" not in e or "image" in e or "table" in e or "elementGroup" in e for e in page.get("pageElements", [])):
+            parsed_page["explicit_invalid"] = True
+        slides.append(parsed_page)
     return {"slides": slides, "size": size, "source_kind": "native_" + source_role + "_source",
             "native_source_id": presentation_id, "native_source_revision": str(revision),
             "native_source": copy.deepcopy(presentation)}

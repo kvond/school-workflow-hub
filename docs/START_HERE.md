@@ -277,6 +277,49 @@ Private roles and source IDs never belong in GitHub task text.
 
 ## VT readiness repair loop
 
+### Explicit above-field text responses
+
+`hub_v2.explicit_response_binding` adds the opt-in `above-field-text/v1`
+contract. A normal visible NOTES marker stays above one existing response text
+shape. Its existing `HUB_COMPLETION_BINDING_V1` description declares that
+target and up to twenty existing practice fields; practice writing is unscored.
+It preserves the marker identity and single response denominator. Legacy
+single-question and multipart behavior is unchanged when this contract is absent.
+
+The trusted author first captures the complete native presentation and PPTX
+from the same exact teacher source with metadata/revision bookends. Parse with
+`native_teacher_source.read(..., explicit_authoring=True)` and
+`completion.read_deck(..., explicit_authoring=True)`. Call
+`explicit_response_binding.author(native, exported, label_key=...,
+target_key=..., practice_keys=[...])` using native keys for selection. The helper
+derives source ID, exact marker, original givens, normalized EMU boxes, ordered
+scene fingerprint and independent native/PPTX surface fingerprints. It accepts
+no supplied scene hash. Attach the returned JSON only to the selected existing
+label with the existing binding prefix, then reread both formats and recheck
+every intended field and practice negative. The helper is pure code; it does
+not write a source or supply its own authorization/readback evidence.
+
+V1 requires direct, fixed, axis-aligned text shapes, resolved opaque normal
+font runs and light label/field fills. Unknown visibility, overlapping shapes,
+groups, images or tables on a bound page remain held. Do not add hidden text,
+tiny markers or backing geometry to manufacture acceptance. Native and PPTX
+names are diagnostic aliases; roles use exact unique typed geometry and ordered
+source content. This is semantic source/role identity, not proof that an
+indistinguishable shape was never physically recreated. Keep existing table
+bindings and grading holds until a separate exact-cell contract is supported.
+
+Normal hosted reads retain the actual teacher file ID; a raw unverified PPTX
+cannot authorize this contract. Assessment validates the fresh registered
+teacher source before submitted-marker dispatch. Missing or changed student
+metadata, a missing/reordered bound slide, source/given/style/geometry changes
+or ambiguous mappings hold both scores; they cannot fall back to the legacy
+heuristic. Only text in the declared target supplies its existing response.
+Pure deletion and practice-only edits earn no credit. Current teacher-source
+authority remains the existing host's responsibility: this contract neither
+creates a historical-distribution registry nor resolves issue242's original
+version lineage gap. Actual-source acceptance is separate from synthetic tests
+and deployment receipts; keep held grading held until that acceptance passes.
+
 Katherine's October 18 workflow starts with a fresh read of the current exact
 Agenda lesson, Form and teacher-source checks. Keep separate assignments scoped
 to their own sources under [Lesson pages and turn-in folders](#lesson-pages-and-turn-in-folders).
