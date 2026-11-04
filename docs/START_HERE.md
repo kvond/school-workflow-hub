@@ -277,6 +277,32 @@ Private roles and source IDs never belong in GitHub task text.
 
 ## VT readiness repair loop
 
+### Existing-copy response attribution
+
+Generic legacy completion routes now validate writing against a field-to-identity
+map derived from the complete original slide before considering edited fields.
+An isolated later response cannot shift to the first identity. Unique original
+geometry, full category/cycle/ID, existing blank/placeholder fields, established
+first/revised labels and whole-term BANK fields supply that map; exported object
+names and newly inserted marker text cannot establish a response role. Existing
+inline BANK definition fields remain compatible; a distinct printed term label
+beside a separate answer field is context. Original titles, instructions, table
+headers and index cells cannot supply completion evidence. Unknown, changed or
+ambiguous source/field attribution holds both scores for manual original-field
+review, without changing denominators or completion judgments.
+
+This guard is shared by ordinary and combined assessment; the raw `_assign`
+helper also serves structural source-repair probes and is not a scoring API.
+Existing independently validated graphical/revision and descriptor-backed
+routes retain their own validators. Legacy multipart blank fields belonging to
+one identity retain their established behavior; blank practice versus multipart
+intent cannot be proved from geometry alone. Use an explicit declared role
+contract for prospective separation rather than inventing a new scoring policy.
+No historical saved grades/results are rewritten, no source metadata is added
+to existing student files, and current teacher evidence is not proof of original
+distribution lineage. Keep actual-source grading held until exact deployed
+native/PPTX field positives and source-text negatives pass independently.
+
 ### Explicit above-field text responses
 
 `hub_v2.explicit_response_binding` adds the opt-in `above-field-text/v1`

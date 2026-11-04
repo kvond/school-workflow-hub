@@ -266,18 +266,19 @@ class ExplicitResponseTests(unittest.TestCase):
                     b.author(parse(raw, "native", authoring=True), parse(export_raw, "pptx", authoring=True),
                              label_key=label, target_key=target, practice_keys=practice)
 
-    def test_legacy_visible_above_field_heuristic_remains_unchanged_without_opt_in(self):
+    def test_legacy_practice_writing_is_held_without_an_original_response_role(self):
         source = original(); student = deepcopy(source); write(student, "practice0", WORDS)
         result = c.assess(parse(student, "pptx"), parse(source, "native"), found_codes_only=True)
-        self.assertEqual(result["items"][0]["answer"], WORDS)
-        self.assertEqual(result["notes_score"], 10)  # opt-in contract, no global policy change
+        self.assertEqual(result["items"][0]["answer"], "")
+        self.assertIsNone(result["notes_score"])
+        self.assertIn("original source", result["note"])
         # A mention in ordinary alt text is not a declaration of this contract.
         element(student, "label")["description"] = "Discussion of " + b.KIND
         for form in ("native", "pptx"):
             parsed = parse(student, form)
             self.assertFalse(b.bound(parsed["slides"][0]))
             self.assertNotIn("explicit_invalid", parsed["slides"][0])
-            self.assertEqual(c.assess(parsed, parse(source, form), found_codes_only=True)["notes_score"], 10)
+            self.assertIsNone(c.assess(parsed, parse(source, form), found_codes_only=True)["notes_score"])
         self.assertIsNone(b.decode(rb.PREFIX + json.dumps({"kind": "existing-kind", "comment": b.KIND})))
 
     def test_unsupported_raw_objects_cannot_disappear_from_the_explicit_scene(self):
