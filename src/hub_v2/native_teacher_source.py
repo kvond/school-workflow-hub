@@ -271,7 +271,7 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
         if len(json.dumps(page).encode()) > max_slide_bytes:
             raise Unreadable("One native teacher slide is too large to read.")
         units = []
-        explicit = explicit_authoring or any(explicit_response_binding.KIND in str(e.get("description", ""))
+        explicit = explicit_authoring or any(explicit_response_binding.decode(e.get("description", "")) is not None
                        for e in page.get("pageElements", []) if isinstance(e, dict))
         walk(page.get("pageElements", []), units, explicit=explicit)
         parsed_page = {"number": number, "units": units}

@@ -43,9 +43,9 @@ def decode(raw):
         return result
     try:
         value = json.loads(raw[len(rb.HEADER):], object_pairs_hook=pairs)
-        if len(raw) > 40_000 or not isinstance(value, dict) or value.get("kind") != KIND:
+        if len(raw) > 40_000 or not isinstance(value, dict):
             raise ValueError("invalid explicit binding")
-        return value
+        return value if value.get("kind") == KIND else None
     except (ValueError, TypeError):
         return {"kind": KIND, "invalid": True}
 

@@ -298,7 +298,7 @@ def read_deck(raw, *, explicit_authoring=False):
                 if seen[unit["key"]] > 1:
                     unit["key"] += "|%d" % seen[unit["key"]]
             slide = {"number": number, "units": units}
-            if tree is not None and (explicit_authoring or any(explicit_response_binding.KIND in (p.get("descr", "") or "") for p in tree.iter(P + "cNvPr"))):
+            if tree is not None and (explicit_authoring or any(explicit_response_binding.decode(p.get("descr", "")) is not None for p in tree.iter(P + "cNvPr"))):
                 explicit_response_binding.attach_pptx(slide, tree, root, _name)
             if tree is not None and any(u.get("binding", {}).get("kind") == writing_fields.KIND for u in units):
                 writing_fields.attach(slide, tree, root, pictures, archive, _box, _name, part=name)
