@@ -217,7 +217,7 @@ def _declared_inventory(census, parsed_markers, parsed):
     counts = {('BANK' if k == 'BANK_TERMS' else k): int(value) for k, value in fields}
     declared = {}
     for category, value in completion.ID_LIST.findall(line):
-        ids = [' '.join(v.split()) for v in re.split(r'[,\n]', value) if v.strip()]
+        ids = [' '.join(v.split()) for v in completion.marker_syntax.split_ids(value, category=category, multiline=True) if v.strip()]
         if ids == ['-'] and counts[category] == 0:
             ids = []
         _need(category not in declared and len(ids) == len(set(ids))

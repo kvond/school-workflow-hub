@@ -13,12 +13,12 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
+from ..core import markers as marker_syntax
+
 
 _DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 _SLIDE = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
-_MARKER = re.compile(
-    r"\[\[(NOTES|DRAFT|BANK|OPTIONAL):([A-Za-z0-9_-]{1,40}):([^\]]{1,120})\]\]"
-)
+_MARKER = marker_syntax.MARKER
 _INVENTORY = re.compile(r"\[\[MARKER-INVENTORY:([A-Za-z0-9_-]{1,40})\]\]")
 _ASPECT_LABEL = re.compile(r"critical\s+aspect\s*:\s*([^\n\r]{1,180})", re.I)
 _FIELD = re.compile(
@@ -165,7 +165,7 @@ def _compact_ids(tail: str) -> dict[str, list[str]]:
     first = tail.splitlines()[0] if tail else ""
     result = {"NOTES_IDS": [], "DRAFT_IDS": [], "OPTIONAL_IDS": [], "BANK_IDS": []}
     for key, body in _FIELD.findall(first):
-        result[key] = [item.strip() for item in body.split(",") if item.strip()]
+        result[key] = [item.strip() for item in marker_syntax.split_ids(body, category="BANK" if key == "BANK_IDS" else None) if item.strip()]
     return result
 
 
@@ -238,6 +238,9 @@ def validate_release(
         issues.append("marker_inventory_missing_or_duplicated")
     elif not _INVENTORY.search(slides[0]):
         issues.append("marker_inventory_not_on_first_slide")
+
+    if marker_syntax.malformed_bank_marker(all_text):
+        issues.append("malformed_feedback_marker")
 
     markers = [
         {"category": m.group(1), "cycle": m.group(2), "id": m.group(3).strip()}
