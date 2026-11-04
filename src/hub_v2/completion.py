@@ -299,7 +299,7 @@ def read_deck(raw, *, explicit_authoring=False):
                     unit["key"] += "|%d" % seen[unit["key"]]
             slide = {"number": number, "units": units}
             if tree is not None and (explicit_authoring or any(explicit_response_binding.KIND in (p.get("descr", "") or "") for p in tree.iter(P + "cNvPr"))):
-                explicit_response_binding.attach_pptx(slide, tree, _name)
+                explicit_response_binding.attach_pptx(slide, tree, root, _name)
             if tree is not None and any(u.get("binding", {}).get("kind") == writing_fields.KIND for u in units):
                 writing_fields.attach(slide, tree, root, pictures, archive, _box, _name, part=name)
             if tree is not None and any(u.get("binding", {}).get("kind") == graphical_choice.KIND for u in units):
@@ -1171,6 +1171,7 @@ def _read(token, file_id, meta, *, source_role="student"):
         deck = read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
         if any(explicit_response_binding.bound(page) for page in deck["slides"]):
             deck["explicit_source_id"] = file_id
+            deck["explicit_source_revision"] = str(meta.get("version") or "")
         return deck
     except google.GoogleError as error:
         # A provider export-size limit is distinct from missing access, quota,

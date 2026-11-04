@@ -320,6 +320,24 @@ creates a historical-distribution registry nor resolves issue242's original
 version lineage gap. Actual-source acceptance is separate from synthetic tests
 and deployment receipts; keep held grading held until that acceptance passes.
 
+Native parity requires paired export evidence. The documented
+[Google Page schema](https://developers.google.com/workspace/slides/api/reference/rest/v1/presentations.pages)
+does not expose the PPTX animation timeline; the native reader cannot infer its
+absence. For **each** native teacher source and native submitted copy, the
+trusted host must independently bookend the current native and export reads
+against that actual file's ID and Drive revision. The normal `_read` export
+retains `explicit_source_id` and `explicit_source_revision` from host metadata.
+Call `explicit_response_binding.with_export_witness(native, exported)` only
+with those current captures. It validates the root-aware export, compares
+actual current text and geometry (including answers/practice), and returns a
+native capture with an exact-type immutable in-memory witness tied to the
+complete consumed snapshot. Raw exports, descriptor hashes and serialized
+lookalikes cannot issue it. Mutation or another file/revision invalidates it.
+Teacher and student normally require separate paired exports. If the normal
+403 native fallback lacks this witness, the new contract remains held; legacy
+native behavior is unchanged. PPTX timing, transition and unsupported display
+branches are rejected rather than interpreted.
+
 Katherine's October 18 workflow starts with a fresh read of the current exact
 Agenda lesson, Form and teacher-source checks. Keep separate assignments scoped
 to their own sources under [Lesson pages and turn-in folders](#lesson-pages-and-turn-in-folders).

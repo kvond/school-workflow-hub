@@ -87,11 +87,18 @@ def export(value):
     return out.getvalue()
 
 
-def parse(value, form, *, authoring=False):
+def parse(value, form, *, authoring=False, witness=True):
     if form == "native":
-        return n.read(value, presentation_id=FILE, revision="7", explicit_authoring=authoring)
+        parsed = n.read(value, presentation_id=FILE, revision="7", explicit_authoring=authoring)
+        if not authoring and witness and any(b.bound(p) for p in parsed["slides"]):
+            try:
+                return b.with_export_witness(parsed, parse(value, "pptx"))
+            except (ValueError, KeyError):
+                pass  # invalid pairs retain no visibility authority and hold
+        return parsed
     parsed = c.read_deck(export(value), explicit_authoring=authoring)
     parsed["explicit_source_id"] = FILE  # fictional trusted host metadata bookend
+    parsed["explicit_source_revision"] = "7"
     return parsed
 
 
@@ -233,7 +240,7 @@ class ExplicitResponseTests(unittest.TestCase):
     def test_host_export_identity_is_attached_and_no_template_or_raw_export_authority_holds(self):
         raw = export(prepared())
         with patch.object(google, "deck_bytes", return_value=raw):
-            source = c._read("fictional-token", FILE, {"mimeType": c.SLIDES}, source_role="teacher")
+            source = c._read("fictional-token", FILE, {"mimeType": c.SLIDES, "version": "7"}, source_role="teacher")
         self.assertEqual(source["explicit_source_id"], FILE)
         student = prepared(); write(student, "answer", WORDS)
         result = c.assess(parse(student, "native"), source, found_codes_only=True)
@@ -307,12 +314,86 @@ class ExplicitResponseTests(unittest.TestCase):
                      label_key="label", target_key="toy_table/r1c1", practice_keys=[])
         table["description"] = rb.PREFIX + json.dumps({"kind": b.KIND})
         with self.assertRaises(n.Unreadable): parse(value, "native")
+
         value = prepared()
         label = element(value, "label")
         value["slides"][0]["pageElements"].remove(label)
         value["slides"][0]["pageElements"].append({"objectId": "group", "transform": {"scaleX": 1, "scaleY": 1, "unit": "EMU"},
                                                  "elementGroup": {"children": [label]}})
         with self.assertRaises(n.Unreadable): parse(value, "native")
+
+
+    def test_native_witness_requires_exact_current_host_pair_and_cannot_be_replayed(self):
+        source = prepared(); student = deepcopy(source); write(student, "answer", WORDS)
+        teacher = parse(source, "native")
+        raw_student = parse(student, "native", witness=False)
+        self.assertIsNone(c.assess(raw_student, teacher, found_codes_only=True)["notes_score"])
+        self.assertIsNone(c.assess(parse(student, "native"), parse(source, "native", witness=False), found_codes_only=True)["notes_score"])
+        for change in ("answer", "revision", "id", "raw", "serialized"):
+            current = parse(student, "native")
+            if change == "answer": current["slides"][0]["units"][-1]["text"] = "Different current answer."
+            if change == "revision": current["native_source_revision"] = "8"
+            if change == "id": current["native_source_id"] = "AnotherFictionalCopy1234567"
+            if change == "raw": current["native_source"]["revisionId"] = "new"
+            if change == "serialized": current["_explicit_export_witness"] = {"snapshot": b._snapshot(raw_student)}
+            with self.subTest(change=change):
+                self.assertIsNone(c.assess(current, teacher, found_codes_only=True)["notes_score"])
+        for exported in (c.read_deck(export(student)), parse(source, "pptx")):
+            with self.assertRaises(ValueError): b.with_export_witness(raw_student, exported)
+        exported = parse(student, "pptx"); exported["explicit_source_revision"] = "6"
+        with self.assertRaises(ValueError): b.with_export_witness(raw_student, exported)
+
+    def test_student_native_copy_uses_its_own_export_witness(self):
+        student = prepared(); write(student, "answer", WORDS)
+        copy_id = "FictionalSubmittedCopy123456789"
+        student["presentationId"] = copy_id
+        native = n.read(student, presentation_id=copy_id, revision="8", source_role="student")
+        exported = c.read_deck(export(student))
+        exported.update(explicit_source_id=copy_id, explicit_source_revision="8")
+        with self.assertRaises(ValueError): b.with_export_witness(native, parse(prepared(), "pptx"))
+        witnessed = b.with_export_witness(native, exported)
+        result = c.assess(witnessed, parse(prepared(), "native"), found_codes_only=True)
+        self.assertEqual((result["notes_score"], result["items"][0]["answer"]), (10, WORDS))
+
+    def test_draft_and_multiple_identity_pages_are_held_instead_of_silently_migrated(self):
+        source = prepared()
+        label = element(source, "label")
+        data = json.loads(label["description"][len(rb.PREFIX):])
+        data["category"] = "DRAFT"
+        label["description"] = rb.PREFIX + json.dumps(data)
+        write(source, "label", TAG.replace("NOTES", "DRAFT"))
+        student = deepcopy(source); write(student, "prompt", WORDS)
+        self.assert_held(student, source)
+        raw = original(); write(raw, "prompt", "[[NOTES:C99:SECOND]]")
+        with self.assertRaises(ValueError):
+            b.author(parse(raw, "native", authoring=True), parse(raw, "pptx", authoring=True),
+                     label_key="label", target_key="answer", practice_keys=[f"practice{i}" for i in range(6)])
+
+    def test_slide_timing_transition_display_and_background_are_validated(self):
+        teacher = prepared(); student = deepcopy(teacher); write(student, "answer", WORDS)
+        for mode in ("timing", "transition", "hidden", "background", "duplicate_scene", "duplicate_tree"):
+            with self.subTest(mode=mode):
+                out = io.BytesIO()
+                with zipfile.ZipFile(io.BytesIO(export(student))) as src, zipfile.ZipFile(out, "w") as dst:
+                    for name in src.namelist():
+                        raw = src.read(name)
+                        if name == "ppt/slides/slide1.xml":
+                            root = E.fromstring(raw)
+                            if mode in ("timing", "transition"):
+                                branch = E.SubElement(root, P + mode)
+                                if mode == "timing":
+                                    E.SubElement(E.SubElement(branch, P + "set"), P + "strVal", val="hidden")
+                            if mode == "hidden": root.set("show", "0")
+                            if mode == "background": E.SubElement(root.find(P + "cSld"), P + "bg")
+                            if mode == "duplicate_scene": root.append(deepcopy(root.find(P + "cSld")))
+                            if mode == "duplicate_tree": root.find(P + "cSld").append(deepcopy(root.find(P + "cSld/" + P + "spTree")))
+                            raw = E.tostring(root)
+                        dst.writestr(name, raw)
+                parsed = c.read_deck(out.getvalue())
+                parsed.update(explicit_source_id=FILE, explicit_source_revision="7")
+                self.assertIsNone(c.assess(parsed, parse(teacher, "pptx"), found_codes_only=True)["notes_score"])
+                with self.assertRaises(ValueError):
+                    b.with_export_witness(parse(student, "native", witness=False), parsed)
 
 
 if __name__ == "__main__":

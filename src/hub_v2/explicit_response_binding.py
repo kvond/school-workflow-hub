@@ -4,6 +4,7 @@ V1 supports direct fixed text shapes only. It proves semantic source/role
 identity, not physical object lineage across Google/PPTX serialization.
 """
 from copy import deepcopy
+from dataclasses import dataclass
 import hashlib
 import json
 import re
@@ -136,7 +137,29 @@ def pptx_surface(shape):
                              "paragraphs": sorted({digest(_xml(s)) for s in body.iter(A + "pPr")})})}
 
 
-def attach_pptx(page, tree, name):
+def attach_pptx(page, tree, root, name):
+    # Animations and slide-level display branches can hide otherwise normal
+    # shapes. This v1 contract never interprets an animation timeline.
+    if (set(root.attrib) - {"show", "showMasterSp", "showMasterPhAnim"}
+            or any(v not in ("1", "true") for v in root.attrib.values())
+            or len(root.findall(P + "cSld")) != 1 or len(root.findall(P + "clrMapOvr")) > 1
+            or any(c.tag not in (P + "cSld", P + "clrMapOvr") for c in root)):
+        page["explicit_invalid"] = True
+    slide = root.find(P + "cSld")
+    if (slide is None or len(slide.findall(P + "spTree")) != 1 or len(slide.findall(P + "bg")) > 1
+            or any(c.tag not in (P + "spTree", P + "bg") for c in slide)):
+        page["explicit_invalid"] = True
+    colors = root.find(P + "clrMapOvr")
+    if colors is not None and (len(colors) != 1 or colors[0].tag not in (A + "masterClrMapping", A + "overrideClrMapping") or len(colors[0])):
+        page["explicit_invalid"] = True
+    background = slide.find(P + "bg") if slide is not None else None
+    if background is not None and (len(background) != 1 or background[0].tag != P + "bgPr"
+            or len(background[0]) != 1 or background[0][0].tag not in (A + "solidFill", A + "noFill")):
+        page["explicit_invalid"] = True
+    page["explicit_page_surface"] = digest({"attributes": sorted(root.attrib.items()),
+        "slide": sorted(slide.attrib.items()) if slide is not None else [],
+        "background": _xml(slide.find(P + "bg")) if slide is not None else None,
+        "colors": _xml(root.find(P + "clrMapOvr"))})
     # The ordinary reader omits some objects. An explicit full-scene claim must
     # never omit a connector, video, table, group or other possible cover.
     if any(child.tag not in (P + "sp", P + "nvGrpSpPr", P + "grpSpPr") for child in tree):
@@ -192,7 +215,7 @@ def _scene(page, size, label, target, practice):
     if (len({tuple(b) for b in boxes}) != len(boxes) or any(not rb.rectangle(b, size) for b in boxes)
             or any(rb._intersects(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1:])):
         raise ValueError(REVIEW)
-    scene, paint, formats = [], [], set()
+    scene, paint, formats = [], [page.get("explicit_page_surface")], set()
     for unit in page["units"]:
         box, surface = _box(unit.get("box")), unit.get("explicit_surface", {})
         if (box is None or not rb.rectangle(box, size) or not surface.get("supported")
@@ -307,6 +330,58 @@ class _Reference:
         self.source_page = deepcopy(page)
 
 
+def _snapshot(native):
+    return digest({k: v for k, v in native.items() if k != "_explicit_export_witness"})
+
+
+@dataclass(frozen=True)
+class _ExportWitness:
+    """Host-only current paired-read evidence; never deserialize from a deck."""
+    snapshot: str
+
+
+def with_export_witness(native, exported):
+    """Prove current native content against a current, root-validated export.
+
+    Both actual file IDs/revisions must come from trusted host metadata
+    bookends. A raw exported deck or descriptor-provided identity cannot issue
+    this capability. This proves no historical distribution or school action.
+    """
+    source_id, revision = native.get("native_source_id"), native.get("native_source_revision")
+    if (not source_id or not revision or exported.get("explicit_source_id") != source_id
+            or exported.get("explicit_source_revision") != revision or native["size"] != exported["size"]
+            or len(native["slides"]) != len(exported["slides"])):
+        raise ValueError(REVIEW)
+    seen = False
+    for page, export_page in zip(native["slides"], exported["slides"]):
+        actual = lambda p: [(u["text"], _box(u.get("box"))) for u in p["units"]]
+        if (page["number"] != export_page["number"] or actual(page) != actual(export_page)
+                or any(box is None for _, box in actual(page))):
+            raise ValueError(REVIEW)
+        labels, exported_labels = bound(page), bound(export_page)
+        if not labels and not exported_labels:
+            continue
+        if len(labels) != 1 or len(exported_labels) != 1 or labels[0]["binding"] != exported_labels[0]["binding"]:
+            raise ValueError(REVIEW)
+        data = labels[0]["binding"]
+        for candidate in (page, export_page):
+            _validate(data, candidate, native["size"], original=False)
+        seen = True
+    if not seen:
+        raise ValueError(REVIEW)
+    result = deepcopy(native)
+    result.pop("_explicit_export_witness", None)
+    result["_explicit_export_witness"] = _ExportWitness(_snapshot(result))
+    return result
+
+
+def _witnessed(deck):
+    if not str(deck.get("source_kind", "")).startswith("native_"):
+        return True
+    witness = deck.get("_explicit_export_witness")
+    return type(witness) is _ExportWitness and witness.snapshot == _snapshot(deck)
+
+
 def plan(student, template):
     """Fresh teacher source drives dispatch; missing submitted metadata holds."""
     if any(p.get("explicit_invalid") for d in (student, template) if d for p in d["slides"]):
@@ -317,7 +392,8 @@ def plan(student, template):
         return {}, False
     references = {}
     try:
-        if not template or student["size"] != template["size"] or len(student["slides"]) != len(template["slides"]) or len(expected) != len(received):
+        if (not template or not _witnessed(template) or not _witnessed(student)
+                or student["size"] != template["size"] or len(student["slides"]) != len(template["slides"]) or len(expected) != len(received)):
             raise ValueError(REVIEW)
         source_id = template.get("explicit_source_id", template.get("native_source_id"))
         for page, label in expected:

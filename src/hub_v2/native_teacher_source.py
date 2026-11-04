@@ -275,6 +275,12 @@ def read(presentation, *, presentation_id, revision, max_slides=200, max_slide_b
                        for e in page.get("pageElements", []) if isinstance(e, dict))
         walk(page.get("pageElements", []), units, explicit=explicit)
         parsed_page = {"number": number, "units": units}
+        if explicit:
+            parsed_page["explicit_page_surface"] = explicit_response_binding.digest({
+                "pageProperties": page.get("pageProperties", {}),
+                "isSkipped": page.get("slideProperties", {}).get("isSkipped", False)})
+            if page.get("slideProperties", {}).get("isSkipped"):
+                parsed_page["explicit_invalid"] = True
         if explicit and any("shape" not in e or "image" in e or "table" in e or "elementGroup" in e for e in page.get("pageElements", [])):
             parsed_page["explicit_invalid"] = True
         slides.append(parsed_page)
