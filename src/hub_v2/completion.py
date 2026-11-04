@@ -30,7 +30,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from . import graphical_choice, response_binding, workspace_binding, writing_fields
+from . import graphical_choice, response_binding, workspace_binding, writing_fields, explicit_response_binding
 from school_workflow_hub.core import markers as marker_syntax
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
@@ -235,7 +235,7 @@ def _slide_names(archive):
     return sorted(names, key=lambda n: int(re.search(r"(\d+)\.xml$", n).group(1)))
 
 
-def read_deck(raw):
+def read_deck(raw, *, explicit_authoring=False):
     """{"slides": [{"number", "units": [{key, text, box}]}], "size": (cx, cy)} from .pptx bytes."""
     try:
         archive = zipfile.ZipFile(io.BytesIO(raw))
@@ -298,6 +298,8 @@ def read_deck(raw):
                 if seen[unit["key"]] > 1:
                     unit["key"] += "|%d" % seen[unit["key"]]
             slide = {"number": number, "units": units}
+            if tree is not None and (explicit_authoring or any(explicit_response_binding.decode(p.get("descr", "")) is not None for p in tree.iter(P + "cNvPr"))):
+                explicit_response_binding.attach_pptx(slide, tree, root, _name)
             if tree is not None and any(u.get("binding", {}).get("kind") == writing_fields.KIND for u in units):
                 writing_fields.attach(slide, tree, root, pictures, archive, _box, _name, part=name)
             if tree is not None and any(u.get("binding", {}).get("kind") == graphical_choice.KIND for u in units):
@@ -554,9 +556,13 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
     return out, exact
 
 
-def _assign(slide_markers, written, template_slide, size, *, student_slide=None, panel_reference=None):
+def _assign(slide_markers, written, template_slide, size, *, student_slide=None, panel_reference=None, explicit_reference=None):
     """{(category, id): [(unit, words)]} plus uncoded [(unit, words)] and how it was matched."""
     result = {(m["category"], m["id"]): [] for m in slide_markers}
+    if (explicit_response_binding.bound(template_slide) or explicit_response_binding.bound(student_slide)
+            or any(p.get("explicit_invalid") for p in (template_slide, student_slide) if p)):
+        return explicit_response_binding.answers(slide_markers, written, template_slide, student_slide,
+            size, _plain, reference=explicit_reference)
     if any(marker_syntax.malformed_bank_marker(u["text"])
            for page in (template_slide, student_slide) if page for u in page["units"]):
         return result, list(written), "Response marker needs review"
@@ -958,6 +964,7 @@ def teacher_readiness(deck, *, revision="", require_complete_codes=True):
 
 def assess(student, template, *, found_codes_only=False, panel_reference=None):
     """The completion counts for one student deck against the distributed copy."""
+    explicit_references, explicit_hold = explicit_response_binding.plan(student, template)
     code, required, basis, note = inventory(template or student)
     if template:
         # A copy of another version of the same lesson carries its own code list:
@@ -980,7 +987,7 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
     marker_unbound = any(marker_syntax.malformed_bank_marker(u["text"])
                          for deck in (student, template) if deck for s in deck["slides"] for u in s["units"])
     bank_unbound = False
-    response_unbound = marker_unbound
+    response_unbound = marker_unbound or explicit_hold
     panel_unbound = False
     numeric_unbound = False
     choice_unbound = False
@@ -1009,11 +1016,11 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
             written = [(u, _plain(u["text"])) for u in slide["units"] if MARKER.search(u["text"]) and _plain(u["text"])]
             exact = {u["key"]: " ".join(words.split()) for u, words in written}
         assigned, loose, basis_here = _assign(mine, written, match, student["size"], student_slide=slide,
-                                             panel_reference=panel_reference)
+                                             panel_reference=panel_reference, explicit_reference=explicit_references.get(slide["number"]))
         if basis_here == "BANK term labels need review":
             bank_unbound = True
             bank_review_slides.add(slide["number"])
-        if basis_here in (response_binding.REVIEW, "Response marker needs review"):
+        if basis_here in (response_binding.REVIEW, "Response marker needs review", explicit_response_binding.REVIEW):
             response_unbound = True
             panel_unbound |= any(m.get('binding', {}).get('kind') == response_binding.PANEL_KIND for m in mine)
             response_review_slides.add(slide["number"])
@@ -1106,6 +1113,8 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
         locations = sorted(response_review_slides if response_unbound else bank_review_slides)
         if locations:
             student_note = ("Slide " if len(locations) == 1 else "Slides ") + ", ".join(map(str, locations)) + ": " + student_note
+    if explicit_hold:
+        student_note = "The explicit response field no longer matches its verified source contract. Check the source label, response and practice fields before scoring or entering grades."
     if marker_unbound:
         student_note = "A response marker is malformed. Verify its exact original identity and response binding before scoring or entering grades."
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
@@ -1159,7 +1168,11 @@ def _read(token, file_id, meta, *, source_role="student"):
     if meta.get("trashed"):
         raise Unreadable("This exact deck is in trash; no contents were scored or restored.")
     try:
-        return read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
+        deck = read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
+        if any(explicit_response_binding.bound(page) for page in deck["slides"]):
+            deck["explicit_source_id"] = file_id
+            deck["explicit_source_revision"] = str(meta.get("version") or "")
+        return deck
     except google.GoogleError as error:
         # A provider export-size limit is distinct from missing access, quota,
         # or a generic 403. Native reading changes no source or grade policy.
