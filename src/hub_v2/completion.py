@@ -30,7 +30,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from . import graphical_choice, response_binding, workspace_binding, writing_fields, explicit_response_binding
+from . import graphical_choice, response_binding, workspace_binding, writing_fields, explicit_response_binding, legacy_response_attribution
 from school_workflow_hub.core import markers as marker_syntax
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
@@ -1017,10 +1017,37 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
             exact = {u["key"]: " ".join(words.split()) for u, words in written}
         assigned, loose, basis_here = _assign(mine, written, match, student["size"], student_slide=slide,
                                              panel_reference=panel_reference, explicit_reference=explicit_references.get(slide["number"]))
+        # _assign also supplies structural probes to source repair. Only the
+        # assessor turns actual writing into completion evidence: gate generic
+        # legacy fallbacks here, shared by ordinary and combined host scoring.
+        if (mine and written and not any("binding" in m for m in mine)
+                and basis_here in ("code on the box", "box labels", "one question on the slide", "order on the slide")):
+            assigned, loose, basis_here = legacy_response_attribution.answers(mine, written, match,
+                slide, student["size"], _assign, MARKER, _plain, _squash, added, _distance)
+        elif basis_here == "original numeric response group" and written:
+            numeric = [m for m in mine if m.get("binding", {}).get("kind") == "numeric-record-group"]
+            ordinary = [m for m in mine if "binding" not in m]
+            if len(numeric) == 1 and ordinary:
+                # Reuse the numeric validator's actual original source object
+                # and remaining writing, never an arbitrary declared rectangle.
+                records, remaining, checked = response_binding.numeric_answers(numeric, written, match, slide, student["size"], _plain)
+                original_numeric = response_binding.numeric_source(numeric[0]["binding"], match, student["size"], _plain)
+                if checked == "original numeric response group" and original_numeric is not None:
+                    other, loose, attribution = legacy_response_attribution.answers(ordinary, remaining, match,
+                        slide, student["size"], _assign, MARKER, _plain, _squash, added, _distance,
+                        validated_numeric_source=original_numeric,
+                        validated_numeric_identity=(numeric[0]["category"], numeric[0]["code"], numeric[0]["id"]))
+                    if attribution == legacy_response_attribution.REVIEW:
+                        assigned, loose, basis_here = {key: [] for key in assigned}, list(written), attribution
+                    else:
+                        assigned = {**records, **other}
+                else:
+                    assigned, loose, basis_here = {key: [] for key in assigned}, list(written), legacy_response_attribution.REVIEW
         if basis_here == "BANK term labels need review":
             bank_unbound = True
             bank_review_slides.add(slide["number"])
-        if basis_here in (response_binding.REVIEW, "Response marker needs review", explicit_response_binding.REVIEW):
+        if basis_here in (response_binding.REVIEW, "Response marker needs review", explicit_response_binding.REVIEW,
+                           legacy_response_attribution.REVIEW):
             response_unbound = True
             panel_unbound |= any(m.get('binding', {}).get('kind') == response_binding.PANEL_KIND for m in mine)
             response_review_slides.add(slide["number"])
@@ -1047,7 +1074,7 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
                 status = "done"
             prior = found.get(key)
             if not prior or (prior["status"] != "done" and status == "done"):
-                answer = " ".join(u.get("verified_workspace_answer", exact.get(u["key"], w)) for u, w in items if not u.get("picture") and not u.get("completion_only"))
+                answer = " ".join(u.get("verified_legacy_answer", u.get("verified_workspace_answer", exact.get(u["key"], w))) for u, w in items if not u.get("picture") and not u.get("completion_only"))
                 where = match or slide  # named and ordered by the handed-out deck's slide
                 found[key] = {"category": key[0], "id": key[1], "slide": slide["number"], "status": status,
                               "excerpt": words[:80], "answer": answer[:MAX_ANSWER],
@@ -1115,6 +1142,8 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
             student_note = ("Slide " if len(locations) == 1 else "Slides ") + ", ".join(map(str, locations)) + ": " + student_note
     if explicit_hold:
         student_note = "The explicit response field no longer matches its verified source contract. Check the source label, response and practice fields before scoring or entering grades."
+    if legacy_response_attribution.REVIEW in how:
+        student_note = "The original source does not establish an unambiguous response field for this writing. Check the original answer fields and unchanged lesson text by hand before scoring or entering grades."
     if marker_unbound:
         student_note = "A response marker is malformed. Verify its exact original identity and response binding before scoring or entering grades."
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
