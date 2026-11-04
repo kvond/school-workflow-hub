@@ -220,6 +220,12 @@ class LegacyAttributionTests(unittest.TestCase):
         field(before, "label")["text"] += " [[NOTES:C17:N2]]"
         after = deepcopy(before); field(after, "answer")["text"] = WORDS
         self.held(self.assess(before, after))
+        before = {"size": SIZE, "slides": [{"number": 1, "units": [
+            unit("left", "Alpha [[BANK:C17:Alpha]]", 100000, x=100000),
+            unit("right", "Beta [[BANK:C17:Beta]]", 100000, x=4100000),
+            unit("answer", "", 100000, x=2600000, width=1000000)]}]}
+        after = deepcopy(before); field(after, "left")["text"] += "\n" + WORDS
+        self.held(self.assess(before, after))
         before = source(); after = deepcopy(before)
         field(after, "answer")["text"] = WORDS
         after["slides"][1]["units"].append(unit("unbound", WORDS, 3000000))

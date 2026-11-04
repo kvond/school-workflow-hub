@@ -125,7 +125,11 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
     # An inline whole-term definition is an established legacy response. A
     # separate printed label next to an original answer field is only context.
     for i in terms:
-        if any(owners.get(j, set()) & owners[i] for j in fields):
+        separate = any(owners.get(j, set()) & owners[i] or (
+            source[i].get("box") and source[j].get("box") and (
+                all(m["category"] == "BANK" for m in source_markers)
+                or distance(rb.center(source[j]["box"]), source[i]["box"]) <= .08 * max(size))) for j in fields)
+        if separate:
             owners.pop(i, None)
             context.append(i)
     for i in list(owners):
