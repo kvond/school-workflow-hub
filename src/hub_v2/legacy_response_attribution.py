@@ -4,6 +4,7 @@ This is a gate on legacy completion evidence, not a grading rule or a proof of
 historical distribution. Source roles come from the complete original slide;
 submitted text and exported object names cannot create a response role.
 """
+import math
 import re
 
 from . import response_binding as rb, legacy_static_context
@@ -25,6 +26,13 @@ def _contains(outer, inner, size):
             and inner[0] >= outer[0] - margin and inner[1] >= outer[1] - margin
             and inner[0] + inner[2] <= outer[0] + outer[2] + margin
             and inner[1] + inner[3] <= outer[1] + outer[3] + margin)
+
+
+def _finite_box(box):
+    # Printed context may extend off-canvas and still contain a visible child.
+    return (isinstance(box, (list, tuple)) and len(box) == 4
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in box)
+            and box[2] > 0 and box[3] > 0)
 
 
 def anchor_writing(original, student, size, syntax, plain):
@@ -217,6 +225,17 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
     for i in _mixed_role_fields(source, owners, size):
         if i not in fixed:
             owners[i] = set()  # no largest-field guess or new activity scoring rule
+
+    # An empty/placeholder child inside printed source context cannot acquire
+    # an answer role from fallback proximity or that context's marker center.
+    # Retain it in the complete census above so refusing it cannot shift any
+    # other field's identity. Direct in-field and validated routes stay separate.
+    for i in fields:
+        box = source[i].get("box")
+        if not rb.rectangle(box, size) or any(
+                not _finite_box(source[j].get("box")) or _contains(source[j]["box"], box, size)
+                for j in context):
+            owners[i] = set()
 
     # Keep original context at its original location. Moving or rewriting a
     # heading into an answer rectangle cannot manufacture a response role.
