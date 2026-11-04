@@ -7,7 +7,7 @@ Submitted copies use this bounded model only after a proven export-size limit.
 import copy
 import math
 
-from . import response_binding, explicit_response_binding
+from . import response_binding, explicit_response_binding, legacy_static_context
 
 
 class Unreadable(ValueError):
@@ -169,12 +169,12 @@ def _table_units(element, matrix, depth):
                     chunks.append(value)
                 else:
                     _mapping(run["paragraphMarker"])
-            units.append({"key": "%s/r%dc%d" % (element["objectId"], r, c),
+            units.append(legacy_static_context.TableCell({"key": "%s/r%dc%d" % (element["objectId"], r, c),
                           "text": "".join(chunks).strip(), "box": (x, y, widths[c], heights[r]),
                           "title": False, "panel_geometry_unverified": True,
                           "native_style": copy.deepcopy(cell),
                           "native_transform": copy.deepcopy(element["transform"]),
-                          "native_absolute_transform": matrix})
+                          "native_absolute_transform": matrix}))
             x += widths[c]
         y += heights[r]
     return units

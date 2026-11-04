@@ -6,7 +6,7 @@ submitted text and exported object names cannot create a response role.
 """
 import re
 
-from . import response_binding as rb
+from . import response_binding as rb, legacy_static_context
 
 REVIEW = "Legacy response attribution needs review"
 
@@ -15,7 +15,6 @@ def _placeholder(text):
     text = " ".join(text.split()).strip()
     return bool(re.fullmatch(
         r"(?i)(?:(?:type|write|enter)(?: your)?(?: answer| response| explanation| definition| text)? here[.!:]?"
-        r"|(?:your )?(?:first |revised )?answer[.:]?"
         r"|[^\[\]]*\[\s*(?:type|write|enter)\b[^\[\]]{0,100}\])", text))
 
 
@@ -28,6 +27,25 @@ def _contains(outer, inner, size):
             and inner[1] + inner[3] <= outer[1] + outer[3] + margin)
 
 
+def anchor_writing(original, student, size, syntax, plain):
+    """Standalone code shapes are source anchors, never writable evidence.
+
+    A parsed table cell has a separately established cell role; a source/copy
+    name, student flag or a code appearing in text cannot create that role.
+    """
+    for anchor in (original or {}).get("units", []):
+        code = syntax.fullmatch(anchor["text"].strip())
+        if code is None or "binding" in anchor or legacy_static_context.is_table_cell(anchor):
+            continue
+        for unit in student["units"]:
+            if not plain(unit["text"]):
+                continue
+            if rb.same_box(anchor.get("box"), unit.get("box"), size) or any(
+                    m.groups() == code.groups() for m in syntax.finditer(unit["text"])):
+                return True
+    return False
+
+
 def answers(markers, written, original, student, size, candidate_assign, syntax, plain, squash, added, distance,
             *, validated_numeric_source=None, validated_numeric_identity=None):
     """Retain legacy routes only when the original establishes field ownership."""
@@ -36,6 +54,11 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
         return {key: [] for key in result}, list(written), REVIEW
     if not original or not student:
         return bad()
+    static_members = legacy_static_context.plan(original, student, size, _placeholder)
+    if static_members is None:
+        return bad()
+    static_source = {id(original["units"][i]) for i in static_members}
+    static_student = {id(student["units"][i]) for i in static_members}
     if validated_numeric_source is not None and not any(validated_numeric_source is u for u in original["units"]):
         return bad()
     source = [u for u in original["units"] if not u.get("picture") and u is not validated_numeric_source]
@@ -62,6 +85,8 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
     wanted = {(m["category"], m["id"]): identity(m) for m in source_markers}
     fixed, fields, terms, context = {}, [], [], []
     for index, unit in enumerate(source):
+        if id(unit) in static_source:
+            continue  # both verified objects remain in source, never in field ownership
         text = plain(unit["text"])
         own = {m.groups() for m in syntax.finditer(unit["text"])}
         own = {(c, cycle, ident.strip()) for c, cycle, ident in own}
@@ -74,6 +99,8 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
             terms.append(index)
             fixed[index] = labels if not own or own == labels else set()
         elif eligible:
+            if own and not text and not legacy_static_context.is_table_cell(unit):
+                continue  # a standalone marker supplies location, not an answer field
             # A code-only label is an anchor, not an extra field in an ordered
             # census. It can still authenticate writing in its very own box.
             if not own:
@@ -165,6 +192,8 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
     loose = []
     for item in written:
         unit, words = item
+        if id(unit) in static_student:
+            continue  # unchanged context can appear as a renamed-alias diff, never an answer
         if words.startswith("moved: "):
             loose.append(item)
             continue
