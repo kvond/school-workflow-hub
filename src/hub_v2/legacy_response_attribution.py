@@ -124,11 +124,16 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
 
     # An inline whole-term definition is an established legacy response. A
     # separate printed label next to an original answer field is only context.
+    contenders = {}
+    for j in fields:
+        distances = [(distance(rb.center(source[j]["box"]), source[t]["box"]), t)
+                     for t in terms if source[j].get("box") and source[t].get("box")]
+        nearest = min((d for d, _ in distances), default=None)
+        if nearest is not None and (all(m["category"] == "BANK" for m in source_markers) or nearest <= .08 * max(size)):
+            contenders[j] = {t for d, t in distances if d == nearest}
     for i in terms:
         separate = any(owners.get(j, set()) & owners[i] or (
-            source[i].get("box") and source[j].get("box") and (
-                all(m["category"] == "BANK" for m in source_markers)
-                or distance(rb.center(source[j]["box"]), source[i]["box"]) <= .08 * max(size))) for j in fields)
+            len(owners.get(j, set())) != 1 and i in contenders.get(j, set())) for j in fields)
         if separate:
             owners.pop(i, None)
             context.append(i)

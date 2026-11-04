@@ -220,15 +220,31 @@ class LegacyAttributionTests(unittest.TestCase):
         field(before, "label")["text"] += " [[NOTES:C17:N2]]"
         after = deepcopy(before); field(after, "answer")["text"] = WORDS
         self.held(self.assess(before, after))
+        before = source(); after = deepcopy(before)
+        field(after, "answer")["text"] = WORDS
+        after["slides"][1]["units"].append(unit("unbound", WORDS, 3000000))
+        self.held(self.assess(before, after))
+
+    def test_inline_term_survives_a_different_terms_separate_blank(self):
+        before = {"size": SIZE, "slides": [{"number": 1, "units": [
+            unit("alpha", "Alpha [[BANK:C17:Alpha]]", 100000),
+            unit("beta", "Beta [[BANK:C17:Beta]]", 1100000),
+            unit("beta-answer", "", 1100000, x=2500000)]}]}
+        for teacher, student in product(("native", "pptx"), repeat=2):
+            for key, identity in (("alpha", "Alpha"), ("beta-answer", "Beta")):
+                after = deepcopy(before); field(after, key)["text"] += "\n" + WORDS
+                result = self.assess(before, after, teacher, student)
+                self.assertIsNone(result["note"])
+                self.assertEqual([(i["id"], i["answer"]) for i in result["items"] if i["status"] == "done"], [(identity, WORDS)])
+            after = deepcopy(before); field(after, "beta")["text"] += "\n" + WORDS
+            self.held(self.assess(before, after, teacher, student))
+
+    def test_tied_separate_bank_labels_remain_context(self):
         before = {"size": SIZE, "slides": [{"number": 1, "units": [
             unit("left", "Alpha [[BANK:C17:Alpha]]", 100000, x=100000),
             unit("right", "Beta [[BANK:C17:Beta]]", 100000, x=4100000),
             unit("answer", "", 100000, x=2600000, width=1000000)]}]}
         after = deepcopy(before); field(after, "left")["text"] += "\n" + WORDS
-        self.held(self.assess(before, after))
-        before = source(); after = deepcopy(before)
-        field(after, "answer")["text"] = WORDS
-        after["slides"][1]["units"].append(unit("unbound", WORDS, 3000000))
         self.held(self.assess(before, after))
 
     def test_score_file_found_code_policy_does_not_waive_attribution_or_assignment_hold(self):
