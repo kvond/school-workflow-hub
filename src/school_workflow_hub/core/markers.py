@@ -5,10 +5,12 @@ import re
 PLAIN_ID = r"[A-Za-z0-9 _-]{1,80}"
 _ATOM = r"[A-Za-z0-9][A-Za-z0-9 _-]*"
 _SLASH_LABEL = _ATOM + r"(?: / " + _ATOM + r")+"
-# One balanced suffix, at least two nonempty members, no nesting or free commas.
+# One balanced nonempty suffix: an explanatory phrase or a comma-separated list.
+# Periods occur only in a positive 1–999 numbered label prefix followed by a space.
 _MEMBER = r"[A-Za-z0-9](?:[A-Za-z0-9 _-]*[A-Za-z0-9_-])?"
-_PAREN_LABEL = _MEMBER + r" \(" + _MEMBER + r"(?:, " + _MEMBER + r")+\)"
-BANK_ID = rf"(?:{PLAIN_ID}|{_SLASH_LABEL}|{_PAREN_LABEL})"
+_PAREN_LABEL = _MEMBER + r" \(" + _MEMBER + r"(?:, " + _MEMBER + r")*\)"
+_NUMBERED_LABEL = rf"[1-9][0-9]{{0,2}}\. (?:{_MEMBER}|{_SLASH_LABEL}|{_PAREN_LABEL})"
+BANK_ID = rf"(?:{PLAIN_ID}|{_SLASH_LABEL}|{_PAREN_LABEL}|{_NUMBERED_LABEL})"
 
 
 def marker_pattern(*, capture_cycle=True):
@@ -17,7 +19,7 @@ def marker_pattern(*, capture_cycle=True):
     return re.compile(
         rf"\[\[(?=BANK:|(?:NOTES|DRAFT|OPTIONAL):[A-Za-z0-9_-]{{1,40}}:{PLAIN_ID}\]\])"
         rf"(NOTES|BANK|DRAFT|OPTIONAL):{cycle}:"
-        rf"(?=[A-Za-z0-9 _/(),-]{{1,80}}\]\])({BANK_ID})\]\]")
+        rf"(?=[A-Za-z0-9 ._/(),-]{{1,80}}\]\])({BANK_ID})\]\]")
 
 
 MARKER = marker_pattern()
