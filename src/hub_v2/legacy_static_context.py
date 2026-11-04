@@ -17,6 +17,8 @@ from . import explicit_response_binding as explicit, response_binding as rb, wri
 
 P, A = explicit.P, explicit.A
 REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+CT = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 
 
 def _digest(value):
@@ -68,8 +70,59 @@ def _groups(page):
     return groups
 
 
+def _graph(archive):
+    """Bind the actual OPC main/slide graph followed by the ordinary reader."""
+    names = archive.namelist()
+    required = {"[Content_Types].xml", "_rels/.rels", "ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"}
+    if not required <= set(names): raise ValueError("missing OPC graph")
+    types = E.fromstring(archive.read("[Content_Types].xml"))
+    root_rels = E.fromstring(archive.read("_rels/.rels"))
+    if types.tag != CT + "Types" or root_rels.tag != REL + "Relationships": raise ValueError("invalid OPC graph")
+    root_ids = [node.get("Id") for node in root_rels]
+    defaults = [node.get("Extension") for node in types if node.tag == CT + "Default"]
+    if (len(root_ids) != len(set(root_ids)) or None in root_ids or len(defaults) != len(set(defaults))
+            or any(node.tag not in (CT + "Default", CT + "Override") for node in types)):
+        raise ValueError("ambiguous OPC metadata")
+    main = [r for r in root_rels if r.get("Type", "").endswith("/officeDocument")]
+    if len(main) != 1 or main[0].get("Type") != R[1:-1] + "/officeDocument" or main[0].get("Target") != "ppt/presentation.xml" or main[0].get("TargetMode") is not None:
+        raise ValueError("unsupported main presentation")
+    overrides = {node.get("PartName"): node.get("ContentType") for node in types if node.tag == CT + "Override"}
+    if len(overrides) != len(types.findall(CT + "Override")) or overrides.get("/ppt/presentation.xml") != "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml":
+        raise ValueError("invalid main presentation type")
+    presentation = E.fromstring(archive.read("ppt/presentation.xml"))
+    rels = E.fromstring(archive.read("ppt/_rels/presentation.xml.rels"))
+    ids = [n.get("Id") for n in rels]
+    if presentation.tag != P + "presentation" or rels.tag != REL + "Relationships" or len(ids) != len(set(ids)) or None in ids:
+        raise ValueError("ambiguous presentation graph")
+    if (any(node.tag not in {P + k for k in ("sldMasterIdLst", "notesMasterIdLst", "handoutMasterIdLst", "sldIdLst", "sldSz", "notesSz", "defaultTextStyle")} for node in presentation)
+            or any(len(presentation.findall(P + k)) > 1 for k in ("sldMasterIdLst", "notesMasterIdLst", "handoutMasterIdLst", "sldIdLst", "sldSz", "notesSz", "defaultTextStyle"))
+            or len(presentation.findall(P + "sldSz")) != 1):
+        raise ValueError("unsupported presentation context")
+    if len(presentation.findall(P + "sldIdLst")) != 1: raise ValueError("missing slide order")
+    size = presentation.find(P + "sldSz")
+    if any(not str(size.get(k, "")).isdigit() or int(size.get(k)) <= 0 for k in ("cx", "cy")):
+        raise ValueError("invalid presentation dimensions")
+    slide_ids = [node.get("id") for node in presentation.find(P + "sldIdLst")]
+    if len(slide_ids) != len(set(slide_ids)) or any(not str(v).isdigit() for v in slide_ids):
+        raise ValueError("ambiguous slide identities")
+    parts = []
+    for slide in presentation.find(P + "sldIdLst"):
+        matches = [r for r in rels if r.get("Id") == slide.get(R + "id") and r.get("Type") == R[1:-1] + "/slide"]
+        if slide.tag != P + "sldId" or len(matches) != 1 or matches[0].get("TargetMode") is not None:
+            raise ValueError("ambiguous slide order")
+        part = posixpath.normpath(posixpath.join("ppt", matches[0].get("Target", "")))
+        if (not re.fullmatch(r"ppt/slides/slide\d+\.xml", part) or part not in names
+                or overrides.get("/" + part) != "application/vnd.openxmlformats-officedocument.presentationml.slide+xml"):
+            raise ValueError("missing slide part")
+        parts.append(part)
+    if (not parts or len(parts) > 200 or len(parts) != len(set(parts))
+            or set(parts) != {name for name in names if re.fullmatch(r"ppt/slides/slide\d+\.xml", name)}):
+        raise ValueError("unaccounted slide part")
+
+
 def _resources(archive):
     # Unresolved or modified inherited resources cannot authorize this exception.
+    _graph(archive)
     if writing_fields.style_resource_roles(archive) is None:
         raise ValueError("unverified style resources")
     rows, total = [], 0
@@ -79,7 +132,7 @@ def _resources(archive):
     for name in sorted(names):
         if name.endswith("/") or name.startswith("docProps/") or re.fullmatch(r"ppt/slides/slide\d+\.xml", name):
             continue
-        if not re.fullmatch(r"(?:\[Content_Types\]\.xml|(?:_rels|ppt)/[A-Za-z0-9_./-]+\.(?:xml|rels|png|jpg|jpeg|gif))", name):
+        if not re.fullmatch(r"(?:\[Content_Types\]\.xml|_rels/\.rels|(?:_rels|ppt)/[A-Za-z0-9_./-]+\.(?:xml|rels|png|jpg|jpeg|gif))", name):
             raise ValueError("unsupported package resource")
         if posixpath.normpath(name) != name:
             raise ValueError("ambiguous resource path")
@@ -92,15 +145,25 @@ def _resources(archive):
             root = E.fromstring(raw)
             if any(node.tag in (P + "timing", P + "transition", P + "embeddedFontLst", A + "fld") for node in root.iter()):
                 raise ValueError("unsupported render branch")
+            if any(node.tag in (P + "defaultTextStyle", P + "txStyles", A + "objectDefaults") and (len(node) or node.attrib)
+                   for node in root.iter()):
+                raise ValueError("unresolved inherited text layout")
             if name.endswith(".rels"):
                 if root.tag != REL + "Relationships":
                     raise ValueError("unsupported relationships")
+                ids = [node.get("Id") for node in root]
+                if (None in ids or len(ids) != len(set(ids)) or any(node.tag != REL + "Relationship" for node in root)
+                        or any(set(node.attrib) - {"Id", "Type", "Target", "TargetMode"} for node in root)):
+                    raise ValueError("ambiguous render relationships")
                 if any(node.get("TargetMode") == "External" and not node.get("Type", "").endswith("/hyperlink") for node in root):
                     raise ValueError("external render resource")
                 safe = {"officeDocument", "core-properties", "extended-properties", "slide", "slideMaster", "slideLayout",
                         "notesMaster", "notesSlide", "theme", "presProps", "viewProps", "tableStyles", "image", "hyperlink", "thumbnail"}
                 if any(node.get("Type", "").rsplit("/", 1)[-1] not in safe for node in root):
                     raise ValueError("unknown render relationship")
+                package_metadata = {REL[1:-1] + "/metadata/" + k for k in ("core-properties", "thumbnail")}
+                if any(node.get("Type") not in package_metadata and not node.get("Type", "").startswith(R[1:-1] + "/") for node in root):
+                    raise ValueError("unknown render relationship namespace")
                 owner = re.fullmatch(r"(.*/)?_rels/([^/]+)\.rels", name)
                 base = posixpath.dirname((owner[1] or "") + owner[2]) if owner else ""
                 for node in root:
@@ -132,7 +195,14 @@ def _layout(tree):
             return False
     group = tree.find(P + "grpSpPr")
     if group is not None:
-        if not _card(group, {A + "xfrm": (0, 1)}): return False
+        if group.attrib or not _card(group, {A + "xfrm": (0, 1)}): return False
+        transform = group.find(A + "xfrm")
+        if transform is not None:
+            if (set(transform.attrib) - {"rot", "flipH", "flipV"}
+                    or not _card(transform, {A + n: (1, 1) for n in ("off", "ext", "chOff", "chExt")})): return False
+            for child in transform:
+                expected = {"x", "y"} if child.tag in (A + "off", A + "chOff") else {"cx", "cy"}
+                if len(child) or set(child.attrib) != expected: return False
         # The ordinary reader does not compose a root-tree transform.
         for node in group.iter():
             if node is not group and (any(not re.fullmatch(r"0|false", str(v)) for v in node.attrib.values())

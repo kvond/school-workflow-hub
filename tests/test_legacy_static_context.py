@@ -10,12 +10,60 @@ import xml.etree.ElementTree as E
 import zipfile
 
 from hub_v2 import completion as c, combined_assessment, google, legacy_response_attribution as legacy, legacy_static_context as static, native_teacher_source as n
-from test_explicit_response_binding import shape, export, SIZE, WORDS
+from test_explicit_response_binding import shape, export as minimal_export, SIZE, WORDS
 from test_legacy_response_attribution import parse_table
 from test_native_table_source import native as table_source, element as table_element
 from test_hub_v2 import pptx
 
 FILE = "FictionalDuplicateGeometrySource001"
+
+
+def export(value, *, resources=False):
+    """Complete OPC root/main/slide graph, with optional inherited resources."""
+    P, A, R, REL, CT = c.P, c.A, static.R, static.REL, static.CT
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(minimal_export(value))) as raw, zipfile.ZipFile(out, "w") as z:
+        for name in raw.namelist():
+            if name != "ppt/presentation.xml": z.writestr(name, raw.read(name))
+        types = E.Element(CT + "Types")
+        E.SubElement(types, CT + "Default", Extension="rels", ContentType="application/vnd.openxmlformats-package.relationships+xml")
+        E.SubElement(types, CT + "Default", Extension="xml", ContentType="application/xml")
+        def declare(part, kind): E.SubElement(types, CT + "Override", PartName="/" + part, ContentType=kind)
+        declare("ppt/presentation.xml", "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml")
+        root_rels = E.Element(REL + "Relationships")
+        E.SubElement(root_rels, REL + "Relationship", Id="root-main", Type=R[1:-1] + "/officeDocument", Target="ppt/presentation.xml")
+        z.writestr("_rels/.rels", E.tostring(root_rels))
+        presentation, rels = E.Element(P + "presentation"), E.Element(REL + "Relationships")
+        if resources:
+            E.SubElement(E.SubElement(presentation, P + "sldMasterIdLst"), P + "sldMasterId", id="2147483648", **{R + "id": "master"})
+            E.SubElement(rels, REL + "Relationship", Id="master", Type=R[1:-1] + "/slideMaster", Target="slideMasters/slideMaster1.xml")
+            for part, tag, kind in (("ppt/slideMasters/slideMaster1.xml", P + "sldMaster", "slideMaster"),
+                                    ("ppt/slideLayouts/slideLayout1.xml", P + "sldLayout", "slideLayout"),
+                                    ("ppt/theme/theme1.xml", A + "theme", "theme")):
+                node = E.Element(tag)
+                if kind != "theme": E.SubElement(E.SubElement(node, P + "cSld"), P + "spTree")
+                else: E.SubElement(node, A + "themeElements")
+                z.writestr(part, E.tostring(node))
+                declare(part, "application/vnd.openxmlformats-officedocument." + ("theme+xml" if kind == "theme" else "presentationml." + kind + "+xml"))
+            for part, targets in (("ppt/slideMasters/_rels/slideMaster1.xml.rels", (("slideLayout", "../slideLayouts/slideLayout1.xml"), ("theme", "../theme/theme1.xml"))),
+                                  ("ppt/slideLayouts/_rels/slideLayout1.xml.rels", (("slideMaster", "../slideMasters/slideMaster1.xml"),))):
+                rr = E.Element(REL + "Relationships")
+                for i, (kind, target) in enumerate(targets): E.SubElement(rr, REL + "Relationship", Id="r" + str(i), Type=R[1:-1] + "/" + kind, Target=target)
+                z.writestr(part, E.tostring(rr))
+        ids = E.SubElement(presentation, P + "sldIdLst")
+        for i in range(1, len(value["slides"]) + 1):
+            E.SubElement(ids, P + "sldId", id=str(255 + i), **{R + "id": "slide" + str(i)})
+            E.SubElement(rels, REL + "Relationship", Id="slide" + str(i), Type=R[1:-1] + "/slide", Target=f"slides/slide{i}.xml")
+            declare(f"ppt/slides/slide{i}.xml", "application/vnd.openxmlformats-officedocument.presentationml.slide+xml")
+            if resources:
+                rr = E.Element(REL + "Relationships")
+                E.SubElement(rr, REL + "Relationship", Id="layout", Type=R[1:-1] + "/slideLayout", Target="../slideLayouts/slideLayout1.xml")
+                z.writestr(f"ppt/slides/_rels/slide{i}.xml.rels", E.tostring(rr))
+        E.SubElement(presentation, P + "sldSz", cx=str(SIZE[0]), cy=str(SIZE[1]))
+        z.writestr("ppt/presentation.xml", E.tostring(presentation))
+        z.writestr("ppt/_rels/presentation.xml.rels", E.tostring(rels))
+        z.writestr("[Content_Types].xml", E.tostring(types))
+    return out.getvalue()
 
 
 def source(duplicate=True):
@@ -133,7 +181,7 @@ class StaticContextTests(unittest.TestCase):
         self.held(c.assess(after, before))
 
     def test_unsupported_original_layout_and_duplicate_raw_metadata_never_receive_proof(self):
-        for mode in ("insets", "paragraph", "list", "overflow", "duplicate-tree", "duplicate-fill", "root-transform"):
+        for mode in ("insets", "paragraph", "list", "overflow", "duplicate-tree", "duplicate-fill", "root-transform", "root-transform-duplicate"):
             def mutation(name, raw):
                 if name != "ppt/slides/slide2.xml": return raw
                 root = E.fromstring(raw); tree = root.find(c.P + "cSld/" + c.P + "spTree")
@@ -150,6 +198,10 @@ class StaticContextTests(unittest.TestCase):
                     props = answer.find(c.P + "spPr"); props.append(deepcopy(props.find(c.A + "solidFill")))
                 if mode == "root-transform":
                     props = E.Element(c.P + "grpSpPr"); xf = E.SubElement(props, c.A + "xfrm"); E.SubElement(xf, c.A + "off", x="99999999", y="0"); tree.insert(0, props)
+                if mode == "root-transform-duplicate":
+                    props = E.Element(c.P + "grpSpPr"); xf = E.SubElement(props, c.A + "xfrm")
+                    for tag, attrs in (("off", {"x": "0", "y": "0"}), ("off", {"x": "0", "y": "0"}), ("ext", {"cx": "0", "cy": "0"}), ("chOff", {"x": "0", "y": "0"}), ("chExt", {"cx": "0", "cy": "0"})): E.SubElement(xf, c.A + tag, **attrs)
+                    tree.insert(0, props)
                 return E.tostring(root)
             before = source(); after = deepcopy(before); write(after, "first-answer", WORDS)
             original = c.read_deck(repack(export(before), mutation))
@@ -166,6 +218,24 @@ class StaticContextTests(unittest.TestCase):
         after = json.loads(encoded)
         next(u for u in after["slides"][1]["units"] if u["key"] == "first-answer")["text"] = WORDS
         self.held(c.assess(after, value))
+
+    def test_complete_opc_resources_work_and_missing_or_alternate_main_parts_hold(self):
+        before = source(); after = deepcopy(before); write(after, "revision-answer", WORDS)
+        original, student = (c.read_deck(export(v, resources=True)) for v in (before, after))
+        self.assertIsNone(c.assess(student, original)["note"])
+        self.assertEqual(c.assess(student, original)["revision_score"], 10)
+        for mode in ("no-graph", "alternate-main", "missing-target", "duplicate-main"):
+            if mode == "no-graph": a, b = minimal_export(before), minimal_export(after)
+            else:
+                def broken(name, raw):
+                    if name != "_rels/.rels": return raw
+                    root = E.fromstring(raw)
+                    if mode == "alternate-main": root[0].set("Target", "ppt/alternate.xml")
+                    if mode == "missing-target": root[0].set("Target", "ppt/missing.xml")
+                    if mode == "duplicate-main": root.append(deepcopy(root[0]))
+                    return E.tostring(root)
+                a, b = (repack(export(v), broken) for v in (before, after))
+            self.held(c.assess(c.read_deck(b), c.read_deck(a)))
 
 
 def anchor_source(starter="My reasoning and evidence:", width=5000):
@@ -266,6 +336,23 @@ class AnchorContextTests(unittest.TestCase):
             result = c.assess(after, bank)
             self.assertEqual(result["notes_score"], expected)
             self.assertEqual([i["id"] for i in result["items"] if i["status"] == "done"], ["Token"] if expected else [])
+
+    def test_first_revised_labels_never_become_fields_when_starters_are_unknown(self):
+        unit = lambda k, t, b: {"key": k, "text": t, "box": b, "title": False}
+        before = {"size": SIZE, "slides": [{"number": 1, "units": [
+            unit("instruction", "Compare the fictional route diagrams.", (100000, 650000, 5000000, 350000)),
+            unit("first-code", "[[NOTES:Z17:Q1]]", (150000, 1200000, 180000, 120000)),
+            unit("revised-code", "[[DRAFT:Z17:Q1]]", (150000, 3300000, 180000, 120000)),
+            unit("first-label", "Your first answer", (400000, 1200000, 6000000, 300000)),
+            unit("first-field", "Type your first answer here.", (400000, 1600000, 6000000, 1200000)),
+            unit("revised-label", "Your revised answer", (400000, 3300000, 6000000, 300000)),
+            unit("revised-field", "Type your revised answer here. Keep your first answer above.", (400000, 3700000, 6000000, 1200000))]}]}
+        for key in ("first-label", "revised-label", "first-field", "revised-field"):
+            after = deepcopy(before); next(u for u in after["slides"][0]["units"] if u["key"] == key)["text"] += "\n" + WORDS
+            result = c.assess(after, before)
+            self.assertIsNone(result["notes_score"])
+            self.assertIsNone(result["revision_score"])
+            self.assertFalse(any(i["status"] == "done" for i in result["items"]))
 
 
 if __name__ == "__main__":

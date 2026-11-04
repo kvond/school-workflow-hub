@@ -15,7 +15,6 @@ def _placeholder(text):
     text = " ".join(text.split()).strip()
     return bool(re.fullmatch(
         r"(?i)(?:(?:type|write|enter)(?: your)?(?: answer| response| explanation| definition| text)? here[.!:]?"
-        r"|(?:your )?(?:first |revised )?answer[.:]?"
         r"|[^\[\]]*\[\s*(?:type|write|enter)\b[^\[\]]{0,100}\])", text))
 
 

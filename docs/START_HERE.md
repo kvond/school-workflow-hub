@@ -299,6 +299,9 @@ point fallbacks. Separately parsed complete unmerged table cells retain their
 existing field role; a submitted JSON flag, source name or code presence alone
 cannot supply that role. Unknown response starters and coincident answer-field
 backplates remain held rather than being treated as new response conventions.
+Bare first/revised answer labels remain source context even when a separate
+field's starter is unknown; a phrase whitelist cannot turn label edits into
+responses. Existing ordinary write/type/enter placeholders retain their routes.
 
 One bounded exception supports a verified **PPTX/PPTX** static-label group:
 an unchanged empty text shape immediately behind a first/revised label at its
@@ -311,6 +314,10 @@ branches. Missing parts, changed/malformed resources, group edits, extra objects
 changed order/geometry/style or ambiguous fields preserve the hold. Parser-only
 proof and table-cell types survive in-memory copies but add no keys to JSON or
 source hashes; serialization cannot recreate their authority.
+The exception requires a complete OPC root/main/slide graph, the exact ordered
+main presentation used by the reader, and verified unchanged render resources.
+Minimal ZIP fixtures without that graph, nontrivial inherited text defaults and
+unsupported source layout remain held; a style-summary hash is not the proof.
 
 Native-only and mixed-format coincident groups remain held: the native API
 omits timeline facts and no new export-witness bridge is implemented here.
