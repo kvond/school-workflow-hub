@@ -96,6 +96,15 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
                 if unit is source[i] and key in wanted:
                     owners[i].add(wanted[key])
     owners.update(fixed)
+    if basis == "code on the box":
+        for i in fields:
+            if i in fixed or not source[i].get("box"):
+                continue
+            distances = [(distance(rb.center(m["box"]), source[i]["box"]),
+                          identity(m)) for m in source_markers if m.get("box")]
+            nearest = min((d for d, _ in distances), default=None)
+            if len({owner for d, owner in distances if d == nearest}) > 1:
+                owners[i] = set()  # source order cannot break a geometric tie
     if basis in (REVIEW, rb.REVIEW, "BANK term labels need review", "Response marker needs review"):
         # Exact in-field identities remain independently meaningful; uncertain
         # fallback assignments do not inherit that evidence.

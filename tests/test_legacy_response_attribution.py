@@ -247,6 +247,17 @@ class LegacyAttributionTests(unittest.TestCase):
         after = deepcopy(before); field(after, "left")["text"] += "\n" + WORDS
         self.held(self.assess(before, after))
 
+    def test_equal_distance_to_two_generic_codes_is_not_an_identity(self):
+        before = {"size": SIZE, "slides": [{"number": 1, "units": [
+            unit("p1", "Original first prompt", 700000, x=1000000, width=1400000),
+            unit("p2", "Original second prompt", 700000, x=3600000, width=1400000),
+            unit("c1", "[[NOTES:C17:N1]]", 850000, x=1800000, width=400000, height=100000),
+            unit("c2", "[[NOTES:C17:N2]]", 850000, x=3800000, width=400000, height=100000),
+            unit("answer", "", 800000, x=2500000, width=1000000)]}]}
+        after = deepcopy(before); field(after, "answer")["text"] = WORDS
+        for teacher, student in product(("native", "pptx"), repeat=2):
+            self.held(self.assess(before, after, teacher, student))
+
     def test_score_file_found_code_policy_does_not_waive_attribution_or_assignment_hold(self):
         meta = {"id": FILE, "name": "Synthetic submission", "mimeType": c.SLIDES, "trashed": False,
                 "version": "1", "modifiedTime": "2026-11-04T19:00:00Z"}
