@@ -11,6 +11,7 @@ import zipfile
 from hub_v2 import completion as c, combined_assessment as combined, google, native_teacher_source
 from test_explicit_response_binding import shape, export, SIZE
 from test_native_table_source import native as table_source, element as table_element, read as table_read
+from test_anatomy_activity_binding import numeric_activity, SIZE as NUMERIC_SIZE
 
 FILE = "SyntheticSubmittedFile000001"
 TEACHER = "SyntheticTeacherFile0000001"
@@ -142,6 +143,16 @@ class LegacyAttributionTests(unittest.TestCase):
         after = deepcopy(before); field(after, "answer2")["text"] = WORDS
         result = self.assess(before, after)
         self.assertEqual([i["id"] for i in result["items"] if i["status"] == "done"], ["N2"])
+        for key in ("answer", "answer2"):
+            after = deepcopy(before)
+            field(after, "label")["text"] = "Question"
+            field(after, key)["text"] = WORDS
+            result = self.assess(before, after)
+            if key == "answer": self.held(result)
+            else:
+                self.assertIsNone(result["note"])
+                self.assertEqual(result["notes_score"], 10)
+                self.assertEqual([i["id"] for i in result["items"] if i["status"] == "done"], ["N2"])
 
     def test_in_field_full_identity_isolated_and_conflicting_codes_hold(self):
         before = {"size": SIZE, "slides": [{"number": 1, "units": [unit("title", "Synthetic heading", 100000)] + [
@@ -256,6 +267,19 @@ class LegacyAttributionTests(unittest.TestCase):
             result = combined.score_row(None, form, row)
         self.assertEqual(spy.call_count, 1)
         self.held(result)
+
+    def test_mixed_numeric_validator_does_not_exempt_ordinary_source_prose(self):
+        for measured in (False, True):
+            for key in ("blank", "explain", "explanation"):
+                teacher, student = numeric_activity()
+                if measured: student["units"][0]["text"] = student["units"][0]["text"].replace("____", "72", 1)
+                if key != "blank": next(u for u in student["units"] if u["key"] == key)["text"] += "\n" + WORDS
+                result = c.assess({"slides": [student], "size": NUMERIC_SIZE}, {"slides": [teacher], "size": NUMERIC_SIZE})
+                if key == "explain": self.held(result)
+                else:
+                    self.assertIsNone(result["note"])
+                    self.assertEqual(result["counts"]["NOTES"]["done"], int(measured) + int(key == "explanation"))
+                    if key == "explanation": self.assertEqual(next(i for i in result["items"] if i["id"] == "EXPLAIN")["answer"], WORDS)
 
 
 if __name__ == "__main__":

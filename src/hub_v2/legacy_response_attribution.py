@@ -28,23 +28,27 @@ def _contains(outer, inner, size):
             and inner[1] + inner[3] <= outer[1] + outer[3] + margin)
 
 
-def answers(markers, written, original, student, size, candidate_assign, syntax, plain, squash, added, distance):
+def answers(markers, written, original, student, size, candidate_assign, syntax, plain, squash, added, distance,
+            *, validated_numeric_source=None, validated_numeric_identity=None):
     """Retain legacy routes only when the original establishes field ownership."""
     result = {(m["category"], m["id"]): [] for m in markers}
     def bad():
         return {key: [] for key in result}, list(written), REVIEW
-    if not original:
+    if not original or not student:
         return bad()
-    source = [u for u in original["units"] if not u.get("picture")]
+    if validated_numeric_source is not None and not any(validated_numeric_source is u for u in original["units"]):
+        return bad()
+    source = [u for u in original["units"] if not u.get("picture") and u is not validated_numeric_source]
     source_markers = [
         {"category": m.group(1), "code": m.group(2), "id": m.group(3).strip(),
          "slide": original["number"], "key": u["key"], "box": u.get("box"),
          "standalone": u["text"].strip() == m.group(0)}
-        for u in source for m in syntax.finditer(u["text"])]
+        for u in source for m in syntax.finditer(u["text"])
+        if (m.group(1), m.group(2), m.group(3).strip()) != validated_numeric_identity]
     identity = lambda m: (m["category"], m["code"], m["id"])
     current = {identity(m) for m in markers}
     originals = {identity(m) for m in source_markers}
-    if not current <= originals:
+    if not current <= originals or len(current) != len(markers):
         return bad()
     codes = {}
     for m in source_markers:
@@ -52,7 +56,8 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
     # A duplicated source identity cannot authenticate one response location.
     if any(len(codes[i]) != 1 for i in current):
         return bad()
-    source_markers = [m for m in source_markers if identity(m) in current]
+    # Missing submitted codes never remove their original fields from the map
+    # or lend those fields to one of the surviving identities.
     source_markers.sort(key=lambda m: (m["box"][1], m["box"][0]) if m.get("box") else (0, 0))
     wanted = {(m["category"], m["id"]): identity(m) for m in source_markers}
     fixed, fields, terms, context = {}, [], [], []
@@ -76,7 +81,7 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
             anchors = own or {identity(m) for m in source_markers if m.get("box")
                               and unit.get("box") and rb.inside(rb.center(m["box"]), unit["box"])}
             if anchors:
-                fixed[index] = anchors & current
+                fixed[index] = anchors
         elif text:
             context.append(index)
 
@@ -132,8 +137,6 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
     # Keep original context at its original location. Moving or rewriting a
     # heading into an answer rectangle cannot manufacture a response role.
     for i in context:
-        if student is None:
-            continue  # low-level callers provide only changed units; assess always supplies the full page
         unit = source[i]
         matching = [u for u in student["units"] if not u.get("picture")
                     and rb.same_box(u.get("box"), unit.get("box"), size)]
@@ -154,8 +157,8 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
         if len(matching) != 1 or len(owners.get(matching[0], set())) != 1:
             return bad()
         owner = next(iter(owners[matching[0]]))
-        if student is not None and sum(rb.same_box(unit.get("box"), u.get("box"), size)
-                                       for u in student["units"] if not u.get("picture")) != 1:
+        if sum(rb.same_box(unit.get("box"), u.get("box"), size)
+               for u in student["units"] if not u.get("picture")) != 1:
             return bad()
         # Original geometry and complete identity, never submitted marker text,
         # determine the recipient. Changed/added codes cannot transfer credit.

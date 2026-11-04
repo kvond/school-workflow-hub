@@ -1024,6 +1024,25 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
                 and basis_here in ("code on the box", "box labels", "one question on the slide", "order on the slide")):
             assigned, loose, basis_here = legacy_response_attribution.answers(mine, written, match,
                 slide, student["size"], _assign, MARKER, _plain, _squash, added, _distance)
+        elif basis_here == "original numeric response group" and written:
+            numeric = [m for m in mine if m.get("binding", {}).get("kind") == "numeric-record-group"]
+            ordinary = [m for m in mine if "binding" not in m]
+            if len(numeric) == 1 and ordinary:
+                # Reuse the numeric validator's actual original source object
+                # and remaining writing, never an arbitrary declared rectangle.
+                records, remaining, checked = response_binding.numeric_answers(numeric, written, match, slide, student["size"], _plain)
+                original_numeric = response_binding.numeric_source(numeric[0]["binding"], match, student["size"], _plain)
+                if checked == "original numeric response group" and original_numeric is not None:
+                    other, loose, attribution = legacy_response_attribution.answers(ordinary, remaining, match,
+                        slide, student["size"], _assign, MARKER, _plain, _squash, added, _distance,
+                        validated_numeric_source=original_numeric,
+                        validated_numeric_identity=(numeric[0]["category"], numeric[0]["code"], numeric[0]["id"]))
+                    if attribution == legacy_response_attribution.REVIEW:
+                        assigned, loose, basis_here = {key: [] for key in assigned}, list(written), attribution
+                    else:
+                        assigned = {**records, **other}
+                else:
+                    assigned, loose, basis_here = {key: [] for key in assigned}, list(written), legacy_response_attribution.REVIEW
         if basis_here == "BANK term labels need review":
             bank_unbound = True
             bank_review_slides.add(slide["number"])

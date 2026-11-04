@@ -294,8 +294,12 @@ review, without changing denominators or completion judgments.
 This guard is shared by ordinary and combined assessment; the raw `_assign`
 helper also serves structural source-repair probes and is not a scoring API.
 Existing independently validated graphical/revision and descriptor-backed
-routes retain their own validators. Legacy multipart blank fields belonging to
-one identity retain their established behavior; blank practice versus multipart
+routes retain their own validators.
+The mixed numeric-record/ordinary-writing route validates the numeric source
+independently, then applies this guard to ordinary writing; only that exact
+validated numeric source object is exempted from static-context continuity.
+Legacy multipart blank fields belonging to one identity retain their established
+behavior; blank practice versus multipart
 intent cannot be proved from geometry alone. Use an explicit declared role
 contract for prospective separation rather than inventing a new scoring policy.
 No historical saved grades/results are rewritten, no source metadata is added
