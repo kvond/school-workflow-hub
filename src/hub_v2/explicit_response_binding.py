@@ -13,6 +13,8 @@ from . import response_binding as rb, writing_fields
 
 KIND = "above-field-text/v1"
 REVIEW = "Explicit response field needs review"
+NORMAL_FACES = frozenset({"arial", "aptos", "calibri", "courier new", "georgia", "helvetica",
+                          "times new roman", "trebuchet ms", "verdana"})
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 
@@ -67,24 +69,31 @@ def _native_rgb(color):
 def native_surface(element, *, direct):
     """Opaque resolved normal text and fixed native surfaces; unknown => hold."""
     shape = element.get("shape", {})
-    props = shape.get("shapeProperties", {})
+    mapping = lambda v: v if isinstance(v, dict) else {}
+    props = mapping(shape.get("shapeProperties", {}))
     text = shape.get("text", {}).get("textElements", [])
     styles = [r["textRun"].get("style", {}) for r in text if "textRun" in r]
     paras = [r["paragraphMarker"].get("style", {}) for r in text if "paragraphMarker" in r]
-    fill = props.get("shapeBackgroundFill", {}).get("solidFill", {})
+    fill = mapping(mapping(props.get("shapeBackgroundFill")).get("solidFill"))
     light = fill.get("alpha", 1) == 1 and _rgb(_native_rgb(fill.get("color")), light=True)
     def visible(style):
-        size = style.get("fontSize", {})
-        foreground = style.get("foregroundColor", {})
+        if not isinstance(style, dict) or ("weightedFontFamily" in style and not isinstance(style["weightedFontFamily"], dict)):
+            return False
+        size = mapping(style.get("fontSize"))
+        foreground = mapping(style.get("foregroundColor"))
+        weighted = style.get("weightedFontFamily", {})
+        face = style.get("fontFamily", weighted.get("fontFamily"))
         return (not set(style) - {"fontSize", "fontFamily", "weightedFontFamily", "foregroundColor", "bold", "italic", "underline", "strikethrough"}
+                and isinstance(face, str) and face.casefold() in NORMAL_FACES
+                and (not weighted or weighted.get("fontFamily") == face)
                 and size.get("unit") == "PT" and type(size.get("magnitude")) in (int, float)
                 and 10 <= size["magnitude"] <= 72 and set(foreground) == {"opaqueColor"}
                 and _rgb(_native_rgb(foreground.get("opaqueColor")))
                 and not any(k in style for k in ("link", "baselineOffset")))
     transform = element.get("transform", {})
-    fixed = (props.get("autofit", {}).get("autofitType") == "NONE"
-             and props.get("autofit", {}).get("fontScale", 1) == 1
-             and props.get("autofit", {}).get("lineSpacingReduction", 0) == 0)
+    autofit = mapping(props.get("autofit"))
+    fixed = (autofit.get("autofitType") == "NONE"
+             and autofit.get("fontScale", 1) == 1 and autofit.get("lineSpacingReduction", 0) == 0)
     supported = (direct and shape.get("shapeType") in ("TEXT_BOX", "RECTANGLE")
                  and not set(shape) - {"shapeType", "shapeProperties", "text", "placeholder"}
                  and not set(props) - {"shapeBackgroundFill", "autofit", "outline", "contentAlignment"}
@@ -92,7 +101,7 @@ def native_surface(element, *, direct):
                  and transform.get("scaleX") == transform.get("scaleY") == 1
                  and transform.get("shearX", 0) == transform.get("shearY", 0) == 0 and fixed)
     return {"format": "native", "supported": supported,
-            "visible": bool(supported and light and props.get("shapeBackgroundFill", {}).get("propertyState") in (None, "RENDERED")
+            "visible": bool(supported and light and mapping(props.get("shapeBackgroundFill")).get("propertyState") in (None, "RENDERED")
                             and styles and all(visible(s) for s in styles)),
             "paint": digest({"shape": {k: v for k, v in shape.items() if k != "text"},
                              "styles": sorted({digest(s) for s in styles}),
@@ -115,7 +124,14 @@ def pptx_surface(shape):
     def visible(style):
         size = style.get("sz", "")
         paint = style.find(A + "solidFill")
-        return (size.isdigit() and 1000 <= int(size) <= 7200 and paint is not None and len(paint) == 1
+        latin = style.find(A + "latin")
+        return (not set(style.attrib) - {"sz", "b", "i", "u", "strike", "lang", "dirty", "baseline"}
+                and all(node.tag in (A + "solidFill", A + "latin", A + "ea", A + "cs") for node in style)
+                and len(style.findall(A + "latin")) == 1 and len(style.findall(A + "solidFill")) == 1
+                and len(style.findall(A + "ea")) <= 1 and len(style.findall(A + "cs")) <= 1
+                and size.isdigit() and 1000 <= int(size) <= 7200 and paint is not None and len(paint) == 1
+                and latin is not None and latin.get("typeface", "").casefold() in NORMAL_FACES
+                and all(node.get("typeface", "").casefold() in NORMAL_FACES for node in style if node.tag in (A + "ea", A + "cs"))
                 and _rgb(color(paint[0])) and not any(style.find(A + k) is not None for k in
                     ("hlinkClick", "hlinkMouseOver", "effectLst", "effectDag"))
                 and style.get("baseline", "0") == "0")

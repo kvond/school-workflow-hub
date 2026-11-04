@@ -78,6 +78,7 @@ def export(value):
                     run = E.SubElement(p, A + "r")
                     style = data["style"]
                     rp = E.SubElement(run, A + "rPr", sz=str(round(style["fontSize"]["magnitude"] * 100)))
+                    E.SubElement(rp, A + "latin", typeface=style.get("fontFamily", "Arial"))
                     rgb = style["foregroundColor"]["opaqueColor"]["rgbColor"]
                     color = E.SubElement(E.SubElement(rp, A + "solidFill"), A + "srgbClr", val="".join(f"{round(rgb.get(k, 0) * 255):02X}" for k in ("red", "green", "blue")))
                     if style.get("transparent"):
@@ -401,6 +402,18 @@ class ExplicitResponseTests(unittest.TestCase):
                 self.assertIsNone(c.assess(parsed, parse(teacher, "pptx"), found_codes_only=True)["notes_score"])
                 with self.assertRaises(ValueError):
                     b.with_export_witness(parse(student, "native", witness=False), parsed)
+
+    def test_inherited_theme_and_symbol_fonts_do_not_claim_resolved_visibility(self):
+        for face in ("+mn-lt", "Wingdings", "Webdings"):
+            with self.subTest(face=face):
+                value = original()
+                element(value, "answer")["shape"]["text"]["textElements"][0]["textRun"]["style"]["fontFamily"] = face
+                with self.assertRaises(ValueError):
+                    b.author(parse(value, "native", authoring=True), parse(value, "pptx", authoring=True),
+                             label_key="label", target_key="answer", practice_keys=[f"practice{i}" for i in range(6)])
+                value = prepared(); write(value, "answer", WORDS)
+                element(value, "answer")["shape"]["text"]["textElements"][0]["textRun"]["style"]["fontFamily"] = face
+                self.assert_held(value)
 
 
 if __name__ == "__main__":

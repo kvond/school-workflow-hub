@@ -300,7 +300,10 @@ every intended field and practice negative. The helper is pure code; it does
 not write a source or supply its own authorization/readback evidence.
 
 V1 requires direct, fixed, axis-aligned text shapes, resolved opaque normal
-font runs and light label/field fills. Unknown visibility, overlapping shapes,
+font runs with an explicit face from the module's bounded `NORMAL_FACES` set,
+and light label/field fills. Theme/inherited font aliases and symbol fonts are
+unsupported; a theme reference is never evidence of a resolved normal face.
+Unknown visibility, overlapping shapes,
 groups, images or tables on a bound page remain held. Do not add hidden text,
 tiny markers or backing geometry to manufacture acceptance. Native and PPTX
 names are diagnostic aliases; roles use exact unique typed geometry and ordered
