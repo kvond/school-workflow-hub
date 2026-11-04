@@ -328,14 +328,21 @@ class ExplicitResponseTests(unittest.TestCase):
         teacher = parse(source, "native")
         raw_student = parse(student, "native", witness=False)
         self.assertIsNone(c.assess(raw_student, teacher, found_codes_only=True)["notes_score"])
+        no_kind = deepcopy(raw_student); no_kind.pop("source_kind")
+        self.assertIsNone(c.assess(no_kind, teacher, found_codes_only=True)["notes_score"])
         self.assertIsNone(c.assess(parse(student, "native"), parse(source, "native", witness=False), found_codes_only=True)["notes_score"])
-        for change in ("answer", "revision", "id", "raw", "serialized"):
+        for change in ("answer", "revision", "id", "raw", "serialized", "kind_deleted", "kind_changed", "format"):
             current = parse(student, "native")
             if change == "answer": current["slides"][0]["units"][-1]["text"] = "Different current answer."
             if change == "revision": current["native_source_revision"] = "8"
             if change == "id": current["native_source_id"] = "AnotherFictionalCopy1234567"
             if change == "raw": current["native_source"]["revisionId"] = "new"
             if change == "serialized": current["_explicit_export_witness"] = {"snapshot": b._snapshot(raw_student)}
+            if change == "kind_deleted": current.pop("source_kind")
+            if change == "kind_changed":
+                current["source_kind"] = "pptx"
+                current["slides"][0]["units"][-1]["text"] = "A changed native answer."
+            if change == "format": current["slides"][0]["units"][-1]["explicit_surface"]["format"] = "pptx"
             with self.subTest(change=change):
                 self.assertIsNone(c.assess(current, teacher, found_codes_only=True)["notes_score"])
         for exported in (c.read_deck(export(student)), parse(source, "pptx")):

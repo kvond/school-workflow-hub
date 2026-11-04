@@ -376,8 +376,15 @@ def with_export_witness(native, exported):
 
 
 def _witnessed(deck):
-    if not str(deck.get("source_kind", "")).startswith("native_"):
-        return True
+    formats = {u.get("explicit_surface", {}).get("format")
+               for page in deck["slides"] if bound(page) for u in page["units"]}
+    native = (any(k in deck for k in ("native_source", "native_source_id", "native_source_revision"))
+              or "native" in formats or str(deck.get("source_kind", "")).startswith("native_"))
+    if not native:
+        return formats == {"pptx"} and deck.get("source_kind") in (None, "pptx")
+    if (formats != {"native"} or deck.get("source_kind") not in ("native_teacher_source", "native_student_source")
+            or not all(k in deck for k in ("native_source", "native_source_id", "native_source_revision"))):
+        return False
     witness = deck.get("_explicit_export_witness")
     return type(witness) is _ExportWitness and witness.snapshot == _snapshot(deck)
 
