@@ -30,7 +30,7 @@ import re
 import zipfile
 import xml.etree.ElementTree as ET
 
-from . import graphical_choice, response_binding, workspace_binding, writing_fields, explicit_response_binding, legacy_response_attribution
+from . import graphical_choice, response_binding, workspace_binding, writing_fields, explicit_response_binding, legacy_response_attribution, legacy_static_context
 from school_workflow_hub.core import markers as marker_syntax
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
@@ -203,17 +203,24 @@ def _walk(node, units, transform, prefix="", pictures=None, picture_orientation=
                 continue
             key = prefix + _name(child, P + "nvGraphicFramePr")
             widths = [int(g.get("w", 0)) * transform[0] for g in table.findall(A + "tblGrid/" + A + "gridCol")]
+            rows = table.findall(A + "tr")
+            unmerged_cells = (bool(widths) and all(w > 0 for w in widths) and bool(rows)
+                and not panel_geometry_unverified and not _unsupported_panel_geometry(
+                    child.find(P + "xfrm"), child.find(P + "nvGraphicFramePr/" + P + "cNvPr"))
+                and all(int(row.get("h", 0)) > 0 and len(row.findall(A + "tc")) == len(widths)
+                        and all(not cell.attrib for cell in row.findall(A + "tc")) for row in rows))
             y = frame[1]
-            for r, row in enumerate(table.findall(A + "tr")):
+            for r, row in enumerate(rows):
                 height = int(row.get("h", 0)) * transform[1]
                 x = frame[0]
                 for c, cell in enumerate(row.findall(A + "tc")):
                     width = widths[c] if c < len(widths) else 0
-                    units.append({"key": "%s/r%dc%d" % (key, r, c), "text": _text(cell.find(A + "txBody")),
+                    cell_unit = {"key": "%s/r%dc%d" % (key, r, c), "text": _text(cell.find(A + "txBody")),
                                   "box": (x, y, width, height),
                                   # Cell/graphic-frame rendering is not an existing
                                   # fixed text-shape proof for the panel contract.
-                                  "panel_geometry_unverified": True})
+                                  "panel_geometry_unverified": True}
+                    units.append(legacy_static_context.TableCell(cell_unit) if unmerged_cells else cell_unit)
                     x += width
                 y += height
 
@@ -298,6 +305,8 @@ def read_deck(raw, *, explicit_authoring=False):
                 if seen[unit["key"]] > 1:
                     unit["key"] += "|%d" % seen[unit["key"]]
             slide = {"number": number, "units": units}
+            if tree is not None:
+                slide = legacy_static_context.capture(slide, tree, root, archive, _name)
             if tree is not None and (explicit_authoring or any(explicit_response_binding.decode(p.get("descr", "")) is not None for p in tree.iter(P + "cNvPr"))):
                 explicit_response_binding.attach_pptx(slide, tree, root, _name)
             if tree is not None and any(u.get("binding", {}).get("kind") == writing_fields.KIND for u in units):
@@ -1021,6 +1030,9 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
         # assessor turns actual writing into completion evidence: gate generic
         # legacy fallbacks here, shared by ordinary and combined host scoring.
         if (mine and written and not any("binding" in m for m in mine)
+                and legacy_response_attribution.anchor_writing(match, slide, student["size"], MARKER, _plain)):
+            assigned, loose, basis_here = {key: [] for key in assigned}, list(written), legacy_response_attribution.REVIEW
+        elif (mine and written and not any("binding" in m for m in mine)
                 and basis_here in ("code on the box", "box labels", "one question on the slide", "order on the slide")):
             assigned, loose, basis_here = legacy_response_attribution.answers(mine, written, match,
                 slide, student["size"], _assign, MARKER, _plain, _squash, added, _distance)

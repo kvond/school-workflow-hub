@@ -293,6 +293,32 @@ review, without changing denominators or completion judgments.
 
 This guard is shared by ordinary and combined assessment; the raw `_assign`
 helper also serves structural source-repair probes and is not a scoring API.
+Standalone code-only text shapes are immutable source anchors. Appending text
+to a marker object cannot establish an answer role, including under graphical
+point fallbacks. Separately parsed complete unmerged table cells retain their
+existing field role; a submitted JSON flag, source name or code presence alone
+cannot supply that role. Unknown response starters and coincident answer-field
+backplates remain held rather than being treated as new response conventions.
+
+One bounded exception supports a verified **PPTX/PPTX** static-label group:
+an unchanged empty text shape immediately behind a first/revised label at its
+exact rectangle, plus separately unique disjoint original answer fields. Both
+objects remain in the raw census and neither can supply writing. The raw reader
+must prove the complete ordered page/paint/resource context and full static-node
+content, with bounded direct text rendering/layout, exact metadata cardinality,
+resolved normal opaque text/fills and no clipping, animation or unknown display
+branches. Missing parts, changed/malformed resources, group edits, extra objects,
+changed order/geometry/style or ambiguous fields preserve the hold. Parser-only
+proof and table-cell types survive in-memory copies but add no keys to JSON or
+source hashes; serialization cannot recreate their authority.
+
+Native-only and mixed-format coincident groups remain held: the native API
+omits timeline facts and no new export-witness bridge is implemented here.
+Unchanged native JSON is not that missing rendering proof. This exception does
+not migrate student files, broaden the explicit text contract, certify a real
+lesson or bypass existing source/revision/assignment gates. Verify actual-source
+acceptance against the exact deployed package before releasing a held workflow.
+
 Existing independently validated graphical/revision and descriptor-backed
 routes retain their own validators.
 The mixed numeric-record/ordinary-writing route validates the numeric source
