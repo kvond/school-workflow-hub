@@ -11,6 +11,7 @@ completion arithmetic is the existing Prompt-1 policy, never re-derived here.
 import re
 
 from ..core.runs import content_hash
+from ..core import markers as marker_syntax
 from .completion_policy import (
     CATEGORIES, POLICY_VERSION, AssessedResponse, ReadinessAssessment,
     assess_completion,
@@ -57,14 +58,7 @@ def _text(value, limit, *, required=False, multiline=False):
 
 
 def _question_id(value, *, category=None):
-    # The teacher's Concept Bank terms are marker ids too ("Trophic level"),
-    # so interior spaces are part of the id vocabulary. Spaced slash term
-    # labels are BANK-only; response ids and file/source paths stay strict.
-    return (isinstance(value, str) and value == value.strip()
-            and len(value) <= 80
-            and (bool(re.fullmatch(r"[A-Za-z0-9 _-]{1,80}", value))
-                 or (category == "BANK" and bool(re.fullmatch(
-                     r"[A-Za-z0-9][A-Za-z0-9 _-]*(?: / [A-Za-z0-9][A-Za-z0-9 _-]*)+", value)))))
+    return marker_syntax.question_id(value, category=category)
 
 
 def _ids(value, *, category=None):
@@ -125,6 +119,8 @@ def validate_packet(packet, source_text):
             or not url.startswith(("https://docs.google.com/", "https://drive.google.com/"))):
         raise ValueError("invalid_assessment_source")
 
+    if marker_syntax.malformed_bank_marker(source_text):
+        raise ValueError("assessment_manifest_unparsed")
     manifest = packet["manifest"]
     if (not isinstance(manifest, dict) or not MANIFEST_KEYS <= set(manifest)
             or not set(manifest) <= MANIFEST_KEYS | {"inventory_basis",
@@ -228,7 +224,7 @@ def completion(packet):
                          judgment=r["judgment"],
                          evidence_reference=evidence + ":" + (
                              "bank_" + content_hash(r["question_id"])[:24]
-                             if r["category"] == "BANK" and "/" in r["question_id"]
+                             if r["category"] == "BANK" and not re.fullmatch(r"[A-Za-z0-9 _-]+", r["question_id"])
                              else r["question_id"].replace(" ", "_")),
                          optional=r["optional"])
         for r in packet["responses"])
@@ -258,13 +254,8 @@ def record_id(packet):
 
 MANIFEST_SECTIONS = {"NOTES_IDS": "notes_ids", "DRAFT_IDS": "draft_ids",
                      "OPTIONAL_IDS": "optional_ids", "BANK_IDS": "bank_ids"}
-# Preserve the two capture groups consumed by the census. This is the same
-# BANK-only label grammar as completion.MARKER, not a broader question id.
-_MARKER = re.compile(
-    r"\[\[(?=BANK:|(?:NOTES|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:[A-Za-z0-9 _-]{1,80}\]\])"
-    r"(NOTES|BANK|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:"
-    r"(?=[A-Za-z0-9 _/-]{1,80}\]\])"
-    r"([A-Za-z0-9 _-]{1,80}|[A-Za-z0-9][A-Za-z0-9 _-]*(?: / [A-Za-z0-9][A-Za-z0-9 _-]*)+)\]\]")
+# Same bounded vocabulary as the completion reader; preserve two groups.
+_MARKER = marker_syntax.marker_pattern(capture_cycle=False)
 
 
 def census_manifest(source_text):
@@ -277,6 +268,8 @@ def census_manifest(source_text):
     student's distributed version is template evidence here, never a penalty
     and never an assumption that BANK work is missing elsewhere.
     """
+    if marker_syntax.malformed_bank_marker(source_text):
+        raise ValueError("assessment_manifest_unparsed")
     seen = {"NOTES": [], "BANK": [], "DRAFT": [], "OPTIONAL": []}
     duplicates = 0
     for match in _MARKER.finditer(source_text):
@@ -363,7 +356,8 @@ def _legacy_compact_manifest(source_text, inventory, lines):
             sections[key] = list(observed[key])
         else:
             body = fields[name].strip()
-            sections[key] = [] if body in ("", "-") else [part.strip() for part in body.split(",")]
+            sections[key] = [] if body in ("", "-") else [part.strip() for part in marker_syntax.split_ids(
+                body, category="BANK" if key == "bank_ids" else None)]
     expected = {"notes_ids": int(fields["NOTES"]), "draft_ids": int(fields["DRAFT"]),
                 "optional_ids": int(fields["OPTIONAL"]), "bank_ids": int(fields["BANK_TERMS"])}
     for key, want in expected.items():
@@ -397,6 +391,8 @@ def derive_manifest(source_text):
     """
     if not isinstance(source_text, str) or not source_text:
         raise ValueError("invalid_assessment_source")
+    if marker_syntax.malformed_bank_marker(source_text):
+        raise ValueError("assessment_manifest_unparsed")
     inventory = re.search(r"\[\[MARKER-INVENTORY:[A-Za-z0-9_-]{1,40}\]\]", source_text)
     if not inventory:
         return census_manifest(source_text)

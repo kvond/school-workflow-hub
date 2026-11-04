@@ -31,19 +31,14 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from . import graphical_choice, response_binding, workspace_binding, writing_fields
+from school_workflow_hub.core import markers as marker_syntax
 
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CATEGORIES = ("NOTES", "BANK", "DRAFT", "OPTIONAL")
-# BANK ids are printed term labels, including "sensor / control center / effector".
-# Only BANK may use these spaced separators. Keep the three capture groups,
-# response/cycle id grammar and length bound used by matching and assessment.
-MARKER = re.compile(
-    r"\[\[(?=BANK:|(?:NOTES|DRAFT|OPTIONAL):[A-Za-z0-9_-]{1,40}:[A-Za-z0-9 _-]{1,80}\]\])"
-    r"(NOTES|BANK|DRAFT|OPTIONAL):([A-Za-z0-9_-]{1,40}):"
-    r"(?=[A-Za-z0-9 _/-]{1,80}\]\])"
-    r"([A-Za-z0-9 _-]{1,80}|[A-Za-z0-9][A-Za-z0-9 _-]*(?: / [A-Za-z0-9][A-Za-z0-9 _-]*)+)\]\]")
+# Keep literal BANK labels and the historic three capture groups.
+MARKER = marker_syntax.MARKER
 INVENTORY = re.compile(r"\[\[MARKER-INVENTORY:([A-Za-z0-9_-]{1,40})\]\]")
 ID_LIST = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK)_IDS=(.*?)(?=\s+[A-Z][A-Z_]*=|\s*$)", re.S)
 COUNT = re.compile(r"\b(NOTES|DRAFT|OPTIONAL|BANK_TERMS)=(\d+)\b")
@@ -352,7 +347,7 @@ def _parse_header(header, census):
     lists = {c: list(census[c]) for c in CATEGORIES}
     counts = {("BANK" if k == "BANK_TERMS" else k): int(v) for k, v in COUNT.findall(header)}
     for category, values in ID_LIST.findall(header):
-        parsed = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
+        parsed = [" ".join(v.split()) for v in marker_syntax.split_ids(values, category=category, multiline=True) if v.strip()]
         lists[category] = [] if parsed == ["-"] and counts.get(category) == 0 else parsed
     if any(lists.values()) and all(counts.get(c, len(lists[c])) == len(lists[c]) for c in CATEGORIES):
         return lists
@@ -562,6 +557,9 @@ def _written(student_slide, template_slide, size=(12192000, 6858000)):
 def _assign(slide_markers, written, template_slide, size, *, student_slide=None, panel_reference=None):
     """{(category, id): [(unit, words)]} plus uncoded [(unit, words)] and how it was matched."""
     result = {(m["category"], m["id"]): [] for m in slide_markers}
+    if any(marker_syntax.malformed_bank_marker(u["text"])
+           for page in (template_slide, student_slide) if page for u in page["units"]):
+        return result, list(written), "Response marker needs review"
     if not slide_markers:
         return result, list(written), "no code"
     if any(m.get("binding", {}).get("kind") == response_binding.PANEL_KIND for m in slide_markers):
@@ -811,6 +809,9 @@ def readiness(deck, *, revision=""):
         if ident not in issues:
             issues.append(ident); messages.append(message)
 
+    if any(marker_syntax.malformed_bank_marker(u["text"]) for s in deck["slides"] for u in s["units"]):
+        issue("malformed_feedback_marker", "A response marker is malformed; verify its exact original identity before scoring.")
+
     cycle, line, declared = "", "", {}
     if len(headers) != 1:
         issue("marker_inventory_missing_or_duplicated",
@@ -835,7 +836,7 @@ def readiness(deck, *, revision=""):
                           (category, declared[category], observed[category]))
         lists = {}
         for category, values in ID_LIST.findall(line):
-            parsed = [" ".join(v.split()) for v in re.split(r"[,\n]", values) if v.strip()]
+            parsed = [" ".join(v.split()) for v in marker_syntax.split_ids(values, category=category, multiline=True) if v.strip()]
             if parsed == ["-"] and declared.get(category) == 0:
                 parsed = []  # explicit empty-list sentinel used in marked Forensics decks
             if category in lists or len(parsed) != len(set(parsed)):
@@ -976,8 +977,10 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
                      for s in (template or {"slides": []})["slides"]}
     found = {}
     uncoded, how = [], set()
+    marker_unbound = any(marker_syntax.malformed_bank_marker(u["text"])
+                         for deck in (student, template) if deck for s in deck["slides"] for u in s["units"])
     bank_unbound = False
-    response_unbound = False
+    response_unbound = marker_unbound
     panel_unbound = False
     numeric_unbound = False
     choice_unbound = False
@@ -1010,7 +1013,7 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
         if basis_here == "BANK term labels need review":
             bank_unbound = True
             bank_review_slides.add(slide["number"])
-        if basis_here == response_binding.REVIEW:
+        if basis_here in (response_binding.REVIEW, "Response marker needs review"):
             response_unbound = True
             panel_unbound |= any(m.get('binding', {}).get('kind') == response_binding.PANEL_KIND for m in mine)
             response_review_slides.add(slide["number"])
@@ -1103,6 +1106,8 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
         locations = sorted(response_review_slides if response_unbound else bank_review_slides)
         if locations:
             student_note = ("Slide " if len(locations) == 1 else "Slides ") + ", ".join(map(str, locations)) + ": " + student_note
+    if marker_unbound:
+        student_note = "A response marker is malformed. Verify its exact original identity and response binding before scoring or entering grades."
     return {"code": code, "inventory": basis, "note": student_note, "inventory_note": note,
             "missing_code_warning": missing_code_warning,
             "scoring_basis": "found_codes" if found_codes_only else "inventory",
