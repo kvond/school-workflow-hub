@@ -331,10 +331,20 @@ routes retain their own validators.
 The mixed numeric-record/ordinary-writing route validates the numeric source
 independently, then applies this guard to ordinary writing; only that exact
 validated numeric source object is exempted from static-context continuity.
-Legacy multipart blank fields belonging to one identity retain their established
-behavior; blank practice versus multipart
-intent cannot be proved from geometry alone. Use an explicit declared role
-contract for prospective separation rather than inventing a new scoring policy.
+Uniform legacy multipart fields belonging to one identity retain their existing
+behavior. A mixed layout with a disjoint row of blank regions and a wider,
+taller field spanning that row below is conservatively ambiguous when those
+regions share one fallback identity. Editing any unbound field in that original
+cohort holds both scores, including the largest field. This does not classify
+small boxes as practice or select a scored answer by size. Independently
+authenticated original field bindings retain their existing validators. The
+guard uses the complete original layout, not the edited subset, object names,
+instruction wording or submitted role declarations.
+Blank practice versus multipart intent cannot be proved from geometry alone.
+Use an explicit declared role contract for prospective separation rather than
+inventing a new scoring policy. The existing above-field contract still needs
+its supported visible label placement and fresh source/export evidence; this
+guard does not add metadata to old student copies or migrate their roles.
 No historical saved grades/results are rewritten, no source metadata is added
 to existing student files, and current teacher evidence is not proof of original
 distribution lineage. Keep actual-source grading held until exact deployed

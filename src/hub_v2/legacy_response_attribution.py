@@ -46,6 +46,41 @@ def anchor_writing(original, student, size, syntax, plain):
     return False
 
 
+def _mixed_role_fields(source, owners, size):
+    """Find ambiguous fallback cohorts, without assigning roles by box size.
+
+    A disjoint row of blank regions plus a spanning, taller region below can
+    contain different activity/writing roles. One generic identity cannot prove
+    that every region is its answer. The complete original cohort is held;
+    independently authenticated owners are preserved by the caller.
+    """
+    cohorts = {}
+    for i, identities in owners.items():
+        if len(identities) == 1 and rb.rectangle(source[i].get("box"), size):
+            identity = next(iter(identities))
+            if identity[0] in ("NOTES", "DRAFT"):
+                cohorts.setdefault(identity, []).append(i)
+    ambiguous = set()
+    margin = .001 * max(size)
+    for indices in cohorts.values():
+        blanks = [i for i in indices if not source[i]["text"].strip()]
+        for offset, i in enumerate(blanks):
+            a = source[i]["box"]
+            for j in blanks[offset + 1:]:
+                b = source[j]["box"]
+                if (abs(a[1] - b[1]) > margin or abs(a[3] - b[3]) > margin or rb._intersects(a, b)):
+                    continue
+                left, right = min(a[0], b[0]), max(a[0] + a[2], b[0] + b[2])
+                bottom = max(a[1] + a[3], b[1] + b[3])
+                for k in indices:
+                    if k in (i, j): continue
+                    box = source[k]["box"]
+                    if (box[1] >= bottom and box[0] <= left + margin and box[0] + box[2] >= right - margin
+                            and box[2] > max(a[2], b[2]) + margin and box[3] > max(a[3], b[3]) + margin):
+                        ambiguous.update(indices)
+    return ambiguous
+
+
 def answers(markers, written, original, student, size, candidate_assign, syntax, plain, squash, added, distance,
             *, validated_numeric_source=None, validated_numeric_identity=None):
     """Retain legacy routes only when the original establishes field ownership."""
@@ -178,6 +213,10 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
                 j != i and not plain(source[j]["text"]) and owners.get(j, set()) & owners[i] for j in fields):
             owners.pop(i, None)
             context.append(i)
+
+    for i in _mixed_role_fields(source, owners, size):
+        if i not in fixed:
+            owners[i] = set()  # no largest-field guess or new activity scoring rule
 
     # Keep original context at its original location. Moving or rewriting a
     # heading into an answer rectangle cannot manufacture a response role.
