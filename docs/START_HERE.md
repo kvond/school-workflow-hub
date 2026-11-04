@@ -302,6 +302,18 @@ backplates remain held rather than being treated as new response conventions.
 Bare first/revised answer labels remain source context even when a separate
 field's starter is unknown; a phrase whitelist cannot turn label edits into
 responses. Existing ordinary write/type/enter placeholders retain their routes.
+An originally blank or placeholder field contained inside immutable printed
+context cannot gain fallback ownership, including from the printed shape's
+marker center. It remains in the complete original field census so refusing it
+cannot shift a separate answer's identity. Unchanged blank copies remain zero;
+writing in that contained field holds both scores. Separate supported answers,
+direct in-field identities and independently validated routes retain their
+existing checks. Unusable original field or printed-context geometry cannot
+authorize fallback writing when containment cannot be checked. Finite printed
+context extending off-canvas still participates in containment; unrelated
+off-canvas text does not itself disqualify a separate valid answer. Containment
+is a reason to hold uncertainty, not evidence of
+an answer's role, and uses neither color nor submitted text to grant credit.
 
 One bounded exception supports a verified **PPTX/PPTX** static-label group:
 an unchanged empty text shape immediately behind a first/revised label at its
