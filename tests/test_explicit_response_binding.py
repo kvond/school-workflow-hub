@@ -415,6 +415,27 @@ class ExplicitResponseTests(unittest.TestCase):
                 element(value, "answer")["shape"]["text"]["textElements"][0]["textRun"]["style"]["fontFamily"] = face
                 self.assert_held(value)
 
+    def test_unresolved_shape_style_effect_references_are_not_supported(self):
+        def referenced(raw):
+            out = io.BytesIO()
+            with zipfile.ZipFile(io.BytesIO(raw)) as src, zipfile.ZipFile(out, "w") as dst:
+                for name in src.namelist():
+                    data = src.read(name)
+                    if name == "ppt/slides/slide1.xml":
+                        root = E.fromstring(data)
+                        answer = next(s for s in root.iter(P + "sp") if s.find(P + "nvSpPr/" + P + "cNvPr").get("name") == "answer")
+                        E.SubElement(E.SubElement(answer, P + "style"), A + "effectRef", idx="1")
+                        data = E.tostring(root)
+                    dst.writestr(name, data)
+            return out.getvalue()
+        with self.assertRaises(ValueError):
+            b.author(parse(original(), "native", authoring=True), c.read_deck(referenced(export(original())), explicit_authoring=True),
+                     label_key="label", target_key="answer", practice_keys=[f"practice{i}" for i in range(6)])
+        current = prepared(); write(current, "answer", WORDS)
+        parsed = c.read_deck(referenced(export(current)))
+        parsed.update(explicit_source_id=FILE, explicit_source_revision="7")
+        self.assertIsNone(c.assess(parsed, parse(prepared(), "pptx"), found_codes_only=True)["notes_score"])
+
 
 if __name__ == "__main__":
     unittest.main()

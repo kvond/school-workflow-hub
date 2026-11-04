@@ -303,6 +303,8 @@ V1 requires direct, fixed, axis-aligned text shapes, resolved opaque normal
 font runs with an explicit face from the module's bounded `NORMAL_FACES` set,
 and light label/field fills. Theme/inherited font aliases and symbol fonts are
 unsupported; a theme reference is never evidence of a resolved normal face.
+PPTX shape-level `p:style` resource references are likewise unsupported in v1;
+their unvalidated theme effects cannot establish visible response evidence.
 Unknown visibility, overlapping shapes,
 groups, images or tables on a bound page remain held. Do not add hidden text,
 tiny markers or backing geometry to manufacture acceptance. Native and PPTX

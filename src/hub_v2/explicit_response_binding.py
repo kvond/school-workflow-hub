@@ -137,7 +137,7 @@ def pptx_surface(shape):
                 and style.get("baseline", "0") == "0")
     body_props = body.find(A + "bodyPr")
     fixed = body_props is not None and body_props.find(A + "noAutofit") is not None
-    supported = (fixed and not shape.attrib
+    supported = (fixed and not shape.attrib and shape.find(P + "style") is None
                  and not any(c.tag not in (P + "nvSpPr", P + "spPr", P + "style", P + "txBody") for c in shape)
                  and not any(c.tag not in (A + "xfrm", A + "solidFill", A + "noFill", A + "ln", A + "prstGeom") for c in props)
                  and not any(c.tag not in (A + "bodyPr", A + "lstStyle", A + "p") for c in body))
