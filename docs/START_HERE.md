@@ -367,6 +367,16 @@ paint or location. Existing declared labels, direct in-field identities and
 independent points retain their own proof. `NOT_RENDERED` fill/outline does not
 declare an unscored role. Without that independent role evidence, the large
 region also requires source-role clarification before automatic acceptance.
+For a singleton original NOTES/DRAFT identity, unlike disjoint original field
+dimensions also expose unresolved fallback roles without a minimum body-height
+or footer-distance cutoff. All unbound members of that eligible original cohort
+hold, including the apparent response. Dimensions never choose an answer or
+declare another shape unscored. Proven ineligible printed-context backdrops
+remain in the raw census but do not create this separate-field ambiguity.
+One-field singletons, uniform multipart fields and independently validated
+direct, point, declared and descriptor-backed roles retain their checks; a
+heterogeneous multipart layout without such evidence may require review.
+Nested fields within one legacy response region retain their existing checks.
 Speaker-note prose naming a preceding question is not a validated question-to-
 response contract in this completion reader. Exact copies from that preceding
 question remain an unresolved source-echo boundary; this repair does not infer
