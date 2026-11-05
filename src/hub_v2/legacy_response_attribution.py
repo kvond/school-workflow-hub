@@ -145,6 +145,28 @@ def _disjoint_role_fields(source, owners, size):
     return ambiguous
 
 
+def _singleton_role_fields(source, markers, owners, context, size):
+    """One generic identity cannot prove roles across unlike original fields.
+
+    Keep uniform multipart compatibility; dimensions only identify uncertainty,
+    never which field is an answer. Proven ineligible printed backdrops remain
+    in the raw census but cannot make a separate response ambiguous here.
+    """
+    if len(markers) != 1 or markers[0]["category"] not in ("NOTES", "DRAFT"):
+        return set()
+    marker = markers[0]
+    identity = (marker["category"], marker["code"], marker["id"])
+    cohort = [i for i, own in owners.items() if own == {identity} and rb.rectangle(source[i].get("box"), size)
+              and not any(not _finite_box(source[j].get("box"))
+                          or rb._intersects(source[i]["box"], source[j]["box"]) for j in context if j != i)]
+    margin = .001 * max(size)
+    if any(not rb._intersects(source[i]["box"], source[j]["box"])
+           and any(abs(source[i]["box"][axis] - source[j]["box"][axis]) > margin for axis in (2, 3))
+           for offset, i in enumerate(cohort) for j in cohort[offset + 1:]):
+        return set(cohort)
+    return set()
+
+
 def answers(markers, written, original, student, size, candidate_assign, syntax, plain, squash, added, distance,
             *, validated_numeric_source=None, validated_numeric_identity=None):
     """Retain legacy routes only when the original establishes field ownership."""
@@ -295,6 +317,10 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
             owners[i] = set()  # no largest-field guess or new activity scoring rule
 
     for i in _disjoint_role_fields(source, owners, size):
+        if i not in protected and i not in labelled:
+            owners[i] = set()
+
+    for i in _singleton_role_fields(source, source_markers, owners, context, size):
         if i not in protected and i not in labelled:
             owners[i] = set()
 
