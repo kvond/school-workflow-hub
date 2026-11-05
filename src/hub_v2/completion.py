@@ -1033,6 +1033,11 @@ def assess(student, template, *, found_codes_only=False, panel_reference=None):
                 and legacy_response_attribution.anchor_writing(match, slide, student["size"], MARKER, _plain)):
             assigned, loose, basis_here = {key: [] for key in assigned}, list(written), legacy_response_attribution.REVIEW
         elif (mine and written and not any("binding" in m for m in mine)
+                and basis_here == "independent response points"
+                and legacy_response_attribution.point_context_writing(match,
+                    [item for items in assigned.values() for item in items], student["size"], MARKER, _plain)):
+            assigned, loose, basis_here = {key: [] for key in assigned}, list(written), legacy_response_attribution.REVIEW
+        elif (mine and written and not any("binding" in m for m in mine)
                 and basis_here in ("code on the box", "box labels", "one question on the slide", "order on the slide")):
             assigned, loose, basis_here = legacy_response_attribution.answers(mine, written, match,
                 slide, student["size"], _assign, MARKER, _plain, _squash, added, _distance)

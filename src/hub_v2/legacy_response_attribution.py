@@ -54,6 +54,32 @@ def anchor_writing(original, student, size, syntax, plain):
     return False
 
 
+def point_context_writing(original, written, size, syntax, plain):
+    """A point inside a source backdrop cannot authenticate backdrop writing.
+
+    Inspect only proposed credited rectangles against printed original context;
+    merely being inside an unchanged blank backdrop is not a refusal reason.
+    This gate is for the uncontracted point fallback, not graphical validators.
+    """
+    if not original:
+        return False
+    source = [u for u in original["units"] if not u.get("picture")]
+    context = [u for u in source if plain(u["text"]) and not _placeholder(plain(u["text"]))
+               and not (legacy_static_context.is_table_cell(u) and syntax.search(u["text"]))]
+    for unit, words in written:
+        if unit.get("picture") or words.startswith("moved: "):
+            continue
+        box = unit.get("box")
+        exact = [u for u in source if rb.same_box(box, u.get("box"), size)]
+        if len(exact) == 1 and syntax.search(exact[0]["text"]) and (
+                _placeholder(plain(exact[0]["text"])) or legacy_static_context.is_table_cell(exact[0])):
+            continue  # preserve direct in-field/source-cell response evidence
+        if not rb.rectangle(box, size) or any(
+                not _finite_box(u.get("box")) or _contains(box, u["box"], size) for u in context):
+            return True
+    return False
+
+
 def _mixed_role_fields(source, owners, size):
     """Find ambiguous fallback cohorts, without assigning roles by box size.
 
@@ -226,14 +252,15 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
         if i not in fixed:
             owners[i] = set()  # no largest-field guess or new activity scoring rule
 
-    # An empty/placeholder child inside printed source context cannot acquire
-    # an answer role from fallback proximity or that context's marker center.
+    # Empty/placeholder shapes containing printed context or contained in it
+    # cannot acquire a role from fallback proximity or a context marker center.
     # Retain it in the complete census above so refusing it cannot shift any
     # other field's identity. Direct in-field and validated routes stay separate.
     for i in fields:
         box = source[i].get("box")
         if not rb.rectangle(box, size) or any(
                 not _finite_box(source[j].get("box")) or _contains(source[j]["box"], box, size)
+                or _contains(box, source[j]["box"], size)
                 for j in context):
             owners[i] = set()
 
