@@ -317,13 +317,63 @@ context extending off-canvas still participates in containment; unrelated
 off-canvas text does not itself disqualify a separate valid answer. Containment
 is a reason to hold uncertainty, not evidence of
 an answer's role, and uses neither color nor submitted text to grant credit.
+The same refusal covers printed-context overlap with a partial text-box
+overhang. A small box-boundary mismatch does not establish a writing role;
+separate original responses remain eligible and raw structural probes retain
+their existing behavior.
 The shared assessor also refuses legacy point-route writing whose proposed
-rectangle encloses immutable original printed context. A point inside a backdrop
+rectangle overlaps immutable original printed context. A point inside a backdrop
 does not supply a writable role. Genuine thin point answers can lie inside an
 unchanged larger blank background. Contract-backed graphical/revision validators
 and direct in-field responses retain their own checks; raw structural `_assign`
 probes are unchanged. Adding, moving or resizing a submitted container cannot
 discard the original printed-context baseline.
+
+Declared legacy response labels can establish a source-only binding without
+depending on response order. A whole `Your first answer` / `Your revised answer`
+label may carry a bounded `Question 1 -` prefix or `- Question 1` suffix, and
+must contain exactly one own NOTES/DRAFT marker agreeing with that role. An
+established detached-code single-question pair can instead use whole canonical
+first/revised labels when each category has exactly one original full identity.
+Unsupported generic labels cannot borrow the other category's first identity,
+even with only one question pair. A bounded existing single-pair route retains
+one canonical labelled field plus its complementary standalone source point
+immediately above the sole remaining original blank. The response regions must
+be disjoint and that point must uniquely identify the remaining field across
+both original candidates; field count alone never establishes ownership. An
+exact whole BANK term identifies its own matching code, either on that label or
+through the established unique whole-term/CamelCase registry match. The full category,
+cycle and ID come from that code. Supported fields are tightly below the label;
+BANK definitions may also sit to the right of their printed term in the same
+row. Reverse-side placement does not establish this declared role. Label and field
+must identify each other uniquely across the complete original eligible cohort.
+The established BANK label gap has its own bounded geometry; it is not replaced
+by the stricter first/revised label placement. Conflicting point/direct-field
+and above-label identities hold without giving either claim precedence.
+Competing, missing, contradictory or generic mixed-pair labels cannot fall back
+to global-first or nearest-term identity selection. Existing geometric ties hold.
+Contained children/backdrops stay in the raw census but supply no label-binding
+candidate. Direct fields, genuine source points, inline BANK responses without
+a separate field, and established uniform single-question multipart groups
+retain their independent checks. This does not add explicit metadata to old
+copies or extend `above-field-text/v1`; unresolved roles require review or a
+supported prospective contract. Exact deployed lesson acceptance stays separate.
+An unbound wide bottom strip and a separate large writing region sharing one
+legacy NOTES/DRAFT fallback identity form a further bounded ambiguity case.
+The same applies to a small isolated originally blank region and a distinct
+large body region sharing that identity. Both unbound regions hold; no field
+is designated unscored or selected by size,
+paint or location. Existing declared labels, direct in-field identities and
+independent points retain their own proof. `NOT_RENDERED` fill/outline does not
+declare an unscored role. Without that independent role evidence, the large
+region also requires source-role clarification before automatic acceptance.
+Speaker-note prose naming a preceding question is not a validated question-to-
+response contract in this completion reader. Exact copies from that preceding
+question remain an unresolved source-echo boundary; this repair does not infer
+ownership from notes or apply a source-wide question-text ban. Existing genuine
+question selections and quotations followed by an independent explanation
+retain their completion checks. Keep affected automatic acceptance held until
+that source relationship has a supported, independently verified solution.
 
 One bounded exception supports a verified **PPTX/PPTX** static-label group:
 an unchanged empty text shape immediately behind a first/revised label at its

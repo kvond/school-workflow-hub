@@ -7,7 +7,7 @@ submitted text and exported object names cannot create a response role.
 import math
 import re
 
-from . import response_binding as rb, legacy_static_context
+from . import response_binding as rb, legacy_static_context, legacy_label_binding
 
 REVIEW = "Legacy response attribution needs review"
 
@@ -75,7 +75,7 @@ def point_context_writing(original, written, size, syntax, plain):
                 _placeholder(plain(exact[0]["text"])) or legacy_static_context.is_table_cell(exact[0])):
             continue  # preserve direct in-field/source-cell response evidence
         if not rb.rectangle(box, size) or any(
-                not _finite_box(u.get("box")) or _contains(box, u["box"], size) for u in context):
+                not _finite_box(u.get("box")) or rb._intersects(box, u["box"]) for u in context):
             return True
     return False
 
@@ -112,6 +112,36 @@ def _mixed_role_fields(source, owners, size):
                     if (box[1] >= bottom and box[0] <= left + margin and box[0] + box[2] >= right - margin
                             and box[2] > max(a[2], b[2]) + margin and box[3] > max(a[3], b[3]) + margin):
                         ambiguous.update(indices)
+    return ambiguous
+
+
+def _disjoint_role_fields(source, owners, size):
+    """Refuse unlike unbound body/auxiliary regions without selecting a role.
+
+    A wide bottom strip or a small isolated blank and a separate large body
+    can serve different roles or multipart work. Geometry cannot prove that
+    either is unscored. Independent bindings are preserved by the caller.
+    """
+    cohorts = {}
+    for i, own in owners.items():
+        if len(own) == 1 and next(iter(own))[0] in ("NOTES", "DRAFT") and rb.rectangle(source[i].get("box"), size):
+            cohorts.setdefault(next(iter(own)), []).append(i)
+    ambiguous = set()
+    for indices in cohorts.values():
+        for i in indices:
+            strip = source[i]["box"]
+            footer = strip[2] >= .8 * size[0] and strip[3] <= .05 * size[1] and strip[1] >= .9 * size[1]
+            small = strip[2] <= .08 * size[0] and strip[3] <= .08 * size[1]
+            if source[i]["text"].strip() or not (footer or small):
+                continue
+            for j in indices:
+                body = source[j]["box"]
+                overlap = min(strip[0] + strip[2], body[0] + body[2]) - max(strip[0], body[0])
+                gap = strip[1] - body[1] - body[3]
+                separate_body = (j != i and body[2] >= .5 * size[0] and body[3] >= .2 * size[1]
+                                 and not rb._intersects(strip, body))
+                if separate_body and (small or (overlap >= .8 * min(strip[2], body[2]) and 0 <= gap <= .12 * size[1])):
+                    ambiguous.update(indices)
     return ambiguous
 
 
@@ -248,19 +278,34 @@ def answers(markers, written, original, student, size, candidate_assign, syntax,
             owners.pop(i, None)
             context.append(i)
 
+    managed, labelled, static_labels, protected, conflicts = legacy_label_binding.plan(
+        source, source_markers, fields, terms, context, fixed, size, syntax, plain, squash, _contains, _finite_box, distance)
+    for i in static_labels:
+        owners.pop(i, None)
+        if i not in context:
+            context.append(i)
+    for i in fields:
+        if i not in protected:
+            owners[i] = (owners.get(i, set()) - managed) | labelled.get(i, set())
+    for i in conflicts:
+        owners[i] = set()
+
     for i in _mixed_role_fields(source, owners, size):
         if i not in fixed:
             owners[i] = set()  # no largest-field guess or new activity scoring rule
 
-    # Empty/placeholder shapes containing printed context or contained in it
+    for i in _disjoint_role_fields(source, owners, size):
+        if i not in protected and i not in labelled:
+            owners[i] = set()
+
+    # Empty/placeholder shapes overlapping printed context, including overhangs,
     # cannot acquire a role from fallback proximity or a context marker center.
     # Retain it in the complete census above so refusing it cannot shift any
     # other field's identity. Direct in-field and validated routes stay separate.
     for i in fields:
         box = source[i].get("box")
         if not rb.rectangle(box, size) or any(
-                not _finite_box(source[j].get("box")) or _contains(source[j]["box"], box, size)
-                or _contains(box, source[j]["box"], size)
+                not _finite_box(source[j].get("box")) or rb._intersects(box, source[j]["box"])
                 for j in context):
             owners[i] = set()
 
