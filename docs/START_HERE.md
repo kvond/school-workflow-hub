@@ -507,7 +507,14 @@ The fresh registered teacher map drives assessment before legacy fallback.
 Missing, malformed, stale, student-only, relocated or modified maps, source
 context changes, target/style changes, or missing capture/witness proof hold
 scores. An opted-in target supplies only its own existing identity. Exact
-current-page source echoes use the existing ordinary copy-length rule; quoting a prompt plus
+current-page source echoes use the existing ordinary copy-length rule. The
+distinct authenticated own marker label is also supplied text at any length
+when its whole text matches the established canonical first/revised role
+grammar with exact identity and category agreement. An exact echo of that
+label uses the existing copied status, including a target whose original given
+is a prefix of that label. Case, spacing, punctuation and quotation marks alone
+do not add learner words to this own-role scaffold. Arbitrary short prompts/options
+are not reclassified. Quoting a prompt plus
 an original explanation and legitimate question-selection responses retain
 their ordinary behavior. Speaker-note-only references to an uncoded prompt
 on another page do **not** establish an authenticated question binding.

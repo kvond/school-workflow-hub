@@ -528,6 +528,97 @@ class MappedTextTests(unittest.TestCase):
         parsed = c.read_deck(package(opted))
         self.held(c.assess(parsed, parsed_export(prepared())))
 
+    def test_own_canonical_role_echoes_are_copied_with_exact_denominators(self):
+        for teacher, copy, key, label in product(READERS, READERS,
+                ("first_answer", "revised_answer"), ("plain", "numbered")):
+            value = source(True)
+            first = "Your first answer" if label == "plain" else "Question 2 - Your first answer."
+            revised = "Your revised answer" if label == "plain" else "Your revised answer - Question 2."
+            element(value, "first_label")["shape"]["text"]["textElements"][0]["textRun"]["content"] = first + " [[NOTES:C99:EXPLAIN]]\n"
+            element(value, "revised_label")["shape"]["text"]["textElements"][0]["textRun"]["content"] = revised + " [[DRAFT:C99:EXPLAIN]]\n"
+            data = m.author(parse(value, "native", witness=False), parsed_export(value, authoring=True),
+                            targets=[{"marker_key": "first_label", "target_key": "first_answer"},
+                                     {"marker_key": "revised_label", "target_key": "revised_answer"}])
+            element(value, "first_label")["description"] = rb.PREFIX + json.dumps(data)
+            supplied = first if key == "first_answer" else revised
+            # Use compact 10-point text for the longer numbered copied label.
+            for echoed in (supplied.upper(), supplied + ".", supplied + "!!!", '"' + supplied + '"', "'" + supplied + "'"):
+                after = student(value, key, words=echoed)
+                element(after, key)["shape"]["text"]["textElements"][0]["textRun"]["style"]["fontSize"]["magnitude"] = 10
+                result = c.assess(parse(after, copy), parse(value, teacher))
+                self.assertIsNone(result["note"])
+                self.assertEqual((result["notes_score"], result["revision_score"]), (0, 0))
+                own = next(i for i in result["items"] if i["category"] == ("NOTES" if key == "first_answer" else "DRAFT"))
+                self.assertEqual(own["status"], "copied")
+                self.assertEqual(result["counts"]["NOTES"]["required"], 1); self.assertEqual(result["counts"]["DRAFT"]["required"], 1)
+            quoted = student(value, key, words=supplied + " I disagree.")
+            element(quoted, key)["shape"]["text"]["textElements"][0]["textRun"]["style"]["fontSize"]["magnitude"] = 10
+            actual = c.assess(parse(quoted, copy), parse(value, teacher))
+            self.assertIsNone(actual["note"])
+            self.assertEqual(actual["notes_score"] if key == "first_answer" else actual["revision_score"], 10)
+
+    def test_partial_given_echo_and_printed_short_question_choices_stay_distinct(self):
+        value = source(True)
+        element(value, "first_answer")["shape"]["text"]["textElements"][0]["textRun"]["content"] = "Your\n"
+        value["slides"][1]["pageElements"].append(shape("question_choice", "Why does it differ?", [400000, 6000000, 6000000, 300000]))
+        data = m.author(parse(value, "native", witness=False), parsed_export(value, authoring=True),
+                        targets=[{"marker_key": "first_label", "target_key": "first_answer"},
+                                 {"marker_key": "revised_label", "target_key": "revised_answer"}])
+        element(value, "first_label")["description"] = rb.PREFIX + json.dumps(data)
+        for teacher, copy in product(READERS, repeat=2):
+            blank = c.assess(parse(student(value), copy), parse(value, teacher))
+            self.assertEqual((blank["notes_score"], blank["revision_score"]), (0, 0))
+            echo = c.assess(parse(student(value, "first_answer", words="first answer"), copy), parse(value, teacher))
+            self.assertEqual(echo["notes_score"], 0); self.assertEqual(echo["items"][0]["status"], "copied")
+            for key in ("first_answer", "revised_answer"):
+                # The short choice is actually printed on this original page.
+                chosen = c.assess(parse(student(value, key, words="Why does it differ?"), copy), parse(value, teacher))
+                self.assertIsNone(chosen["note"])
+                self.assertEqual(chosen["notes_score"] if key == "first_answer" else chosen["revision_score"], 10)
+
+    def test_own_echo_requires_full_identity_category_separate_target_and_canonical_role(self):
+        value = prepared(True)
+        original = parsed_export(value); page = original["slides"][1]
+        row = deepcopy(m.bound(page)[0]["binding"]["responses"][0])
+        current = next(u for u in page["units"] if u["key"] == "first_answer")
+        self.assertTrue(m._own_label_echo(row, page, current, "Your first answer", c._plain))
+        for key, replacement in (("category", "DRAFT"), ("cycle", "OTHER"), ("id", "OTHER")):
+            altered = {**row, key: replacement}
+            self.assertFalse(m._own_label_echo(altered, page, current, "Your first answer", c._plain))
+        same = deepcopy(row); same["target"]["box"] = same["marker_box"]
+        self.assertFalse(m._own_label_echo(same, page, current, "Your first answer", c._plain))
+        for prompt in ("Why does it differ?", "Question 2 - Your first answer - Question 3"):
+            altered = deepcopy(page)
+            next(u for u in altered["units"] if u["key"] == "first_label")["text"] = prompt + " [[NOTES:C99:EXPLAIN]]"
+            self.assertFalse(m._own_label_echo(row, altered, current, prompt, c._plain))
+
+    def test_own_echo_normal_and_combined_hosts_and_assignment_holds(self):
+        value = prepared(True); formid = "FictionalOwnEchoAssignment001"
+        for teacher, copy, key, held in product(READERS, READERS, ("first_answer", "revised_answer"), (False, True)):
+            words = "Your first answer" if key == "first_answer" else "Your revised answer"
+            original, submitted = parse(value, teacher), parse(student(value, key, words=words), copy)
+            form = {"form_id": formid, "label": "Fictional task", "grade_readiness":
+                    {"status": "NOT_READY", "problem": "Fictional hold"} if held else {"status": "READY"},
+                    "students": [{"files": [{"id": COPY, "mime": c.SLIDES}]}]}
+            lesson = {"topic": "Fictional task", "forms": [form], "materials": [{"url": "https://docs.google.com/presentation/d/" + FILE + "/edit"}]}
+            agenda = SimpleNamespace(classes={"anatomy": {"name": "Fictional class"}}, lessons=lambda *a: [lesson])
+            with patch.dict(c._results, {}, clear=True), patch.object(c, "_read", return_value=submitted), \
+                    patch.object(c, "_teacher_template", return_value=(metadata(value), original)), \
+                    patch.object(google, "drive_file", return_value=metadata(student(value))), patch.object(c, "assess", wraps=c.assess) as spy:
+                actual = c.score_file(None, agenda, "anatomy", "W03", formid, COPY, {"lessons": [lesson]})
+            self.assertEqual(spy.call_count, 0 if held else 1)
+            if held: self.assertEqual(actual["code"], "deck_not_ready")
+            else:
+                self.assertIsNone(actual["note"]); self.assertEqual((actual["notes_score"], actual["revision_score"]), (0, 0))
+            originals = {"C99": {"metadata": metadata(value), "sha256": "a"*64, "deck": original}}
+            copies = {"C99": {"metadata": metadata(student(value)), "sha256": "b"*64, "deck": submitted}}
+            configured = {"combined_assessment": {"scope": {"components": [{"cycle": "C99", "label": "Fictional task", "teacher_id": FILE}]}}}
+            row = {"combined_components": [{"cycle": "C99", "file_id": COPY}]}
+            with patch.object(combined, "verify_sources", return_value=(originals, copies)):
+                combined_result = combined.score_row(None, configured, row)
+            self.assertIsNone(combined_result["note"])
+            self.assertEqual((combined_result["notes_score"], combined_result["revision_score"]), (0, 0))
+
     def test_native_unresolved_styles_effects_geometry_and_unsupported_targets_reject(self):
         for variant in ("fractional", "shadow", "theme", "opacity", "rotated", "grouped", "table", "overlap", "extra-code", "duplicate-box"):
             value = source(True)

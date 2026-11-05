@@ -265,6 +265,25 @@ def plan(student, template):
         return {}, True
 
 
+def _own_label_echo(row, template, current, words, plain):
+    """Only a proven own canonical role scaffold, never an arbitrary prompt."""
+    from .completion import MARKER
+    from .legacy_label_binding import ROLE
+    if row["marker_box"] == row["target"]["box"]: return False
+    source = _unit(template, row["marker_box"])
+    codes = [(m.group(1), m.group(2), m.group(3).strip()) for m in MARKER.finditer(source["text"])]
+    if codes != [(row["category"], row["cycle"], row["id"])]: return False
+    label = " ".join(plain(source["text"]).split())
+    role = ROLE.fullmatch(label)
+    if not role or row["category"] != ("NOTES" if role[2].lower() == "first" else "DRAFT"): return False
+    if role[1] and role[3] and role[1] != role[3]: return False
+    # Only after proving the exact own canonical role, punctuation/quotes are
+    # not new learner words. Keep the ordinary source/short-choice rule intact.
+    signature = lambda text: [token for token in writing_fields.tokens(text) if re.fullmatch(r"\w+", token)]
+    supplied = signature(label)
+    return supplied in (signature(words), signature(plain(current["text"])))
+
+
 def answers(markers, written, template, student, size, plain, *, reference=None):
     from .completion import COPY_WORDS
     result = {(m["category"], m["id"]): [] for m in markers}
@@ -279,8 +298,9 @@ def answers(markers, written, template, student, size, plain, *, reference=None)
             words = writing_fields.new_text(row["target"]["given"], plain(unit["text"]))
             if words:
                 evidence = {**unit, "verified_workspace_answer": words}
-                if len(words.split()) >= COPY_WORDS and writing_fields.tokens(words) in [writing_fields.tokens(plain(u["text"]))
-                        for u in template["units"] if plain(u["text"])]:
+                if (_own_label_echo(row, template, unit, words, plain) or
+                        len(words.split()) >= COPY_WORDS and writing_fields.tokens(words) in [writing_fields.tokens(plain(u["text"]))
+                        for u in template["units"] if plain(u["text"])]):
                     evidence["workspace_supplied_copy"] = True
                 result[(row["category"], row["id"])].append((evidence, words))
         targets = {id(_unit(student, row["target"]["box"])) for row in data["responses"]}
