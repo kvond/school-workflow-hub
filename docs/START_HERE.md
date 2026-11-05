@@ -432,6 +432,94 @@ to existing student files, and current teacher evidence is not proof of original
 distribution lineage. Keep actual-source grading held until exact deployed
 native/PPTX field positives and source-text negatives pass independently.
 
+### Prospective original text-target maps
+
+`hub_v2.mapped_text_binding` provides the separate opt-in
+`original-text-targets/v1` contract. It maps **already established** markers to
+audited existing direct text fields on one page: one NOTES identity, or one
+NOTES/DRAFT pair with the same cycle and ID. It adds no scored/practice roles,
+identities or denominator changes. Source text, marker placement, shapes and
+styles stay intact. Different supported pages can carry independent maps; a
+deck mixing this family with `above-field-text/v1` remains held in this version.
+
+The trusted authoring procedure is:
+
+1. Bookend actual authenticated native GET and PPTX export reads with the exact
+   teacher file's Drive ID, numeric version, modification time and MIME type.
+   Require unchanged metadata. Parse native with
+   `native_teacher_source.read(..., explicit_authoring=True)` and export bytes
+   with `completion.read_deck(raw, explicit_authoring=True)`.
+2. Call `mapped_text_binding.capture_export(exported, before, after, raw)`
+   using those actual provider reads and bytes, then
+   `mapped_text_binding.author(native, captured_export,
+   targets=[{"marker_key": existing_label_key, "target_key": audited_field_key},
+   ...])`. The pure helper derives complete existing identities, original
+   givens, unique typed EMU geometry, both scene hashes and the exact source ID.
+   A supplied hash or serialized capture is never authority.
+3. A separately authorized author may attach the returned JSON with
+   `response_binding.PREFIX` to the **existing first NOTES marker shape's**
+   empty description slot. The helper does not perform this write, authorize
+   it, overwrite alt text, restyle content or establish historical lineage.
+   After that operation, freshly read and bookend both formats again at the
+   resulting actual version. Verify saved metadata and every isolated target,
+   category independence, blank, source/context edit and copy control.
+4. For each native teacher or submitted copy, call
+   `mapped_text_binding.with_export_witness(native, captured_export)` using
+   **that file's own current** bookended export. Teacher evidence cannot be
+   lent to a submitted copy. Normal `_read` and combined `_capture_source`
+   automatically capture authenticated exported decks; they do not fabricate
+   a native witness when export is unavailable. Failed evidence stays held.
+
+Eligibility is intentionally narrow. Targets must be unique, direct,
+nonoverlapping, fixed axis-aligned text shapes, including a genuinely empty
+shape without fake text runs. Positive text requires resolved normal explicit
+font faces, sizes and opaque colors; symbol fonts, theme aliases and inherited
+unresolved typography remain unsupported. The actual paired PPTX must prove
+fixed text layout with explicit horizontal/vertical clipping and zero text
+insets, so text outside a rectangle cannot supply unseen response evidence.
+Credited target text uses a conservative single-paragraph printable-ASCII
+normal-font fit envelope: all raw spaces and the complete original given plus
+response count, with 1.5 em per glyph, 2 em per line and an edge/stroke budget.
+Each word is budgeted on a separate line to cover early wrapping. Extra blank
+paragraphs, controls, unresolved fallback glyphs and text outside that bounded
+profile remain held, even if an ordinary renderer might fit them more tightly.
+Unchanged clipped non-target context does not need this target-only fit test.
+The light opaque target fill and all geometry/paint must remain unchanged.
+Fractional-EMU rectangles that cannot be represented safely reject cleanly.
+
+Immutable context can contain supported direct shapes and bounded positive
+axis-aligned groups of static shapes or embedded PNG/JPEG images. The reader
+validates the actual OPC graph, media bytes, crops, group ancestry, painter
+order, geometry, stroke bounds and resource graph; any context painted bounds
+intersecting a response remain held. Diagnostic object/part names and rIds
+can vary without replacing semantic identity. Native signed image URLs are
+ephemeral and never stored as media authority; actual current paired export
+content proves the supported image. Theme/resource hashes guard integrity,
+not visible font resolution. Nonempty inherited presentation/master/layout
+text defaults and theme object defaults remain unsupported; master/layout
+content cannot supply resolved direct-field typography. Deep or oversized XML
+structure and ambiguous duplicate layout branches reject cleanly before
+recursive canonicalization. Unsupported effects, animation, external media,
+grouped targets, tables, ambiguous geometry or unresolved rendering stay held;
+do not flatten, recolor or add backing shapes to manufacture eligibility.
+
+The fresh registered teacher map drives assessment before legacy fallback.
+Missing, malformed, stale, student-only, relocated or modified maps, source
+context changes, target/style changes, or missing capture/witness proof hold
+scores. An opted-in target supplies only its own existing identity. Exact
+current-page source echoes use the existing ordinary copy-length rule; quoting a prompt plus
+an original explanation and legitimate question-selection responses retain
+their ordinary behavior. Speaker-note-only references to an uncoded prompt
+on another page do **not** establish an authenticated question binding.
+
+This is prospective authoring support, not a historical distribution registry
+or migration tool. It cannot prove which original version an already
+distributed copy received, retroactively attach metadata to that copy, or
+recover a teacher contract removed from all fresh sources without an external
+registry. Such unresolved lineage remains held. No school-file attachment,
+grade/configuration/schedule change or actual lesson acceptance follows from
+these synthetic tests or a deployment receipt.
+
 ### Explicit above-field text responses
 
 `hub_v2.explicit_response_binding` adds the opt-in `above-field-text/v1`
