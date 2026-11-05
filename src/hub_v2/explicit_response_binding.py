@@ -9,7 +9,7 @@ import hashlib
 import json
 import re
 
-from . import response_binding as rb, writing_fields
+from . import response_binding as rb, writing_fields, mapped_text_binding as mapped
 
 KIND = "above-field-text/v1"
 REVIEW = "Explicit response field needs review"
@@ -32,7 +32,8 @@ def _xml(node, *, style=False):
 
 def decode(raw):
     """Reject duplicate keys, including ones the ordinary JSON reader replaces."""
-    if not isinstance(raw, str) or KIND not in raw or not raw.startswith(rb.HEADER):
+    family = "original-text-targets/"
+    if not isinstance(raw, str) or not (KIND in raw or family in raw) or not raw.startswith(rb.HEADER):
         return None
     def pairs(items):
         result = {}
@@ -45,9 +46,10 @@ def decode(raw):
         value = json.loads(raw[len(rb.HEADER):], object_pairs_hook=pairs)
         if len(raw) > 40_000 or not isinstance(value, dict):
             raise ValueError("invalid explicit binding")
-        return value if value.get("kind") == KIND else None
-    except (ValueError, TypeError):
-        return {"kind": KIND, "invalid": True}
+        if value.get("kind") in (KIND, mapped.KIND): return value
+        return {"kind": mapped.KIND, "invalid": True} if family in str(value.get("kind")) else None
+    except (ValueError, TypeError, RecursionError):
+        return {"kind": mapped.KIND if family in raw else KIND, "invalid": True}
 
 
 def _rgb(value, *, light=False):
@@ -153,7 +155,7 @@ def pptx_surface(shape):
                              "paragraphs": sorted({digest(_xml(s)) for s in body.iter(A + "pPr")})})}
 
 
-def attach_pptx(page, tree, root, name):
+def attach_pptx(page, tree, root, name, *, archive=None, part=None):
     # Animations and slide-level display branches can hide otherwise normal
     # shapes. This v1 contract never interprets an animation timeline.
     if (set(root.attrib) - {"show", "showMasterSp", "showMasterPhAnim"}
@@ -206,10 +208,13 @@ def attach_pptx(page, tree, root, name):
             binding = decode(props.get("descr", "") if props is not None else "")
             if binding is not None:
                 unit["binding"] = binding
+    if archive is not None:
+        from . import mapped_text_scene
+        mapped_text_scene.attach(page, root, archive, part)
 
 
 def bound(page):
-    return [u for u in (page or {}).get("units", []) if u.get("binding", {}).get("kind") == KIND]
+    return [u for u in (page or {}).get("units", []) if u.get("binding", {}).get("kind") in (KIND, mapped.KIND)]
 
 
 def _box(value):
@@ -228,7 +233,7 @@ def _scene(page, size, label, target, practice):
         raise ValueError(REVIEW)
     roles = [("label", label), ("target", target)] + [("practice%d" % i, f) for i, f in enumerate(practice)]
     boxes = [r[1]["box"] for r in roles]
-    if (len({tuple(b) for b in boxes}) != len(boxes) or any(not rb.rectangle(b, size) for b in boxes)
+    if (any(not rb.rectangle(b, size) for b in boxes) or len({tuple(b) for b in boxes}) != len(boxes)
             or any(rb._intersects(a, b) for i, a in enumerate(boxes) for b in boxes[i + 1:])):
         raise ValueError(REVIEW)
     scene, paint, formats = [], [page.get("explicit_page_surface")], set()
@@ -253,6 +258,8 @@ def _scene(page, size, label, target, practice):
 
 
 def _fields(page, label_box, target_box, practice_boxes):
+    if any(b is None for b in [label_box, target_box, *practice_boxes]):
+        raise ValueError(REVIEW)
     return [{"box": box, "given": _unit(page, box)["text"]} for box in [label_box, target_box, *practice_boxes]]
 
 
@@ -363,6 +370,8 @@ def with_export_witness(native, exported):
     bookends. A raw exported deck or descriptor-provided identity cannot issue
     this capability. This proves no historical distribution or school action.
     """
+    if mapped.active(native) or mapped.active(exported):
+        return mapped.with_export_witness(native, exported)
     source_id, revision = native.get("native_source_id"), native.get("native_source_revision")
     if (not source_id or not revision or exported.get("explicit_source_id") != source_id
             or exported.get("explicit_source_revision") != revision or native["size"] != exported["size"]
@@ -407,6 +416,8 @@ def _witnessed(deck):
 
 def plan(student, template):
     """Fresh teacher source drives dispatch; missing submitted metadata holds."""
+    if mapped.active(student) or mapped.active(template):
+        return mapped.plan(student, template)
     if any(p.get("explicit_invalid") for d in (student, template) if d for p in d["slides"]):
         return {}, True
     expected = [(p, u) for p in (template or {}).get("slides", []) for u in bound(p)]
@@ -435,6 +446,8 @@ def plan(student, template):
 
 
 def answers(markers, written, template, student, size, plain, *, reference=None):
+    if type(reference) is mapped._Reference or any(m.get("binding", {}).get("kind") == mapped.KIND for m in markers):
+        return mapped.answers(markers, written, template, student, size, plain, reference=reference)
     result = {(m["category"], m["id"]): [] for m in markers}
     bad = (result, list(written), REVIEW)
     if type(reference) is not _Reference or template != reference.source_page or not student:

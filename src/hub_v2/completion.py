@@ -267,6 +267,11 @@ def read_deck(raw, *, explicit_authoring=False):
                 root = ET.fromstring(archive.read(name))
             except ET.ParseError:
                 raise Unreadable("This deck couldn't be read.") from None
+            if explicit_authoring or any("original-text-targets/" in p.get("descr", "") for p in root.iter(P + "cNvPr")):
+                try:
+                    explicit_response_binding.mapped.s.xml_bounds(root)
+                except ValueError:
+                    raise Unreadable("This mapped source has unsupported XML structure.") from None
             units = []
             pictures = {}
             relname = posixpath.dirname(name) + "/_rels/" + posixpath.basename(name) + ".rels"
@@ -308,7 +313,7 @@ def read_deck(raw, *, explicit_authoring=False):
             if tree is not None:
                 slide = legacy_static_context.capture(slide, tree, root, archive, _name)
             if tree is not None and (explicit_authoring or any(explicit_response_binding.decode(p.get("descr", "")) is not None for p in tree.iter(P + "cNvPr"))):
-                explicit_response_binding.attach_pptx(slide, tree, root, _name)
+                explicit_response_binding.attach_pptx(slide, tree, root, _name, archive=archive, part=name)
             if tree is not None and any(u.get("binding", {}).get("kind") == writing_fields.KIND for u in units):
                 writing_fields.attach(slide, tree, root, pictures, archive, _box, _name, part=name)
             if tree is not None and any(u.get("binding", {}).get("kind") == graphical_choice.KIND for u in units):
@@ -1214,7 +1219,14 @@ def _read(token, file_id, meta, *, source_role="student"):
     if meta.get("trashed"):
         raise Unreadable("This exact deck is in trash; no contents were scored or restored.")
     try:
-        deck = read_deck(google.deck_bytes(token, file_id, meta.get("mimeType", "")))
+        raw = google.deck_bytes(token, file_id, meta.get("mimeType", ""))
+        deck = read_deck(raw)
+        if explicit_response_binding.mapped.active(deck):
+            after = google.drive_file(token, file_id, google.FILE_FIELDS + ",version")
+            try:
+                return explicit_response_binding.mapped.capture_export(deck, meta, after, raw)
+            except (ValueError, TypeError, KeyError) as error:
+                raise Unreadable("This exact mapped export lacks unchanged authenticated source evidence.") from error
         if any(explicit_response_binding.bound(page) for page in deck["slides"]):
             deck["explicit_source_id"] = file_id
             deck["explicit_source_revision"] = str(meta.get("version") or "")

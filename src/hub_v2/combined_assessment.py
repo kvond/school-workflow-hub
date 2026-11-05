@@ -275,6 +275,11 @@ def _capture_source(token, fid, before):
     after = _source_metadata(token, fid)
     if before != after:
         raise Held('A combined-assignment source changed while it was being read; reload Student work.')
+    if completion.explicit_response_binding.mapped.active(deck):
+        try:
+            deck = completion.explicit_response_binding.mapped.capture_export(deck, before, after, raw)
+        except (ValueError, TypeError, KeyError) as error:
+            raise Held('This exact mapped component lacks unchanged authenticated export evidence.') from error
     return {'metadata': before, 'sha256': hashlib.sha256(raw).hexdigest(), 'deck': deck}
 
 

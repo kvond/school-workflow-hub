@@ -112,6 +112,14 @@ def prepared():
 
 
 class ExplicitResponseTests(unittest.TestCase):
+    def test_fractional_emu_authoring_rejects_cleanly_without_typeerror(self):
+        value = original()
+        element(value, "answer")["transform"]["scaleX"] = 1.01
+        native = parse(value, "native", authoring=True)
+        exported = parse(value, "pptx", authoring=True)
+        with self.assertRaises(ValueError):
+            b.author(native, exported, label_key="label", target_key="answer", practice_keys=[f"practice{i}" for i in range(6)])
+
     def test_four_reader_combinations_keep_one_response_and_six_practice_negatives(self):
         template = prepared()
         for teacher_form in ("native", "pptx"):
